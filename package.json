@@ -1,0 +1,22 @@
+{
+  "name": "tessera",
+  "private": true,
+  "workspaces": [
+    "apps/desktop",
+    "apps/desktop/ui",
+    "apps/sidecar",
+    "apps/cli",
+    "packages/*",
+    "plugins/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter @tessera/desktop dev",
+    "build": "bun run --filter '*' build",
+    "check": "biome check . && bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1",
+    "typescript": "^5"
+  }
+}

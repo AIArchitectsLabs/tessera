@@ -1,0 +1,20 @@
+[workspace]
+members = ["apps/desktop/src-tauri"]
+resolver = "2"
+
+# Dev: strip full DWARF from dependencies — cuts target/ size from ~10 GB to ~2-3 GB.
+# The app crate itself keeps line-table debug info (debug = 1) for useful backtraces.
+[profile.dev]
+incremental = true
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = false
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

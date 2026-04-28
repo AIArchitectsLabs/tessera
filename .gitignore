@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Rust
+target/
+apps/desktop/src-tauri/target/
+
+# Sidecar binaries (built artifacts, not source)
+apps/desktop/src-tauri/binaries/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea/
+*.swp
+*.swo

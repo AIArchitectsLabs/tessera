@@ -1,0 +1,20 @@
+{
+  "name": "@tessera/sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "build": "bun build --compile --target=bun src/server.ts --outfile dist/sidecar",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@tessera/contracts": "workspace:*",
+    "@tessera/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

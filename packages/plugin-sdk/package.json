@@ -1,0 +1,19 @@
+{
+  "name": "@tessera/plugin-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --outDir dist",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@tessera/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}
