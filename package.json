@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "bun run --filter @tessera/desktop dev",
     "build": "bun run --filter '*' build",
+    "build:sidecar": "bun run scripts/build-sidecar.ts",
     "check": "biome check . && bun run --filter '*' typecheck",
     "test": "bun run --filter '*' test"
   },

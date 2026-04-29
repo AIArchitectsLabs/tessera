@@ -26,3 +26,22 @@ export const SidecarReadySchema = z.discriminatedUnion("transport", [
 ]);
 
 export type SidecarReady = z.infer<typeof SidecarReadySchema>;
+
+// Spawn a registered CLI binary via the sidecar.
+export const SpawnRequestSchema = z.object({
+  binary: z.enum(["workspace-cli"]),
+  args: z.array(z.string()).default([]),
+  timeoutMs: z.number().int().positive().max(60_000).default(10_000),
+});
+
+export type SpawnRequest = z.infer<typeof SpawnRequestSchema>;
+
+export const SpawnResultSchema = z.object({
+  stdout: z.string(),
+  stderr: z.string(),
+  exitCode: z.number().int(),
+  signal: z.string().nullable(),
+  durationMs: z.number().nonnegative(),
+});
+
+export type SpawnResult = z.infer<typeof SpawnResultSchema>;

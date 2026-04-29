@@ -28,6 +28,7 @@
       "dist",
       "target",
       "apps/desktop/src-tauri/target",
+      "apps/desktop/src-tauri/gen",
       "bun.lockb"
     ]
   }

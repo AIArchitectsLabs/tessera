@@ -6,5 +6,5 @@ import type { IpcEnvelope } from "@tessera/contracts";
 export interface Plugin {
   name: string;
   version: string;
-  onMessage?: (envelope: IpcEnvelope) => Promise<IpcEnvelope | void>;
+  onMessage?: (envelope: IpcEnvelope) => Promise<IpcEnvelope | undefined>;
 }

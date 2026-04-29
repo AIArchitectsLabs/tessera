@@ -54,4 +54,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - run: bun install --frozen-lockfile
+      - name: Compile sidecar and CLI binaries
+        run: bun run build:sidecar
       - run: bun run --filter @tessera/desktop build
