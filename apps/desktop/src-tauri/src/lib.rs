@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -142,12 +143,22 @@ fn cli_binary_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let cli_path = cli_binary_path(app.handle()).context("Could not resolve CLI binary path")?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .context("Could not resolve app data dir")?;
+    fs::create_dir_all(&app_data_dir).context("Could not create app data dir")?;
+    let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
 
     let (mut rx, child) = app
         .shell()
         .sidecar("tessera-sidecar")
         .context("Could not create sidecar command")?
         .env("TESSERA_CLI_PATH", cli_path.to_string_lossy().as_ref())
+        .env(
+            "TESSERA_WORKFLOW_DB_PATH",
+            workflow_db_path.to_string_lossy().as_ref(),
+        )
         .spawn()
         .context("Could not spawn sidecar")?;
 

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AgentTurnRequestSchema,
@@ -9,21 +9,24 @@ import {
   type SpawnResult,
   WorkflowResumeRequestSchema,
   WorkflowRunRequestSchema,
-  type WorkflowRunResult,
 } from "@tessera/contracts";
 import { executeAgentTurn, resumeWorkflowRun, runDemoWorkflow } from "@tessera/core";
+import { createWorkflowCheckpointStore } from "./workflow-store.js";
 
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MiB cap per stream
-const workflowRuns = new Map<string, WorkflowRunResult>();
+const WORKFLOW_DB_PATH =
+  process.env.TESSERA_WORKFLOW_DB_PATH ?? join(homedir(), ".tessera", "workflow-runs.sqlite");
+const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 
 const isWindows = process.platform === "win32";
 const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid}.sock`);
 
 process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
+  workflowStore.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => process.exit(0));
@@ -186,7 +189,7 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
         runWorkspaceCli,
       },
     });
-    workflowRuns.set(result.runId, result);
+    workflowStore.save(result);
     return Response.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -215,7 +218,7 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
     return Response.json({ error: "Resume body runId does not match URL" }, { status: 400 });
   }
 
-  const existing = workflowRuns.get(runId);
+  const existing = workflowStore.get(runId);
   if (!existing) {
     return Response.json({ error: "Unknown workflow run" }, { status: 404 });
   }
@@ -228,7 +231,7 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
         runWorkspaceCli,
       },
     });
-    workflowRuns.set(result.runId, result);
+    workflowStore.save(result);
     return Response.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
