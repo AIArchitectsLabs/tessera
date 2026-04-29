@@ -208,13 +208,50 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn workflow_run(
+    state: State<'_, SidecarHandle>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "workflowId": "demo.write-approval",
+        "input": input,
+    })
+    .to_string();
+    let json = state
+        .post("/workflows/run", &body)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn workflow_resume(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+    decision: String,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "runId": &run_id,
+        "decision": decision,
+    })
+    .to_string();
+    let path = format!("/workflows/{run_id}/resume");
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| setup(app))
-        .invoke_handler(tauri::generate_handler![sidecar_ping])
+        .invoke_handler(tauri::generate_handler![
+            sidecar_ping,
+            workflow_run,
+            workflow_resume
+        ])
         .build(tauri::generate_context!())
         .expect("failed to build Tessera")
         .run(|app_handle, event| {

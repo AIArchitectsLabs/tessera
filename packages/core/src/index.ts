@@ -12,3 +12,9 @@ export {
   toolNameToId,
   type WorkspaceCliExecutor,
 } from "./tools.js";
+export {
+  resumeWorkflowRun,
+  runDemoWorkflow,
+  type ResumeWorkflowRunOptions,
+  type RunDemoWorkflowOptions,
+} from "./workflow.js";

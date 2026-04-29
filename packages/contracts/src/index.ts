@@ -161,3 +161,63 @@ export const AgentTurnResultSchema = z.object({
 });
 
 export type AgentTurnResult = z.infer<typeof AgentTurnResultSchema>;
+
+export const WorkflowInputDefinitionSchema = z.object({
+  type: z.enum(["string", "number", "boolean"]),
+  required: z.boolean().default(false),
+  default: z.unknown().optional(),
+});
+
+export type WorkflowInputDefinition = z.infer<typeof WorkflowInputDefinitionSchema>;
+
+export const WorkflowToolStepSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().optional(),
+  kind: z.literal("tool"),
+  toolId: z.enum(["workspace.ping", "workspace.writeProbe"]),
+  args: z.record(z.unknown()).default({}),
+  onSuccess: z.string().min(1).optional(),
+  onFailure: z.string().min(1).optional(),
+});
+
+export type WorkflowToolStep = z.infer<typeof WorkflowToolStepSchema>;
+export type WorkflowStep = WorkflowToolStep;
+
+export const WorkflowDefinitionSchema = z.object({
+  id: z.string().min(1),
+  version: z.number().int().positive(),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  inputs: z.record(WorkflowInputDefinitionSchema).default({}),
+  start: z.string().min(1),
+  steps: z.array(WorkflowToolStepSchema).min(1),
+});
+
+export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
+
+export const WorkflowRunRequestSchema = z.object({
+  workflowId: z.literal("demo.write-approval").default("demo.write-approval"),
+  input: z.record(z.unknown()).default({}),
+});
+
+export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
+
+export const WorkflowRunResultSchema = z.object({
+  runId: z.string().min(1),
+  workflowId: z.string().min(1),
+  status: z.enum(["running", "blocked", "completed", "denied", "failed"]),
+  currentStepId: z.string().optional(),
+  input: z.record(z.unknown()).default({}),
+  outputs: z.record(z.unknown()).optional(),
+  approval: PermissionDecisionSchema.options[1].shape.approval.optional(),
+  error: z.string().optional(),
+});
+
+export type WorkflowRunResult = z.infer<typeof WorkflowRunResultSchema>;
+
+export const WorkflowResumeRequestSchema = z.object({
+  runId: z.string().min(1),
+  decision: z.enum(["approve", "deny"]),
+});
+
+export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;

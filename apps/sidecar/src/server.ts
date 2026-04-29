@@ -7,13 +7,17 @@ import {
   SidecarReadySchema,
   SpawnRequestSchema,
   type SpawnResult,
+  WorkflowResumeRequestSchema,
+  WorkflowRunRequestSchema,
+  type WorkflowRunResult,
 } from "@tessera/contracts";
-import { executeAgentTurn } from "@tessera/core";
+import { executeAgentTurn, resumeWorkflowRun, runDemoWorkflow } from "@tessera/core";
 
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MiB cap per stream
+const workflowRuns = new Map<string, WorkflowRunResult>();
 
 const isWindows = process.platform === "win32";
 const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid}.sock`);
@@ -154,6 +158,84 @@ async function handleAgentTurn(req: Request): Promise<Response> {
   }
 }
 
+async function handleWorkflowRun(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = WorkflowRunRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  if (parsed.data.workflowId !== "demo.write-approval") {
+    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+  }
+
+  try {
+    const result = await runDemoWorkflow({
+      input: parsed.data.input,
+      cli: {
+        runWorkspaceCli,
+      },
+    });
+    workflowRuns.set(result.runId, result);
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
+
+async function handleWorkflowResume(req: Request, runId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = WorkflowResumeRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  if (parsed.data.runId !== runId) {
+    return Response.json({ error: "Resume body runId does not match URL" }, { status: 400 });
+  }
+
+  const existing = workflowRuns.get(runId);
+  if (!existing) {
+    return Response.json({ error: "Unknown workflow run" }, { status: 404 });
+  }
+
+  try {
+    const result = await resumeWorkflowRun({
+      run: existing,
+      decision: parsed.data.decision,
+      cli: {
+        runWorkspaceCli,
+      },
+    });
+    workflowRuns.set(result.runId, result);
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -182,6 +264,16 @@ const server = Bun.serve({
 
     if (pathname === "/agent/turn") {
       return handleAgentTurn(req);
+    }
+
+    if (pathname === "/workflows/run") {
+      return handleWorkflowRun(req);
+    }
+
+    const workflowResumeMatch = pathname.match(/^\/workflows\/([^/]+)\/resume$/);
+    const workflowRunId = workflowResumeMatch?.[1];
+    if (workflowRunId) {
+      return handleWorkflowResume(req, workflowRunId);
     }
 
     return new Response("Not Found", { status: 404 });
