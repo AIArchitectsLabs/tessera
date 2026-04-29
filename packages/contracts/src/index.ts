@@ -45,3 +45,119 @@ export const SpawnResultSchema = z.object({
 });
 
 export type SpawnResult = z.infer<typeof SpawnResultSchema>;
+
+export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
+  z.object({
+    provider: z.literal("openai"),
+    model: z.string().min(1),
+    apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
+  }),
+  z.object({
+    provider: z.literal("anthropic"),
+    model: z.string().min(1),
+    apiKeyEnv: z.string().min(1).default("ANTHROPIC_API_KEY"),
+  }),
+  z.object({
+    provider: z.literal("openrouter"),
+    model: z.string().min(1),
+    apiKeyEnv: z.string().min(1).default("OPENROUTER_API_KEY"),
+  }),
+  z.object({
+    provider: z.literal("local"),
+    model: z.string().min(1),
+    baseUrl: z.string().url(),
+    apiKeyEnv: z.string().min(1).optional(),
+  }),
+]);
+
+export type AgentProviderConfig = z.infer<typeof AgentProviderConfigSchema>;
+
+export const ToolCapabilitySchema = z.enum(["read", "write"]);
+export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;
+
+export const ToolRiskSchema = z.object({
+  mutates: z.boolean(),
+  destructive: z.boolean(),
+  external: z.boolean(),
+  reversible: z.boolean(),
+  dryRunSupported: z.boolean(),
+});
+
+export type ToolRisk = z.infer<typeof ToolRiskSchema>;
+
+export const PermissionGrantSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("tool"),
+    toolId: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("exact"),
+    toolId: z.string().min(1),
+    args: z.record(z.unknown()),
+  }),
+]);
+
+export type PermissionGrant = z.infer<typeof PermissionGrantSchema>;
+
+export const PermissionDecisionSchema = z.discriminatedUnion("decision", [
+  z.object({
+    decision: z.literal("allow"),
+    toolId: z.string(),
+    reason: z.string(),
+  }),
+  z.object({
+    decision: z.literal("ask"),
+    toolId: z.string(),
+    reason: z.string(),
+    approval: z.object({
+      toolId: z.string(),
+      args: z.record(z.unknown()),
+      capability: ToolCapabilitySchema,
+      risk: ToolRiskSchema,
+      preview: z.string(),
+      reasonCode: z.string(),
+    }),
+  }),
+  z.object({
+    decision: z.literal("deny"),
+    toolId: z.string(),
+    reason: z.string(),
+  }),
+]);
+
+export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;
+
+export const AgentTurnRequestSchema = z.object({
+  prompt: z.string().min(1),
+  provider: AgentProviderConfigSchema,
+  grants: z.array(PermissionGrantSchema).default([]),
+  timeoutMs: z.number().int().positive().max(120_000).default(60_000),
+});
+
+export type AgentTurnRequest = z.infer<typeof AgentTurnRequestSchema>;
+
+export const AgentMessageSummarySchema = z.object({
+  role: z.string(),
+  text: z.string().optional(),
+});
+
+export type AgentMessageSummary = z.infer<typeof AgentMessageSummarySchema>;
+
+export const AgentToolResultSummarySchema = z.object({
+  toolId: z.string(),
+  status: z.enum(["success", "error", "blocked"]),
+  text: z.string(),
+  details: z.unknown().optional(),
+});
+
+export type AgentToolResultSummary = z.infer<typeof AgentToolResultSummarySchema>;
+
+export const AgentTurnResultSchema = z.object({
+  status: z.enum(["completed", "blocked", "denied", "error"]),
+  messages: z.array(AgentMessageSummarySchema),
+  toolResults: z.array(AgentToolResultSummarySchema),
+  permissionDecisions: z.array(PermissionDecisionSchema),
+  error: z.string().optional(),
+});
+
+export type AgentTurnResult = z.infer<typeof AgentTurnResultSchema>;

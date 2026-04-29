@@ -27,3 +27,4 @@ apps/desktop/src-tauri/binaries/
 .idea/
 *.swp
 *.swo
+.omx/

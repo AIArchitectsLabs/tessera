@@ -29,6 +29,7 @@
       "target",
       "apps/desktop/src-tauri/target",
       "apps/desktop/src-tauri/gen",
+      ".omx",
       "bun.lockb"
     ]
   }

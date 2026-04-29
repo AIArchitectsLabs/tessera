@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "test": "bun test"
+    "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

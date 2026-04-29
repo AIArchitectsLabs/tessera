@@ -2,7 +2,13 @@ import { randomBytes } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SidecarReadySchema, SpawnRequestSchema, type SpawnResult } from "@tessera/contracts";
+import {
+  AgentTurnRequestSchema,
+  SidecarReadySchema,
+  SpawnRequestSchema,
+  type SpawnResult,
+} from "@tessera/contracts";
+import { executeAgentTurn } from "@tessera/core";
 
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
@@ -68,23 +74,35 @@ async function handleSpawn(req: Request): Promise<Response> {
   }
   const request = parsed.data;
 
-  // binary enum is validated by Zod; resolve to the path injected by Rust at launch
-  const cliPath = process.env.TESSERA_CLI_PATH;
-  if (!cliPath) {
+  try {
+    const result = await runWorkspaceCli(request.args, request.timeoutMs);
+    return Response.json(result);
+  } catch (error) {
     return Response.json(
-      { error: "TESSERA_CLI_PATH not configured", code: "SPAWN_FAILED" },
+      {
+        error: error instanceof Error ? error.message : String(error),
+        code: "SPAWN_FAILED",
+      },
       { status: 500 }
     );
   }
+}
+
+async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<SpawnResult> {
+  // binary enum is validated by Zod; resolve to the path injected by Rust at launch
+  const cliPath = process.env.TESSERA_CLI_PATH;
+  if (!cliPath) {
+    throw new Error("TESSERA_CLI_PATH not configured");
+  }
 
   const startMs = Date.now();
-  const proc = Bun.spawn([cliPath, ...request.args], {
+  const proc = Bun.spawn([cliPath, ...args], {
     stdout: "pipe",
     stderr: "pipe",
   });
 
   // Kill the child on timeout; exited promise still resolves (with a non-zero code)
-  const timer = setTimeout(() => proc.kill(), request.timeoutMs);
+  const timer = setTimeout(() => proc.kill(), timeoutMs);
 
   const [rawStdout, rawStderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -101,7 +119,39 @@ async function handleSpawn(req: Request): Promise<Response> {
     durationMs: Date.now() - startMs,
   };
 
-  return Response.json(result);
+  return result;
+}
+
+async function handleAgentTurn(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = AgentTurnRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const result = await executeAgentTurn({
+      request: parsed.data,
+      cli: {
+        runWorkspaceCli,
+      },
+    });
+
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
 }
 
 const server = Bun.serve({
@@ -128,6 +178,10 @@ const server = Bun.serve({
 
     if (pathname === "/spawn") {
       return handleSpawn(req);
+    }
+
+    if (pathname === "/agent/turn") {
+      return handleAgentTurn(req);
     }
 
     return new Response("Not Found", { status: 404 });
