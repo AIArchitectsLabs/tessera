@@ -38,10 +38,6 @@ export function TaskList({
 }: TaskListProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest px-4 py-3">
-        Tasks
-      </div>
-
       {!workspaceRoot && (
         <div className="mx-4 mt-2 rounded-lg border border-dashed border-border bg-background/60 p-4 text-center text-sm text-muted-foreground">
           Select a workspace before creating tasks.

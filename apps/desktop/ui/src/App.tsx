@@ -6,7 +6,7 @@ import type {
   TaskListResult,
   TaskSummary,
 } from "@tessera/contracts";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { RailNav, type SidebarMode } from "@/components/RailNav";
 import { Sidebar } from "@/components/Sidebar";
@@ -28,6 +28,7 @@ export default function App() {
   const [loadingTaskDetail, setLoadingTaskDetail] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [sendingTurn, setSendingTurn] = useState(false);
+  const taskDetailRequestId = useRef(0);
 
   const handleWorkspaceSelect = (path: string) => {
     setWorkspaceRoot(path);
@@ -60,18 +61,31 @@ export default function App() {
   }, [selectedTaskId, workspaceRoot]);
 
   const loadTaskDetail = useCallback(async (taskId: string) => {
+    const requestId = ++taskDetailRequestId.current;
     setLoadingTaskDetail(true);
     setTaskDetailError(null);
     try {
       const task = await invoke<TaskDetail>("task_get", { taskId });
+      if (taskDetailRequestId.current !== requestId) return;
       setSelectedTask(task);
     } catch (error) {
+      if (taskDetailRequestId.current !== requestId) return;
       setTaskDetailError(error instanceof Error ? error.message : String(error));
       setSelectedTask(null);
     } finally {
-      setLoadingTaskDetail(false);
+      if (taskDetailRequestId.current === requestId) {
+        setLoadingTaskDetail(false);
+      }
     }
   }, []);
+
+  const handleNewTask = () => {
+    taskDetailRequestId.current += 1;
+    setSelectedTaskId(null);
+    setSelectedTask(null);
+    setTaskDetailError(null);
+    setSendingTurn(false);
+  };
 
   useEffect(() => {
     if (sidebarMode === "tasks") {
@@ -165,6 +179,7 @@ export default function App() {
         error={taskListError}
         loadingTasks={loadingTasks}
         mode={sidebarMode}
+        onNewTask={handleNewTask}
         onRetryTasks={loadTasks}
         onSelectTask={setSelectedTaskId}
         onWorkspaceSelect={handleWorkspaceSelect}
