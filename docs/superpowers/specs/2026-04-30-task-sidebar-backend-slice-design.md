@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add first-class workspace tasks to Tessera. A task is the user-facing work item, separate from workflow runs. It belongs to a selected workspace, appears in the left secondary sidebar when the Tasks rail item is selected, can execute a minimal backend run, and can produce persisted artifact records.
+Add first-class workspace tasks to Tessera. A task is the user-facing work item, separate from workflow runs. It belongs to a selected workspace, appears in the left secondary sidebar when the Tasks rail item is selected, supports multiple conversation turns, can execute a minimal backend run per user turn, and can produce persisted artifact records.
 
 ## Product Behavior
 
@@ -16,7 +16,7 @@ When a workspace is selected, the sidebar shows:
 - a `Tasks` section header
 - task rows with title, status, agent/persona label when present, updated time, and latest activity preview
 
-Selecting a task opens its detail view in the main pane. The first detail view shows task metadata, current status, latest activity, and produced artifacts. Conversation history and rich agent controls are out of scope for this slice.
+Selecting a task opens its detail view in the main pane. The first detail view shows task metadata, current status, latest activity, the task conversation timeline, a composer for the next user instruction, and produced artifacts. Rich provider/model controls are out of scope for this slice.
 
 ## Data Model
 
@@ -38,12 +38,28 @@ interface TaskSummary {
 
 interface TaskDetail extends TaskSummary {
   description?: string;
+  turns: TaskTurn[];
   artifacts: TaskArtifact[];
+}
+
+type TaskTurnRole = "user" | "agent" | "system";
+type TaskTurnStatus = "queued" | "running" | "completed" | "failed";
+
+interface TaskTurn {
+  id: string;
+  taskId: string;
+  role: TaskTurnRole;
+  content: string;
+  status: TaskTurnStatus;
+  createdAt: string;
+  completedAt?: string;
+  error?: string;
 }
 
 interface TaskArtifact {
   id: string;
   taskId: string;
+  turnId?: string;
   kind: "text" | "file";
   title: string;
   path?: string;
@@ -54,6 +70,8 @@ interface TaskArtifact {
 
 `workspaceRoot` is required for persisted tasks. Global task browsing can be added later by querying across workspace roots, but this first UI filters tasks to the selected workspace.
 
+Tasks are the durable container. Turns are the conversation and execution log inside the task. Artifacts may belong to the task overall or to the specific turn that produced them.
+
 ## Backend And Persistence
 
 The sidecar adds a SQLite-backed `task-store.ts`. It should use the same app data directory pattern as workflow persistence, but tasks remain a separate domain from workflow runs.
@@ -61,17 +79,20 @@ The sidecar adds a SQLite-backed `task-store.ts`. It should use the same app dat
 Initial HTTP endpoints:
 
 - `GET /tasks?workspaceRoot=<path>` returns task summaries for the selected workspace, ordered by `updatedAt` descending.
-- `POST /tasks` creates a task and starts the minimal execution loop.
-- `GET /tasks/:id` returns task detail with artifacts.
+- `POST /tasks` creates a task, stores the first user turn, and starts the minimal execution loop for that turn.
+- `GET /tasks/:id` returns task detail with turns and artifacts.
 - `PATCH /tasks/:id` updates task fields such as status, title, and latest activity for later UI actions.
+- `POST /tasks/:id/turns` appends a new user turn to an existing task and starts the minimal execution loop for that turn.
 
-The store persists tasks and artifacts in separate tables. Task creation must reject missing or empty `workspaceRoot`.
+The store persists tasks, turns, and artifacts in separate tables. Task creation must reject missing or empty `workspaceRoot`. New turns must be rejected when the task does not exist or when the task's workspace is unavailable.
 
 ## Execution And Artifacts
 
-The first slice includes a bounded backend execution path so tasks are not empty metadata. Creating a task stores it as `active`, runs a deterministic task runner, creates at least one artifact record, updates `latestActivity`, and transitions the task to `done` or `failed`.
+The first slice includes a bounded backend execution path so tasks are not empty metadata. Creating a task stores it as `active`, creates the first user turn, runs a deterministic task runner for that turn, appends an agent turn with the result, creates at least one artifact record, updates `latestActivity`, and transitions the task to `done` or `failed`.
 
-The initial runner can be deterministic rather than a full provider-backed agent loop. It accepts `title`, optional `description`, and `workspaceRoot`, then produces a text artifact record such as an initial draft or task output preview. The runner interface should be shaped so a later real agent loop can replace it without changing UI contracts.
+Sending a follow-up instruction to an existing task creates another user turn under the same task. The runner receives the task, recent prior turns, the new user turn, and `workspaceRoot`, then appends another agent turn and any artifacts it produces. This keeps the cowork-style interaction model in place from the first implementation.
+
+The initial runner can be deterministic rather than a full provider-backed agent loop. It accepts `title`, optional `description`, `workspaceRoot`, prior turns, and the new user turn, then produces a text artifact record such as an initial draft, revision, or task output preview. The runner interface should be shaped so a later real agent loop can replace it without changing UI contracts.
 
 Artifacts are persisted in SQLite for this slice. Writing artifact files into the workspace is out of scope, so `TaskArtifact.path` is optional and may be absent. The UI should still render the artifact title and content preview.
 
@@ -83,6 +104,7 @@ Rust adds thin sidecar proxy commands matching the existing workflow pattern:
 - `task_create`
 - `task_get`
 - `task_update`
+- `task_create_turn`
 
 The frontend calls these through `invoke` and uses shared contract types. The UI must not read SQLite or sidecar HTTP directly.
 
@@ -94,30 +116,33 @@ Keep the feature small, but split the current app shell along the task boundary:
 - `RailNav` renders Files, Tasks, and future rail items.
 - `Sidebar` keeps `WorkspacePicker` and switches content by selected mode.
 - `TaskList` renders disabled, loading, error, empty, and populated task history states.
-- `TaskDetail` renders the selected task and artifacts in the main pane.
+- `TaskDetail` renders the selected task conversation, turn composer, and artifacts in the main pane.
 
 `FileExplorer` stays behind `sidebarMode === "files"`.
 
-`New task` should use a small inline title input in the sidebar. The input remains available when task creation fails, and creation is disabled when no workspace is selected.
+`New task` should use a small inline title input in the sidebar plus an initial instruction field in the task detail or creation flow. The input remains available when task creation fails, and creation is disabled when no workspace is selected.
 
 ## Error Handling
 
-Task list failures show an inline sidebar error with retry. Task creation failures keep the draft title and show an inline error. Task execution failures transition the task to `failed` and persist a latest activity message describing the failure.
+Task list failures show an inline sidebar error with retry. Task creation failures keep the draft title and initial instruction and show an inline error. Task execution failures mark the active turn `failed`, transition the task to `failed`, and persist a latest activity message describing the failure.
 
 If a selected task cannot be loaded, the detail pane shows a recoverable error and the sidebar remains usable.
 
 ## Tests And Verification
 
-Add contract schema tests for task create, list, detail, update, and artifact shapes.
+Add contract schema tests for task create, list, detail, update, turn create, turn list/detail, and artifact shapes.
 
 Add sidecar store tests for:
 
 - rejecting task creation without a workspace
 - creating a task
+- creating the first user turn during task creation
+- appending a follow-up user turn to an existing task
 - listing tasks by workspace
 - ordering by `updatedAt`
 - updating task status/latest activity
-- creating and loading artifacts
+- creating and loading turns
+- creating and loading artifacts linked to a turn
 - persisting failed execution state
 
 Add endpoint tests only if the current sidecar server can be tested without a broad server refactor. Otherwise, keep endpoint logic thin and cover contracts plus store behavior.
@@ -133,7 +158,6 @@ bun test packages/contracts apps/sidecar
 
 - streaming task progress
 - provider/model selection
-- multi-turn chat
 - approval gates
 - task deletion/archive
 - background cancellation
