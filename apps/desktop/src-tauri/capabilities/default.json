@@ -3,5 +3,13 @@
   "identifier": "main-capability",
   "description": "Grants the main window access to core Tauri APIs. Custom Rust commands (invoke_handler) do not require capability entries.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "**" }]
+    }
+  ]
 }
