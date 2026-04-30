@@ -28,3 +28,4 @@ apps/desktop/src-tauri/binaries/
 *.swp
 *.swo
 .omx/
+.superpowers/
