@@ -2,14 +2,11 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { TaskSummary } from "@tessera/contracts";
-import { CheckCircle2, Loader2, Plus, RotateCw } from "lucide-react";
-import { useState } from "react";
+import { CheckCircle2, Loader2, RotateCw } from "lucide-react";
 
 interface TaskListProps {
-  creating: boolean;
   error: string | null;
   loading: boolean;
-  onCreateTask: (input: { title: string; initialInstruction: string }) => Promise<void>;
   onRetry: () => void;
   onSelectTask: (taskId: string) => void;
   selectedTaskId: string | null;
@@ -31,66 +28,17 @@ function formatUpdatedAt(value: string) {
 }
 
 export function TaskList({
-  creating,
   error,
   loading,
-  onCreateTask,
   onRetry,
   onSelectTask,
   selectedTaskId,
   tasks,
   workspaceRoot,
 }: TaskListProps) {
-  const [title, setTitle] = useState("");
-  const [initialInstruction, setInitialInstruction] = useState("");
-
-  const disabled = !workspaceRoot;
-  const canCreate = Boolean(title.trim() && initialInstruction.trim() && !creating && !disabled);
-
-  async function handleCreateTask() {
-    if (!canCreate) return;
-    await onCreateTask({
-      title: title.trim(),
-      initialInstruction: initialInstruction.trim(),
-    });
-    setTitle("");
-    setInitialInstruction("");
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="px-4 mb-4 mt-2 space-y-2">
-        <input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          disabled={disabled || creating}
-          placeholder="Task title"
-          className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <textarea
-          value={initialInstruction}
-          onChange={(event) => setInitialInstruction(event.target.value)}
-          disabled={disabled || creating}
-          placeholder="Initial instruction"
-          rows={3}
-          className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <Button
-          type="button"
-          className="w-full bg-[#2a2826] hover:bg-[#1a1918] text-white rounded-full h-10"
-          disabled={!canCreate}
-          onClick={handleCreateTask}
-        >
-          {creating ? (
-            <Loader2 size={16} className="mr-2 animate-spin" />
-          ) : (
-            <Plus size={16} className="mr-2" />
-          )}
-          New task
-        </Button>
-      </div>
-
-      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest px-4 py-2">
+      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest px-4 py-3">
         Tasks
       </div>
 
@@ -119,7 +67,7 @@ export function TaskList({
 
       {workspaceRoot && !loading && !error && tasks.length === 0 && (
         <div className="mx-4 mt-2 rounded-lg border border-dashed border-border bg-background/60 p-4 text-center text-sm text-muted-foreground">
-          No tasks in this workspace yet.
+          No task history yet. Start from the composer in the main pane.
         </div>
       )}
 

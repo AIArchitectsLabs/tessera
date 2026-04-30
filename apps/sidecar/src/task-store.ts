@@ -90,6 +90,20 @@ function assertNonEmpty(value: string, name: string): void {
   if (!value.trim()) throw new Error(`${name} is required`);
 }
 
+export function generateTaskTitle(initialInstruction: string): string {
+  const normalized = initialInstruction
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.replace(/\s+/g, " ")
+    .replace(/^[#*\-:;\s]+/, "")
+    .replace(/[.!?,:;\s]+$/, "");
+
+  if (!normalized) return "New task";
+  if (normalized.length <= 48) return normalized;
+  return `${normalized.slice(0, 45).trimEnd()}...`;
+}
+
 function rowToSummary(row: TaskRow): TaskSummary {
   return TaskSummarySchema.parse({
     id: row.id,
@@ -295,12 +309,12 @@ export function createTaskStore(dbPath: string): TaskStore {
     },
     createTask(input) {
       assertNonEmpty(input.workspaceRoot, "workspaceRoot");
-      assertNonEmpty(input.title, "title");
       assertNonEmpty(input.initialInstruction, "initialInstruction");
+      const title = generateTaskTitle(input.initialInstruction);
       const parsed = {
         ...input,
         workspaceRoot: input.workspaceRoot.trim(),
-        title: input.title.trim(),
+        title,
         initialInstruction: input.initialInstruction.trim(),
       };
       const id = createId("task");

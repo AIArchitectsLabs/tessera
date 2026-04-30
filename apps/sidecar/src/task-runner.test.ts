@@ -24,7 +24,6 @@ describe("task runner", () => {
     const store = createTaskStore(tempDbPath());
     const task = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Draft announcement",
       initialInstruction: "Draft a launch announcement",
       agentLabel: "Maeve",
     });
@@ -47,7 +46,6 @@ describe("task runner", () => {
     const store = createTaskStore(tempDbPath());
     const task = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Draft announcement",
       initialInstruction: "Draft a launch announcement",
     });
     const firstTurn = task.turns[0];

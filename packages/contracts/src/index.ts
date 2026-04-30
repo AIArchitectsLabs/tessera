@@ -287,7 +287,6 @@ export type TaskListResult = z.infer<typeof TaskListResultSchema>;
 
 export const TaskCreateRequestSchema = z.object({
   workspaceRoot: z.string().min(1),
-  title: z.string().min(1),
   initialInstruction: z.string().min(1),
   description: z.string().optional(),
   agentLabel: z.string().min(1).default("Tessera"),

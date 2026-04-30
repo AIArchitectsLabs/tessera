@@ -6,11 +6,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TaskSummary } from "@tessera/contracts";
 
 interface SidebarProps {
-  creatingTask: boolean;
   error: string | null;
   loadingTasks: boolean;
   mode: SidebarMode;
-  onCreateTask: (input: { title: string; initialInstruction: string }) => Promise<void>;
   onRetryTasks: () => void;
   onSelectTask: (taskId: string) => void;
   onWorkspaceSelect: (path: string) => void;
@@ -20,11 +18,9 @@ interface SidebarProps {
 }
 
 export function Sidebar({
-  creatingTask,
   error,
   loadingTasks,
   mode,
-  onCreateTask,
   onRetryTasks,
   onSelectTask,
   onWorkspaceSelect,
@@ -47,10 +43,8 @@ export function Sidebar({
         </>
       ) : (
         <TaskList
-          creating={creatingTask}
           error={error}
           loading={loadingTasks}
-          onCreateTask={onCreateTask}
           onRetry={onRetryTasks}
           onSelectTask={onSelectTask}
           selectedTaskId={selectedTaskId}

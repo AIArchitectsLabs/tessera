@@ -6,10 +6,13 @@ import { ArrowUp, FileText, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 interface TaskDetailProps {
+  creatingTask: boolean;
   loading: boolean;
+  onCreateTask: (initialInstruction: string) => Promise<void>;
   onCreateTurn: (content: string) => Promise<void>;
   sendingTurn: boolean;
   task: TaskDetailType | null;
+  workspaceRoot: string | null;
 }
 
 function turnLabel(turn: TaskTurn) {
@@ -18,13 +21,26 @@ function turnLabel(turn: TaskTurn) {
   return "You";
 }
 
-export function TaskDetail({ loading, onCreateTurn, sendingTurn, task }: TaskDetailProps) {
+export function TaskDetail({
+  creatingTask,
+  loading,
+  onCreateTask,
+  onCreateTurn,
+  sendingTurn,
+  task,
+  workspaceRoot,
+}: TaskDetailProps) {
   const [content, setContent] = useState("");
-  const canSend = Boolean(task && content.trim() && !sendingTurn);
+  const isBusy = sendingTurn || creatingTask;
+  const canSend = Boolean(content.trim() && !isBusy && (task || workspaceRoot));
 
   async function handleSend() {
     if (!canSend) return;
-    await onCreateTurn(content.trim());
+    if (task) {
+      await onCreateTurn(content.trim());
+    } else {
+      await onCreateTask(content.trim());
+    }
     setContent("");
   }
 
@@ -39,14 +55,29 @@ export function TaskDetail({ loading, onCreateTurn, sendingTurn, task }: TaskDet
 
   if (!task) {
     return (
-      <main className="flex-1 flex items-center justify-center bg-background">
-        <div className="max-w-sm text-center">
-          <h1 className="text-lg font-semibold text-foreground">Select or create a task</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Tasks keep workspace-scoped instructions, conversation turns, and produced artifacts
-            together.
-          </p>
+      <main className="flex-1 flex flex-col bg-background relative">
+        <div className="flex flex-1 items-center justify-center px-6 pb-28">
+          <div className="max-w-xl text-center">
+            <h1 className="text-xl font-semibold text-foreground">
+              {workspaceRoot
+                ? "What should Tessera work on?"
+                : "Select a workspace to start a task"}
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {workspaceRoot
+                ? "Describe the outcome you want. Tessera will create a task, keep the conversation, and attach artifacts here."
+                : "Tasks are workspace-scoped so outputs and history stay tied to the right files."}
+            </p>
+          </div>
         </div>
+        <TaskComposer
+          disabled={!workspaceRoot}
+          busy={creatingTask}
+          placeholder={workspaceRoot ? "Ask Tessera to work on..." : "Select a workspace first"}
+          value={content}
+          onChange={setContent}
+          onSend={handleSend}
+        />
       </main>
     );
   }
@@ -126,26 +157,56 @@ export function TaskDetail({ loading, onCreateTurn, sendingTurn, task }: TaskDet
         </div>
       </ScrollArea>
 
-      <div className="absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4">
-        <div className="flex min-h-14 items-end rounded-2xl border border-border bg-background p-2 pl-4 shadow-lg">
-          <textarea
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder="Continue this task..."
-            rows={2}
-            className="max-h-32 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground/60"
-          />
-          <Button
-            type="button"
-            size="icon"
-            className="h-10 w-10 shrink-0 rounded-full"
-            disabled={!canSend}
-            onClick={handleSend}
-          >
-            {sendingTurn ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
-          </Button>
-        </div>
-      </div>
+      <TaskComposer
+        disabled={false}
+        busy={sendingTurn}
+        placeholder="Continue this task..."
+        value={content}
+        onChange={setContent}
+        onSend={handleSend}
+      />
     </main>
+  );
+}
+
+function TaskComposer({
+  busy,
+  disabled,
+  onChange,
+  onSend,
+  placeholder,
+  value,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  placeholder: string;
+  value: string;
+}) {
+  const canSend = Boolean(value.trim() && !busy && !disabled);
+
+  return (
+    <div className="absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4">
+      <div className="flex min-h-14 items-end rounded-2xl border border-border bg-background p-2 pl-4 shadow-lg">
+        <textarea
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          rows={2}
+          disabled={disabled || busy}
+          className="max-h-32 min-h-10 flex-1 resize-none bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-60"
+        />
+        <Button
+          type="button"
+          size="icon"
+          className="h-10 w-10 shrink-0 rounded-full"
+          disabled={!canSend}
+          onClick={onSend}
+        >
+          {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
+        </Button>
+      </div>
+    </div>
   );
 }

@@ -85,7 +85,7 @@ export default function App() {
     }
   }, [loadTaskDetail, selectedTaskId]);
 
-  async function handleCreateTask(input: { title: string; initialInstruction: string }) {
+  async function handleCreateTask(initialInstruction: string) {
     if (!workspaceRoot) return;
 
     setCreatingTask(true);
@@ -93,8 +93,7 @@ export default function App() {
     try {
       const request: TaskCreateRequest = {
         workspaceRoot,
-        title: input.title,
-        initialInstruction: input.initialInstruction,
+        initialInstruction,
         agentLabel: "Tessera",
       };
       const task = await invoke<TaskDetail>("task_create", { request });
@@ -138,10 +137,13 @@ export default function App() {
           </div>
         )}
         <TaskDetailView
+          creatingTask={creatingTask}
           loading={loadingTaskDetail}
+          onCreateTask={handleCreateTask}
           onCreateTurn={handleCreateTurn}
           sendingTurn={sendingTurn}
           task={selectedTask}
+          workspaceRoot={workspaceRoot}
         />
       </div>
     ) : (
@@ -160,11 +162,9 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans">
       <RailNav mode={sidebarMode} onModeChange={setSidebarMode} />
       <Sidebar
-        creatingTask={creatingTask}
         error={taskListError}
         loadingTasks={loadingTasks}
         mode={sidebarMode}
-        onCreateTask={handleCreateTask}
         onRetryTasks={loadTasks}
         onSelectTask={setSelectedTaskId}
         onWorkspaceSelect={handleWorkspaceSelect}

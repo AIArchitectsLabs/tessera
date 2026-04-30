@@ -25,7 +25,6 @@ describe("task store", () => {
     expect(() =>
       store.createTask({
         workspaceRoot: "",
-        title: "Draft announcement",
         initialInstruction: "Draft a launch announcement",
       })
     ).toThrow("workspaceRoot is required");
@@ -38,11 +37,11 @@ describe("task store", () => {
 
     const task = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Draft announcement",
       initialInstruction: "Draft a launch announcement",
       agentLabel: "Maeve",
     });
 
+    expect(task.title).toBe("Draft a launch announcement");
     expect(task.status).toBe("active");
     expect(task.turns).toHaveLength(1);
     expect(task.turns[0]).toMatchObject({
@@ -55,21 +54,31 @@ describe("task store", () => {
     store.close();
   });
 
+  test("generates a compact task title from the first instruction", () => {
+    const store = createTaskStore(tempDbPath());
+
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction:
+        "  Please draft a launch announcement for the new analytics workspace with customer proof points.",
+    });
+
+    expect(task.title).toBe("Please draft a launch announcement for the ne...");
+    store.close();
+  });
+
   test("lists tasks by workspace ordered by update time", () => {
     const store = createTaskStore(tempDbPath());
     const first = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "First",
       initialInstruction: "First task",
     });
     const other = store.createTask({
       workspaceRoot: "/workspace/other",
-      title: "Other",
       initialInstruction: "Other task",
     });
     const second = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Second",
       initialInstruction: "Second task",
     });
 
@@ -90,7 +99,6 @@ describe("task store", () => {
     const store = createTaskStore(tempDbPath());
     const task = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Draft announcement",
       initialInstruction: "Draft a launch announcement",
     });
     const followUp = store.createUserTurn(task.id, "Make it shorter");
@@ -121,7 +129,6 @@ describe("task store", () => {
     const store = createTaskStore(tempDbPath());
     const task = store.createTask({
       workspaceRoot: "/workspace/acme",
-      title: "Draft announcement",
       initialInstruction: "Draft a launch announcement",
     });
     const turn = task.turns[0];

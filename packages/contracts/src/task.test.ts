@@ -28,7 +28,6 @@ describe("task contracts", () => {
 
   test("rejects tasks without a workspace root", () => {
     const parsed = TaskCreateRequestSchema.safeParse({
-      title: "No workspace",
       initialInstruction: "Do work",
     });
 
