@@ -8,9 +8,10 @@ import {
   SpawnRequestSchema,
   type SpawnResult,
   WorkflowResumeRequestSchema,
+  WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
 } from "@tessera/contracts";
-import { executeAgentTurn, resumeWorkflowRun, runDemoWorkflow } from "@tessera/core";
+import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
 import { createWorkflowCheckpointStore } from "./workflow-store.js";
 
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
@@ -20,6 +21,7 @@ const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MiB cap per stream
 const WORKFLOW_DB_PATH =
   process.env.TESSERA_WORKFLOW_DB_PATH ?? join(homedir(), ".tessera", "workflow-runs.sqlite");
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
+const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
 
 const isWindows = process.platform === "win32";
 const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid}.sock`);
@@ -178,12 +180,14 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
 
-  if (parsed.data.workflowId !== "demo.write-approval") {
+  const definition = workflowRegistry.get(parsed.data.workflowId);
+  if (!definition) {
     return Response.json({ error: "Unknown workflow id" }, { status: 404 });
   }
 
   try {
-    const result = await runDemoWorkflow({
+    const result = await runWorkflow({
+      definition,
       input: parsed.data.input,
       cli: {
         runWorkspaceCli,
@@ -195,6 +199,23 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
   }
+}
+
+function handleWorkflowRunList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get("status");
+  if (status && status !== "blocked") {
+    return Response.json({ error: "Unsupported workflow status filter" }, { status: 400 });
+  }
+
+  const result = WorkflowRunListResultSchema.parse({
+    runs: workflowStore.list(status === "blocked" ? { status } : undefined),
+  });
+  return Response.json(result);
 }
 
 async function handleWorkflowResume(req: Request, runId: string): Promise<Response> {
@@ -222,11 +243,16 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   if (!existing) {
     return Response.json({ error: "Unknown workflow run" }, { status: 404 });
   }
+  const definition = workflowRegistry.get(existing.workflowId);
+  if (!definition) {
+    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+  }
 
   try {
     const result = await resumeWorkflowRun({
       run: existing,
       decision: parsed.data.decision,
+      definition,
       cli: {
         runWorkspaceCli,
       },
@@ -271,6 +297,10 @@ const server = Bun.serve({
 
     if (pathname === "/workflows/run") {
       return handleWorkflowRun(req);
+    }
+
+    if (pathname === "/workflows/runs") {
+      return handleWorkflowRunList(req);
     }
 
     const workflowResumeMatch = pathname.match(/^\/workflows\/([^/]+)\/resume$/);

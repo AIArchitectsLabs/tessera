@@ -36,9 +36,15 @@ struct SidecarChild(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
 // ── HTTP over UDS/TCP ─────────────────────────────────────────────────────────
 
 impl SidecarHandle {
-    async fn post(&self, path: &str, body: &str) -> anyhow::Result<String> {
+    async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let body = body.unwrap_or("");
         let header = format!(
-            "POST {path} HTTP/1.1\r\n\
+            "{method} {path} HTTP/1.1\r\n\
              Host: localhost\r\n\
              Authorization: Bearer {token}\r\n\
              Content-Type: application/json\r\n\
@@ -82,6 +88,14 @@ impl SidecarHandle {
         }
 
         Ok(response[body_start..].to_string())
+    }
+
+    async fn get(&self, path: &str) -> anyhow::Result<String> {
+        self.request("GET", path, None).await
+    }
+
+    async fn post(&self, path: &str, body: &str) -> anyhow::Result<String> {
+        self.request("POST", path, Some(body)).await
     }
 }
 
@@ -237,6 +251,17 @@ async fn workflow_run(
 }
 
 #[tauri::command]
+async fn workflow_list_pending(
+    state: State<'_, SidecarHandle>,
+) -> Result<serde_json::Value, String> {
+    let json = state
+        .get("/workflows/runs?status=blocked")
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn workflow_resume(
     state: State<'_, SidecarHandle>,
     run_id: String,
@@ -260,6 +285,7 @@ pub fn run() {
         .setup(|app| setup(app))
         .invoke_handler(tauri::generate_handler![
             sidecar_ping,
+            workflow_list_pending,
             workflow_run,
             workflow_resume
         ])

@@ -5,51 +5,48 @@ import type {
   WorkflowRunResult,
   WorkflowStep,
 } from "@tessera/contracts";
+import { WorkflowDefinitionSchema } from "@tessera/contracts";
 import { createActor, createMachine } from "xstate";
 import { type WorkspaceCliExecutor, createTesseraTools } from "./tools.js";
-
-const DEMO_WORKFLOW: WorkflowDefinition = {
-  id: "demo.write-approval",
-  version: 1,
-  name: "Demo Write Approval",
-  description: "Proves deterministic workflow execution with HITL pause/resume.",
-  start: "ping",
-  inputs: {
-    message: { type: "string", required: true, default: "hello" },
-    target: { type: "string", required: true, default: "lead" },
-    value: { type: "string", required: true, default: "qualified" },
-  },
-  steps: [
-    {
-      id: "ping",
-      kind: "tool",
-      toolId: "workspace.ping",
-      args: { message: "{{inputs.message}}" },
-      onSuccess: "writeProbe",
-      onFailure: "failed",
-    },
-    {
-      id: "writeProbe",
-      kind: "tool",
-      toolId: "workspace.writeProbe",
-      args: { target: "{{inputs.target}}", value: "{{inputs.value}}" },
-      onSuccess: "completed",
-      onFailure: "failed",
-    },
-  ],
-};
+import demoWorkflowManifest from "./workflows/demo.write-approval.json";
 
 const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
+
+export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
+  const definition = WorkflowDefinitionSchema.parse(value);
+  const stepIds = new Set(definition.steps.map((step) => step.id));
+
+  if (!stepIds.has(definition.start)) {
+    throw new Error(`Unknown workflow start step: ${definition.start}`);
+  }
+
+  for (const step of definition.steps) {
+    for (const next of [step.onSuccess, step.onFailure]) {
+      if (next && !stepIds.has(next) && !TERMINAL_STEPS.has(next)) {
+        throw new Error(`Unknown workflow transition from ${step.id}: ${next}`);
+      }
+    }
+  }
+
+  return definition;
+}
+
+export const DEMO_WORKFLOW = loadWorkflowDefinition(demoWorkflowManifest);
 
 export interface RunDemoWorkflowOptions {
   cli: WorkspaceCliExecutor;
   input?: Record<string, unknown>;
 }
 
+export interface RunWorkflowOptions extends RunDemoWorkflowOptions {
+  definition: WorkflowDefinition;
+}
+
 export interface ResumeWorkflowRunOptions {
   cli: WorkspaceCliExecutor;
   decision: "approve" | "deny";
   run: WorkflowRunResult;
+  definition?: WorkflowDefinition;
 }
 
 function createRunId(): string {
@@ -236,16 +233,20 @@ async function executeFromStep(options: {
   };
 }
 
-export async function runDemoWorkflow(options: RunDemoWorkflowOptions): Promise<WorkflowRunResult> {
-  const input = normalizeInput(DEMO_WORKFLOW, options.input);
+export async function runWorkflow(options: RunWorkflowOptions): Promise<WorkflowRunResult> {
+  const input = normalizeInput(options.definition, options.input);
   return executeFromStep({
     cli: options.cli,
-    definition: DEMO_WORKFLOW,
+    definition: options.definition,
     input,
     outputs: {},
     runId: createRunId(),
-    startStepId: DEMO_WORKFLOW.start,
+    startStepId: options.definition.start,
   });
+}
+
+export async function runDemoWorkflow(options: RunDemoWorkflowOptions): Promise<WorkflowRunResult> {
+  return runWorkflow({ ...options, definition: DEMO_WORKFLOW });
 }
 
 export async function resumeWorkflowRun(
@@ -265,7 +266,7 @@ export async function resumeWorkflowRun(
 
   return executeFromStep({
     cli,
-    definition: DEMO_WORKFLOW,
+    definition: options.definition ?? DEMO_WORKFLOW,
     grants: [{ type: "exact", toolId: run.approval.toolId, args: run.approval.args }],
     input: run.input,
     outputs: run.outputs ?? {},

@@ -196,7 +196,7 @@ export const WorkflowDefinitionSchema = z.object({
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
 export const WorkflowRunRequestSchema = z.object({
-  workflowId: z.literal("demo.write-approval").default("demo.write-approval"),
+  workflowId: z.string().min(1).default("demo.write-approval"),
   input: z.record(z.unknown()).default({}),
 });
 
@@ -214,6 +214,12 @@ export const WorkflowRunResultSchema = z.object({
 });
 
 export type WorkflowRunResult = z.infer<typeof WorkflowRunResultSchema>;
+
+export const WorkflowRunListResultSchema = z.object({
+  runs: z.array(WorkflowRunResultSchema),
+});
+
+export type WorkflowRunListResult = z.infer<typeof WorkflowRunListResultSchema>;
 
 export const WorkflowResumeRequestSchema = z.object({
   runId: z.string().min(1),

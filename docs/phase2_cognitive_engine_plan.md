@@ -17,8 +17,6 @@ This plan expands the Phase 2 outline in [tessera_prd.md](./tessera_prd.md).
 
 - Use `@mariozechner/pi-agent-core` for the agent loop.
 - Use `@mariozechner/pi-ai` as Tessera's canonical Phase 2 LLM abstraction.
-- Treat the PRD reference to `@badlogic/pi-agent-core` as an outdated package
-  name.
 - Do not integrate the Vercel AI SDK in Phase 2.
 - Support OpenRouter through Pi AI's OpenRouter provider.
 - Support local models through Pi AI custom OpenAI-compatible model
@@ -183,7 +181,7 @@ The following belong to later phases or separate specs:
 - Hindsight/Postgres memory integration.
 - GBrain wiki compilation.
 - Auto-compiler workflow generation.
-- Built-in CRM/ERP implementation.
+- Domain-specific CRM/ERP implementation, which is excluded from Tessera core.
 
 ## Implementation Notes
 

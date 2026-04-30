@@ -13,8 +13,12 @@ export {
   type WorkspaceCliExecutor,
 } from "./tools.js";
 export {
+  DEMO_WORKFLOW,
+  loadWorkflowDefinition,
   resumeWorkflowRun,
   runDemoWorkflow,
+  runWorkflow,
   type ResumeWorkflowRunOptions,
   type RunDemoWorkflowOptions,
+  type RunWorkflowOptions,
 } from "./workflow.js";

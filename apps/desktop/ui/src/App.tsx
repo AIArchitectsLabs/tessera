@@ -1,13 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SpawnResult, WorkflowRunResult } from "@tessera/contracts";
-import { useState } from "react";
+import type { SpawnResult, WorkflowRunListResult, WorkflowRunResult } from "@tessera/contracts";
+import { useCallback, useEffect, useState } from "react";
 
 export default function App() {
   const [result, setResult] = useState<SpawnResult | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowRunResult | null>(null);
+  const [pendingRuns, setPendingRuns] = useState<WorkflowRunResult[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [workflowLoading, setWorkflowLoading] = useState(false);
+
+  const loadPendingRuns = useCallback(async () => {
+    const res = await invoke<WorkflowRunListResult>("workflow_list_pending");
+    setPendingRuns(res.runs);
+  }, []);
+
+  useEffect(() => {
+    loadPendingRuns().catch((e) => setError(String(e)));
+  }, [loadPendingRuns]);
 
   async function ping() {
     setLoading(true);
@@ -36,6 +46,7 @@ export default function App() {
         },
       });
       setWorkflow(res);
+      await loadPendingRuns();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -43,17 +54,18 @@ export default function App() {
     }
   }
 
-  async function resumeWorkflow(decision: "approve" | "deny") {
-    if (!workflow) return;
+  async function resumeWorkflow(decision: "approve" | "deny", selectedRun = workflow) {
+    if (!selectedRun) return;
 
     setWorkflowLoading(true);
     setError(null);
     try {
       const res = await invoke<WorkflowRunResult>("workflow_resume", {
-        runId: workflow.runId,
+        runId: selectedRun.runId,
         decision,
       });
       setWorkflow(res);
+      await loadPendingRuns();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -113,6 +125,40 @@ export default function App() {
               </button>
             </div>
           )}
+        </section>
+      )}
+
+      {pendingRuns.length > 0 && (
+        <section style={{ marginTop: "1rem" }}>
+          <h2>Pending Runs</h2>
+          {pendingRuns.map((run) => (
+            <div key={run.runId} style={{ marginTop: "0.75rem" }}>
+              <pre style={{ background: "#111", color: "#0f0", padding: "1rem" }}>
+                {JSON.stringify(run, null, 2)}
+              </pre>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkflow(run);
+                  void resumeWorkflow("approve", run);
+                }}
+                disabled={workflowLoading}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkflow(run);
+                  void resumeWorkflow("deny", run);
+                }}
+                disabled={workflowLoading}
+                style={{ marginLeft: "0.75rem" }}
+              >
+                Deny
+              </button>
+            </div>
+          ))}
         </section>
       )}
     </main>

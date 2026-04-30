@@ -82,4 +82,21 @@ describe("workflow checkpoint store", () => {
     expect(store.list()).toHaveLength(1);
     store.close();
   });
+
+  test("lists only blocked workflow runs when status is filtered", () => {
+    const store = createWorkflowCheckpointStore(tempDbPath());
+    const run = blockedRun();
+
+    store.save(run);
+    store.save({
+      ...run,
+      runId: "run-2",
+      status: "completed",
+      currentStepId: undefined,
+      approval: undefined,
+    });
+
+    expect(store.list({ status: "blocked" }).map((item) => item.runId)).toEqual(["run-1"]);
+    store.close();
+  });
 });

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { SpawnResult } from "@tessera/contracts";
-import { resumeWorkflowRun, runDemoWorkflow } from "./workflow.js";
+import {
+  loadWorkflowDefinition,
+  resumeWorkflowRun,
+  runDemoWorkflow,
+  runWorkflow,
+} from "./workflow.js";
 
 const spawnResult: SpawnResult = {
   stdout: '{"message":"pong"}\n',
@@ -11,6 +16,69 @@ const spawnResult: SpawnResult = {
 };
 
 describe("workflow runner", () => {
+  test("runs a workflow loaded from a manifest definition", async () => {
+    const definition = loadWorkflowDefinition({
+      id: "custom.write-approval",
+      version: 1,
+      name: "Custom Write Approval",
+      start: "ping",
+      inputs: {
+        message: { type: "string", required: true, default: "hello" },
+        target: { type: "string", required: true, default: "lead" },
+        value: { type: "string", required: true, default: "qualified" },
+      },
+      steps: [
+        {
+          id: "ping",
+          kind: "tool",
+          toolId: "workspace.ping",
+          args: { message: "{{inputs.message}}" },
+          onSuccess: "writeProbe",
+        },
+        {
+          id: "writeProbe",
+          kind: "tool",
+          toolId: "workspace.writeProbe",
+          args: { target: "{{inputs.target}}", value: "{{inputs.value}}" },
+          onSuccess: "completed",
+        },
+      ],
+    });
+
+    const result = await runWorkflow({
+      definition,
+      input: { message: "hello", target: "lead", value: "qualified" },
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
+    });
+
+    expect(result.workflowId).toBe("custom.write-approval");
+    expect(result.status).toBe("blocked");
+    expect(result.currentStepId).toBe("writeProbe");
+  });
+
+  test("rejects manifest definitions whose start step is missing", () => {
+    expect(() =>
+      loadWorkflowDefinition({
+        id: "bad",
+        version: 1,
+        name: "Bad",
+        start: "missing",
+        steps: [
+          {
+            id: "ping",
+            kind: "tool",
+            toolId: "workspace.ping",
+            args: {},
+          },
+        ],
+      })
+    ).toThrow("Unknown workflow start step: missing");
+  });
+
   test("runs the demo workflow until an unapproved write blocks", async () => {
     const calls: string[][] = [];
 

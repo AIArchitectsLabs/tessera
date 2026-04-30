@@ -6,7 +6,7 @@ import { type WorkflowRunResult, WorkflowRunResultSchema } from "@tessera/contra
 export interface WorkflowCheckpointStore {
   close(): void;
   get(runId: string): WorkflowRunResult | undefined;
-  list(): WorkflowRunResult[];
+  list(filter?: { status?: WorkflowRunResult["status"] }): WorkflowRunResult[];
   save(run: WorkflowRunResult): void;
 }
 
@@ -43,6 +43,9 @@ export function createWorkflowCheckpointStore(dbPath: string): WorkflowCheckpoin
   const listRuns = db.prepare<WorkflowRunRow, []>(
     "SELECT payload FROM workflow_runs ORDER BY updated_at DESC, run_id DESC"
   );
+  const listRunsByStatus = db.prepare<WorkflowRunRow, [WorkflowRunResult["status"]]>(
+    "SELECT payload FROM workflow_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC"
+  );
 
   function parseRun(row: WorkflowRunRow | null): WorkflowRunResult | undefined {
     if (!row) return undefined;
@@ -56,8 +59,9 @@ export function createWorkflowCheckpointStore(dbPath: string): WorkflowCheckpoin
     get(runId) {
       return parseRun(getRun.get(runId));
     },
-    list() {
-      return listRuns.all().map((row) => WorkflowRunResultSchema.parse(JSON.parse(row.payload)));
+    list(filter) {
+      const rows = filter?.status ? listRunsByStatus.all(filter.status) : listRuns.all();
+      return rows.map((row) => WorkflowRunResultSchema.parse(JSON.parse(row.payload)));
     },
     save(run) {
       const parsed = WorkflowRunResultSchema.parse(run);

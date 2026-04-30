@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   WorkflowDefinitionSchema,
   WorkflowResumeRequestSchema,
+  WorkflowRunListResultSchema,
+  WorkflowRunRequestSchema,
   WorkflowRunResultSchema,
 } from "./index.js";
 
@@ -70,5 +72,31 @@ describe("workflow contracts", () => {
     });
 
     expect(resume).toEqual({ runId: "run-1", decision: "approve" });
+  });
+
+  test("accepts non-demo workflow run requests", () => {
+    const parsed = WorkflowRunRequestSchema.parse({
+      workflowId: "operations.lead-sync",
+      input: { message: "hello" },
+    });
+
+    expect(parsed.workflowId).toBe("operations.lead-sync");
+  });
+
+  test("accepts workflow run list results", () => {
+    const parsed = WorkflowRunListResultSchema.parse({
+      runs: [
+        {
+          runId: "run-1",
+          workflowId: "demo.write-approval",
+          status: "blocked",
+          currentStepId: "writeProbe",
+          input: { target: "lead", value: "qualified" },
+        },
+      ],
+    });
+
+    expect(parsed.runs).toHaveLength(1);
+    expect(parsed.runs[0]?.status).toBe("blocked");
   });
 });
