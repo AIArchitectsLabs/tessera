@@ -7,11 +7,17 @@ import {
   SidecarReadySchema,
   SpawnRequestSchema,
   type SpawnResult,
+  TaskCreateRequestSchema,
+  TaskCreateTurnRequestSchema,
+  TaskListResultSchema,
+  TaskUpdateRequestSchema,
   WorkflowResumeRequestSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
 } from "@tessera/contracts";
 import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
+import { runTaskTurn } from "./task-runner.js";
+import { createTaskStore } from "./task-store.js";
 import { createWorkflowCheckpointStore } from "./workflow-store.js";
 
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
@@ -20,7 +26,10 @@ const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MiB cap per stream
 const WORKFLOW_DB_PATH =
   process.env.TESSERA_WORKFLOW_DB_PATH ?? join(homedir(), ".tessera", "workflow-runs.sqlite");
+const TASK_DB_PATH =
+  process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
+const taskStore = createTaskStore(TASK_DB_PATH);
 const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
 
 const isWindows = process.platform === "win32";
@@ -29,6 +38,7 @@ const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid
 process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
   workflowStore.close();
+  taskStore.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => process.exit(0));
@@ -265,6 +275,121 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   }
 }
 
+function handleTaskList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const workspaceRoot = searchParams.get("workspaceRoot") ?? "";
+  try {
+    const result = TaskListResultSchema.parse({
+      tasks: taskStore.listTasks({ workspaceRoot }),
+    });
+    return Response.json(result);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 }
+    );
+  }
+}
+
+async function handleTaskCreate(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = TaskCreateRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const task = taskStore.createTask(parsed.data);
+    const userTurn = task.turns.at(-1);
+    if (!userTurn) throw new Error("Created task has no user turn");
+    return Response.json(
+      runTaskTurn({ store: taskStore, taskId: task.id, userTurnId: userTurn.id })
+    );
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+function handleTaskGet(req: Request, taskId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const task = taskStore.getTask(taskId);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  return Response.json(task);
+}
+
+async function handleTaskUpdate(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "PATCH") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = TaskUpdateRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.updateTask(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  return Response.json(task);
+}
+
+async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = TaskCreateTurnRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);
+    return Response.json(runTaskTurn({ store: taskStore, taskId, userTurnId: userTurn.id }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.startsWith("Unknown task") ? 404 : 500;
+    return Response.json({ error: message }, { status });
+  }
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -301,6 +426,24 @@ const server = Bun.serve({
 
     if (pathname === "/workflows/runs") {
       return handleWorkflowRunList(req);
+    }
+
+    if (pathname === "/tasks") {
+      if (req.method === "GET") return handleTaskList(req);
+      return handleTaskCreate(req);
+    }
+
+    const taskTurnMatch = pathname.match(/^\/tasks\/([^/]+)\/turns$/);
+    const taskTurnTaskId = taskTurnMatch?.[1];
+    if (taskTurnTaskId) {
+      return handleTaskCreateTurn(req, taskTurnTaskId);
+    }
+
+    const taskMatch = pathname.match(/^\/tasks\/([^/]+)$/);
+    const taskId = taskMatch?.[1];
+    if (taskId) {
+      if (req.method === "GET") return handleTaskGet(req, taskId);
+      return handleTaskUpdate(req, taskId);
     }
 
     const workflowResumeMatch = pathname.match(/^\/workflows\/([^/]+)\/resume$/);

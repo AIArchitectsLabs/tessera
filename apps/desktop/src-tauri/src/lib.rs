@@ -153,6 +153,18 @@ fn cli_binary_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
     }
 }
 
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -163,6 +175,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .context("Could not resolve app data dir")?;
     fs::create_dir_all(&app_data_dir).context("Could not create app data dir")?;
     let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
+    let task_db_path = app_data_dir.join("tasks.sqlite");
 
     let (mut rx, child) = app
         .shell()
@@ -173,6 +186,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_WORKFLOW_DB_PATH",
             workflow_db_path.to_string_lossy().as_ref(),
         )
+        .env("TESSERA_TASK_DB_PATH", task_db_path.to_string_lossy().as_ref())
         .spawn()
         .context("Could not spawn sidecar")?;
 
@@ -277,6 +291,66 @@ async fn workflow_resume(
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn task_list(
+    state: State<'_, SidecarHandle>,
+    workspace_root: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks?workspaceRoot={}", percent_encode(&workspace_root));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_create(
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let json = state
+        .post("/tasks", &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_get(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}", percent_encode(&task_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_update(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}", percent_encode(&task_id));
+    let json = state
+        .request("PATCH", &path, Some(&request.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_create_turn(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/turns", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -287,6 +361,11 @@ pub fn run() {
         .setup(|app| setup(app))
         .invoke_handler(tauri::generate_handler![
             sidecar_ping,
+            task_create,
+            task_create_turn,
+            task_get,
+            task_list,
+            task_update,
             workflow_list_pending,
             workflow_run,
             workflow_resume

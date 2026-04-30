@@ -227,3 +227,81 @@ export const WorkflowResumeRequestSchema = z.object({
 });
 
 export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;
+
+export const TaskStatusSchema = z.enum(["active", "waiting", "done", "failed"]);
+export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+
+export const TaskTurnRoleSchema = z.enum(["user", "agent", "system"]);
+export type TaskTurnRole = z.infer<typeof TaskTurnRoleSchema>;
+
+export const TaskTurnStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
+export type TaskTurnStatus = z.infer<typeof TaskTurnStatusSchema>;
+
+export const TaskTurnSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  role: TaskTurnRoleSchema,
+  content: z.string().min(1),
+  status: TaskTurnStatusSchema,
+  createdAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  error: z.string().optional(),
+});
+export type TaskTurn = z.infer<typeof TaskTurnSchema>;
+
+export const TaskArtifactSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1),
+  turnId: z.string().min(1).optional(),
+  kind: z.enum(["text", "file"]),
+  title: z.string().min(1),
+  path: z.string().min(1).optional(),
+  contentPreview: z.string().optional(),
+  createdAt: z.string().datetime(),
+});
+export type TaskArtifact = z.infer<typeof TaskArtifactSchema>;
+
+export const TaskSummarySchema = z.object({
+  id: z.string().min(1),
+  workspaceRoot: z.string().min(1),
+  title: z.string().min(1),
+  status: TaskStatusSchema,
+  agentLabel: z.string().min(1).optional(),
+  latestActivity: z.string().optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type TaskSummary = z.infer<typeof TaskSummarySchema>;
+
+export const TaskDetailSchema = TaskSummarySchema.extend({
+  description: z.string().optional(),
+  turns: z.array(TaskTurnSchema),
+  artifacts: z.array(TaskArtifactSchema),
+});
+export type TaskDetail = z.infer<typeof TaskDetailSchema>;
+
+export const TaskListResultSchema = z.object({
+  tasks: z.array(TaskSummarySchema),
+});
+export type TaskListResult = z.infer<typeof TaskListResultSchema>;
+
+export const TaskCreateRequestSchema = z.object({
+  workspaceRoot: z.string().min(1),
+  title: z.string().min(1),
+  initialInstruction: z.string().min(1),
+  description: z.string().optional(),
+  agentLabel: z.string().min(1).default("Tessera"),
+});
+export type TaskCreateRequest = z.infer<typeof TaskCreateRequestSchema>;
+
+export const TaskUpdateRequestSchema = z.object({
+  title: z.string().min(1).optional(),
+  status: TaskStatusSchema.optional(),
+  latestActivity: z.string().optional(),
+});
+export type TaskUpdateRequest = z.infer<typeof TaskUpdateRequestSchema>;
+
+export const TaskCreateTurnRequestSchema = z.object({
+  content: z.string().min(1),
+});
+export type TaskCreateTurnRequest = z.infer<typeof TaskCreateTurnRequestSchema>;
