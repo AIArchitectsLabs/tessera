@@ -23,6 +23,8 @@ interface RailNavProps {
 export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNavProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const firstMenuItemRef = useRef<HTMLButtonElement>(null);
   const itemClass = (active: boolean) =>
     active
       ? "rounded-full bg-background text-foreground shadow-sm hover:bg-background"
@@ -38,6 +40,26 @@ export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNa
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+
+    firstMenuItemRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setMenuOpen(false);
+      triggerRef.current?.focus();
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [menuOpen]);
 
   return (
     <nav className="relative flex w-16 flex-shrink-0 flex-col items-center gap-6 border-r border-border bg-secondary py-4">
@@ -86,11 +108,31 @@ export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNa
         </Button>
       </div>
       <div className="mt-auto" ref={menuRef}>
+        <Button
+          ref={triggerRef}
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="rounded-full bg-background text-foreground shadow-sm hover:bg-background"
+          title="User menu"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls="user-menu"
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <User size={18} />
+        </Button>
         {menuOpen && (
-          <div className="absolute bottom-3 left-14 z-20 w-40 rounded-xl border border-border bg-popover p-1 shadow-lg">
+          <div
+            id="user-menu"
+            role="menu"
+            className="absolute bottom-12 left-14 z-20 w-40 rounded-xl border border-border bg-popover p-1 shadow-lg"
+          >
             <Button
+              ref={firstMenuItemRef}
               type="button"
               variant="ghost"
+              role="menuitem"
               className="h-8 w-full justify-start rounded-lg px-2 text-xs"
               onClick={() => {
                 setMenuOpen(false);
@@ -103,9 +145,11 @@ export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNa
             <Button
               type="button"
               variant="ghost"
+              role="menuitem"
               className="h-8 w-full justify-start rounded-lg px-2 text-xs text-muted-foreground"
               onClick={() => {
                 setMenuOpen(false);
+                triggerRef.current?.focus();
                 onLogout();
               }}
             >
@@ -114,16 +158,6 @@ export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNa
             </Button>
           </div>
         )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="rounded-full bg-background text-foreground shadow-sm hover:bg-background"
-          title="User menu"
-          onClick={() => setMenuOpen((open) => !open)}
-        >
-          <User size={18} />
-        </Button>
       </div>
     </nav>
   );

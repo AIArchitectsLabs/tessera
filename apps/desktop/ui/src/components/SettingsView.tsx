@@ -15,7 +15,7 @@ import type {
   ModelSettingsRead,
 } from "@tessera/contracts";
 import { KeyRound, Loader2, Trash2, Wifi, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface SettingsViewProps {
   onClose: () => void;
@@ -36,6 +36,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeAction, setActiveAction] = useState<"remove" | "save" | "test" | null>(null);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +73,12 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
   const busy = loading || activeAction !== null;
   const requiresBaseUrl = draft.provider === "local";
@@ -89,6 +97,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }
 
   function handleProviderSelect(provider: ModelProvider) {
+    if (busy) {
+      return;
+    }
     setSelectedProvider(provider);
     setDraft(
       settings ? providerConfigFromSettings(settings.providers[provider]) : defaultDraftForProvider(provider)
@@ -102,6 +113,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       return;
     }
 
+    const requestId = ++requestIdRef.current;
     setActiveAction("save");
     setStatus(null);
     try {
@@ -112,34 +124,51 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
       });
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       hydrateFromSettings(next, selectedProvider);
       setStatus({ message: "Model settings saved", tone: "success" });
     } catch (error) {
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       setStatus({
         message: error instanceof Error ? error.message : String(error),
         tone: "error",
       });
     } finally {
-      setActiveAction(null);
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        setActiveAction(null);
+      }
     }
   }
 
   async function handleRemoveKey() {
+    const requestId = ++requestIdRef.current;
     setActiveAction("remove");
     setStatus(null);
     try {
       const next = await invoke<ModelSettingsRead>("model_credential_delete", {
         request: { provider: selectedProvider },
       });
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       hydrateFromSettings(next, selectedProvider);
       setStatus({ message: "Stored key removed", tone: "success" });
     } catch (error) {
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       setStatus({
         message: error instanceof Error ? error.message : String(error),
         tone: "error",
       });
     } finally {
-      setActiveAction(null);
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        setActiveAction(null);
+      }
     }
   }
 
@@ -148,6 +177,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       return;
     }
 
+    const requestId = ++requestIdRef.current;
     setActiveAction("test");
     setStatus(null);
     try {
@@ -157,14 +187,22 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
       });
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       setStatus({ message: result.message, tone: result.ok ? "success" : "info" });
     } catch (error) {
+      if (!mountedRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
       setStatus({
         message: error instanceof Error ? error.message : String(error),
         tone: "error",
       });
     } finally {
-      setActiveAction(null);
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        setActiveAction(null);
+      }
     }
   }
 
@@ -215,8 +253,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <button
                       key={provider}
                       type="button"
+                      disabled={busy}
                       className={cn(
-                        "rounded-xl border px-4 py-3 text-left transition-colors",
+                        "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                         selected
                           ? "border-primary bg-secondary text-foreground shadow-sm"
                           : "border-border bg-background text-foreground hover:bg-secondary/70"
@@ -248,6 +287,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 <input
                   className="input mt-2"
                   value={draft.model}
+                  disabled={busy}
                   placeholder={modelPlaceholderForProvider(selectedProvider)}
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, model: event.target.value }))
@@ -261,6 +301,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   <input
                     className="input mt-2"
                     value={draft.baseUrl}
+                    disabled={busy}
                     placeholder="http://127.0.0.1:11434/v1"
                     onChange={(event) =>
                       setDraft((current) =>
@@ -279,6 +320,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   className="input mt-2"
                   type="password"
                   value={apiKey}
+                  disabled={busy}
                   placeholder={credentialPlaceholder}
                   onChange={(event) => setApiKey(event.target.value)}
                 />
