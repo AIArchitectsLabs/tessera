@@ -51,7 +51,7 @@ export interface ExecuteAgentTurnOptions {
 export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promise<AgentTurnResult> {
   const { request, cli } = options;
   const model = createAgentModel(request.provider);
-  const apiKey = resolveApiKey(request.provider);
+  const apiKey = resolveApiKey(request.provider, request.credential?.apiKey);
   const permissionDecisions: PermissionDecision[] = [];
   const toolResults: AgentToolResultSummary[] = [];
   let messages: AgentMessageSummary[] = [];
@@ -68,7 +68,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
       messages,
       toolResults,
       permissionDecisions,
-      error: `${request.provider.apiKeyEnv} is not configured`,
+      error: `${request.provider.provider} is not configured. Add an API key in Settings > Model.`,
     };
   }
 
@@ -87,7 +87,8 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
       thinkingLevel: "off",
     },
     getApiKey(provider) {
-      return provider === model.provider ? apiKey : undefined;
+      if (provider !== model.provider) return undefined;
+      return apiKey;
     },
     toolExecution: "sequential",
   });
