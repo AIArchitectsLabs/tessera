@@ -16,6 +16,7 @@ import {
   WorkflowRunRequestSchema,
 } from "@tessera/contracts";
 import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
+import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 import { createWorkflowCheckpointStore } from "./workflow-store.js";
@@ -30,6 +31,7 @@ const TASK_DB_PATH =
   process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
+const taskEventBus = createTaskEventBus();
 const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
 
 const isWindows = process.platform === "win32";
@@ -317,14 +319,20 @@ async function handleTaskCreate(req: Request): Promise<Response> {
     const userTurn = task.turns.at(-1);
     if (!userTurn) throw new Error("Created task has no user turn");
     const agentTurn = taskStore.createQueuedAgentTurn(task.id);
-    await runTaskTurn({
-      store: taskStore,
-      taskId: task.id,
-      userTurnId: userTurn.id,
-      agentTurnId: agentTurn.id,
-      publish: () => {},
+    const snapshot = taskStore.getTask(task.id);
+    const taskId = task.id;
+    const agentTurnId = agentTurn.id;
+    const userTurnId = userTurn.id;
+    queueMicrotask(() => {
+      void runTaskTurn({
+        store: taskStore,
+        taskId,
+        userTurnId,
+        agentTurnId,
+        publish: (e) => taskEventBus.publish(taskId, e),
+      });
     });
-    return Response.json(taskStore.getTask(task.id));
+    return Response.json(snapshot);
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },
@@ -389,19 +397,73 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
   try {
     const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);
     const agentTurn = taskStore.createQueuedAgentTurn(taskId);
-    await runTaskTurn({
-      store: taskStore,
-      taskId,
-      userTurnId: userTurn.id,
-      agentTurnId: agentTurn.id,
-      publish: () => {},
+    const snapshot = taskStore.getTask(taskId);
+    const userTurnId = userTurn.id;
+    const agentTurnId = agentTurn.id;
+    queueMicrotask(() => {
+      void runTaskTurn({
+        store: taskStore,
+        taskId,
+        userTurnId,
+        agentTurnId,
+        publish: (e) => taskEventBus.publish(taskId, e),
+      });
     });
-    return Response.json(taskStore.getTask(taskId));
+    return Response.json(snapshot);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("Unknown task") ? 404 : 500;
     return Response.json({ error: message }, { status });
   }
+}
+
+async function handleTaskEvents(_req: Request, taskId: string): Promise<Response> {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = (chunk: string) => controller.enqueue(encoder.encode(chunk));
+
+      send(": open\n\n");
+
+      const heartbeat = setInterval(() => {
+        try {
+          send(": ping\n\n");
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15000);
+
+      const unsubscribe = taskEventBus.subscribe(taskId, (event) => {
+        try {
+          send(`data: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          clearInterval(heartbeat);
+          unsubscribe();
+        }
+      });
+
+      // _cleanup is attached here so the cancel() hook can tear down the interval
+      // and subscription without a class wrapper — standard workaround for
+      // ReadableStreamController having no built-in cancellation state slot.
+      (controller as unknown as { _cleanup: () => void })._cleanup = () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
+    },
+    cancel() {
+      (this as unknown as { _cleanup?: () => void })._cleanup?.();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
 }
 
 const server = Bun.serve({
@@ -445,6 +507,13 @@ const server = Bun.serve({
     if (pathname === "/tasks") {
       if (req.method === "GET") return handleTaskList(req);
       return handleTaskCreate(req);
+    }
+
+    const taskEventsMatch = pathname.match(/^\/tasks\/([^/]+)\/events$/);
+    const taskEventsId = taskEventsMatch?.[1];
+    if (taskEventsId) {
+      if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+      return handleTaskEvents(req, decodeURIComponent(taskEventsId));
     }
 
     const taskTurnMatch = pathname.match(/^\/tasks\/([^/]+)\/turns$/);
