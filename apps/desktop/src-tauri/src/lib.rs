@@ -512,22 +512,23 @@ async fn model_connection_test(
     state: State<'_, SidecarHandle>,
     request: model_settings::ModelConnectionTestRequest,
 ) -> Result<model_settings::ModelConnectionTestResult, String> {
+    let provider =
+        model_settings::validate_provider_config(&request.provider).map_err(|e| e.to_string())?;
     let credential = match request.credential {
         Some(input) => {
             let api_key = input.api_key.trim();
             (!api_key.is_empty()).then(|| api_key.to_string())
         }
-        None => model_settings::get_credential(request.provider.provider)
-            .map_err(|error| error.to_string())?,
+        None => {
+            model_settings::get_credential(provider.provider).map_err(|error| error.to_string())?
+        }
     };
 
-    if credential.is_none() && request.provider.provider != model_settings::ModelProvider::Local {
-        return Ok(model_settings::missing_credential_result(
-            request.provider.provider,
-        ));
+    if credential.is_none() && provider.provider != model_settings::ModelProvider::Local {
+        return Ok(model_settings::missing_credential_result(provider.provider));
     }
 
-    let body = model_connection_test_body(&request.provider, credential).to_string();
+    let body = model_connection_test_body(&provider, credential).to_string();
     let json = state
         .post("/agent/turn", &body)
         .await

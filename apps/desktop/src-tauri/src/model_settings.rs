@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use url::Url;
 
 pub const KEYCHAIN_SERVICE: &str = "Tessera";
 pub const SETTINGS_FILE: &str = "model-settings.json";
@@ -202,6 +203,7 @@ fn redact(settings: SettingsFile) -> Result<ModelSettingsRead> {
     let mut providers = BTreeMap::new();
 
     for (provider, config) in settings.providers {
+        let config = normalize_provider_config(config)?;
         providers.insert(
             provider,
             ProviderSettings {
@@ -217,6 +219,31 @@ fn redact(settings: SettingsFile) -> Result<ModelSettingsRead> {
         selected_provider: settings.selected_provider,
         providers,
     })
+}
+
+fn normalize_provider_config(mut config: ProviderConfig) -> Result<ProviderConfig> {
+    if config.provider != ModelProvider::Local {
+        config.base_url = None;
+        return Ok(config);
+    }
+
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:11434/v1");
+    let parsed = Url::parse(base_url).context("Local provider base URL must be a valid URL")?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        bail!("Local provider base URL must use http or https");
+    }
+
+    config.base_url = Some(parsed.to_string());
+    Ok(config)
+}
+
+pub fn validate_provider_config(config: &ProviderConfig) -> Result<ProviderConfig> {
+    normalize_provider_config(config.clone())
 }
 
 pub fn read(app: &AppHandle) -> Result<ModelSettingsRead> {
@@ -238,18 +265,17 @@ pub fn validate_save_request(request: &ModelSettingsSaveRequest) -> Result<()> {
 fn apply_save_request(
     mut settings: SettingsFile,
     request: &ModelSettingsSaveRequest,
-) -> SettingsFile {
+) -> Result<SettingsFile> {
+    let provider = validate_provider_config(&request.provider)?;
     settings.selected_provider = request.selected_provider;
-    settings
-        .providers
-        .insert(request.provider.provider, request.provider.clone());
-    settings
+    settings.providers.insert(provider.provider, provider);
+    Ok(settings)
 }
 
 pub fn save(app: &AppHandle, request: ModelSettingsSaveRequest) -> Result<ModelSettingsRead> {
     let path = settings_path(app)?;
     validate_save_request(&request)?;
-    let settings = apply_save_request(load_settings_file(&path)?, &request);
+    let settings = apply_save_request(load_settings_file(&path)?, &request)?;
 
     if let Some(credential) = request.credential {
         let api_key = credential.api_key.trim();
@@ -341,13 +367,58 @@ mod tests {
                 credential: None,
             };
 
-            let updated = apply_save_request(default_settings_file(), &request);
+            let updated = apply_save_request(default_settings_file(), &request).expect("apply");
 
             assert_eq!(updated.selected_provider, ModelProvider::Local);
             assert_eq!(
                 updated.providers.get(&ModelProvider::Local),
                 Some(&request.provider)
             );
+        }
+
+        #[test]
+        fn redact_backfills_missing_local_base_url() {
+            let mut settings = default_settings_file();
+            settings
+                .providers
+                .get_mut(&ModelProvider::Local)
+                .expect("local provider")
+                .base_url = None;
+
+            let read = redact(settings).expect("redact");
+
+            assert_eq!(
+                read.providers
+                    .get(&ModelProvider::Local)
+                    .and_then(|provider| provider.base_url.as_deref()),
+                Some("http://127.0.0.1:11434/v1")
+            );
+        }
+
+        #[test]
+        fn validate_provider_config_rejects_invalid_local_base_url() {
+            let config = ProviderConfig {
+                provider: ModelProvider::Local,
+                model: "llama3.2".to_string(),
+                base_url: Some("not a url".to_string()),
+            };
+
+            let error = validate_provider_config(&config).expect_err("invalid URL should fail");
+
+            assert!(error.to_string().contains("valid URL"));
+        }
+
+        #[test]
+        fn validate_provider_config_requires_http_local_base_url() {
+            let config = ProviderConfig {
+                provider: ModelProvider::Local,
+                model: "llama3.2".to_string(),
+                base_url: Some("file:///tmp/model".to_string()),
+            };
+
+            let error = validate_provider_config(&config).expect_err("file URL should fail");
+
+            assert!(error.to_string().contains("http or https"));
         }
 
         #[test]
