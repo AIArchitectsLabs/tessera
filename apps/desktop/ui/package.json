@@ -28,6 +28,7 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "@types/node": "^25.6.0",
     "@types/react": "^18",
     "@types/react-dom": "^18",
