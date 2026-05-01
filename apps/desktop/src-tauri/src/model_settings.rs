@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -72,13 +72,13 @@ pub struct ModelSettingsRead {
     pub providers: BTreeMap<ModelProvider, ProviderSettings>,
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialInput {
     pub api_key: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSettingsSaveRequest {
     pub selected_provider: ModelProvider,
@@ -195,22 +195,42 @@ pub fn read(app: &AppHandle) -> Result<ModelSettingsRead> {
     redact(load_settings_file(&settings_path(app)?)?)
 }
 
+pub fn validate_save_request(request: &ModelSettingsSaveRequest) -> Result<()> {
+    if request.selected_provider != request.provider.provider {
+        bail!(
+            "Selected provider {:?} does not match provider payload {:?}",
+            request.selected_provider,
+            request.provider.provider
+        );
+    }
+
+    Ok(())
+}
+
+fn apply_save_request(
+    mut settings: SettingsFile,
+    request: &ModelSettingsSaveRequest,
+) -> SettingsFile {
+    settings.selected_provider = request.selected_provider;
+    settings
+        .providers
+        .insert(request.provider.provider, request.provider.clone());
+    settings
+}
+
 pub fn save(app: &AppHandle, request: ModelSettingsSaveRequest) -> Result<ModelSettingsRead> {
     let path = settings_path(app)?;
-    let mut settings = load_settings_file(&path)?;
-    let provider = request.provider.provider;
-
-    settings.selected_provider = request.selected_provider;
-    settings.providers.insert(provider, request.provider);
-    save_settings_file(&path, &settings)?;
+    validate_save_request(&request)?;
+    let settings = apply_save_request(load_settings_file(&path)?, &request);
 
     if let Some(credential) = request.credential {
         let api_key = credential.api_key.trim();
         if !api_key.is_empty() {
-            set_credential(provider, api_key)?;
+            set_credential(request.provider.provider, api_key)?;
         }
     }
 
+    save_settings_file(&path, &settings)?;
     read(app)
 }
 
@@ -260,6 +280,46 @@ mod tests {
             let loaded = load_settings_file(&path).expect("load");
 
             assert_eq!(loaded, settings);
+        }
+
+        #[test]
+        fn validate_save_request_rejects_mismatched_selected_provider() {
+            let request = ModelSettingsSaveRequest {
+                selected_provider: ModelProvider::Openai,
+                provider: ProviderConfig {
+                    provider: ModelProvider::Anthropic,
+                    model: "claude-sonnet-4-6".to_string(),
+                    base_url: None,
+                },
+                credential: None,
+            };
+
+            let error = validate_save_request(&request).expect_err("mismatch should fail");
+
+            assert!(error
+                .to_string()
+                .contains("Selected provider Openai does not match provider payload Anthropic"));
+        }
+
+        #[test]
+        fn apply_save_request_updates_selected_provider_and_target_provider() {
+            let request = ModelSettingsSaveRequest {
+                selected_provider: ModelProvider::Local,
+                provider: ProviderConfig {
+                    provider: ModelProvider::Local,
+                    model: "llama3.3".to_string(),
+                    base_url: Some("http://localhost:9000/v1".to_string()),
+                },
+                credential: None,
+            };
+
+            let updated = apply_save_request(default_settings_file(), &request);
+
+            assert_eq!(updated.selected_provider, ModelProvider::Local);
+            assert_eq!(
+                updated.providers.get(&ModelProvider::Local),
+                Some(&request.provider)
+            );
         }
     }
 }
