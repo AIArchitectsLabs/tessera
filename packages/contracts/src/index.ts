@@ -275,7 +275,19 @@ export const WorkflowToolStepSchema = z.object({
 });
 
 export type WorkflowToolStep = z.infer<typeof WorkflowToolStepSchema>;
-export type WorkflowStep = WorkflowToolStep;
+
+export const WorkflowAgentStepSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().optional(),
+  kind: z.literal("agent"),
+  prompt: z.string().min(1),
+  workspaceRootInput: z.string().min(1).default("workspaceRoot"),
+  onSuccess: z.string().min(1).optional(),
+  onFailure: z.string().min(1).optional(),
+});
+
+export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
+export type WorkflowStep = WorkflowToolStep | WorkflowAgentStep;
 
 export const WorkflowDefinitionSchema = z.object({
   id: z.string().min(1),
@@ -284,7 +296,9 @@ export const WorkflowDefinitionSchema = z.object({
   description: z.string().optional(),
   inputs: z.record(WorkflowInputDefinitionSchema).default({}),
   start: z.string().min(1),
-  steps: z.array(WorkflowToolStepSchema).min(1),
+  steps: z
+    .array(z.discriminatedUnion("kind", [WorkflowToolStepSchema, WorkflowAgentStepSchema]))
+    .min(1),
 });
 
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;

@@ -1,4 +1,5 @@
 import type {
+  AgentProviderConfig,
   PermissionDecision,
   PermissionGrant,
   WorkflowDefinition,
@@ -7,6 +8,7 @@ import type {
 } from "@tessera/contracts";
 import { WorkflowDefinitionSchema } from "@tessera/contracts";
 import { createActor, createMachine } from "xstate";
+import { type PiTaskTurnResult, runPiTaskTurn } from "./pi-session.js";
 import { type WorkspaceCliExecutor, createTesseraTools } from "./tools.js";
 import demoWorkflowManifest from "./workflows/demo.write-approval.json";
 
@@ -34,6 +36,14 @@ export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
 export const DEMO_WORKFLOW = loadWorkflowDefinition(demoWorkflowManifest);
 
 export interface RunDemoWorkflowOptions {
+  agentCredential?: string;
+  agentProvider?: AgentProviderConfig;
+  agentRunner?: (options: {
+    credential?: string;
+    prompt: string;
+    provider: AgentProviderConfig;
+    workspaceRoot: string;
+  }) => Promise<PiTaskTurnResult>;
   cli: WorkspaceCliExecutor;
   input?: Record<string, unknown>;
 }
@@ -43,6 +53,14 @@ export interface RunWorkflowOptions extends RunDemoWorkflowOptions {
 }
 
 export interface ResumeWorkflowRunOptions {
+  agentCredential?: string;
+  agentProvider?: AgentProviderConfig;
+  agentRunner?: (options: {
+    credential?: string;
+    prompt: string;
+    provider: AgentProviderConfig;
+    workspaceRoot: string;
+  }) => Promise<PiTaskTurnResult>;
   cli: WorkspaceCliExecutor;
   decision: "approve" | "deny";
   run: WorkflowRunResult;
@@ -101,7 +119,14 @@ function resolveArgs(
   return resolved;
 }
 
-function agentToolName(toolId: WorkflowStep["toolId"]): string {
+function resolveTemplate(text: string, input: Record<string, unknown>): string {
+  return text.replace(/\{\{inputs\.([A-Za-z0-9_]+)\}\}/g, (_match, key: string) => {
+    const value = input[key];
+    return value === undefined ? "" : String(value);
+  });
+}
+
+function agentToolName(toolId: Extract<WorkflowStep, { kind: "tool" }>["toolId"]): string {
   if (toolId === "workspace.ping") return "workspace_ping";
   return "workspace_write_probe";
 }
@@ -134,6 +159,14 @@ function compileWorkflowMachine(definition: WorkflowDefinition, initial: string)
 async function executeFromStep(options: {
   cli: WorkspaceCliExecutor;
   definition: WorkflowDefinition;
+  agentCredential?: string;
+  agentProvider?: AgentProviderConfig;
+  agentRunner?: (options: {
+    credential?: string;
+    prompt: string;
+    provider: AgentProviderConfig;
+    workspaceRoot: string;
+  }) => Promise<PiTaskTurnResult>;
   grants?: PermissionGrant[];
   input: Record<string, unknown>;
   outputs: Record<string, unknown>;
@@ -157,6 +190,43 @@ async function executeFromStep(options: {
         outputs,
         error: `Unknown workflow step: ${currentStepId}`,
       };
+    }
+
+    if (step.kind === "agent") {
+      const workspaceRoot = input[step.workspaceRootInput];
+      if (typeof workspaceRoot !== "string" || !workspaceRoot.trim()) {
+        return {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId: step.id,
+          input,
+          outputs,
+          error: `Missing workflow agent workspace root input: ${step.workspaceRootInput}`,
+        };
+      }
+
+      const provider = options.agentProvider ?? {
+        provider: "openai",
+        model: "gpt-5.4",
+        apiKeyEnv: "OPENAI_API_KEY",
+      };
+      const credential =
+        options.agentCredential ??
+        (provider.provider === "local" || !("apiKeyEnv" in provider)
+          ? undefined
+          : process.env[provider.apiKeyEnv]);
+      const result = await (options.agentRunner ?? runPiTaskTurn)({
+        ...(credential ? { credential } : {}),
+        prompt: resolveTemplate(step.prompt, input),
+        provider,
+        workspaceRoot,
+      });
+
+      outputs[step.id] = result;
+      actor.send({ type: "STEP_SUCCESS" });
+      currentStepId = String(actor.getSnapshot().value);
+      continue;
     }
 
     const decisions: PermissionDecision[] = [];
@@ -238,6 +308,9 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
   return executeFromStep({
     cli: options.cli,
     definition: options.definition,
+    ...(options.agentCredential ? { agentCredential: options.agentCredential } : {}),
+    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
+    ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
     input,
     outputs: {},
     runId: createRunId(),
@@ -267,6 +340,9 @@ export async function resumeWorkflowRun(
   return executeFromStep({
     cli,
     definition: options.definition ?? DEMO_WORKFLOW,
+    ...(options.agentCredential ? { agentCredential: options.agentCredential } : {}),
+    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
+    ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
     grants: [{ type: "exact", toolId: run.approval.toolId, args: run.approval.args }],
     input: run.input,
     outputs: run.outputs ?? {},

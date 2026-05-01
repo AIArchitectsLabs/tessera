@@ -79,6 +79,84 @@ describe("workflow runner", () => {
     ).toThrow("Unknown workflow start step: missing");
   });
 
+  test("runs an agent workflow step through the Pi task runner adapter", async () => {
+    const definition = loadWorkflowDefinition({
+      id: "custom.agent",
+      version: 1,
+      name: "Custom Agent",
+      start: "draft",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+        prompt: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "Draft: {{inputs.prompt}}",
+          workspaceRootInput: "workspaceRoot",
+          onSuccess: "completed",
+        },
+      ],
+    });
+    const calls: Array<{ prompt: string; workspaceRoot: string }> = [];
+
+    const result = await runWorkflow({
+      definition,
+      input: { workspaceRoot: "/workspace/acme", prompt: "hello" },
+      cli: {
+        async runWorkspaceCli() {
+          throw new Error("agent workflow should not call tool CLI");
+        },
+      },
+      agentProvider: { provider: "local", model: "llama3.2", baseUrl: "http://127.0.0.1:11434/v1" },
+      async agentRunner(options) {
+        calls.push({ prompt: options.prompt, workspaceRoot: options.workspaceRoot });
+        return { text: "drafted" };
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.outputs?.draft).toEqual({ text: "drafted" });
+    expect(calls).toEqual([{ prompt: "Draft: hello", workspaceRoot: "/workspace/acme" }]);
+  });
+
+  test("fails an agent workflow step when workspace input is missing", async () => {
+    const definition = loadWorkflowDefinition({
+      id: "custom.agent-missing-workspace",
+      version: 1,
+      name: "Custom Agent Missing Workspace",
+      start: "draft",
+      inputs: {
+        prompt: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "{{inputs.prompt}}",
+          workspaceRootInput: "workspaceRoot",
+        },
+      ],
+    });
+
+    const result = await runWorkflow({
+      definition,
+      input: { prompt: "hello" },
+      cli: {
+        async runWorkspaceCli() {
+          throw new Error("agent workflow should not call tool CLI");
+        },
+      },
+      async agentRunner() {
+        throw new Error("agent runner should not be called without workspace root");
+      },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Missing workflow agent workspace root input");
+  });
+
   test("runs the demo workflow until an unapproved write blocks", async () => {
     const calls: string[][] = [];
 

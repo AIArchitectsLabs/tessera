@@ -28,7 +28,10 @@ describe("workflow contracts", () => {
       ],
     });
 
-    expect(parsed.steps[0]?.toolId).toBe("workspace.ping");
+    expect(parsed.steps[0]?.kind).toBe("tool");
+    if (parsed.steps[0]?.kind === "tool") {
+      expect(parsed.steps[0].toolId).toBe("workspace.ping");
+    }
   });
 
   test("rejects unsupported workflow tools", () => {
@@ -41,6 +44,30 @@ describe("workflow contracts", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  test("accepts agent workflow steps", () => {
+    const parsed = WorkflowDefinitionSchema.parse({
+      id: "agent.workflow",
+      version: 1,
+      name: "Agent Workflow",
+      start: "draft",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+        prompt: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "{{inputs.prompt}}",
+          workspaceRootInput: "workspaceRoot",
+          onSuccess: "completed",
+        },
+      ],
+    });
+
+    expect(parsed.steps[0]?.kind).toBe("agent");
   });
 
   test("accepts blocked run results and resume decisions", () => {

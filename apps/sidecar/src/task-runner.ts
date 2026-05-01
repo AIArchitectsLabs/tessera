@@ -1,7 +1,18 @@
 import type { TaskEvent, TaskSummary, TaskTurn } from "@tessera/contracts";
+import type { AgentProviderConfig } from "@tessera/contracts";
+import { type PiTaskTurnResult, runPiTaskTurn } from "@tessera/core";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
+  credential?: string;
+  piRunner?: (options: {
+    credential?: string;
+    onActivity?: (activity: string) => void;
+    prompt: string;
+    provider: AgentProviderConfig;
+    workspaceRoot: string;
+  }) => Promise<PiTaskTurnResult>;
+  provider?: AgentProviderConfig;
   store: TaskStore;
   taskId: string;
   userTurnId: string;
@@ -11,12 +22,28 @@ export interface RunTaskTurnOptions {
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const DEFAULT_PROVIDER: AgentProviderConfig = {
+  provider: "openai",
+  model: "gpt-5.4",
+  apiKeyEnv: "OPENAI_API_KEY",
+};
 
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const { store, taskId, userTurnId, agentTurnId, publish } = opts;
   const delayMs = opts.delayMs ?? 120;
+  const provider = opts.provider ?? DEFAULT_PROVIDER;
+  const credential =
+    opts.credential ??
+    (provider.provider === "local" || !("apiKeyEnv" in provider)
+      ? undefined
+      : process.env[provider.apiKeyEnv]);
+  const piRunner = opts.piRunner ?? runPiTaskTurn;
 
   try {
+    const task = store.getTask(taskId);
+    const userTurn = store.getTurn(userTurnId);
+    if (!task) throw new Error(`Unknown task: ${taskId}`);
+
     store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
     const updatedUserTurn = store.getTurn(userTurnId);
     publish({
@@ -26,17 +53,17 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: updatedUserTurn,
     });
 
-    store.updateTask(taskId, { latestActivity: "Researching" });
-    const researchingSummary = store.getTaskSummary(taskId);
+    store.updateTask(taskId, { latestActivity: "Starting" });
+    const startingSummary = store.getTaskSummary(taskId);
     publish({
       type: "task.updated",
       taskId,
       emittedAt: new Date().toISOString(),
-      task: researchingSummary,
+      task: startingSummary,
     });
     await sleep(delayMs);
 
-    store.updateTurn(agentTurnId, { status: "running", content: "Drafting response…" });
+    store.updateTurn(agentTurnId, { status: "running", content: "Running Pi session..." });
     const runningAgentTurn = store.getTurn(agentTurnId);
     publish({
       type: "turn.status_changed",
@@ -45,19 +72,35 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: runningAgentTurn,
     });
 
-    store.updateTask(taskId, { latestActivity: "Drafting" });
-    const draftingSummary = store.getTaskSummary(taskId);
+    store.updateTask(taskId, { latestActivity: "Running" });
+    const runningSummary = store.getTaskSummary(taskId);
     publish({
       type: "task.updated",
       taskId,
       emittedAt: new Date().toISOString(),
-      task: draftingSummary,
+      task: runningSummary,
     });
     await sleep(delayMs);
 
-    const artifactContent = "# Task Output\n\nHere is the completed work for this task.";
+    const result = await piRunner({
+      ...(credential ? { credential } : {}),
+      onActivity(activity) {
+        store.updateTask(taskId, { latestActivity: activity });
+        publish({
+          type: "task.updated",
+          taskId,
+          emittedAt: new Date().toISOString(),
+          task: store.getTaskSummary(taskId),
+        });
+      },
+      prompt: userTurn.content,
+      provider,
+      workspaceRoot: task.workspaceRoot,
+    });
+    const artifactContent = result.text.trim() || "No response was produced.";
     const createdArtifact = store.createArtifact({
       taskId,
+      turnId: agentTurnId,
       kind: "text",
       title: "Task Output",
       contentPreview: artifactContent.slice(0, 200),
