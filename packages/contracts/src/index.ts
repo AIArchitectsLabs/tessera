@@ -119,15 +119,25 @@ export const ModelSettingsReadSchema = z.object({
 });
 export type ModelSettingsRead = z.infer<typeof ModelSettingsReadSchema>;
 
-export const ModelSettingsSaveRequestSchema = z.object({
-  selectedProvider: ModelProviderSchema,
-  provider: AgentProviderConfigSchema,
-  credential: z
-    .object({
-      apiKey: z.string().min(1),
-    })
-    .optional(),
-});
+export const ModelSettingsSaveRequestSchema = z
+  .object({
+    selectedProvider: ModelProviderSchema,
+    provider: AgentProviderConfigSchema,
+    credential: z
+      .object({
+        apiKey: z.string().min(1),
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.selectedProvider !== value.provider.provider) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "selectedProvider must match provider.provider",
+        path: ["provider"],
+      });
+    }
+  });
 export type ModelSettingsSaveRequest = z.infer<typeof ModelSettingsSaveRequestSchema>;
 
 export const ModelCredentialDeleteRequestSchema = z.object({

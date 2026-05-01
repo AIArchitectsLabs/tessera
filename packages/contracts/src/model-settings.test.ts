@@ -38,6 +38,15 @@ describe("model settings contracts", () => {
     expect(parsed.credential?.apiKey).toBe("sk-test");
   });
 
+  test("rejects a save request when selected and configured providers differ", () => {
+    expect(() =>
+      ModelSettingsSaveRequestSchema.parse({
+        selectedProvider: "openai",
+        provider: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      }),
+    ).toThrow();
+  });
+
   test("accepts local provider settings without credentials", () => {
     const parsed = ModelProviderSettingsSchema.parse({
       provider: "local",
