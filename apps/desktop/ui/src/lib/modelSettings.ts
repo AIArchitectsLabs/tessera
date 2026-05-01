@@ -39,23 +39,26 @@ export function defaultDraftForProvider(provider: ModelProvider): AgentProviderC
       return {
         provider: "openai",
         model: modelPlaceholderForProvider("openai"),
-      } as AgentProviderConfig;
+        apiKeyEnv: "OPENAI_API_KEY",
+      };
     case "anthropic":
       return {
         provider: "anthropic",
         model: modelPlaceholderForProvider("anthropic"),
-      } as AgentProviderConfig;
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+      };
     case "openrouter":
       return {
         provider: "openrouter",
         model: modelPlaceholderForProvider("openrouter"),
-      } as AgentProviderConfig;
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      };
     case "local":
       return {
         provider: "local",
         model: modelPlaceholderForProvider("local"),
         baseUrl: "http://127.0.0.1:11434/v1",
-      } as AgentProviderConfig;
+      };
   }
 }
 
