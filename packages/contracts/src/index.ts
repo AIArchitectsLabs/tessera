@@ -72,6 +72,85 @@ export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
 
 export type AgentProviderConfig = z.infer<typeof AgentProviderConfigSchema>;
 
+export const ModelProviderSchema = z.enum(["openai", "anthropic", "openrouter", "local"]);
+export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+
+const OpenAIModelProviderSettingsSchema = z.object({
+  provider: z.literal("openai"),
+  model: z.string().min(1),
+  hasCredential: z.boolean().default(false),
+});
+
+const AnthropicModelProviderSettingsSchema = z.object({
+  provider: z.literal("anthropic"),
+  model: z.string().min(1),
+  hasCredential: z.boolean().default(false),
+});
+
+const OpenRouterModelProviderSettingsSchema = z.object({
+  provider: z.literal("openrouter"),
+  model: z.string().min(1),
+  hasCredential: z.boolean().default(false),
+});
+
+const LocalModelProviderSettingsSchema = z.object({
+  provider: z.literal("local"),
+  model: z.string().min(1),
+  baseUrl: z.string().url(),
+  hasCredential: z.boolean().default(false),
+});
+
+export const ModelProviderSettingsSchema = z.discriminatedUnion("provider", [
+  OpenAIModelProviderSettingsSchema,
+  AnthropicModelProviderSettingsSchema,
+  OpenRouterModelProviderSettingsSchema,
+  LocalModelProviderSettingsSchema,
+]);
+export type ModelProviderSettings = z.infer<typeof ModelProviderSettingsSchema>;
+
+export const ModelSettingsReadSchema = z.object({
+  selectedProvider: ModelProviderSchema,
+  providers: z.object({
+    openai: OpenAIModelProviderSettingsSchema,
+    anthropic: AnthropicModelProviderSettingsSchema,
+    openrouter: OpenRouterModelProviderSettingsSchema,
+    local: LocalModelProviderSettingsSchema,
+  }),
+});
+export type ModelSettingsRead = z.infer<typeof ModelSettingsReadSchema>;
+
+export const ModelSettingsSaveRequestSchema = z.object({
+  selectedProvider: ModelProviderSchema,
+  provider: AgentProviderConfigSchema,
+  credential: z
+    .object({
+      apiKey: z.string().min(1),
+    })
+    .optional(),
+});
+export type ModelSettingsSaveRequest = z.infer<typeof ModelSettingsSaveRequestSchema>;
+
+export const ModelCredentialDeleteRequestSchema = z.object({
+  provider: ModelProviderSchema,
+});
+export type ModelCredentialDeleteRequest = z.infer<typeof ModelCredentialDeleteRequestSchema>;
+
+export const ModelConnectionTestRequestSchema = z.object({
+  provider: AgentProviderConfigSchema,
+  credential: z
+    .object({
+      apiKey: z.string().min(1),
+    })
+    .optional(),
+});
+export type ModelConnectionTestRequest = z.infer<typeof ModelConnectionTestRequestSchema>;
+
+export const ModelConnectionTestResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+});
+export type ModelConnectionTestResult = z.infer<typeof ModelConnectionTestResultSchema>;
+
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;
 
@@ -130,6 +209,11 @@ export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;
 export const AgentTurnRequestSchema = z.object({
   prompt: z.string().min(1),
   provider: AgentProviderConfigSchema,
+  credential: z
+    .object({
+      apiKey: z.string().min(1),
+    })
+    .optional(),
   grants: z.array(PermissionGrantSchema).default([]),
   timeoutMs: z.number().int().positive().max(120_000).default(60_000),
 });
