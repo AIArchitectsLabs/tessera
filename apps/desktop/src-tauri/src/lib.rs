@@ -167,6 +167,45 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn model_connection_test_body(
+    provider: &model_settings::ProviderConfig,
+    credential: Option<String>,
+) -> serde_json::Value {
+    let provider_value = match provider.provider {
+        model_settings::ModelProvider::Openai => serde_json::json!({
+            "provider": "openai",
+            "model": provider.model,
+        }),
+        model_settings::ModelProvider::Anthropic => serde_json::json!({
+            "provider": "anthropic",
+            "model": provider.model,
+        }),
+        model_settings::ModelProvider::Openrouter => serde_json::json!({
+            "provider": "openrouter",
+            "model": provider.model,
+        }),
+        model_settings::ModelProvider::Local => serde_json::json!({
+            "provider": "local",
+            "model": provider.model,
+            "baseUrl": provider
+                .base_url
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("http://127.0.0.1:11434/v1"),
+        }),
+    };
+
+    let mut body = serde_json::json!({
+        "prompt": "Reply with OK.",
+        "provider": provider_value,
+        "timeoutMs": 30_000,
+    });
+    if let Some(api_key) = credential {
+        body["credential"] = serde_json::json!({ "apiKey": api_key });
+    }
+    body
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -188,7 +227,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_WORKFLOW_DB_PATH",
             workflow_db_path.to_string_lossy().as_ref(),
         )
-        .env("TESSERA_TASK_DB_PATH", task_db_path.to_string_lossy().as_ref())
+        .env(
+            "TESSERA_TASK_DB_PATH",
+            task_db_path.to_string_lossy().as_ref(),
+        )
         .spawn()
         .context("Could not spawn sidecar")?;
 
@@ -353,6 +395,77 @@ async fn task_create_turn(
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn model_settings_get(app: AppHandle) -> Result<model_settings::ModelSettingsRead, String> {
+    model_settings::read(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_settings_save(
+    app: AppHandle,
+    request: model_settings::ModelSettingsSaveRequest,
+) -> Result<model_settings::ModelSettingsRead, String> {
+    model_settings::save(&app, request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_credential_delete(
+    app: AppHandle,
+    request: model_settings::ModelCredentialDeleteRequest,
+) -> Result<model_settings::ModelSettingsRead, String> {
+    model_settings::delete(&app, request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_connection_test(
+    state: State<'_, SidecarHandle>,
+    request: model_settings::ModelConnectionTestRequest,
+) -> Result<model_settings::ModelConnectionTestResult, String> {
+    let credential = match request.credential {
+        Some(input) => {
+            let api_key = input.api_key.trim();
+            (!api_key.is_empty()).then(|| api_key.to_string())
+        }
+        None => model_settings::get_credential(request.provider.provider)
+            .map_err(|error| error.to_string())?,
+    };
+
+    if credential.is_none() && request.provider.provider != model_settings::ModelProvider::Local {
+        return Ok(model_settings::missing_credential_result(
+            request.provider.provider,
+        ));
+    }
+
+    let body = model_connection_test_body(&request.provider, credential).to_string();
+    let json = state
+        .post("/agent/turn", &body)
+        .await
+        .map_err(|error| error.to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    let ok = value.get("status").and_then(|status| status.as_str()) == Some("completed");
+
+    let message = if ok {
+        "Connection test succeeded".to_string()
+    } else {
+        value
+            .get("error")
+            .and_then(|error| error.as_str())
+            .or_else(|| {
+                value
+                    .get("messages")
+                    .and_then(|messages| messages.as_array())
+                    .and_then(|messages| messages.last())
+                    .and_then(|message| message.get("text"))
+                    .and_then(|text| text.as_str())
+            })
+            .unwrap_or("Connection test failed")
+            .to_string()
+    };
+
+    Ok(model_settings::ModelConnectionTestResult { ok, message })
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -362,6 +475,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| setup(app))
         .invoke_handler(tauri::generate_handler![
+            model_connection_test,
+            model_credential_delete,
+            model_settings_get,
+            model_settings_save,
             sidecar_ping,
             task_create,
             task_create_turn,

@@ -72,10 +72,24 @@ pub struct ModelSettingsRead {
     pub providers: BTreeMap<ModelProvider, ProviderSettings>,
 }
 
-#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialInput {
     pub api_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionTestRequest {
+    pub provider: ProviderConfig,
+    pub credential: Option<CredentialInput>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConnectionTestResult {
+    pub ok: bool,
+    pub message: String,
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq)]
@@ -90,6 +104,20 @@ pub struct ModelSettingsSaveRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ModelCredentialDeleteRequest {
     pub provider: ModelProvider,
+}
+
+pub fn missing_credential_result(provider: ModelProvider) -> ModelConnectionTestResult {
+    ModelConnectionTestResult {
+        ok: false,
+        message: match provider {
+            ModelProvider::Local => {
+                "Local provider does not require an API key by default".to_string()
+            }
+            ModelProvider::Openai | ModelProvider::Anthropic | ModelProvider::Openrouter => {
+                "Add an API key in Settings > Model before running this provider".to_string()
+            }
+        },
+    }
 }
 
 pub fn default_settings_file() -> SettingsFile {
@@ -320,6 +348,14 @@ mod tests {
                 updated.providers.get(&ModelProvider::Local),
                 Some(&request.provider)
             );
+        }
+
+        #[test]
+        fn missing_cloud_credential_message_points_to_settings() {
+            let result = missing_credential_result(ModelProvider::Openai);
+
+            assert!(!result.ok);
+            assert!(result.message.contains("Settings > Model"));
         }
     }
 }
