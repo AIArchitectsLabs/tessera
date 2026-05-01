@@ -231,7 +231,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-foreground">Model</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Global provider settings shared across every workspace in Tessera.
+                Global provider defaults for Tessera.
               </p>
             </div>
             <Button type="button" variant="outline" onClick={onClose}>
@@ -411,7 +411,7 @@ function providerConfigFromSettings(
       return {
         provider: "local",
         model: settings.model,
-        baseUrl: settings.baseUrl,
+        baseUrl: settings.baseUrl ?? "http://127.0.0.1:11434/v1",
       };
   }
 }

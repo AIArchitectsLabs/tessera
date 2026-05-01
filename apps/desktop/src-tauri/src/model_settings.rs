@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use url::Url;
 
 pub const KEYCHAIN_SERVICE: &str = "Tessera";
 pub const SETTINGS_FILE: &str = "model-settings.json";
@@ -235,21 +236,44 @@ pub fn validate_save_request(request: &ModelSettingsSaveRequest) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_provider_config(config: &ProviderConfig) -> Result<ProviderConfig> {
+    let mut normalized = config.clone();
+
+    if config.provider != ModelProvider::Local {
+        normalized.base_url = None;
+        return Ok(normalized);
+    }
+
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Local provider base URL is required"))?;
+    let parsed = Url::parse(base_url).context("Local provider base URL must be a valid URL")?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        bail!("Local provider base URL must use http or https");
+    }
+
+    normalized.base_url = Some(parsed.to_string());
+    Ok(normalized)
+}
+
 fn apply_save_request(
     mut settings: SettingsFile,
     request: &ModelSettingsSaveRequest,
-) -> SettingsFile {
+) -> Result<SettingsFile> {
+    let provider = validate_provider_config(&request.provider)?;
+
     settings.selected_provider = request.selected_provider;
-    settings
-        .providers
-        .insert(request.provider.provider, request.provider.clone());
-    settings
+    settings.providers.insert(provider.provider, provider);
+    Ok(settings)
 }
 
 pub fn save(app: &AppHandle, request: ModelSettingsSaveRequest) -> Result<ModelSettingsRead> {
     let path = settings_path(app)?;
     validate_save_request(&request)?;
-    let settings = apply_save_request(load_settings_file(&path)?, &request);
+    let settings = apply_save_request(load_settings_file(&path)?, &request)?;
 
     if let Some(credential) = request.credential {
         let api_key = credential.api_key.trim();
@@ -341,13 +365,36 @@ mod tests {
                 credential: None,
             };
 
-            let updated = apply_save_request(default_settings_file(), &request);
+            let updated = apply_save_request(default_settings_file(), &request).expect("apply");
 
             assert_eq!(updated.selected_provider, ModelProvider::Local);
-            assert_eq!(
-                updated.providers.get(&ModelProvider::Local),
-                Some(&request.provider)
-            );
+            assert_eq!(updated.providers.get(&ModelProvider::Local), Some(&request.provider));
+        }
+
+        #[test]
+        fn validate_provider_config_rejects_invalid_local_base_url() {
+            let config = ProviderConfig {
+                provider: ModelProvider::Local,
+                model: "llama3.2".to_string(),
+                base_url: Some("not a url".to_string()),
+            };
+
+            let error = validate_provider_config(&config).expect_err("invalid URL should fail");
+
+            assert!(error.to_string().contains("valid URL"));
+        }
+
+        #[test]
+        fn validate_provider_config_requires_http_local_base_url() {
+            let config = ProviderConfig {
+                provider: ModelProvider::Local,
+                model: "llama3.2".to_string(),
+                base_url: Some("file:///tmp/model".to_string()),
+            };
+
+            let error = validate_provider_config(&config).expect_err("file URL should fail");
+
+            assert!(error.to_string().contains("http or https"));
         }
 
         #[test]
