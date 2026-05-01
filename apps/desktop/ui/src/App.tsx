@@ -10,6 +10,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { RailNav, type SidebarMode } from "@/components/RailNav";
+import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
 import { applyTaskEvent } from "./lib/applyTaskEvent";
@@ -22,6 +23,7 @@ export default function App() {
     return localStorage.getItem(WORKSPACE_STORAGE_KEY);
   });
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("files");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
@@ -116,6 +118,10 @@ export default function App() {
     setSelectedTask(null);
     setTaskDetailError(null);
     setSendingTurn(false);
+  };
+
+  const handleLogout = () => {
+    // Login/logout will be implemented separately. This intentionally does nothing.
   };
 
   useEffect(() => {
@@ -214,20 +220,31 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans">
-      <RailNav mode={sidebarMode} onModeChange={setSidebarMode} />
-      <Sidebar
-        error={taskListError}
-        loadingTasks={loadingTasks}
+      <RailNav
         mode={sidebarMode}
-        onNewTask={handleNewTask}
-        onRetryTasks={loadTasks}
-        onSelectTask={setSelectedTaskId}
-        onWorkspaceSelect={handleWorkspaceSelect}
-        selectedTaskId={selectedTaskId}
-        tasks={tasks}
-        workspaceRoot={workspaceRoot}
+        onLogout={handleLogout}
+        onModeChange={setSidebarMode}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
-      {mainPane}
+      {settingsOpen ? (
+        <SettingsView onClose={() => setSettingsOpen(false)} />
+      ) : (
+        <>
+          <Sidebar
+            error={taskListError}
+            loadingTasks={loadingTasks}
+            mode={sidebarMode}
+            onNewTask={handleNewTask}
+            onRetryTasks={loadTasks}
+            onSelectTask={setSelectedTaskId}
+            onWorkspaceSelect={handleWorkspaceSelect}
+            selectedTaskId={selectedTaskId}
+            tasks={tasks}
+            workspaceRoot={workspaceRoot}
+          />
+          {mainPane}
+        </>
+      )}
     </div>
   );
 }

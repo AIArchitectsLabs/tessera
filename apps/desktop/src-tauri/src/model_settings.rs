@@ -370,10 +370,7 @@ mod tests {
             let updated = apply_save_request(default_settings_file(), &request).expect("apply");
 
             assert_eq!(updated.selected_provider, ModelProvider::Local);
-            assert_eq!(
-                updated.providers.get(&ModelProvider::Local),
-                Some(&request.provider)
-            );
+            assert_eq!(updated.providers.get(&ModelProvider::Local), Some(&request.provider));
         }
 
         #[test]

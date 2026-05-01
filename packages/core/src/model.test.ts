@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AgentProviderConfigSchema } from "@tessera/contracts";
-import { createAgentModel } from "./model.js";
+import { createAgentModel, resolveApiKey } from "./model.js";
 
 describe("createAgentModel", () => {
   test("creates a direct OpenAI model", () => {
@@ -77,5 +77,47 @@ describe("createAgentModel", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("resolveApiKey", () => {
+  test("returns in-memory credential before env fallback", () => {
+    const config = AgentProviderConfigSchema.parse({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    const previous = process.env.OPENAI_API_KEY;
+
+    process.env.OPENAI_API_KEY = "sk-env";
+
+    try {
+      expect(resolveApiKey(config, "sk-memory")).toBe("sk-memory");
+    } finally {
+      if (previous === undefined) {
+        process.env.OPENAI_API_KEY = undefined;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
+  });
+
+  test("falls back to env when no in-memory credential is supplied", () => {
+    const config = AgentProviderConfigSchema.parse({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    const previous = process.env.OPENAI_API_KEY;
+
+    process.env.OPENAI_API_KEY = "sk-env";
+
+    try {
+      expect(resolveApiKey(config)).toBe("sk-env");
+    } finally {
+      if (previous === undefined) {
+        process.env.OPENAI_API_KEY = undefined;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+    }
   });
 });

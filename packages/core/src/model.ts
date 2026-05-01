@@ -1,7 +1,12 @@
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentProviderConfig } from "@tessera/contracts";
 
-export function resolveApiKey(config: AgentProviderConfig): string | undefined {
+export function resolveApiKey(
+  config: AgentProviderConfig,
+  credential?: string
+): string | undefined {
+  if (credential) return credential;
+
   if (config.provider === "openai") {
     return process.env[config.apiKeyEnv];
   }
