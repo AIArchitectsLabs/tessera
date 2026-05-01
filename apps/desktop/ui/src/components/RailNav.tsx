@@ -1,22 +1,47 @@
 import { Button } from "@/components/ui/button";
-import { Blocks, CheckCircle2, FolderTree, MessageSquare, Sparkles, Wrench } from "lucide-react";
+import {
+  Blocks,
+  CheckCircle2,
+  FolderTree,
+  LogOut,
+  MessageSquare,
+  Settings,
+  Sparkles,
+  User,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 export type SidebarMode = "files" | "tasks";
 
 interface RailNavProps {
   mode: SidebarMode;
+  onLogout: () => void;
   onModeChange: (mode: SidebarMode) => void;
+  onOpenSettings: () => void;
 }
 
-export function RailNav({ mode, onModeChange }: RailNavProps) {
+export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNavProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const itemClass = (active: boolean) =>
     active
       ? "rounded-full bg-background text-foreground shadow-sm hover:bg-background"
       : "rounded-full text-muted-foreground hover:text-foreground";
 
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
   return (
-    <nav className="w-16 flex-shrink-0 bg-secondary flex flex-col items-center py-4 border-r border-border gap-6 relative">
-      <div className="relative w-10 h-10 bg-background rounded-xl shadow-sm flex items-center justify-center text-primary">
+    <nav className="relative flex w-16 flex-shrink-0 flex-col items-center gap-6 border-r border-border bg-secondary py-4">
+      <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-background text-primary shadow-sm">
         <div className="absolute -left-[18px] top-1/2 -translate-y-1/2 w-1 h-5 bg-primary rounded-r-full" />
         <Blocks size={20} strokeWidth={2.5} />
       </div>
@@ -59,14 +84,45 @@ export function RailNav({ mode, onModeChange }: RailNavProps) {
         >
           <Sparkles size={20} />
         </Button>
+      </div>
+      <div className="mt-auto" ref={menuRef}>
+        {menuOpen && (
+          <div className="absolute bottom-3 left-14 z-20 w-40 rounded-xl border border-border bg-popover p-1 shadow-lg">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-8 w-full justify-start rounded-lg px-2 text-xs"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpenSettings();
+              }}
+            >
+              <Settings size={14} />
+              Settings
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-8 w-full justify-start rounded-lg px-2 text-xs text-muted-foreground"
+              onClick={() => {
+                setMenuOpen(false);
+                onLogout();
+              }}
+            >
+              <LogOut size={14} />
+              Logout
+            </Button>
+          </div>
+        )}
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="rounded-full text-muted-foreground hover:text-foreground"
-          title="Settings"
+          className="rounded-full bg-background text-foreground shadow-sm hover:bg-background"
+          title="User menu"
+          onClick={() => setMenuOpen((open) => !open)}
         >
-          <Wrench size={20} />
+          <User size={18} />
         </Button>
       </div>
     </nav>
