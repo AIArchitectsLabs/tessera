@@ -583,6 +583,9 @@ async fn task_subscribe(
             let mut stream = match handle.request_stream("GET", &path).await {
                 Ok(s) => s,
                 Err(e) => {
+                    if let Some(s) = app_for_task.try_state::<TaskSubscriptions>() {
+                        s.handles.lock().unwrap().remove(&id_for_task);
+                    }
                     let _ = app_for_task
                         .emit(&format!("task:event:{}:closed", id_for_task), e.to_string());
                     return;
