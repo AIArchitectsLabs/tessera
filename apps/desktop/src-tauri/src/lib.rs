@@ -10,6 +10,8 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod model_settings;
+
 // Compile-time target triple injected by build.rs via `cargo:rustc-env`.
 const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
 const EXE_EXT: &str = if cfg!(windows) { ".exe" } else { "" };
