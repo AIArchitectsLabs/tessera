@@ -15,5 +15,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "ne
 anyhow = "1"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
+keyring = "3.6.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "model_settings"
+path = "src/model_settings.rs"
 
 # Profiles are defined at the workspace root (../../Cargo.toml) — cargo ignores them here.
