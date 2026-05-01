@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -5,10 +6,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 mod model_settings;
 
@@ -34,6 +35,61 @@ unsafe impl Send for SidecarHandle {}
 unsafe impl Sync for SidecarHandle {}
 
 struct SidecarChild(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
+
+struct TaskSubscriptions {
+    handles: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+}
+
+impl Default for TaskSubscriptions {
+    fn default() -> Self {
+        Self {
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+pub struct SseStream {
+    reader: Box<dyn AsyncBufRead + Unpin + Send>,
+}
+
+impl SseStream {
+    async fn skip_headers(&mut self) -> anyhow::Result<()> {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = self.reader.read_line(&mut line).await?;
+            if n == 0 {
+                anyhow::bail!("SSE connection closed during header read");
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn next_event(&mut self) -> anyhow::Result<Option<String>> {
+        let mut data_lines: Vec<String> = Vec::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = self.reader.read_line(&mut line).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                if !data_lines.is_empty() {
+                    return Ok(Some(data_lines.join("\n")));
+                }
+                continue;
+            }
+            if let Some(data) = trimmed.strip_prefix("data: ") {
+                data_lines.push(data.to_string());
+            }
+        }
+    }
+}
 
 // ── HTTP over UDS/TCP ─────────────────────────────────────────────────────────
 
@@ -98,6 +154,40 @@ impl SidecarHandle {
 
     async fn post(&self, path: &str, body: &str) -> anyhow::Result<String> {
         self.request("POST", path, Some(body)).await
+    }
+
+    async fn request_stream(&self, method: &str, path: &str) -> anyhow::Result<SseStream> {
+        let header = format!(
+            "{method} {path} HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Authorization: Bearer {token}\r\n\
+             Accept: text/event-stream\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+            token = self.token,
+        );
+
+        let reader: Box<dyn AsyncBufRead + Unpin + Send> = match &self.transport {
+            #[cfg(unix)]
+            SidecarTransport::Unix(socket_path) => {
+                let mut stream = tokio::net::UnixStream::connect(socket_path)
+                    .await
+                    .context("Could not connect to sidecar Unix socket")?;
+                stream.write_all(header.as_bytes()).await?;
+                Box::new(BufReader::new(stream))
+            }
+            SidecarTransport::Tcp(port) => {
+                let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", *port))
+                    .await
+                    .context("Could not connect to sidecar TCP socket")?;
+                stream.write_all(header.as_bytes()).await?;
+                Box::new(BufReader::new(stream))
+            }
+        };
+
+        let mut sse = SseStream { reader };
+        sse.skip_headers().await?;
+        Ok(sse)
     }
 }
 
@@ -255,6 +345,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     app.manage(handle);
     app.manage(SidecarChild(Mutex::new(Some(child))));
+    app.manage(TaskSubscriptions::default());
 
     Ok(())
 }
@@ -466,6 +557,69 @@ async fn model_connection_test(
     Ok(model_settings::ModelConnectionTestResult { ok, message })
 }
 
+#[tauri::command]
+async fn task_subscribe(
+    app: AppHandle,
+    state: State<'_, SidecarHandle>,
+    subs: State<'_, TaskSubscriptions>,
+    task_id: String,
+) -> Result<(), String> {
+    {
+        let map = subs.handles.lock().unwrap();
+        if map.contains_key(&task_id) {
+            return Ok(());
+        }
+    }
+
+    let _ = state;
+    let id = task_id.clone();
+
+    let join = {
+        let app_for_task = app.clone();
+        let id_for_task = id.clone();
+        tokio::spawn(async move {
+            let handle = app_for_task.state::<SidecarHandle>();
+            let path = format!("/tasks/{}/events", percent_encode(&id_for_task));
+            let mut stream = match handle.request_stream("GET", &path).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = app_for_task
+                        .emit(&format!("task:event:{}:closed", id_for_task), e.to_string());
+                    return;
+                }
+            };
+            loop {
+                match stream.next_event().await {
+                    Ok(Some(payload)) => {
+                        let _ = app_for_task
+                            .emit(&format!("task:event:{}", id_for_task), payload);
+                    }
+                    _ => break,
+                }
+            }
+            if let Some(s) = app_for_task.try_state::<TaskSubscriptions>() {
+                s.handles.lock().unwrap().remove(&id_for_task);
+            }
+            let _ = app_for_task
+                .emit(&format!("task:event:{}:closed", id_for_task), ());
+        })
+    };
+
+    subs.handles.lock().unwrap().insert(task_id, join);
+    Ok(())
+}
+
+#[tauri::command]
+async fn task_unsubscribe(
+    subs: State<'_, TaskSubscriptions>,
+    task_id: String,
+) -> Result<(), String> {
+    if let Some(handle) = subs.handles.lock().unwrap().remove(&task_id) {
+        handle.abort();
+    }
+    Ok(())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -484,6 +638,8 @@ pub fn run() {
             task_create_turn,
             task_get,
             task_list,
+            task_subscribe,
+            task_unsubscribe,
             task_update,
             workflow_list_pending,
             workflow_run,
@@ -493,6 +649,18 @@ pub fn run() {
         .expect("failed to build Tessera")
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { .. } = event {
+                if let Some(subs) = app_handle.try_state::<TaskSubscriptions>() {
+                    let handles: Vec<_> = subs
+                        .handles
+                        .lock()
+                        .unwrap()
+                        .drain()
+                        .map(|(_, h)| h)
+                        .collect();
+                    for h in handles {
+                        h.abort();
+                    }
+                }
                 kill_sidecar(app_handle);
             }
         });
