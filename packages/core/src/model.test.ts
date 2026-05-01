@@ -94,7 +94,7 @@ describe("resolveApiKey", () => {
       expect(resolveApiKey(config, "sk-memory")).toBe("sk-memory");
     } finally {
       if (previous === undefined) {
-        delete process.env.OPENAI_API_KEY;
+        process.env.OPENAI_API_KEY = undefined;
       } else {
         process.env.OPENAI_API_KEY = previous;
       }
@@ -114,7 +114,7 @@ describe("resolveApiKey", () => {
       expect(resolveApiKey(config)).toBe("sk-env");
     } finally {
       if (previous === undefined) {
-        delete process.env.OPENAI_API_KEY;
+        process.env.OPENAI_API_KEY = undefined;
       } else {
         process.env.OPENAI_API_KEY = previous;
       }

@@ -83,8 +83,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const busy = loading || activeAction !== null;
   const requiresBaseUrl = draft.provider === "local";
   const canSubmit =
-    draft.model.trim().length > 0 &&
-    (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
+    draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
 
   function hydrateFromSettings(
     loaded: ModelSettingsRead,
@@ -102,7 +101,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     }
     setSelectedProvider(provider);
     setDraft(
-      settings ? providerConfigFromSettings(settings.providers[provider]) : defaultDraftForProvider(provider)
+      settings
+        ? providerConfigFromSettings(settings.providers[provider])
+        : defaultDraftForProvider(provider)
     );
     setApiKey("");
     setStatus(null);
@@ -333,8 +334,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     status.tone === "error" &&
                       "border-destructive/25 bg-destructive/5 text-destructive",
                     status.tone === "info" && "border-border bg-secondary text-foreground",
-                    status.tone === "success" &&
-                      "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    status.tone === "success" && "border-emerald-200 bg-emerald-50 text-emerald-800"
                   )}
                 >
                   {status.message}

@@ -1,7 +1,7 @@
 /// <reference types="bun" />
 
-import { AgentProviderConfigSchema, type ModelProvider } from "@tessera/contracts";
 import { describe, expect, test } from "bun:test";
+import { AgentProviderConfigSchema, type ModelProvider } from "@tessera/contracts";
 import {
   MODEL_PROVIDERS,
   defaultDraftForProvider,

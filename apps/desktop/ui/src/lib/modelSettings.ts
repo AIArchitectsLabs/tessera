@@ -1,11 +1,6 @@
 import type { AgentProviderConfig, ModelProvider } from "@tessera/contracts";
 
-export const MODEL_PROVIDERS: ModelProvider[] = [
-  "openai",
-  "anthropic",
-  "openrouter",
-  "local",
-];
+export const MODEL_PROVIDERS: ModelProvider[] = ["openai", "anthropic", "openrouter", "local"];
 
 export function providerLabel(provider: ModelProvider): string {
   switch (provider) {
