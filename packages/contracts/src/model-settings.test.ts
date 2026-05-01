@@ -43,7 +43,7 @@ describe("model settings contracts", () => {
       ModelSettingsSaveRequestSchema.parse({
         selectedProvider: "openai",
         provider: { provider: "anthropic", model: "claude-sonnet-4-6" },
-      }),
+      })
     ).toThrow();
   });
 

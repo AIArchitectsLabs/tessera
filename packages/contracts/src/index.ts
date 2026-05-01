@@ -398,3 +398,47 @@ export const TaskCreateTurnRequestSchema = z.object({
   content: z.string().min(1),
 });
 export type TaskCreateTurnRequest = z.infer<typeof TaskCreateTurnRequestSchema>;
+
+export const TaskEventTypeSchema = z.enum([
+  "task.updated",
+  "turn.created",
+  "turn.status_changed",
+  "turn.completed",
+  "artifact.created",
+]);
+export type TaskEventType = z.infer<typeof TaskEventTypeSchema>;
+
+const TaskEventBase = z.object({
+  taskId: z.string().min(1),
+  emittedAt: z.string().min(1),
+});
+
+export const TaskUpdatedEventSchema = TaskEventBase.extend({
+  type: z.literal("task.updated"),
+  task: TaskSummarySchema,
+});
+export const TurnCreatedEventSchema = TaskEventBase.extend({
+  type: z.literal("turn.created"),
+  turn: TaskTurnSchema,
+});
+export const TurnStatusChangedEventSchema = TaskEventBase.extend({
+  type: z.literal("turn.status_changed"),
+  turn: TaskTurnSchema,
+});
+export const TurnCompletedEventSchema = TaskEventBase.extend({
+  type: z.literal("turn.completed"),
+  turn: TaskTurnSchema,
+});
+export const ArtifactCreatedEventSchema = TaskEventBase.extend({
+  type: z.literal("artifact.created"),
+  artifact: TaskArtifactSchema,
+});
+
+export const TaskEventSchema = z.discriminatedUnion("type", [
+  TaskUpdatedEventSchema,
+  TurnCreatedEventSchema,
+  TurnStatusChangedEventSchema,
+  TurnCompletedEventSchema,
+  ArtifactCreatedEventSchema,
+]);
+export type TaskEvent = z.infer<typeof TaskEventSchema>;
