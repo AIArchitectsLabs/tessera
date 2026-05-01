@@ -1,4 +1,4 @@
-import type { TaskEvent } from "@tessera/contracts";
+import type { TaskEvent, TaskSummary, TaskTurn } from "@tessera/contracts";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
@@ -17,7 +17,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const delayMs = opts.delayMs ?? 120;
 
   try {
-    // Stage 1: Complete the user turn
     store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
     const updatedUserTurn = store.getTurn(userTurnId);
     publish({
@@ -27,7 +26,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: updatedUserTurn,
     });
 
-    // Stage 2: Update task to "Researching"
     store.updateTask(taskId, { latestActivity: "Researching" });
     const researchingSummary = store.getTaskSummary(taskId);
     publish({
@@ -38,7 +36,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     });
     await sleep(delayMs);
 
-    // Stage 3: Mark agent turn "running"
     store.updateTurn(agentTurnId, { status: "running", content: "Drafting response…" });
     const runningAgentTurn = store.getTurn(agentTurnId);
     publish({
@@ -48,7 +45,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: runningAgentTurn,
     });
 
-    // Stage 4: Update task to "Drafting"
     store.updateTask(taskId, { latestActivity: "Drafting" });
     const draftingSummary = store.getTaskSummary(taskId);
     publish({
@@ -59,7 +55,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     });
     await sleep(delayMs);
 
-    // Stage 5: Create artifact
     const artifactContent = "# Task Output\n\nHere is the completed work for this task.";
     const createdArtifact = store.createArtifact({
       taskId,
@@ -74,7 +69,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       artifact: createdArtifact,
     });
 
-    // Stage 6: Complete the agent turn
     store.updateTurn(agentTurnId, {
       status: "completed",
       content: artifactContent,
@@ -88,7 +82,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: completedAgentTurn,
     });
 
-    // Stage 7: Mark task done
     store.updateTask(taskId, { status: "done", latestActivity: "Completed" });
     const doneSummary = store.getTaskSummary(taskId);
     publish({
@@ -106,38 +99,48 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
         error: message,
         completedAt: new Date().toISOString(),
       });
-    } catch {
-      // ignore secondary failure
-    }
+    } catch {}
 
     try {
       store.updateTask(taskId, { status: "failed", latestActivity: "Failed" });
-    } catch {
-      // ignore secondary failure
-    }
+    } catch {}
 
-    try {
-      const failedAgentTurn = store.getTurn(agentTurnId);
-      publish({
-        type: "turn.completed",
-        taskId,
-        emittedAt: new Date().toISOString(),
-        turn: failedAgentTurn,
-      });
-    } catch {
-      // ignore secondary failure
-    }
+    const failedTurn: TaskTurn = {
+      id: agentTurnId,
+      taskId,
+      role: "agent",
+      content: "",
+      status: "failed",
+      error: message,
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    publish({
+      type: "turn.completed",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      turn: failedTurn,
+    });
 
+    let failedSummary: TaskSummary;
     try {
-      const failedSummary = store.getTaskSummary(taskId);
-      publish({
-        type: "task.updated",
-        taskId,
-        emittedAt: new Date().toISOString(),
-        task: failedSummary,
-      });
+      failedSummary = store.getTaskSummary(taskId);
     } catch {
-      // ignore secondary failure
+      failedSummary = {
+        id: taskId,
+        workspaceRoot: "",
+        title: "",
+        status: "failed",
+        latestActivity: "Failed",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
     }
+    publish({
+      type: "task.updated",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      task: failedSummary,
+    });
   }
 }

@@ -108,8 +108,6 @@ describe("task runner", () => {
 
     const finalTaskDetail = store.getTask(task.id);
     expect(finalTaskDetail?.artifacts).toHaveLength(1);
-
-    store.close();
   });
 
   test("failure path: no exception thrown, publishes failed events", async () => {
@@ -157,7 +155,5 @@ describe("task runner", () => {
     if (failedTaskUpdate?.type === "task.updated") {
       expect(failedTaskUpdate.task.status).toBe("failed");
     }
-
-    store.close();
   });
 });
