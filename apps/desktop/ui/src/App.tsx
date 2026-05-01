@@ -33,6 +33,7 @@ export default function App() {
   const [sendingTurn, setSendingTurn] = useState(false);
   const taskDetailRequestId = useRef(0);
   const reconnectAttemptsRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleWorkspaceSelect = (path: string) => {
     setWorkspaceRoot(path);
@@ -96,11 +97,10 @@ export default function App() {
     }
     reconnectAttemptsRef.current = attempt + 1;
     const delays = [250, 750, 2250];
-    setTimeout(async () => {
+    retryTimerRef.current = setTimeout(async () => {
       if (selectedTaskId) {
         await loadTaskDetail(selectedTaskId);
       }
-      reconnectAttemptsRef.current = 0;
     }, delays[attempt] ?? 250);
   }, [selectedTaskId, loadTaskDetail]);
 
@@ -133,6 +133,10 @@ export default function App() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: writing to a ref, selectedTaskId is the trigger
   useEffect(() => {
     reconnectAttemptsRef.current = 0;
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
   }, [selectedTaskId]);
 
   async function handleCreateTask(initialInstruction: string) {
