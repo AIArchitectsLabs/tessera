@@ -92,6 +92,23 @@ describe("TaskEvent schemas", () => {
     expect(TaskEventSchema.parse(obj)).toEqual(obj);
   });
 
+  test("rejects malformed emittedAt", () => {
+    const obj = {
+      type: "task.updated",
+      taskId: "task-1",
+      emittedAt: "not-a-date",
+      task: {
+        id: "task-1",
+        workspaceRoot: "/workspace",
+        title: "Test task",
+        status: "active" as const,
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+      },
+    };
+    expect(TaskEventSchema.safeParse(obj).success).toBe(false);
+  });
+
   test("rejects unknown event type", () => {
     const obj = {
       type: "unknown.event",

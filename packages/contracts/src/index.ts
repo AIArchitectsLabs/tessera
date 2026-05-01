@@ -410,7 +410,7 @@ export type TaskEventType = z.infer<typeof TaskEventTypeSchema>;
 
 const TaskEventBase = z.object({
   taskId: z.string().min(1),
-  emittedAt: z.string().min(1),
+  emittedAt: z.string().datetime(),
 });
 
 export const TaskUpdatedEventSchema = TaskEventBase.extend({
