@@ -33,14 +33,17 @@ export interface TaskStore {
   close(): void;
   createAgentTurn(taskId: string, content: string): TaskTurn;
   createArtifact(input: CreateArtifactInput): TaskArtifact;
+  createQueuedAgentTurn(taskId: string): TaskTurn;
   createTask(input: CreateTaskInput): TaskDetail;
   createUserTurn(taskId: string, content: string): TaskTurn;
   getTask(taskId: string): TaskDetail | undefined;
+  getTaskSummary(taskId: string): TaskSummary;
+  getTurn(turnId: string): TaskTurn;
   listTasks(filter: { workspaceRoot: string }): TaskSummary[];
   updateTask(taskId: string, patch: TaskUpdateRequest): TaskDetail | undefined;
   updateTurn(
     turnId: string,
-    patch: { status?: TaskTurnStatus; error?: string }
+    patch: { status?: TaskTurnStatus; content?: string; error?: string; completedAt?: string }
   ): TaskTurn | undefined;
 }
 
@@ -223,6 +226,7 @@ export function createTaskStore(dbPath: string): TaskStore {
   const updateTurnRow = db.prepare(`
     UPDATE task_turns
     SET status = COALESCE(?, status),
+        content = COALESCE(?, content),
         completed_at = CASE WHEN ? IN ('completed', 'failed') THEN COALESCE(completed_at, ?) ELSE completed_at END,
         error = COALESCE(?, error)
     WHERE id = ?
@@ -279,6 +283,9 @@ export function createTaskStore(dbPath: string): TaskStore {
     },
     createAgentTurn(taskId, content) {
       return createTurn({ taskId, role: "agent", content, status: "completed" });
+    },
+    createQueuedAgentTurn(taskId) {
+      return createTurn({ taskId, role: "agent", content: "Queued", status: "queued" });
     },
     createArtifact(input) {
       requireTask(input.taskId);
@@ -364,12 +371,23 @@ export function createTaskStore(dbPath: string): TaskStore {
       );
       return getTask(taskId);
     },
+    getTaskSummary(taskId) {
+      const row = getTaskRow.get(taskId);
+      if (!row) throw new Error(`Unknown task: ${taskId}`);
+      return rowToSummary(row);
+    },
+    getTurn(turnId) {
+      const row = getTurnRow.get(turnId);
+      if (!row) throw new Error(`Unknown turn: ${turnId}`);
+      return rowToTurn(row);
+    },
     updateTurn(turnId, patch) {
       const existing = getTurnRow.get(turnId);
       if (!existing) return undefined;
-      const completedAt = nowIso();
+      const completedAt = patch.completedAt ?? nowIso();
       updateTurnRow.run(
         patch.status ?? null,
+        patch.content ?? null,
         patch.status ?? null,
         completedAt,
         patch.error ?? null,

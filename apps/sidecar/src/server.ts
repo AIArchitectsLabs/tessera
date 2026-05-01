@@ -316,9 +316,15 @@ async function handleTaskCreate(req: Request): Promise<Response> {
     const task = taskStore.createTask(parsed.data);
     const userTurn = task.turns.at(-1);
     if (!userTurn) throw new Error("Created task has no user turn");
-    return Response.json(
-      runTaskTurn({ store: taskStore, taskId: task.id, userTurnId: userTurn.id })
-    );
+    const agentTurn = taskStore.createQueuedAgentTurn(task.id);
+    await runTaskTurn({
+      store: taskStore,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      publish: () => {},
+    });
+    return Response.json(taskStore.getTask(task.id));
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },
@@ -382,7 +388,15 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
 
   try {
     const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);
-    return Response.json(runTaskTurn({ store: taskStore, taskId, userTurnId: userTurn.id }));
+    const agentTurn = taskStore.createQueuedAgentTurn(taskId);
+    await runTaskTurn({
+      store: taskStore,
+      taskId,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      publish: () => {},
+    });
+    return Response.json(taskStore.getTask(taskId));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.startsWith("Unknown task") ? 404 : 500;
