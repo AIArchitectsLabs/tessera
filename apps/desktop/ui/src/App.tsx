@@ -3,6 +3,7 @@ import type {
   TaskCreateRequest,
   TaskCreateTurnRequest,
   TaskDetail,
+  TaskEvent,
   TaskListResult,
   TaskSummary,
 } from "@tessera/contracts";
@@ -11,6 +12,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RailNav, type SidebarMode } from "@/components/RailNav";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
+import { applyTaskEvent } from "./lib/applyTaskEvent";
+import { useTaskEvents } from "./lib/useTaskEvents";
 
 const WORKSPACE_STORAGE_KEY = "tessera_workspace_root";
 
@@ -29,6 +32,7 @@ export default function App() {
   const [creatingTask, setCreatingTask] = useState(false);
   const [sendingTurn, setSendingTurn] = useState(false);
   const taskDetailRequestId = useRef(0);
+  const reconnectAttemptsRef = useRef(0);
 
   const handleWorkspaceSelect = (path: string) => {
     setWorkspaceRoot(path);
@@ -79,6 +83,33 @@ export default function App() {
     }
   }, []);
 
+  const handleEvent = useCallback((event: TaskEvent) => {
+    setSelectedTask((current) => (current ? applyTaskEvent(current, event) : current));
+  }, []);
+
+  const handleReconnect = useCallback(() => {
+    const attempt = reconnectAttemptsRef.current;
+    if (attempt >= 3) {
+      reconnectAttemptsRef.current = 0;
+      setTaskDetailError("Connection to task updates lost. Refresh to retry.");
+      return;
+    }
+    reconnectAttemptsRef.current = attempt + 1;
+    const delays = [250, 750, 2250];
+    setTimeout(async () => {
+      if (selectedTaskId) {
+        await loadTaskDetail(selectedTaskId);
+      }
+      reconnectAttemptsRef.current = 0;
+    }, delays[attempt] ?? 250);
+  }, [selectedTaskId, loadTaskDetail]);
+
+  useTaskEvents({
+    taskId: selectedTaskId,
+    onEvent: handleEvent,
+    onReconnect: handleReconnect,
+  });
+
   const handleNewTask = () => {
     taskDetailRequestId.current += 1;
     setSelectedTaskId(null);
@@ -98,6 +129,11 @@ export default function App() {
       void loadTaskDetail(selectedTaskId);
     }
   }, [loadTaskDetail, selectedTaskId]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: writing to a ref, selectedTaskId is the trigger
+  useEffect(() => {
+    reconnectAttemptsRef.current = 0;
+  }, [selectedTaskId]);
 
   async function handleCreateTask(initialInstruction: string) {
     if (!workspaceRoot) return;
