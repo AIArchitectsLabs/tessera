@@ -133,6 +133,36 @@ describe("runPiTaskTurn", () => {
     ).rejects.toThrow("Add an API key in Settings > Model");
     expect(called).toBe(false);
   });
+
+  test("passes agent instructions and selected workspace tools into session setup", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { customToolNames?: string[]; promptText?: string } = {};
+    const factory: PiSessionFactory = async (options) => {
+      seen.customToolNames = options.customTools.map((tool) => tool.name).sort();
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+      agent: {
+        id: "writer",
+        name: "Writer",
+        model: { mode: "default" },
+        instructions: "Write crisp updates.",
+        soul: "Calm and direct.",
+        skills: [],
+        tools: ["workspace_read", "workspace_write"],
+        createdAt: "2026-05-02T00:00:00.000Z",
+        updatedAt: "2026-05-02T00:00:00.000Z",
+      },
+    });
+
+    expect(seen.customToolNames).toEqual(["workspace_read", "workspace_write"]);
+  });
 });
 
 describe("createTesseraModelRegistry", () => {

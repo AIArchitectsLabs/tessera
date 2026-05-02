@@ -5,7 +5,7 @@ import {
   SessionManager,
   createAgentSession,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentProviderConfig } from "@tessera/contracts";
+import type { AgentProfile, AgentProviderConfig } from "@tessera/contracts";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -27,6 +27,7 @@ export interface PiSessionFactoryOptions {
 export type PiSessionFactory = (options: PiSessionFactoryOptions) => Promise<PiSessionLike>;
 
 export interface RunPiTaskTurnOptions {
+  agent?: AgentProfile;
   credential?: string;
   factory?: PiSessionFactory;
   onActivity?: (activity: string) => void;
@@ -147,9 +148,22 @@ export async function createTesseraModelRegistry(options: {
   return { model, modelRegistry };
 }
 
+function withAgentInstructions(prompt: string, agent?: AgentProfile): string {
+  if (!agent) return prompt;
+  const sections = [
+    agent.instructions ? `Agent instructions:\n${agent.instructions}` : "",
+    agent.soul ? `Agent soul:\n${agent.soul}` : "",
+    `User task:\n${prompt}`,
+  ].filter(Boolean);
+  return sections.join("\n\n");
+}
+
 export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTaskTurnResult> {
   const guard = await createWorkspaceGuard(options.workspaceRoot);
-  const customTools = createWorkspaceToolDefinitions(guard);
+  const allTools = createWorkspaceToolDefinitions(guard);
+  const allowedTools = new Set(options.agent?.tools ?? allTools.map((tool) => tool.name));
+  const customTools = allTools.filter((tool) => allowedTools.has(tool.name));
+
   const { model, modelRegistry } = await createTesseraModelRegistry({
     ...(options.credential ? { credential: options.credential } : {}),
     provider: options.provider,
@@ -171,7 +185,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   });
 
   try {
-    await session.prompt(options.prompt);
+    await session.prompt(withAgentInstructions(options.prompt, options.agent));
   } finally {
     unsubscribe();
     session.dispose();
