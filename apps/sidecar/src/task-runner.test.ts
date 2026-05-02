@@ -148,7 +148,11 @@ describe("task runner", () => {
           createdAt: "2026-05-02T00:00:00.000Z",
           updatedAt: "2026-05-02T00:00:00.000Z",
         },
-        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        provider: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          apiKeyEnv: "ANTHROPIC_API_KEY",
+        },
         credential: { apiKey: "sk-runtime" },
       },
       piRunner: async (options) => {
@@ -162,7 +166,11 @@ describe("task runner", () => {
     expect(seen).toEqual([
       expect.objectContaining({
         credential: "sk-runtime",
-        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        provider: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          apiKeyEnv: "ANTHROPIC_API_KEY",
+        },
         prompt: "Run the task",
         workspaceRoot: "/workspace/acme",
       }),
