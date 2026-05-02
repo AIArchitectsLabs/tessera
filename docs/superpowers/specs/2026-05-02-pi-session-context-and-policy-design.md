@@ -21,6 +21,12 @@ The previous slices established:
   the Pi runner (`task-model-settings-and-agent-profiles` slice)
 - `AgentProfile` with tool allowlist and instructions/soul fields
 
+**Two execution paths exist in the sidecar.** The task path (`task-runner.ts` →
+`runPiTaskTurn` → `@mariozechner/pi-coding-agent`) is fully Pi-backed. A
+separate legacy path remains for the `/agent/turn` endpoint and workflow steps:
+`executeAgentTurn` → `agent.ts` → `@mariozechner/pi-agent-core`. Migrating that
+path is deferred to the workflow agent step slice.
+
 One gap shipped with the agent profiles slice: `runTaskTurn` extracts
 `execution.provider` and `execution.credential` from the resolved config but
 drops `execution.agent` — the `piRunner` callback type does not include `agent`,
