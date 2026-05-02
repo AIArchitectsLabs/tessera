@@ -30,6 +30,15 @@ impl ModelProvider {
         }
     }
 
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Openrouter => "openrouter",
+            Self::Local => "local",
+        }
+    }
+
     fn default_model(self) -> &'static str {
         match self {
             Self::Openai => "gpt-5.4",
@@ -246,6 +255,16 @@ pub fn validate_provider_config(config: &ProviderConfig) -> Result<ProviderConfi
     normalize_provider_config(config.clone())
 }
 
+pub fn selected_provider_config(settings: &SettingsFile) -> Result<ProviderConfig> {
+    settings
+        .providers
+        .get(&settings.selected_provider)
+        .cloned()
+        .map(normalize_provider_config)
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("Selected model provider is missing from settings"))
+}
+
 pub fn read(app: &AppHandle) -> Result<ModelSettingsRead> {
     redact(load_settings_file(&settings_path(app)?)?)
 }
@@ -424,6 +443,14 @@ mod tests {
 
             assert!(!result.ok);
             assert!(result.message.contains("Settings > Model"));
+        }
+
+        #[test]
+        fn selected_provider_config_returns_selected_provider() {
+            let settings = default_settings_file();
+            let provider = selected_provider_config(&settings).expect("selected provider");
+
+            assert_eq!(provider.provider, ModelProvider::Openai);
         }
     }
 }

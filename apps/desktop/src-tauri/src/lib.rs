@@ -257,33 +257,39 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
-fn model_connection_test_body(
-    provider: &model_settings::ProviderConfig,
-    credential: Option<String>,
-) -> serde_json::Value {
-    let provider_value = match provider.provider {
+fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json::Value {
+    match provider.provider {
         model_settings::ModelProvider::Openai => serde_json::json!({
             "provider": "openai",
             "model": provider.model,
+            "apiKeyEnv": "OPENAI_API_KEY"
         }),
         model_settings::ModelProvider::Anthropic => serde_json::json!({
             "provider": "anthropic",
             "model": provider.model,
+            "apiKeyEnv": "ANTHROPIC_API_KEY"
         }),
         model_settings::ModelProvider::Openrouter => serde_json::json!({
             "provider": "openrouter",
             "model": provider.model,
+            "apiKeyEnv": "OPENROUTER_API_KEY"
         }),
         model_settings::ModelProvider::Local => serde_json::json!({
             "provider": "local",
             "model": provider.model,
             "baseUrl": provider
                 .base_url
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or("http://127.0.0.1:11434/v1"),
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string())
         }),
-    };
+    }
+}
+
+fn model_connection_test_body(
+    provider: &model_settings::ProviderConfig,
+    credential: Option<String>,
+) -> serde_json::Value {
+    let provider_value = provider_config_json(provider);
 
     let mut body = serde_json::json!({
         "prompt": "Reply with OK.",
@@ -294,6 +300,66 @@ fn model_connection_test_body(
         body["credential"] = serde_json::json!({ "apiKey": api_key });
     }
     body
+}
+
+fn default_agent_profile_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": "default",
+        "name": "Tessera",
+        "model": { "mode": "default" },
+        "instructions": "You are Tessera's workspace agent. Work inside the selected workspace.",
+        "soul": "",
+        "skills": [],
+        "tools": [
+            "workspace_read",
+            "workspace_list",
+            "workspace_search",
+            "workspace_write",
+            "workspace_edit"
+        ],
+        "createdAt": "1970-01-01T00:00:00.000Z",
+        "updatedAt": "1970-01-01T00:00:00.000Z"
+    })
+}
+
+fn attach_default_task_execution(
+    app: &AppHandle,
+    mut request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if request.get("execution").is_some() {
+        return Ok(request);
+    }
+
+    let settings_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join(model_settings::SETTINGS_FILE);
+    let settings =
+        model_settings::load_settings_file(&settings_path).map_err(|error| error.to_string())?;
+    let provider =
+        model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
+    let credential =
+        model_settings::get_credential(provider.provider).map_err(|error| error.to_string())?;
+
+    if credential.is_none() && provider.provider != model_settings::ModelProvider::Local {
+        return Err(format!(
+            "{} is not configured. Add an API key in Settings > Model.",
+            provider.provider.label()
+        ));
+    }
+
+    let mut execution = serde_json::json!({
+        "agent": default_agent_profile_json(),
+        "provider": provider_config_json(&provider)
+    });
+
+    if let Some(api_key) = credential {
+        execution["credential"] = serde_json::json!({ "apiKey": api_key });
+    }
+
+    request["execution"] = execution;
+    Ok(request)
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -438,9 +504,11 @@ async fn task_list(
 
 #[tauri::command]
 async fn task_create(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let request = attach_default_task_execution(&app, request)?;
     let json = state
         .post("/tasks", &request.to_string())
         .await
@@ -474,10 +542,12 @@ async fn task_update(
 
 #[tauri::command]
 async fn task_create_turn(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     task_id: String,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let request = attach_default_task_execution(&app, request)?;
     let path = format!("/tasks/{}/turns", percent_encode(&task_id));
     let json = state
         .post(&path, &request.to_string())

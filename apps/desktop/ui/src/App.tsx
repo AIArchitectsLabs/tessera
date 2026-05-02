@@ -154,6 +154,7 @@ export default function App() {
       const request: TaskCreateRequest = {
         workspaceRoot,
         initialInstruction,
+        agentId: "default",
         agentLabel: "Tessera",
       };
       const task = await invoke<TaskDetail>("task_create", { request });
@@ -174,7 +175,7 @@ export default function App() {
     setSendingTurn(true);
     setTaskDetailError(null);
     try {
-      const request: TaskCreateTurnRequest = { content };
+      const request: TaskCreateTurnRequest = { content, agentId: "default" };
       const task = await invoke<TaskDetail>("task_create_turn", {
         taskId: selectedTaskId,
         request,
