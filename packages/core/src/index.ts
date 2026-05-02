@@ -28,6 +28,10 @@ export {
 } from "./workspace-guard.js";
 export { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 export {
+  DEFAULT_AGENT_PROFILE,
+  resolveTaskExecutionConfig,
+} from "./task-model-resolution.js";
+export {
   DEMO_WORKFLOW,
   loadWorkflowDefinition,
   resumeWorkflowRun,
