@@ -242,6 +242,30 @@ describe("runPiTaskTurn", () => {
 
     expect(result.boundaryViolations).toBe(0);
   });
+
+  test("returns boundaryViolations 1 when a workspace tool is denied", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      const outsidePath = "../escape.txt";
+      const writeTool = factoryOpts.customTools.find((t) => t.name === "workspace_write");
+      if (writeTool) {
+        await writeTool
+          .execute("call-1", { path: outsidePath, content: "x" }, undefined, undefined, undefined as never)
+          .catch(() => {});
+      }
+      return new FakeSession([]);
+    };
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.boundaryViolations).toBe(1);
+  });
 });
 
 describe("createTesseraModelRegistry", () => {

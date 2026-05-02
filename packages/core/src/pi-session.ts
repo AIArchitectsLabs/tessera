@@ -19,6 +19,7 @@ export interface PiSessionLike {
 
 export interface PiSessionFactoryOptions {
   customTools: ToolDefinition[];
+  // Pi SDK's Model type is not publicly exported; callers pass it opaquely.
   model?: unknown;
   modelRegistry: ModelRegistry;
   workspaceRoot: string;
@@ -103,7 +104,7 @@ function defaultFactory(): PiSessionFactory {
       authStorage: modelRegistry.authStorage,
       customTools,
       cwd: workspaceRoot,
-      model: model as never,
+      model: model as never, // SDK requires the opaque Model object; no public type to use here
       modelRegistry,
       noTools: "all",
       sessionManager: SessionManager.inMemory(),
@@ -175,7 +176,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   const guard = await createWorkspaceGuard(options.workspaceRoot);
   let boundaryViolations = 0;
   const allTools = createWorkspaceToolDefinitions(guard, {
-    onViolation: () => {
+    onViolation: (_toolName) => {
       boundaryViolations++;
     },
   });
