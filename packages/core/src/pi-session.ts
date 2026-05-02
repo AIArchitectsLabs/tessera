@@ -28,6 +28,7 @@ export type PiSessionFactory = (options: PiSessionFactoryOptions) => Promise<PiS
 
 export interface RunPiTaskTurnOptions {
   agent?: AgentProfile;
+  conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
   credential?: string;
   factory?: PiSessionFactory;
   onActivity?: (activity: string) => void;
@@ -38,6 +39,7 @@ export interface RunPiTaskTurnOptions {
 
 export interface PiTaskTurnResult {
   text: string;
+  boundaryViolations: number;
 }
 
 function providerBaseUrl(provider: AgentProviderConfig): string {
@@ -148,19 +150,35 @@ export async function createTesseraModelRegistry(options: {
   return { model, modelRegistry };
 }
 
-function withAgentInstructions(prompt: string, agent?: AgentProfile): string {
-  if (!agent) return prompt;
-  const sections = [
-    agent.instructions ? `Agent instructions:\n${agent.instructions}` : "",
-    agent.soul ? `Agent soul:\n${agent.soul}` : "",
-    `User task:\n${prompt}`,
-  ].filter(Boolean);
+function buildPrompt(
+  prompt: string,
+  options: {
+    agent?: AgentProfile;
+    conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
+  }
+): string {
+  const { agent, conversationHistory } = options;
+  const sections: string[] = [];
+  if (agent?.instructions) sections.push(`Agent instructions:\n${agent.instructions}`);
+  if (agent?.soul) sections.push(`Agent soul:\n${agent.soul}`);
+  if (conversationHistory && conversationHistory.length > 0) {
+    const lines = conversationHistory
+      .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.content}`)
+      .join("\n");
+    sections.push(`Prior conversation:\n${lines}`);
+  }
+  sections.push(`User task:\n${prompt}`);
   return sections.join("\n\n");
 }
 
 export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTaskTurnResult> {
   const guard = await createWorkspaceGuard(options.workspaceRoot);
-  const allTools = createWorkspaceToolDefinitions(guard);
+  let boundaryViolations = 0;
+  const allTools = createWorkspaceToolDefinitions(guard, {
+    onViolation: () => {
+      boundaryViolations++;
+    },
+  });
   const allowedTools = new Set(options.agent?.tools ?? allTools.map((tool) => tool.name));
   const customTools = allTools.filter((tool) => allowedTools.has(tool.name));
 
@@ -185,11 +203,18 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   });
 
   try {
-    await session.prompt(withAgentInstructions(options.prompt, options.agent));
+    await session.prompt(
+      buildPrompt(options.prompt, {
+        ...(options.agent !== undefined ? { agent: options.agent } : {}),
+        ...(options.conversationHistory !== undefined
+          ? { conversationHistory: options.conversationHistory }
+          : {}),
+      })
+    );
   } finally {
     unsubscribe();
     session.dispose();
   }
 
-  return { text };
+  return { text, boundaryViolations };
 }

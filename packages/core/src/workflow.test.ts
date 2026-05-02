@@ -112,12 +112,12 @@ describe("workflow runner", () => {
       agentProvider: { provider: "local", model: "llama3.2", baseUrl: "http://127.0.0.1:11434/v1" },
       async agentRunner(options) {
         calls.push({ prompt: options.prompt, workspaceRoot: options.workspaceRoot });
-        return { text: "drafted" };
+        return { text: "drafted", boundaryViolations: 0 };
       },
     });
 
     expect(result.status).toBe("completed");
-    expect(result.outputs?.draft).toEqual({ text: "drafted" });
+    expect(result.outputs?.draft).toEqual({ text: "drafted", boundaryViolations: 0 });
     expect(calls).toEqual([{ prompt: "Draft: hello", workspaceRoot: "/workspace/acme" }]);
   });
 

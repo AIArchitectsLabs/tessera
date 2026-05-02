@@ -13,13 +13,15 @@ import {
 } from "./pi-session.js";
 
 class FakeSession implements PiSessionLike {
+  capturedPrompts: string[] = [];
   private listeners: ((event: AgentSessionEvent) => void)[] = [];
 
   constructor(private readonly events: AgentSessionEvent[]) {}
 
   dispose(): void {}
 
-  async prompt(_text: string): Promise<void> {
+  async prompt(text: string): Promise<void> {
+    this.capturedPrompts.push(text);
     for (const event of this.events) {
       for (const listener of this.listeners) listener(event);
     }
@@ -162,6 +164,83 @@ describe("runPiTaskTurn", () => {
     });
 
     expect(seen.customToolNames).toEqual(["workspace_read", "workspace_write"]);
+  });
+
+  test("builds prompt with instructions, history, and task in order", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async () => {
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+      agent: {
+        id: "writer",
+        name: "Writer",
+        model: { mode: "default" },
+        instructions: "Write crisp updates.",
+        soul: "Calm and direct.",
+        skills: [],
+        tools: ["workspace_read", "workspace_write"],
+        createdAt: "2026-05-02T00:00:00.000Z",
+        updatedAt: "2026-05-02T00:00:00.000Z",
+      },
+      conversationHistory: [
+        { role: "user", content: "Hello" },
+        { role: "agent", content: "Hi there" },
+      ],
+    });
+
+    const prompt = capturedSession?.capturedPrompts[0] ?? "";
+    expect(prompt).toContain("Agent instructions:\nWrite crisp updates.");
+    expect(prompt).toContain("Agent soul:\nCalm and direct.");
+    expect(prompt).toContain("Prior conversation:\nUser: Hello\nAssistant: Hi there");
+    expect(prompt).toContain("User task:\nDraft");
+    const instrIdx = prompt.indexOf("Agent instructions:");
+    const histIdx = prompt.indexOf("Prior conversation:");
+    const taskIdx = prompt.indexOf("User task:");
+    expect(instrIdx).toBeLessThan(histIdx);
+    expect(histIdx).toBeLessThan(taskIdx);
+  });
+
+  test("omits history block when conversationHistory is empty", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async () => {
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(capturedSession?.capturedPrompts[0]).not.toContain("Prior conversation:");
+  });
+
+  test("returns boundaryViolations 0 when no violations occur", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async () => new FakeSession([]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.boundaryViolations).toBe(0);
   });
 });
 
