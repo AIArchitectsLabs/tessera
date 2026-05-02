@@ -1,4 +1,5 @@
 import type {
+  AgentProfile,
   AgentProviderConfig,
   TaskEvent,
   TaskExecutionConfig,
@@ -12,6 +13,8 @@ export interface RunTaskTurnOptions {
   credential?: string;
   execution?: TaskExecutionConfig;
   piRunner?: (options: {
+    agent?: AgentProfile;
+    conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
     credential?: string;
     onActivity?: (activity: string) => void;
     prompt: string;
@@ -45,6 +48,16 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     const task = store.getTask(taskId);
     const userTurn = store.getTurn(userTurnId);
     if (!task) throw new Error(`Unknown task: ${taskId}`);
+
+    const conversationHistory = task.turns
+      .filter(
+        (turn) =>
+          turn.status === "completed" &&
+          turn.id !== userTurnId &&
+          turn.id !== agentTurnId &&
+          (turn.role === "user" || turn.role === "agent")
+      )
+      .map((turn) => ({ role: turn.role as "user" | "agent", content: turn.content }));
 
     store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
     const updatedUserTurn = store.getTurn(userTurnId);
@@ -85,6 +98,8 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     await sleep(delayMs);
 
     const result = await piRunner({
+      ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
+      ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
       ...(credential ? { credential } : {}),
       onActivity(activity) {
         store.updateTask(taskId, { latestActivity: activity });
@@ -127,13 +142,20 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       turn: completedAgentTurn,
     });
 
-    store.updateTask(taskId, { status: "done", latestActivity: "Completed" });
-    const doneSummary = store.getTaskSummary(taskId);
+    if (result.boundaryViolations > 0) {
+      store.updateTask(taskId, {
+        status: "waiting",
+        latestActivity: "Paused: agent reached workspace boundary",
+      });
+    } else {
+      store.updateTask(taskId, { status: "done", latestActivity: "Completed" });
+    }
+    const finalSummary = store.getTaskSummary(taskId);
     publish({
       type: "task.updated",
       taskId,
       emittedAt: new Date().toISOString(),
-      task: doneSummary,
+      task: finalSummary,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

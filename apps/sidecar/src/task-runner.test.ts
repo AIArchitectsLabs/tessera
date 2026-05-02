@@ -39,7 +39,7 @@ describe("task runner", () => {
       agentTurnId: agentTurn.id,
       piRunner: async ({ onActivity }) => {
         onActivity?.("Using workspace_read");
-        return { text: "# Task Output\n\nPi completed this task." };
+        return { text: "# Task Output\n\nPi completed this task.", boundaryViolations: 0 };
       },
       publish: (event) => events.push(event),
       delayMs: 0,
@@ -157,7 +157,7 @@ describe("task runner", () => {
       },
       piRunner: async (options) => {
         seen.push(options);
-        return { text: "done" };
+        return { text: "done", boundaryViolations: 0 };
       },
       publish() {},
       delayMs: 0,
@@ -203,7 +203,7 @@ describe("task runner", () => {
       taskId: task.id,
       userTurnId: userTurn.id,
       agentTurnId: agentTurn.id,
-      piRunner: async () => ({ text: "unused" }),
+      piRunner: async () => ({ text: "unused", boundaryViolations: 0 }),
       publish: (event) => events.push(event),
       delayMs: 0,
     });
@@ -223,5 +223,155 @@ describe("task runner", () => {
     if (failedTaskUpdate?.type === "task.updated") {
       expect(failedTaskUpdate.task.status).toBe("failed");
     }
+  });
+
+  test("forwards execution agent to piRunner", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let capturedAgent: unknown;
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      execution: {
+        agent: {
+          id: "writer",
+          name: "Writer",
+          model: { mode: "default" },
+          skills: [],
+          tools: ["workspace_read"],
+          createdAt: "2026-05-02T00:00:00.000Z",
+          updatedAt: "2026-05-02T00:00:00.000Z",
+        },
+        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        credential: { apiKey: "sk-test" },
+      },
+      piRunner: async (options) => {
+        capturedAgent = options.agent;
+        return { text: "done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect((capturedAgent as { id: string } | undefined)?.id).toBe("writer");
+  });
+
+  test("passes prior completed turns as conversation history on continuation", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "First message",
+    });
+    const firstUserTurn = task.turns[0];
+    if (!firstUserTurn) throw new Error("expected first turn");
+    store.updateTurn(firstUserTurn.id, { status: "completed", completedAt: new Date().toISOString() });
+    store.createAgentTurn(task.id, "First response");
+
+    const secondUserTurn = store.createUserTurn(task.id, "Follow up");
+    const secondAgentTurn = store.createQueuedAgentTurn(task.id);
+    let capturedHistory: unknown;
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: secondUserTurn.id,
+      agentTurnId: secondAgentTurn.id,
+      piRunner: async (options) => {
+        capturedHistory = options.conversationHistory;
+        return { text: "done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(capturedHistory).toEqual([
+      { role: "user", content: "First message" },
+      { role: "agent", content: "First response" },
+    ]);
+  });
+
+  test("passes no conversation history on the first task turn", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "First",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let capturedHistory: unknown = "sentinel";
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async (options) => {
+        capturedHistory = options.conversationHistory;
+        return { text: "done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(capturedHistory).toBeUndefined();
+  });
+
+  test("sets task to waiting when boundary violations occur", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async () => ({ text: "tried outside workspace", boundaryViolations: 1 }),
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(store.getTask(task.id)?.status).toBe("waiting");
+    expect(store.getTask(task.id)?.latestActivity).toBe(
+      "Paused: agent reached workspace boundary"
+    );
+  });
+
+  test("sets task to done when no boundary violations occur", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async () => ({ text: "completed", boundaryViolations: 0 }),
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(store.getTask(task.id)?.status).toBe("done");
   });
 });
