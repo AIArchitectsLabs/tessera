@@ -25,8 +25,9 @@ export interface CreateArtifactInput {
   contentPreview?: string;
 }
 
-export type CreateTaskInput = Omit<TaskCreateRequest, "agentLabel"> & {
+export type CreateTaskInput = Omit<TaskCreateRequest, "agentLabel" | "agentId" | "execution"> & {
   agentLabel?: string;
+  agentId?: string;
 };
 
 export interface TaskStore {

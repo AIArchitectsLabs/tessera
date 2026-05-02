@@ -329,6 +329,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         taskId,
         userTurnId,
         agentTurnId,
+        ...(parsed.data.execution ? { execution: parsed.data.execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -406,6 +407,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         taskId,
         userTurnId,
         agentTurnId,
+        ...(parsed.data.execution ? { execution: parsed.data.execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });

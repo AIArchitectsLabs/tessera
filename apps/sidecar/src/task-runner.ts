@@ -1,10 +1,10 @@
-import type { TaskEvent, TaskSummary, TaskTurn } from "@tessera/contracts";
-import type { AgentProviderConfig } from "@tessera/contracts";
+import type { AgentProviderConfig, TaskEvent, TaskExecutionConfig, TaskSummary, TaskTurn } from "@tessera/contracts";
 import { type PiTaskTurnResult, runPiTaskTurn } from "@tessera/core";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
   credential?: string;
+  execution?: TaskExecutionConfig;
   piRunner?: (options: {
     credential?: string;
     onActivity?: (activity: string) => void;
@@ -31,12 +31,8 @@ const DEFAULT_PROVIDER: AgentProviderConfig = {
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const { store, taskId, userTurnId, agentTurnId, publish } = opts;
   const delayMs = opts.delayMs ?? 120;
-  const provider = opts.provider ?? DEFAULT_PROVIDER;
-  const credential =
-    opts.credential ??
-    (provider.provider === "local" || !("apiKeyEnv" in provider)
-      ? undefined
-      : process.env[provider.apiKeyEnv]);
+  const provider = opts.execution?.provider ?? opts.provider ?? DEFAULT_PROVIDER;
+  const credential = opts.execution?.credential?.apiKey ?? opts.credential;
   const piRunner = opts.piRunner ?? runPiTaskTurn;
 
   try {

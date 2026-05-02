@@ -123,6 +123,52 @@ describe("task runner", () => {
     expect(finalTaskDetail?.artifacts[0]?.turnId).toBe(agentTurn.id);
   });
 
+  test("passes resolved execution provider, credential, and agent to Pi runner", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft a launch announcement",
+    });
+    const userTurn = store.createUserTurn(task.id, "Run the task");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const seen: unknown[] = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      execution: {
+        agent: {
+          id: "default",
+          name: "Tessera",
+          model: { mode: "default" },
+          skills: [],
+          tools: ["workspace_read"],
+          createdAt: "2026-05-02T00:00:00.000Z",
+          updatedAt: "2026-05-02T00:00:00.000Z",
+        },
+        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        credential: { apiKey: "sk-runtime" },
+      },
+      piRunner: async (options) => {
+        seen.push(options);
+        return { text: "done" };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(seen).toEqual([
+      expect.objectContaining({
+        credential: "sk-runtime",
+        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        prompt: "Run the task",
+        workspaceRoot: "/workspace/acme",
+      }),
+    ]);
+  });
+
   test("failure path: no exception thrown, publishes failed events", async () => {
     const store = makeStore();
     const task = store.createTask({
