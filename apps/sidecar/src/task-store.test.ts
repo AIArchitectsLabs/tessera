@@ -39,10 +39,12 @@ describe("task store", () => {
       workspaceRoot: "/workspace/acme",
       initialInstruction: "Draft a launch announcement",
       agentLabel: "Maeve",
+      agentId: "writer",
     });
 
     expect(task.title).toBe("Draft a launch announcement");
     expect(task.status).toBe("active");
+    expect(task.agentId).toBe("writer");
     expect(task.turns).toHaveLength(1);
     expect(task.turns[0]).toMatchObject({
       taskId: task.id,

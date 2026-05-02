@@ -11,6 +11,7 @@ const makeEvent = (taskId = "task-1"): TaskEvent => ({
     workspaceRoot: "/workspace",
     title: "Test",
     status: "active",
+    agentId: "default",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },

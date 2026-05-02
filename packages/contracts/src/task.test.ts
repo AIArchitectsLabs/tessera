@@ -16,6 +16,7 @@ describe("task contracts", () => {
       workspaceRoot: "/workspace/acme",
       title: "Draft announcement",
       status: "done",
+      agentId: "default",
       agentLabel: "Maeve",
       latestActivity: "Created draft artifact",
       createdAt: "2026-04-30T10:00:00.000Z",
@@ -24,6 +25,7 @@ describe("task contracts", () => {
 
     expect(parsed.workspaceRoot).toBe("/workspace/acme");
     expect(parsed.status).toBe("done");
+    expect(parsed.agentId).toBe("default");
   });
 
   test("rejects tasks without a workspace root", () => {

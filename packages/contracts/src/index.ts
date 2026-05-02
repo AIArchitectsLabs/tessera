@@ -374,6 +374,7 @@ export const TaskSummarySchema = z.object({
   workspaceRoot: z.string().min(1),
   title: z.string().min(1),
   status: TaskStatusSchema,
+  agentId: z.string().min(1).default("default"),
   agentLabel: z.string().min(1).optional(),
   latestActivity: z.string().optional(),
   createdAt: z.string().datetime(),

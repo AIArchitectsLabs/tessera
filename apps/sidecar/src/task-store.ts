@@ -53,6 +53,7 @@ interface TaskRow {
   workspace_root: string;
   title: string;
   status: TaskStatus;
+  agent_id: string;
   agent_label: string | null;
   latest_activity: string | null;
   description: string | null;
@@ -114,6 +115,7 @@ function rowToSummary(row: TaskRow): TaskSummary {
     workspaceRoot: row.workspace_root,
     title: row.title,
     status: row.status,
+    agentId: row.agent_id,
     agentLabel: row.agent_label ?? undefined,
     latestActivity: row.latest_activity ?? undefined,
     createdAt: row.created_at,
@@ -151,18 +153,27 @@ export function createTaskStore(dbPath: string): TaskStore {
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath, { create: true, strict: true });
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tasks (
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,
       workspace_root TEXT NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT 'default',
       agent_label TEXT,
       latest_activity TEXT,
       description TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    );
+    );`
+  );
+
+  const taskColumns = db.query<{ name: string }, []>("PRAGMA table_info(tasks)").all();
+  if (!taskColumns.some((column) => column.name === "agent_id")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'");
+  }
+
+  db.exec(`
 
     CREATE TABLE IF NOT EXISTS task_turns (
       id TEXT PRIMARY KEY NOT NULL,
@@ -192,9 +203,9 @@ export function createTaskStore(dbPath: string): TaskStore {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks (
-      id, workspace_root, title, status, agent_label, latest_activity, description, created_at, updated_at
+      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTurn = db.prepare(`
     INSERT INTO task_turns (id, task_id, role, content, status, created_at, completed_at, error)
@@ -332,6 +343,7 @@ export function createTaskStore(dbPath: string): TaskStore {
         parsed.workspaceRoot,
         parsed.title,
         "active",
+        parsed.agentId ?? "default",
         parsed.agentLabel ?? "Tessera",
         parsed.initialInstruction,
         parsed.description ?? null,

@@ -12,6 +12,7 @@ describe("TaskEvent schemas", () => {
         workspaceRoot: "/workspace/acme",
         title: "Draft announcement",
         status: "active" as const,
+        agentId: "default",
         createdAt: "2026-05-01T00:00:00.000Z",
         updatedAt: "2026-05-01T00:00:00.000Z",
       },

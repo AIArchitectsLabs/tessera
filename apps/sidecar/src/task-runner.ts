@@ -1,4 +1,10 @@
-import type { AgentProviderConfig, TaskEvent, TaskExecutionConfig, TaskSummary, TaskTurn } from "@tessera/contracts";
+import type {
+  AgentProviderConfig,
+  TaskEvent,
+  TaskExecutionConfig,
+  TaskSummary,
+  TaskTurn,
+} from "@tessera/contracts";
 import { type PiTaskTurnResult, runPiTaskTurn } from "@tessera/core";
 import type { TaskStore } from "./task-store.js";
 
@@ -170,6 +176,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
         workspaceRoot: "",
         title: "",
         status: "failed",
+        agentId: "default",
         latestActivity: "Failed",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
