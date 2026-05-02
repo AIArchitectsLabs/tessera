@@ -105,6 +105,27 @@ describe("createWorkspaceToolDefinitions", () => {
     ).rejects.toThrow("outside the workspace");
   });
 
+  test("calls onViolation when a tool is denied outside the workspace", async () => {
+    const root = await realpath(await mkdtemp("/tmp/tessera-wt-violation-"));
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createWorkspaceToolDefinitions(guard, {
+      onViolation: (toolName) => violations.push(toolName),
+    });
+
+    await expect(
+      tool(tools, "workspace_write").execute(
+        "call-1",
+        { path: "../outside.txt", content: "x\n" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("outside the workspace");
+
+    expect(violations).toEqual(["workspace_write"]);
+  });
+
   test("denies symlink escape reads", async () => {
     const { root, tools } = await makeTools();
     const outside = join(root, "..", "symlink-target.txt");

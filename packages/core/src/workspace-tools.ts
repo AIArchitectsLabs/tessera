@@ -53,7 +53,10 @@ async function walkFiles(root: string, dir: string, files: string[] = []): Promi
   return files;
 }
 
-export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefinition[] {
+export function createWorkspaceToolDefinitions(
+  guard: WorkspaceGuard,
+  options?: { onViolation?: (toolName: string) => void }
+): ToolDefinition[] {
   const readTool = defineTool({
     name: "workspace_read",
     label: "Read",
@@ -61,7 +64,13 @@ export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefin
     promptSnippet: "workspace_read: read text files inside the selected workspace.",
     parameters: pathSchema,
     async execute(_toolCallId, params: Static<typeof pathSchema>) {
-      const absolute = await guard.resolveInsideWorkspace(params.path);
+      let absolute: string;
+      try {
+        absolute = await guard.resolveInsideWorkspace(params.path);
+      } catch (error) {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_read");
+        throw error;
+      }
       const metadata = await stat(absolute);
       if (!metadata.isFile()) throw new Error(`Path is not a file: ${params.path}`);
       const text = await readFile(absolute, "utf8");
@@ -76,7 +85,13 @@ export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefin
     promptSnippet: "workspace_list: list files and folders inside the selected workspace.",
     parameters: pathSchema,
     async execute(_toolCallId, params: Static<typeof pathSchema>) {
-      const absolute = await guard.resolveInsideWorkspace(params.path);
+      let absolute: string;
+      try {
+        absolute = await guard.resolveInsideWorkspace(params.path);
+      } catch (error) {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_list");
+        throw error;
+      }
       const entries = await readdir(absolute, { withFileTypes: true });
       const names = entries.map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`).sort();
       return textResult(names.join("\n"), { path: relative(guard.root, absolute), entries: names });
@@ -90,7 +105,13 @@ export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefin
     promptSnippet: "workspace_search: search text files inside the selected workspace.",
     parameters: searchSchema,
     async execute(_toolCallId, params: Static<typeof searchSchema>) {
-      const base = await guard.resolveInsideWorkspace(params.path ?? ".");
+      let base: string;
+      try {
+        base = await guard.resolveInsideWorkspace(params.path ?? ".");
+      } catch (error) {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_search");
+        throw error;
+      }
       const matches: string[] = [];
       for (const file of await walkFiles(guard.root, base)) {
         const absolute = await guard.resolveInsideWorkspace(file);
@@ -110,7 +131,10 @@ export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefin
     async execute(_toolCallId, params: Static<typeof writeSchema>) {
       const absolute = await guard
         .resolveInsideWorkspaceForCreate(params.path)
-        .catch(() => denied(params.path));
+        .catch((error) => {
+          if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_write");
+          denied(params.path);
+        });
       await writeFile(absolute, params.content, "utf8");
       return textResult(`Wrote ${relative(guard.root, absolute)}`, {
         path: relative(guard.root, absolute),
@@ -126,7 +150,13 @@ export function createWorkspaceToolDefinitions(guard: WorkspaceGuard): ToolDefin
     promptSnippet: "workspace_edit: replace exact text in workspace files.",
     parameters: editSchema,
     async execute(_toolCallId, params: Static<typeof editSchema>) {
-      const absolute = await guard.resolveInsideWorkspace(params.path);
+      let absolute: string;
+      try {
+        absolute = await guard.resolveInsideWorkspace(params.path);
+      } catch (error) {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_edit");
+        throw error;
+      }
       const text = await readFile(absolute, "utf8");
       if (!text.includes(params.oldText)) {
         throw new Error(`Text to replace was not found in ${params.path}`);
