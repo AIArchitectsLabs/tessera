@@ -600,9 +600,9 @@ async fn model_connection_test(
     }
 
     let body = model_connection_test_body(&provider, credential).to_string();
-    let json = state
-        .post("/agent/turn", &body)
+    let json = tokio::time::timeout(Duration::from_secs(20), state.post("/agent/turn", &body))
         .await
+        .map_err(|_| "Connection test timed out after 20s".to_string())?
         .map_err(|error| error.to_string())?;
     let value: serde_json::Value =
         serde_json::from_str(&json).map_err(|error| error.to_string())?;

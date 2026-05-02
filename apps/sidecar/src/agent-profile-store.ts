@@ -3,8 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   type AgentProfile,
-  AgentProfileSchema,
   type AgentProfileCreateRequest,
+  AgentProfileSchema,
   type AgentProfileUpdateRequest,
 } from "@tessera/contracts";
 
@@ -94,8 +94,12 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const getProfileRow = db.prepare<AgentProfileRow, [string]>("SELECT * FROM agent_profiles WHERE id = ?");
-  const listProfileRows = db.prepare<AgentProfileRow, []>("SELECT * FROM agent_profiles ORDER BY name ASC");
+  const getProfileRow = db.prepare<AgentProfileRow, [string]>(
+    "SELECT * FROM agent_profiles WHERE id = ?"
+  );
+  const listProfileRows = db.prepare<AgentProfileRow, []>(
+    "SELECT * FROM agent_profiles ORDER BY name ASC"
+  );
   const updateProfileRow = db.prepare(`
     UPDATE agent_profiles
     SET name = COALESCE(?, name),
@@ -141,7 +145,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         createdAt,
         createdAt
       );
-      
+
       const profile = get(id);
       if (!profile) throw new Error(`Could not load created agent profile: ${id}`);
       return profile;
@@ -158,7 +162,8 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
       let modelProviderJson: string | null = null;
       if (patch.model) {
         modelMode = patch.model.mode;
-        modelProviderJson = patch.model.mode === "override" ? JSON.stringify(patch.model.provider) : null;
+        modelProviderJson =
+          patch.model.mode === "override" ? JSON.stringify(patch.model.provider) : null;
       }
 
       updateProfileRow.run(

@@ -1,10 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import type { TaskDetail as TaskDetailType, TaskTurn, AgentProfile, AgentProfileListResult } from "@tessera/contracts";
-import { ArrowUp, FileText, Loader2, Bot, ChevronDown } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  AgentProfile,
+  AgentProfileListResult,
+  TaskDetail as TaskDetailType,
+  TaskTurn,
+} from "@tessera/contracts";
+import { ArrowUp, Bot, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 interface TaskDetailProps {
   creatingTask: boolean;
@@ -101,11 +106,29 @@ export function TaskDetail({
       {task.status === "waiting" && (
         <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-3 flex items-start gap-3 text-amber-600 dark:text-amber-400">
           <div className="shrink-0 mt-0.5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              role="img"
+              aria-labelledby="task-waiting-icon-title"
+            >
+              <title id="task-waiting-icon-title">Authorization required</title>
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
           </div>
           <div className="text-sm">
             <span className="font-semibold block mb-0.5">Waiting for authorization</span>
-            Tessera has reached a workspace boundary. Provide guidance or approve the action in the chat to unblock the agent.
+            Tessera has reached a workspace boundary. Provide guidance or approve the action in the
+            chat to unblock the agent.
           </div>
         </div>
       )}
@@ -250,9 +273,9 @@ function TaskComposer({
           <div className="pl-2 flex items-center h-8 relative" ref={popoverRef}>
             {showAgentSelector && (
               <>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
+                <Button
+                  variant="ghost"
+                  size="sm"
                   className="h-7 text-xs px-2 py-0 text-muted-foreground hover:text-foreground hover:bg-secondary"
                   onClick={() => setPopoverOpen(!popoverOpen)}
                 >
@@ -260,31 +283,53 @@ function TaskComposer({
                   {selectedLabel}
                   <ChevronDown size={12} className="ml-1 opacity-50" />
                 </Button>
-                
+
                 {popoverOpen && (
                   <div className="absolute bottom-full left-0 mb-2 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none z-50 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95">
-                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Agents</div>
+                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Agents
+                    </div>
                     <button
-                      onClick={() => { setSelectedAgentId("default"); setPopoverOpen(false); }}
+                      type="button"
+                      onClick={() => {
+                        setSelectedAgentId("default");
+                        setPopoverOpen(false);
+                      }}
                       className={cn(
                         "w-full text-left px-2 py-1.5 text-sm rounded-sm flex items-center justify-between",
-                        selectedAgentId === "default" ? "bg-secondary text-foreground" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                        selectedAgentId === "default"
+                          ? "bg-secondary text-foreground"
+                          : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
                       )}
                     >
                       <span>Tessera</span>
-                      {selectedAgentId === "default" && <span className="text-xs bg-background rounded px-1 border border-border">Default</span>}
+                      {selectedAgentId === "default" && (
+                        <span className="text-xs bg-background rounded px-1 border border-border">
+                          Default
+                        </span>
+                      )}
                     </button>
                     {agents.map((agent) => (
                       <button
                         key={agent.id}
-                        onClick={() => { setSelectedAgentId(agent.id); setPopoverOpen(false); }}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAgentId(agent.id);
+                          setPopoverOpen(false);
+                        }}
                         className={cn(
                           "w-full text-left px-2 py-1.5 text-sm rounded-sm flex items-center justify-between",
-                          selectedAgentId === agent.id ? "bg-secondary text-foreground" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                          selectedAgentId === agent.id
+                            ? "bg-secondary text-foreground"
+                            : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
                         )}
                       >
                         <span className="truncate">{agent.name}</span>
-                        {selectedAgentId === agent.id && <span className="text-xs bg-background rounded px-1 border border-border shrink-0">Selected</span>}
+                        {selectedAgentId === agent.id && (
+                          <span className="text-xs bg-background rounded px-1 border border-border shrink-0">
+                            Selected
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -307,7 +352,7 @@ function TaskComposer({
   );
 }
 
-function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string, agentId: string }) {
+function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string; agentId: string }) {
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [open, setOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -336,7 +381,8 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string, agentId
 
   return (
     <div className="relative" ref={popoverRef}>
-      <button 
+      <button
+        type="button"
         className="text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-foreground hover:bg-secondary/80 flex items-center gap-1 transition-colors"
         onClick={() => setOpen(!open)}
       >
@@ -352,7 +398,8 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string, agentId
           </div>
           {agentId === "default" ? (
             <p className="text-sm text-muted-foreground mt-2">
-              The default Tessera workspace agent. Capable of reading, writing, and executing code in your workspace.
+              The default Tessera workspace agent. Capable of reading, writing, and executing code
+              in your workspace.
             </p>
           ) : profile ? (
             <div className="space-y-3 mt-3">
@@ -361,16 +408,25 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string, agentId
               )}
               {profile.instructions && (
                 <div>
-                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">Instructions</span>
-                  <p className="text-xs text-muted-foreground whitespace-pre-wrap">{profile.instructions}</p>
+                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">
+                    Instructions
+                  </span>
+                  <p className="text-xs text-muted-foreground whitespace-pre-wrap">
+                    {profile.instructions}
+                  </p>
                 </div>
               )}
               {profile.skills.length > 0 && (
                 <div>
-                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">Skills</span>
+                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">
+                    Skills
+                  </span>
                   <div className="flex flex-wrap gap-1">
                     {profile.skills.map((skill) => (
-                      <span key={skill} className="px-1.5 py-0.5 bg-secondary text-secondary-foreground text-[10px] rounded">
+                      <span
+                        key={skill}
+                        className="px-1.5 py-0.5 bg-secondary text-secondary-foreground text-[10px] rounded"
+                      >
                         {skill}
                       </span>
                     ))}

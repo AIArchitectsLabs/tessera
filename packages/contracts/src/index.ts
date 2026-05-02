@@ -123,6 +123,7 @@ export const ModelSettingsSaveRequestSchema = z
   .object({
     selectedProvider: ModelProviderSchema,
     provider: AgentProviderConfigSchema,
+    hasExistingCredential: z.boolean().default(false),
     credential: z
       .object({
         apiKey: z.string().min(1),

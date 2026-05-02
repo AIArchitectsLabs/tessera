@@ -15,16 +15,16 @@ import {
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
 } from "@tessera/contracts";
-import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
-import { createTaskEventBus } from "./task-event-bus.js";
-import { runTaskTurn } from "./task-runner.js";
-import { createTaskStore } from "./task-store.js";
-import { createWorkflowCheckpointStore } from "./workflow-store.js";
-import { createAgentProfileStore } from "./agent-profile-store.js";
 import {
   AgentProfileCreateRequestSchema,
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
+import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
+import { createAgentProfileStore } from "./agent-profile-store.js";
+import { createTaskEventBus } from "./task-event-bus.js";
+import { runTaskTurn } from "./task-runner.js";
+import { createTaskStore } from "./task-store.js";
+import { createWorkflowCheckpointStore } from "./workflow-store.js";
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
@@ -167,12 +167,25 @@ async function handleAgentTurn(req: Request): Promise<Response> {
   }
 
   try {
-    const result = await executeAgentTurn({
-      request: parsed.data,
-      cli: {
-        runWorkspaceCli,
-      },
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(`Model test timed out after ${parsed.data.timeoutMs}ms`)),
+        parsed.data.timeoutMs + 5_000
+      );
     });
+    const result = await Promise.race([
+      executeAgentTurn({
+        request: parsed.data,
+        cli: {
+          runWorkspaceCli,
+        },
+      }),
+      timeout,
+    ]);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
 
     return Response.json(result);
   } catch (error) {

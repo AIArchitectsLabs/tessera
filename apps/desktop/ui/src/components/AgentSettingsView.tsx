@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentProfile, AgentProfileListResult } from "@tessera/contracts";
 import { Loader2, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export function AgentSettingsView() {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -11,7 +11,7 @@ export function AgentSettingsView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadProfiles() {
+  const loadProfiles = useCallback(async () => {
     setLoading(true);
     try {
       const result = await invoke<AgentProfileListResult>("agent_profile_list");
@@ -21,11 +21,11 @@ export function AgentSettingsView() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadProfiles();
-  }, []);
+  }, [loadProfiles]);
 
   const selectedProfile = profiles.find((p) => p.id === selectedId) || null;
 
@@ -57,6 +57,7 @@ export function AgentSettingsView() {
           {profiles.map((p) => (
             <button
               key={p.id}
+              type="button"
               onClick={() => setSelectedId(p.id)}
               className={cn(
                 "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors",
@@ -70,6 +71,7 @@ export function AgentSettingsView() {
           ))}
           {selectedId === "new" && (
             <button
+              type="button"
               className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors bg-secondary text-foreground font-medium"
             >
               New Agent
@@ -83,10 +85,10 @@ export function AgentSettingsView() {
               {error}
             </div>
           )}
-          
-          {(selectedProfile || selectedId === "new") ? (
-            <AgentEditor 
-              profile={selectedProfile} 
+
+          {selectedProfile || selectedId === "new" ? (
+            <AgentEditor
+              profile={selectedProfile}
               onSaved={() => {
                 void loadProfiles();
                 setSelectedId(null);
@@ -107,14 +109,14 @@ export function AgentSettingsView() {
   );
 }
 
-function AgentEditor({ 
-  profile, 
+function AgentEditor({
+  profile,
   onSaved,
-  onDeleted
-}: { 
-  profile: AgentProfile | null, 
-  onSaved: () => void,
-  onDeleted: () => void
+  onDeleted,
+}: {
+  profile: AgentProfile | null;
+  onSaved: () => void;
+  onDeleted: () => void;
 }) {
   const [name, setName] = useState(profile?.name || "");
   const [description, setDescription] = useState(profile?.description || "");
@@ -148,7 +150,7 @@ function AgentEditor({
             description: description.trim() || undefined,
             instructions: instructions.trim() || undefined,
             soul: soul.trim() || undefined,
-          }
+          },
         });
       } else {
         await invoke("agent_profile_create", {
@@ -159,8 +161,14 @@ function AgentEditor({
             soul: soul.trim() || undefined,
             model: { mode: "default" }, // UI doesn't support model override yet per simplified design
             skills: [],
-            tools: ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit"]
-          }
+            tools: [
+              "workspace_read",
+              "workspace_list",
+              "workspace_search",
+              "workspace_write",
+              "workspace_edit",
+            ],
+          },
         });
       }
       onSaved();
@@ -174,7 +182,7 @@ function AgentEditor({
   async function handleDelete() {
     if (!profile) return;
     if (!confirm(`Are you sure you want to delete the agent "${profile.name}"?`)) return;
-    
+
     setBusy(true);
     setError(null);
     try {
@@ -220,7 +228,9 @@ function AgentEditor({
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-foreground">Instructions (AGENTS.md)</span>
         </div>
-        <p className="text-xs text-muted-foreground mt-1 mb-2">Primary directives and context for this agent.</p>
+        <p className="text-xs text-muted-foreground mt-1 mb-2">
+          Primary directives and context for this agent.
+        </p>
         <textarea
           className="input min-h-32 resize-y"
           value={instructions}
@@ -234,7 +244,9 @@ function AgentEditor({
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-foreground">Soul (SOUL.md)</span>
         </div>
-        <p className="text-xs text-muted-foreground mt-1 mb-2">Personality, tone, and stylistic constraints.</p>
+        <p className="text-xs text-muted-foreground mt-1 mb-2">
+          Personality, tone, and stylistic constraints.
+        </p>
         <textarea
           className="input min-h-32 resize-y"
           value={soul}
@@ -249,9 +261,14 @@ function AgentEditor({
           {busy && <Loader2 size={16} className="animate-spin mr-2" />}
           Save Agent
         </Button>
-        
+
         {profile && (
-          <Button variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={handleDelete} disabled={busy}>
+          <Button
+            variant="ghost"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={handleDelete}
+            disabled={busy}
+          >
             <Trash2 size={16} className="mr-2" />
             Delete Agent
           </Button>

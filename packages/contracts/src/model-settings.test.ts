@@ -32,10 +32,12 @@ describe("model settings contracts", () => {
     const parsed = ModelSettingsSaveRequestSchema.parse({
       selectedProvider: "openai",
       provider: { provider: "openai", model: "gpt-5.4" },
+      hasExistingCredential: true,
       credential: { apiKey: "sk-test" },
     });
 
     expect(parsed.credential?.apiKey).toBe("sk-test");
+    expect(parsed.hasExistingCredential).toBe(true);
   });
 
   test("rejects a save request when selected and configured providers differ", () => {

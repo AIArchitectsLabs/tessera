@@ -14,7 +14,7 @@ import type {
   ModelProvider,
   ModelSettingsRead,
 } from "@tessera/contracts";
-import { KeyRound, Loader2, Trash2, Wifi, X, Box, Bot } from "lucide-react";
+import { Bot, Box, KeyRound, Loader2, Trash2, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AgentSettingsView } from "./AgentSettingsView";
 
@@ -27,6 +27,28 @@ type StatusTone = "error" | "info" | "success";
 interface StatusMessage {
   message: string;
   tone: StatusTone;
+}
+
+async function invokeWithTimeout<T>(
+  command: Parameters<typeof invoke>[0],
+  args?: Parameters<typeof invoke>[1],
+  timeoutMs = 20_000
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(`Request timed out after ${timeoutMs}ms: ${command}`)),
+      timeoutMs
+    );
+  });
+
+  try {
+    return await Promise.race([invoke<T>(command, args), timeout]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 export function SettingsView({ onClose }: SettingsViewProps) {
@@ -48,7 +70,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       setLoading(true);
       setStatus(null);
       try {
-        const loaded = await invoke<ModelSettingsRead>("model_settings_get");
+        const loaded = await invokeWithTimeout<ModelSettingsRead>("model_settings_get");
         if (!active) {
           return;
         }
@@ -76,6 +98,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
@@ -120,10 +143,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setActiveAction("save");
     setStatus(null);
     try {
-      const next = await invoke<ModelSettingsRead>("model_settings_save", {
+      const next = await invokeWithTimeout<ModelSettingsRead>("model_settings_save", {
         request: {
           selectedProvider,
           provider: draft,
+          hasExistingCredential: hasCredential,
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
       });
@@ -152,7 +176,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setActiveAction("remove");
     setStatus(null);
     try {
-      const next = await invoke<ModelSettingsRead>("model_credential_delete", {
+      const next = await invokeWithTimeout<ModelSettingsRead>("model_credential_delete", {
         request: { provider: selectedProvider },
       });
       if (!mountedRef.current || requestIdRef.current !== requestId) {
@@ -184,7 +208,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setActiveAction("test");
     setStatus(null);
     try {
-      const result = await invoke<ModelConnectionTestResult>("model_connection_test", {
+      const result = await invokeWithTimeout<ModelConnectionTestResult>("model_connection_test", {
         request: {
           provider: draft,
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
@@ -224,7 +248,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           onClick={() => setActiveTab("model")}
           className={cn(
             "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
-            activeTab === "model" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+            activeTab === "model"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
           )}
         >
           <Box size={16} />
@@ -235,7 +261,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           onClick={() => setActiveTab("agents")}
           className={cn(
             "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
-            activeTab === "agents" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+            activeTab === "agents"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
           )}
         >
           <Bot size={16} />
@@ -261,146 +289,147 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               </div>
             </div>
 
-          <div className="mt-6 space-y-6">
-            <div className="space-y-3">
-              <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                Providers
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                {MODEL_PROVIDERS.map((provider) => {
-                  const providerSettings = settings?.providers[provider];
-                  const selected = provider === selectedProvider;
+            <div className="mt-6 space-y-6">
+              <div className="space-y-3">
+                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                  Providers
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {MODEL_PROVIDERS.map((provider) => {
+                    const providerSettings = settings?.providers[provider];
+                    const selected = provider === selectedProvider;
 
-                  return (
-                    <button
-                      key={provider}
-                      type="button"
-                      disabled={busy}
-                      className={cn(
-                        "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                        selected
-                          ? "border-primary bg-secondary text-foreground shadow-sm"
-                          : "border-border bg-background text-foreground hover:bg-secondary/70"
-                      )}
-                      onClick={() => handleProviderSelect(provider)}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="truncate text-sm font-medium">
-                          {providerLabel(provider)}
-                        </span>
-                        {selected && (
-                          <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            Selected
-                          </span>
+                    return (
+                      <button
+                        key={provider}
+                        type="button"
+                        disabled={busy}
+                        className={cn(
+                          "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                          selected
+                            ? "border-primary bg-secondary text-foreground shadow-sm"
+                            : "border-border bg-background text-foreground hover:bg-secondary/70"
                         )}
-                      </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {providerSettings?.hasCredential ? "Saved key present" : "No saved key"}
-                      </div>
-                    </button>
-                  );
-                })}
+                        onClick={() => handleProviderSelect(provider)}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate text-sm font-medium">
+                            {providerLabel(provider)}
+                          </span>
+                          {selected && (
+                            <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {providerSettings?.hasCredential ? "Saved key present" : "No saved key"}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-4">
-              <label className="block">
-                <span className="text-sm font-medium text-foreground">Model</span>
-                <input
-                  className="input mt-2"
-                  value={draft.model}
-                  disabled={busy}
-                  placeholder={modelPlaceholderForProvider(selectedProvider)}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, model: event.target.value }))
-                  }
-                />
-              </label>
-
-              {draft.provider === "local" && (
+              <div className="space-y-4">
                 <label className="block">
-                  <span className="text-sm font-medium text-foreground">Base URL</span>
+                  <span className="text-sm font-medium text-foreground">Model</span>
                   <input
                     className="input mt-2"
-                    value={draft.baseUrl}
+                    value={draft.model}
                     disabled={busy}
-                    placeholder="http://127.0.0.1:11434/v1"
+                    placeholder={modelPlaceholderForProvider(selectedProvider)}
                     onChange={(event) =>
-                      setDraft((current) =>
-                        current.provider === "local"
-                          ? { ...current, baseUrl: event.target.value }
-                          : current
-                      )
+                      setDraft((current) => ({ ...current, model: event.target.value }))
                     }
                   />
                 </label>
-              )}
 
-              <label className="block">
-                <span className="text-sm font-medium text-foreground">API key</span>
-                <input
-                  className="input mt-2"
-                  type="password"
-                  value={apiKey}
-                  disabled={busy}
-                  placeholder={credentialPlaceholder}
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-              </label>
+                {draft.provider === "local" && (
+                  <label className="block">
+                    <span className="text-sm font-medium text-foreground">Base URL</span>
+                    <input
+                      className="input mt-2"
+                      value={draft.baseUrl}
+                      disabled={busy}
+                      placeholder="http://127.0.0.1:11434/v1"
+                      onChange={(event) =>
+                        setDraft((current) =>
+                          current.provider === "local"
+                            ? { ...current, baseUrl: event.target.value }
+                            : current
+                        )
+                      }
+                    />
+                  </label>
+                )}
 
-              {status && (
-                <div
-                  className={cn(
-                    "rounded-xl border px-3 py-2 text-sm",
-                    status.tone === "error" &&
-                      "border-destructive/25 bg-destructive/5 text-destructive",
-                    status.tone === "info" && "border-border bg-secondary text-foreground",
-                    status.tone === "success" && "border-emerald-200 bg-emerald-50 text-emerald-800"
-                  )}
-                >
-                  {status.message}
+                <label className="block">
+                  <span className="text-sm font-medium text-foreground">API key</span>
+                  <input
+                    className="input mt-2"
+                    type="password"
+                    value={apiKey}
+                    disabled={busy}
+                    placeholder={credentialPlaceholder}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+
+                {status && (
+                  <div
+                    className={cn(
+                      "rounded-xl border px-3 py-2 text-sm",
+                      status.tone === "error" &&
+                        "border-destructive/25 bg-destructive/5 text-destructive",
+                      status.tone === "info" && "border-border bg-secondary text-foreground",
+                      status.tone === "success" &&
+                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    )}
+                  >
+                    {status.message}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={handleSave} disabled={busy || !canSubmit}>
+                    {activeAction === "save" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <KeyRound size={16} />
+                    )}
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleTestConnection}
+                    disabled={busy || !canSubmit}
+                  >
+                    {activeAction === "test" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Wifi size={16} />
+                    )}
+                    Test connection
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleRemoveKey}
+                    disabled={busy || !hasCredential}
+                  >
+                    {activeAction === "remove" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={16} />
+                    )}
+                    Remove key
+                  </Button>
                 </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" onClick={handleSave} disabled={busy || !canSubmit}>
-                  {activeAction === "save" ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <KeyRound size={16} />
-                  )}
-                  Save
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleTestConnection}
-                  disabled={busy || !canSubmit}
-                >
-                  {activeAction === "test" ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Wifi size={16} />
-                  )}
-                  Test connection
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleRemoveKey}
-                  disabled={busy || !hasCredential}
-                >
-                  {activeAction === "remove" ? (
-                    <Loader2 size={16} className="animate-spin" />
-                  ) : (
-                    <Trash2 size={16} />
-                  )}
-                  Remove key
-                </Button>
               </div>
             </div>
           </div>
-        </div>
         ) : (
           <AgentSettingsView />
         )}
