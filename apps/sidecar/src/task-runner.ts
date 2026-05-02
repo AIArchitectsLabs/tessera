@@ -60,7 +60,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       )
       .map((turn) => ({ role: turn.role as "user" | "agent", content: turn.content }));
 
-    const updatedUserTurn = store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
+    const updatedUserTurn = store.updateTurn(userTurnId, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
     if (!updatedUserTurn) throw new Error(`Turn not found: ${userTurnId}`);
     publish({
       type: "turn.status_changed",
@@ -79,7 +82,10 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     });
     await sleep(delayMs);
 
-    const runningAgentTurn = store.updateTurn(agentTurnId, { status: "running", content: "Running Pi session..." });
+    const runningAgentTurn = store.updateTurn(agentTurnId, {
+      status: "running",
+      content: "Running Pi session...",
+    });
     if (!runningAgentTurn) throw new Error(`Turn not found: ${agentTurnId}`);
     publish({
       type: "turn.status_changed",

@@ -250,7 +250,13 @@ describe("runPiTaskTurn", () => {
       const writeTool = factoryOpts.customTools.find((t) => t.name === "workspace_write");
       if (writeTool) {
         await writeTool
-          .execute("call-1", { path: outsidePath, content: "x" }, undefined, undefined, undefined as never)
+          .execute(
+            "call-1",
+            { path: outsidePath, content: "x" },
+            undefined,
+            undefined,
+            undefined as never
+          )
           .catch(() => {});
       }
       return new FakeSession([]);

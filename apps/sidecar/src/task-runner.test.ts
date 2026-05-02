@@ -251,7 +251,11 @@ describe("task runner", () => {
           createdAt: "2026-05-02T00:00:00.000Z",
           updatedAt: "2026-05-02T00:00:00.000Z",
         },
-        provider: { provider: "anthropic", model: "claude-sonnet-4-6", apiKeyEnv: "ANTHROPIC_API_KEY" },
+        provider: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          apiKeyEnv: "ANTHROPIC_API_KEY",
+        },
         credential: { apiKey: "sk-test" },
       },
       piRunner: async (options) => {
@@ -273,7 +277,10 @@ describe("task runner", () => {
     });
     const firstUserTurn = task.turns[0];
     if (!firstUserTurn) throw new Error("expected first turn");
-    store.updateTurn(firstUserTurn.id, { status: "completed", completedAt: new Date().toISOString() });
+    store.updateTurn(firstUserTurn.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
     store.createAgentTurn(task.id, "First response");
 
     const secondUserTurn = store.createUserTurn(task.id, "Follow up");
@@ -347,9 +354,7 @@ describe("task runner", () => {
     });
 
     expect(store.getTask(task.id)?.status).toBe("waiting");
-    expect(store.getTask(task.id)?.latestActivity).toBe(
-      "Paused: agent reached workspace boundary"
-    );
+    expect(store.getTask(task.id)?.latestActivity).toBe("Paused: agent reached workspace boundary");
   });
 
   test("sets task to done when no boundary violations occur", async () => {

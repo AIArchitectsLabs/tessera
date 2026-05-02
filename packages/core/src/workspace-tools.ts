@@ -131,12 +131,10 @@ export function createWorkspaceToolDefinitions(
     promptSnippet: "workspace_write: write text files inside the selected workspace.",
     parameters: writeSchema,
     async execute(_toolCallId, params: Static<typeof writeSchema>) {
-      const absolute = await guard
-        .resolveInsideWorkspaceForCreate(params.path)
-        .catch((error) => {
-          if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_write");
-          denied(params.path);
-        });
+      const absolute = await guard.resolveInsideWorkspaceForCreate(params.path).catch((error) => {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_write");
+        denied(params.path);
+      });
       await writeFile(absolute, params.content, "utf8");
       return textResult(`Wrote ${relative(guard.root, absolute)}`, {
         path: relative(guard.root, absolute),
