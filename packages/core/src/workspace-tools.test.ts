@@ -142,4 +142,36 @@ describe("createWorkspaceToolDefinitions", () => {
       )
     ).rejects.toThrow("outside the workspace");
   });
+
+  test("denies symlink escape in workspace_search", async () => {
+    const { root, tools } = await makeTools();
+    const outside = join(root, "..", "symlink-search-target.txt");
+    await writeFile(outside, "secret\n");
+    await symlink(outside, join(root, "src", "outside-search-link.txt"));
+
+    await expect(
+      tool(tools, "workspace_search").execute(
+        "call-1",
+        { query: "secret", path: "src" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("outside the workspace");
+  });
+
+  test("throws when oldText matches more than once in workspace_edit", async () => {
+    const { root, tools } = await makeTools();
+    await writeFile(join(root, "src", "dup.ts"), "const x = 1;\nconst x2 = 1;\n");
+
+    await expect(
+      tool(tools, "workspace_edit").execute(
+        "call-1",
+        { path: "src/dup.ts", oldText: "1", newText: "2" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("matches 2 times");
+  });
 });

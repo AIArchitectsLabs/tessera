@@ -44,9 +44,11 @@ function denied(path: string): never {
 async function walkFiles(root: string, dir: string, files: string[] = []): Promise<string[]> {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const absolute = join(dir, entry.name);
-    if (entry.isDirectory()) {
+    const metadata = await stat(absolute).catch(() => null);
+    if (metadata === null) continue;
+    if (metadata.isDirectory()) {
       await walkFiles(root, absolute, files);
-    } else if (entry.isFile()) {
+    } else if (metadata.isFile()) {
       files.push(relative(root, absolute));
     }
   }
@@ -160,6 +162,12 @@ export function createWorkspaceToolDefinitions(
       const text = await readFile(absolute, "utf8");
       if (!text.includes(params.oldText)) {
         throw new Error(`Text to replace was not found in ${params.path}`);
+      }
+      const count = text.split(params.oldText).length - 1;
+      if (count > 1) {
+        throw new Error(
+          `oldText matches ${count} times in ${params.path}; provide unique context to replace exactly one occurrence`
+        );
       }
       const updated = text.replace(params.oldText, params.newText);
       await writeFile(absolute, updated, "utf8");
