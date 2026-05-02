@@ -145,7 +145,7 @@ export default function App() {
     }
   }, [selectedTaskId]);
 
-  async function handleCreateTask(initialInstruction: string) {
+  async function handleCreateTask(initialInstruction: string, agentId: string, agentLabel: string) {
     if (!workspaceRoot) return;
 
     setCreatingTask(true);
@@ -154,8 +154,8 @@ export default function App() {
       const request: TaskCreateRequest = {
         workspaceRoot,
         initialInstruction,
-        agentId: "default",
-        agentLabel: "Tessera",
+        agentId,
+        agentLabel,
       };
       const task = await invoke<TaskDetail>("task_create", { request });
       setSelectedTaskId(task.id);

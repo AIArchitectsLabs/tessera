@@ -20,7 +20,11 @@ import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 import { createWorkflowCheckpointStore } from "./workflow-store.js";
-
+import { createAgentProfileStore } from "./agent-profile-store.js";
+import {
+  AgentProfileCreateRequestSchema,
+  AgentProfileUpdateRequestSchema,
+} from "@tessera/contracts";
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
@@ -31,6 +35,7 @@ const TASK_DB_PATH =
   process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
+const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const taskEventBus = createTaskEventBus();
 const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
 
@@ -41,6 +46,7 @@ process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
   workflowStore.close();
   taskStore.close();
+  agentProfileStore.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => process.exit(0));
@@ -315,6 +321,14 @@ async function handleTaskCreate(req: Request): Promise<Response> {
   }
 
   try {
+    let execution = parsed.data.execution;
+    if (execution && parsed.data.agentId !== "default") {
+      const profile = agentProfileStore.get(parsed.data.agentId);
+      if (profile) {
+        execution = { ...execution, agent: profile };
+      }
+    }
+
     const task = taskStore.createTask(parsed.data);
     const userTurn = task.turns.at(-1);
     if (!userTurn) throw new Error("Created task has no user turn");
@@ -329,7 +343,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         taskId,
         userTurnId,
         agentTurnId,
-        ...(parsed.data.execution ? { execution: parsed.data.execution } : {}),
+        ...(execution ? { execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -396,6 +410,14 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
   }
 
   try {
+    let execution = parsed.data.execution;
+    if (execution && parsed.data.agentId !== "default") {
+      const profile = agentProfileStore.get(parsed.data.agentId);
+      if (profile) {
+        execution = { ...execution, agent: profile };
+      }
+    }
+
     const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);
     const agentTurn = taskStore.createQueuedAgentTurn(taskId);
     const snapshot = taskStore.getTask(taskId);
@@ -407,7 +429,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         taskId,
         userTurnId,
         agentTurnId,
-        ...(parsed.data.execution ? { execution: parsed.data.execution } : {}),
+        ...(execution ? { execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -468,6 +490,85 @@ async function handleTaskEvents(_req: Request, taskId: string): Promise<Response
   });
 }
 
+function handleAgentProfileList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const result = { profiles: agentProfileStore.list() };
+  return Response.json(result);
+}
+
+function handleAgentProfileGet(req: Request, id: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const profile = agentProfileStore.get(id);
+  if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
+  return Response.json(profile);
+}
+
+async function handleAgentProfileCreate(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = AgentProfileCreateRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const profile = agentProfileStore.create(parsed.data);
+    return Response.json(profile);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleAgentProfileUpdate(req: Request, id: string): Promise<Response> {
+  if (req.method !== "PATCH") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = AgentProfileUpdateRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const profile = agentProfileStore.update(id, parsed.data);
+  if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
+  return Response.json(profile);
+}
+
+function handleAgentProfileDelete(req: Request, id: string): Response {
+  if (req.method !== "DELETE") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const deleted = agentProfileStore.delete(id);
+  if (!deleted) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
+  return Response.json({ ok: true });
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -509,6 +610,19 @@ const server = Bun.serve({
     if (pathname === "/tasks") {
       if (req.method === "GET") return handleTaskList(req);
       return handleTaskCreate(req);
+    }
+
+    if (pathname === "/agent-profiles") {
+      if (req.method === "GET") return handleAgentProfileList(req);
+      return handleAgentProfileCreate(req);
+    }
+
+    const agentProfileMatch = pathname.match(/^\/agent-profiles\/([^/]+)$/);
+    const agentProfileId = agentProfileMatch?.[1];
+    if (agentProfileId) {
+      if (req.method === "GET") return handleAgentProfileGet(req, agentProfileId);
+      if (req.method === "PATCH") return handleAgentProfileUpdate(req, agentProfileId);
+      if (req.method === "DELETE") return handleAgentProfileDelete(req, agentProfileId);
     }
 
     const taskEventsMatch = pathname.match(/^\/tasks\/([^/]+)\/events$/);

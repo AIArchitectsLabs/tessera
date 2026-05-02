@@ -64,4 +64,16 @@ copyFileSync(cliSrc, cliDst);
 if (!isWindows) chmodSync(cliDst, 0o755);
 console.log(`[build-sidecar] copied CLI    → ${cliDst}`);
 
+// pi-coding-agent reads its own package.json at module init time.
+// When running as a compiled Bun binary it resolves that path via
+// dirname(process.execPath), which is binDir. Copy the file there so
+// startup doesn't crash with ENOENT.
+const piPkgSrc = join(
+  repoRoot,
+  "packages/core/node_modules/@mariozechner/pi-coding-agent/package.json"
+);
+const piPkgDst = join(binDir, "package.json");
+copyFileSync(piPkgSrc, piPkgDst);
+console.log(`[build-sidecar] copied pi-coding-agent/package.json → ${piPkgDst}`);
+
 console.log("[build-sidecar] done.");

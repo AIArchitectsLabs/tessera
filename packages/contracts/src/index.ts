@@ -416,6 +416,33 @@ export const AgentProfileSchema = z
   .strict();
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
+export const AgentProfileCreateRequestSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  model: AgentModelSelectionSchema,
+  instructions: z.string().optional(),
+  soul: z.string().optional(),
+  skills: z.array(z.string().min(1)).default([]),
+  tools: z.array(z.string().min(1)).default([]),
+});
+export type AgentProfileCreateRequest = z.infer<typeof AgentProfileCreateRequestSchema>;
+
+export const AgentProfileUpdateRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional(),
+  model: AgentModelSelectionSchema.optional(),
+  instructions: z.string().optional(),
+  soul: z.string().optional(),
+  skills: z.array(z.string().min(1)).optional(),
+  tools: z.array(z.string().min(1)).optional(),
+});
+export type AgentProfileUpdateRequest = z.infer<typeof AgentProfileUpdateRequestSchema>;
+
+export const AgentProfileListResultSchema = z.object({
+  profiles: z.array(AgentProfileSchema),
+});
+export type AgentProfileListResult = z.infer<typeof AgentProfileListResultSchema>;
+
 export const TaskExecutionConfigSchema = z.object({
   agent: AgentProfileSchema,
   provider: AgentProviderConfigSchema,

@@ -230,18 +230,14 @@ fn parse_ready(msg: SidecarReadyMsg) -> anyhow::Result<SidecarHandle> {
 
 // ── Path resolution ───────────────────────────────────────────────────────────
 
-fn cli_binary_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
-    let name = format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}");
+fn binaries_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
     if cfg!(debug_assertions) {
-        // Dev: binaries live in src-tauri/binaries/ next to Cargo.toml.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        Ok(manifest.join("binaries").join(name))
+        Ok(manifest.join("binaries"))
     } else {
-        Ok(app
-            .path()
+        app.path()
             .resource_dir()
-            .context("Could not resolve resource dir")?
-            .join(name))
+            .context("Could not resolve resource dir")
     }
 }
 
@@ -365,7 +361,8 @@ fn attach_default_task_execution(
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let cli_path = cli_binary_path(app.handle()).context("Could not resolve CLI binary path")?;
+    let bin_dir = binaries_dir(app.handle()).context("Could not resolve binaries dir")?;
+    let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -387,6 +384,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_TASK_DB_PATH",
             task_db_path.to_string_lossy().as_ref(),
         )
+        // pi-coding-agent resolves its package dir via dirname(process.execPath) when
+        // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
+        // Point it at binaries/ where package.json is kept alongside the sources.
+        .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref())
         .spawn()
         .context("Could not spawn sidecar")?;
 
@@ -694,6 +695,65 @@ async fn task_unsubscribe(
     Ok(())
 }
 
+// ── Agent Profiles ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn agent_profile_list(
+    state: State<'_, SidecarHandle>,
+) -> Result<serde_json::Value, String> {
+    let json = state.get("/agent-profiles").await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn agent_profile_get(
+    state: State<'_, SidecarHandle>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn agent_profile_create(
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let json = state
+        .post("/agent-profiles", &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn agent_profile_update(
+    state: State<'_, SidecarHandle>,
+    id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let json = state
+        .request("PATCH", &path, Some(&request.to_string()))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn agent_profile_delete(
+    state: State<'_, SidecarHandle>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let json = state
+        .request("DELETE", &path, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -703,6 +763,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| setup(app))
         .invoke_handler(tauri::generate_handler![
+            agent_profile_list,
+            agent_profile_get,
+            agent_profile_create,
+            agent_profile_update,
+            agent_profile_delete,
             model_connection_test,
             model_credential_delete,
             model_settings_get,

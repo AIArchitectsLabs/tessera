@@ -14,8 +14,9 @@ import type {
   ModelProvider,
   ModelSettingsRead,
 } from "@tessera/contracts";
-import { KeyRound, Loader2, Trash2, Wifi, X } from "lucide-react";
+import { KeyRound, Loader2, Trash2, Wifi, X, Box, Bot } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { AgentSettingsView } from "./AgentSettingsView";
 
 interface SettingsViewProps {
   onClose: () => void;
@@ -36,6 +37,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeAction, setActiveAction] = useState<"remove" | "save" | "test" | null>(null);
+  const [activeTab, setActiveTab] = useState<"model" | "agents">("model");
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
 
@@ -215,30 +217,49 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   return (
     <main className="flex min-w-0 flex-1 bg-background">
-      <aside className="flex w-56 flex-shrink-0 flex-col border-r border-border bg-secondary px-4 py-5">
-        <div className="text-sm font-semibold text-foreground">Settings</div>
+      <aside className="flex w-56 flex-shrink-0 flex-col border-r border-border bg-secondary px-4 py-5 gap-2">
+        <div className="text-sm font-semibold text-foreground mb-3">Settings</div>
         <button
           type="button"
-          className="mt-5 rounded-xl bg-background px-3 py-2 text-left text-sm font-medium text-foreground shadow-sm"
+          onClick={() => setActiveTab("model")}
+          className={cn(
+            "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
+            activeTab === "model" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+          )}
         >
+          <Box size={16} />
           Model
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("agents")}
+          className={cn(
+            "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
+            activeTab === "agents" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+          )}
+        >
+          <Bot size={16} />
+          Agents
         </button>
       </aside>
 
-      <section className="min-w-0 flex-1 overflow-auto">
-        <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-8 py-6">
-          <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
-            <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-foreground">Model</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Global provider defaults for Tessera.
-              </p>
+      <section className="min-w-0 flex-1 overflow-auto relative">
+        <div className="absolute top-6 right-8 z-10">
+          <Button type="button" variant="outline" onClick={onClose}>
+            <X size={16} className="mr-2" />
+            Close
+          </Button>
+        </div>
+        {activeTab === "model" ? (
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-8 py-6">
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold text-foreground">Model</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Global provider defaults for Tessera.
+                </p>
+              </div>
             </div>
-            <Button type="button" variant="outline" onClick={onClose}>
-              <X size={16} />
-              Close
-            </Button>
-          </div>
 
           <div className="mt-6 space-y-6">
             <div className="space-y-3">
@@ -380,6 +401,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             </div>
           </div>
         </div>
+        ) : (
+          <AgentSettingsView />
+        )}
       </section>
     </main>
   );
