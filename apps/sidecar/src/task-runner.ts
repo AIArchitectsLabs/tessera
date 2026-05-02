@@ -49,6 +49,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     const userTurn = store.getTurn(userTurnId);
     if (!task) throw new Error(`Unknown task: ${taskId}`);
 
+    // Only include settled turns; skip in-flight or queued turns from prior waiting cycles.
     const conversationHistory = task.turns
       .filter(
         (turn) =>
@@ -59,8 +60,8 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       )
       .map((turn) => ({ role: turn.role as "user" | "agent", content: turn.content }));
 
-    store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
-    const updatedUserTurn = store.getTurn(userTurnId);
+    const updatedUserTurn = store.updateTurn(userTurnId, { status: "completed", completedAt: new Date().toISOString() });
+    if (!updatedUserTurn) throw new Error(`Turn not found: ${userTurnId}`);
     publish({
       type: "turn.status_changed",
       taskId,
@@ -78,8 +79,8 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     });
     await sleep(delayMs);
 
-    store.updateTurn(agentTurnId, { status: "running", content: "Running Pi session..." });
-    const runningAgentTurn = store.getTurn(agentTurnId);
+    const runningAgentTurn = store.updateTurn(agentTurnId, { status: "running", content: "Running Pi session..." });
+    if (!runningAgentTurn) throw new Error(`Turn not found: ${agentTurnId}`);
     publish({
       type: "turn.status_changed",
       taskId,
@@ -129,12 +130,12 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       artifact: createdArtifact,
     });
 
-    store.updateTurn(agentTurnId, {
+    const completedAgentTurn = store.updateTurn(agentTurnId, {
       status: "completed",
       content: artifactContent,
       completedAt: new Date().toISOString(),
     });
-    const completedAgentTurn = store.getTurn(agentTurnId);
+    if (!completedAgentTurn) throw new Error(`Turn not found: ${agentTurnId}`);
     publish({
       type: "turn.completed",
       taskId,
