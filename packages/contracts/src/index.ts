@@ -393,11 +393,42 @@ export const TaskListResultSchema = z.object({
 });
 export type TaskListResult = z.infer<typeof TaskListResultSchema>;
 
+export const AgentModelSelectionSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("default") }).strict(),
+  z.object({ mode: z.literal("override"), provider: AgentProviderConfigSchema }).strict(),
+]);
+export type AgentModelSelection = z.infer<typeof AgentModelSelectionSchema>;
+
+export const AgentProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    description: z.string().optional(),
+    model: AgentModelSelectionSchema,
+    instructions: z.string().optional(),
+    soul: z.string().optional(),
+    skills: z.array(z.string().min(1)).default([]),
+    tools: z.array(z.string().min(1)).default([]),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type AgentProfile = z.infer<typeof AgentProfileSchema>;
+
+export const TaskExecutionConfigSchema = z.object({
+  agent: AgentProfileSchema,
+  provider: AgentProviderConfigSchema,
+  credential: z.object({ apiKey: z.string().min(1) }).optional(),
+});
+export type TaskExecutionConfig = z.infer<typeof TaskExecutionConfigSchema>;
+
 export const TaskCreateRequestSchema = z.object({
   workspaceRoot: z.string().min(1),
   initialInstruction: z.string().min(1),
   description: z.string().optional(),
+  agentId: z.string().min(1).default("default"),
   agentLabel: z.string().min(1).default("Tessera"),
+  execution: TaskExecutionConfigSchema.optional(),
 });
 export type TaskCreateRequest = z.infer<typeof TaskCreateRequestSchema>;
 
@@ -410,6 +441,8 @@ export type TaskUpdateRequest = z.infer<typeof TaskUpdateRequestSchema>;
 
 export const TaskCreateTurnRequestSchema = z.object({
   content: z.string().min(1),
+  agentId: z.string().min(1).default("default"),
+  execution: TaskExecutionConfigSchema.optional(),
 });
 export type TaskCreateTurnRequest = z.infer<typeof TaskCreateTurnRequestSchema>;
 
