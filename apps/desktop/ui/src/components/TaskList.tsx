@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { TaskSummary } from "@tessera/contracts";
-import { CheckCircle2, Loader2, RotateCw } from "lucide-react";
+import { CheckCircle2, Clock, Loader2, RotateCw, XCircle } from "lucide-react";
 
 interface TaskListProps {
   error: string | null;
@@ -17,8 +17,16 @@ interface TaskListProps {
 function formatStatus(status: TaskSummary["status"]) {
   if (status === "done") return "Done";
   if (status === "failed") return "Failed";
-  if (status === "waiting") return "Waiting";
-  return "Active";
+  if (status === "waiting") return "Waiting for Input";
+  return "In Progress";
+}
+
+function StatusIcon({ status }: { status: TaskSummary["status"] }) {
+  if (status === "active") return <Loader2 size={12} className="animate-spin" />;
+  if (status === "done") return <CheckCircle2 size={12} className="text-green-500" />;
+  if (status === "waiting") return <Clock size={12} className="text-amber-500" />;
+  if (status === "failed") return <XCircle size={12} className="text-destructive" />;
+  return <CheckCircle2 size={12} />;
 }
 
 function formatUpdatedAt(value: string) {
@@ -86,7 +94,7 @@ export function TaskList({
                 </span>
               </div>
               <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <CheckCircle2 size={12} />
+                <StatusIcon status={task.status} />
                 <span>{formatStatus(task.status)}</span>
                 {task.agentLabel && <span>• {task.agentLabel}</span>}
               </div>

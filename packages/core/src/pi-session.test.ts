@@ -15,6 +15,7 @@ import {
 class FakeSession implements PiSessionLike {
   capturedPrompts: string[] = [];
   private listeners: ((event: AgentSessionEvent) => void)[] = [];
+  private _agentState = { systemPrompt: "" };
 
   constructor(private readonly events: AgentSessionEvent[]) {}
 
@@ -32,6 +33,14 @@ class FakeSession implements PiSessionLike {
     return () => {
       this.listeners = this.listeners.filter((item) => item !== listener);
     };
+  }
+
+  get agent() {
+    return { state: this._agentState };
+  }
+
+  get capturedSystemPrompt(): string {
+    return this._agentState.systemPrompt;
   }
 }
 
@@ -86,6 +95,101 @@ describe("runPiTaskTurn", () => {
     ]);
     expect(seen.model).toBeDefined();
     expect(seen.modelRegistry).toBeDefined();
+  });
+
+  test("ignores message_end for user messages and returns only assistant text", async () => {
+    const workspaceRoot = await makeWorkspace();
+    // Mirrors the real SDK event sequence from runAgentLoop:
+    // message_start + message_end for user prompt, then assistant streaming, then turn_end + agent_end.
+    const factory: PiSessionFactory = async () =>
+      new FakeSession([
+        // SDK emits message_end for the user message before calling the model
+        {
+          type: "message_end",
+          message: {
+            role: "user",
+            content: "User task:\nWhat is the capital of Italy?",
+            timestamp: 0,
+          } as never,
+        },
+        // Assistant streams its answer
+        {
+          type: "message_update",
+          message: { role: "assistant", content: [] } as never,
+          assistantMessageEvent: {
+            type: "text_delta",
+            delta: "Rome is the capital of Italy.",
+          } as never,
+        },
+        // turn_end carries the final assistant message
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Rome is the capital of Italy." }],
+          } as never,
+          toolResults: [],
+        },
+        // agent_end includes both user and assistant messages; must not pick up user text
+        {
+          type: "agent_end",
+          messages: [
+            {
+              role: "user",
+              content: "User task:\nWhat is the capital of Italy?",
+              timestamp: 0,
+            } as never,
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Rome is the capital of Italy." }],
+            } as never,
+          ],
+        },
+      ]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "What is the capital of Italy?",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.text).toBe("Rome is the capital of Italy.");
+  });
+
+  test("falls back to finalized assistant message when no text deltas are emitted", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async () =>
+      new FakeSession([
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Rome is the capital of Italy." }],
+          } as never,
+          toolResults: [],
+        },
+        {
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Rome is the capital of Italy." }],
+            } as never,
+          ],
+        },
+      ]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "What is the capital of Italy?",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.text).toBe("Rome is the capital of Italy.");
   });
 
   test("reports tool activity", async () => {
@@ -166,7 +270,7 @@ describe("runPiTaskTurn", () => {
     expect(seen.customToolNames).toEqual(["workspace_read", "workspace_write"]);
   });
 
-  test("builds prompt with instructions, history, and task in order", async () => {
+  test("builds prompt with history and task; agent instructions go to system prompt", async () => {
     const workspaceRoot = await makeWorkspace();
     let capturedSession: FakeSession | undefined;
     const factory: PiSessionFactory = async () => {
@@ -198,15 +302,15 @@ describe("runPiTaskTurn", () => {
     });
 
     const prompt = capturedSession?.capturedPrompts[0] ?? "";
-    expect(prompt).toContain("Agent instructions:\nWrite crisp updates.");
-    expect(prompt).toContain("Agent soul:\nCalm and direct.");
+    const systemPrompt = capturedSession?.capturedSystemPrompt ?? "";
+
+    expect(prompt).not.toContain("Agent instructions:");
+    expect(prompt).not.toContain("Agent soul:");
     expect(prompt).toContain("Prior conversation:\nUser: Hello\nAssistant: Hi there");
     expect(prompt).toContain("User task:\nDraft");
-    const instrIdx = prompt.indexOf("Agent instructions:");
-    const histIdx = prompt.indexOf("Prior conversation:");
-    const taskIdx = prompt.indexOf("User task:");
-    expect(instrIdx).toBeLessThan(histIdx);
-    expect(histIdx).toBeLessThan(taskIdx);
+
+    expect(systemPrompt).toContain("Write crisp updates.");
+    expect(systemPrompt).toContain("Calm and direct.");
   });
 
   test("omits history block when conversationHistory is empty", async () => {

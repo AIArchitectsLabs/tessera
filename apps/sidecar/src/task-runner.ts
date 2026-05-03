@@ -84,7 +84,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
 
     const runningAgentTurn = store.updateTurn(agentTurnId, {
       status: "running",
-      content: "Running Pi session...",
+      content: "Working on your request...",
     });
     if (!runningAgentTurn) throw new Error(`Turn not found: ${agentTurnId}`);
     publish({
@@ -122,19 +122,6 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       workspaceRoot: task.workspaceRoot,
     });
     const artifactContent = result.text.trim() || "No response was produced.";
-    const createdArtifact = store.createArtifact({
-      taskId,
-      turnId: agentTurnId,
-      kind: "text",
-      title: "Task Output",
-      contentPreview: artifactContent.slice(0, 200),
-    });
-    publish({
-      type: "artifact.created",
-      taskId,
-      emittedAt: new Date().toISOString(),
-      artifact: createdArtifact,
-    });
 
     const completedAgentTurn = store.updateTurn(agentTurnId, {
       status: "completed",

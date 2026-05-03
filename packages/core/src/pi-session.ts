@@ -91,11 +91,26 @@ function modelCapabilities(provider: AgentProviderConfig) {
 
 function textDeltaFromEvent(event: AgentSessionEvent): string {
   if (event.type !== "message_update") return "";
+  // Ignore echoed user/tool messages — only accumulate assistant output.
+  const msg = event.message as unknown;
+  if (msg && typeof msg === "object" && "role" in msg && msg.role !== "assistant") return "";
   const assistantEvent = event.assistantMessageEvent as unknown;
   if (!assistantEvent || typeof assistantEvent !== "object") return "";
   if (!("type" in assistantEvent) || assistantEvent.type !== "text_delta") return "";
   if (!("delta" in assistantEvent) || typeof assistantEvent.delta !== "string") return "";
   return assistantEvent.delta;
+}
+
+function textFromMessage(message: unknown): string {
+  if (!message || typeof message !== "object" || !("content" in message)) return "";
+  const { content } = message;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((item) => item && typeof item === "object" && "type" in item && item.type === "text")
+    .map((item) => ("text" in item && typeof item.text === "string" ? item.text : ""))
+    .join("");
 }
 
 function defaultFactory(): PiSessionFactory {
@@ -154,14 +169,11 @@ export async function createTesseraModelRegistry(options: {
 function buildPrompt(
   prompt: string,
   options: {
-    agent?: AgentProfile;
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
   }
 ): string {
-  const { agent, conversationHistory } = options;
+  const { conversationHistory } = options;
   const sections: string[] = [];
-  if (agent?.instructions) sections.push(`Agent instructions:\n${agent.instructions}`);
-  if (agent?.soul) sections.push(`Agent soul:\n${agent.soul}`);
   if (conversationHistory && conversationHistory.length > 0) {
     const lines = conversationHistory
       .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.content}`)
@@ -194,19 +206,68 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     modelRegistry,
     workspaceRoot: guard.root,
   });
+
+  if (options.agent?.instructions || options.agent?.soul) {
+    const customInstructions = [options.agent.instructions, options.agent.soul]
+      .filter(Boolean)
+      .join("\n\n");
+    const sessionAny = session as unknown as { agent: { state: { systemPrompt: string } } };
+    const existingSystemPrompt = sessionAny.agent?.state?.systemPrompt ?? "";
+    sessionAny.agent.state.systemPrompt =
+      customInstructions + (existingSystemPrompt ? `\n\n${existingSystemPrompt}` : "");
+  }
+
   let text = "";
+  let finalizedText = "";
+  let modelError: string | undefined;
+
   const unsubscribe = session.subscribe((event) => {
     const delta = textDeltaFromEvent(event);
     if (delta) text += delta;
     if (event.type === "tool_execution_start") {
       options.onActivity?.(`Using ${event.toolName}`);
     }
+    // The SDK fires message_end for user messages too (before the model call).
+    // Only capture text from assistant messages so we don't pick up the echoed prompt.
+    if (event.type === "message_end" || event.type === "turn_end") {
+      const assistantMsg = event.message as {
+        role?: string;
+        content?: unknown;
+        stopReason?: string;
+        errorMessage?: string;
+      };
+      if (assistantMsg?.role === "assistant") {
+        // Capture any error from the model API so we can surface it.
+        if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+          modelError =
+            assistantMsg.errorMessage ||
+            `Model call failed (stopReason: ${assistantMsg.stopReason})`;
+        }
+        const nextText = textFromMessage(event.message);
+        if (nextText.trim()) finalizedText = nextText;
+      }
+    }
+    if (event.type === "agent_end") {
+      // agent_end.messages includes user messages; skip them.
+      for (const message of [...event.messages].reverse()) {
+        const m = message as { role?: string; stopReason?: string; errorMessage?: string };
+        if (m?.role !== "assistant") continue;
+        if (m.stopReason === "error" || m.stopReason === "aborted") {
+          modelError = m.errorMessage || `Model call failed (stopReason: ${m.stopReason})`;
+          break;
+        }
+        const nextText = textFromMessage(message);
+        if (nextText.trim()) {
+          finalizedText = nextText;
+          break;
+        }
+      }
+    }
   });
 
   try {
     await session.prompt(
       buildPrompt(options.prompt, {
-        ...(options.agent !== undefined ? { agent: options.agent } : {}),
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),
@@ -217,5 +278,12 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     session.dispose();
   }
 
-  return { text, boundaryViolations };
+  // Surface model errors so task-runner can mark the task as failed with a real message.
+  if (modelError && !finalizedText && !text) {
+    throw new Error(modelError);
+  }
+
+  // Prefer the finalized message content (turn_end/agent_end) as it is authoritative;
+  // fall back to accumulated deltas only if the SDK did not emit a finalized message.
+  return { text: finalizedText || text, boundaryViolations };
 }

@@ -51,7 +51,6 @@ describe("task runner", () => {
       "turn.status_changed",
       "task.updated",
       "task.updated",
-      "artifact.created",
       "turn.completed",
       "task.updated",
     ]);
@@ -62,7 +61,6 @@ describe("task runner", () => {
       agentRunning,
       runningUpdate,
       toolActivityUpdate,
-      artifactCreated,
       agentCompleted,
       doneUpdate,
     ] = events;
@@ -94,11 +92,7 @@ describe("task runner", () => {
       expect(toolActivityUpdate.task.latestActivity).toBe("Using workspace_read");
     }
 
-    expect(artifactCreated?.type).toBe("artifact.created");
-    if (artifactCreated?.type === "artifact.created") {
-      expect(artifactCreated.artifact.taskId).toBe(task.id);
-      expect(artifactCreated.artifact.kind).toBe("text");
-    }
+
 
     expect(agentCompleted?.type).toBe("turn.completed");
     if (agentCompleted?.type === "turn.completed") {
@@ -119,8 +113,7 @@ describe("task runner", () => {
     expect(finalAgentTurn.status).toBe("completed");
 
     const finalTaskDetail = store.getTask(task.id);
-    expect(finalTaskDetail?.artifacts).toHaveLength(1);
-    expect(finalTaskDetail?.artifacts[0]?.turnId).toBe(agentTurn.id);
+    expect(finalTaskDetail?.artifacts).toHaveLength(0);
   });
 
   test("passes resolved execution provider, credential, and agent to Pi runner", async () => {

@@ -21,6 +21,21 @@ interface TaskDetailProps {
   workspaceRoot: string | null;
 }
 
+function taskStatusLabel(status: string) {
+  switch (status) {
+    case "active":
+      return "In Progress";
+    case "done":
+      return "Done";
+    case "waiting":
+      return "Waiting for Input";
+    case "failed":
+      return "Failed";
+    default:
+      return status;
+  }
+}
+
 function turnLabel(turn: TaskTurn) {
   if (turn.role === "agent") return "Tessera";
   if (turn.role === "system") return "System";
@@ -95,8 +110,9 @@ export function TaskDetail({
         <div>
           <h1 className="font-semibold text-sm leading-tight text-foreground">{task.title}</h1>
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground capitalize">
-              {task.status}
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground flex items-center gap-1">
+              {task.status === "active" && <Loader2 size={10} className="animate-spin" />}
+              {taskStatusLabel(task.status)}
             </span>
             <AgentInfoPopover agentLabel={task.agentLabel ?? "Tessera"} agentId={task.agentId} />
           </div>
@@ -151,11 +167,12 @@ export function TaskDetail({
                 >
                   <div
                     className={cn(
-                      "mb-1 text-xs font-medium",
+                      "mb-1 text-xs font-medium flex items-center gap-1.5",
                       turn.role === "user" ? "text-white/70" : "text-muted-foreground"
                     )}
                   >
-                    {turnLabel(turn)} • {turn.status}
+                    {turnLabel(turn)}
+                    {turn.status === "running" && <Loader2 size={10} className="animate-spin" />}
                   </div>
                   <div className="whitespace-pre-wrap text-sm leading-6">{turn.content}</div>
                   {turn.error && <div className="mt-2 text-xs text-destructive">{turn.error}</div>}

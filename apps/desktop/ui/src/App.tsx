@@ -109,6 +109,7 @@ export default function App() {
   useTaskEvents({
     taskId: selectedTaskId,
     onEvent: handleEvent,
+    onSnapshot: setSelectedTask,
     onReconnect: handleReconnect,
   });
 
