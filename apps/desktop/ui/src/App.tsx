@@ -14,6 +14,7 @@ import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
 import { applyTaskEvent } from "./lib/applyTaskEvent";
+import { mergeTaskSummary, summaryFromDetail } from "./lib/taskSummaries";
 import { useTaskEvents } from "./lib/useTaskEvents";
 
 const WORKSPACE_STORAGE_KEY = "tessera_workspace_root";
@@ -88,6 +89,14 @@ export default function App() {
 
   const handleEvent = useCallback((event: TaskEvent) => {
     setSelectedTask((current) => (current ? applyTaskEvent(current, event) : current));
+    if (event.type === "task.updated") {
+      setTasks((current) => mergeTaskSummary(current, event.task));
+    }
+  }, []);
+
+  const handleSnapshot = useCallback((task: TaskDetail) => {
+    setSelectedTask(task);
+    setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
   }, []);
 
   const handleReconnect = useCallback(() => {
@@ -109,7 +118,7 @@ export default function App() {
   useTaskEvents({
     taskId: selectedTaskId,
     onEvent: handleEvent,
-    onSnapshot: setSelectedTask,
+    onSnapshot: handleSnapshot,
     onReconnect: handleReconnect,
   });
 
@@ -161,7 +170,7 @@ export default function App() {
       const task = await invoke<TaskDetail>("task_create", { request });
       setSelectedTaskId(task.id);
       setSelectedTask(task);
-      await loadTasks();
+      setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
     } catch (error) {
       setTaskListError(error instanceof Error ? error.message : String(error));
       throw error;
@@ -176,13 +185,16 @@ export default function App() {
     setSendingTurn(true);
     setTaskDetailError(null);
     try {
-      const request: TaskCreateTurnRequest = { content, agentId: "default" };
+      const request: TaskCreateTurnRequest = {
+        content,
+        agentId: selectedTask?.agentId ?? "default",
+      };
       const task = await invoke<TaskDetail>("task_create_turn", {
         taskId: selectedTaskId,
         request,
       });
       setSelectedTask(task);
-      await loadTasks();
+      setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
     } catch (error) {
       setTaskDetailError(error instanceof Error ? error.message : String(error));
     } finally {

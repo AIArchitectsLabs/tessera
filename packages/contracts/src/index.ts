@@ -385,6 +385,30 @@ export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 
 export const TaskDetailSchema = TaskSummarySchema.extend({
   description: z.string().optional(),
+  agentContext: z
+    .object({
+      profileId: z.string().min(1),
+      profileName: z.string().min(1),
+      templateId: z.string().min(1).optional(),
+      templateLabel: z.string().min(1).optional(),
+      modelSource: z.enum(["global", "profile_override"]),
+      sectionSummaries: z.object({
+        instructions: z.string(),
+        soul: z.string(),
+        userContext: z.string(),
+        memoryDefaults: z.string(),
+      }),
+      toolPolicy: z.object({
+        preset: z.enum(["read_only", "workspace_editor", "elevated_with_approval"]),
+        label: z.string().min(1),
+        approvalMode: z.enum(["never", "ask"]),
+        summary: z.string().min(1),
+        capabilities: z.array(z.string().min(1)).min(1),
+        allowedTools: z.array(z.string().min(1)).min(1),
+      }),
+      compiledSummary: z.string().min(1),
+    })
+    .optional(),
   turns: z.array(TaskTurnSchema),
   artifacts: z.array(TaskArtifactSchema),
 });
@@ -401,16 +425,55 @@ export const AgentModelSelectionSchema = z.discriminatedUnion("mode", [
 ]);
 export type AgentModelSelection = z.infer<typeof AgentModelSelectionSchema>;
 
+export const ToolPolicyPresetSchema = z.enum([
+  "read_only",
+  "workspace_editor",
+  "elevated_with_approval",
+]);
+export type ToolPolicyPreset = z.infer<typeof ToolPolicyPresetSchema>;
+
+export const ToolPolicyRuntimeSchema = z.object({
+  preset: ToolPolicyPresetSchema,
+  label: z.string().min(1),
+  approvalMode: z.enum(["never", "ask"]),
+  summary: z.string().min(1),
+  capabilities: z.array(z.string().min(1)).min(1),
+  allowedTools: z.array(z.string().min(1)).min(1),
+});
+export type ToolPolicyRuntime = z.infer<typeof ToolPolicyRuntimeSchema>;
+
+export const AgentSectionSummariesSchema = z.object({
+  instructions: z.string(),
+  soul: z.string(),
+  userContext: z.string(),
+  memoryDefaults: z.string(),
+});
+export type AgentSectionSummaries = z.infer<typeof AgentSectionSummariesSchema>;
+
+export const AgentRuntimeContextSchema = z.object({
+  profileId: z.string().min(1),
+  profileName: z.string().min(1),
+  templateId: z.string().min(1).optional(),
+  templateLabel: z.string().min(1).optional(),
+  modelSource: z.enum(["global", "profile_override"]),
+  sectionSummaries: AgentSectionSummariesSchema,
+  toolPolicy: ToolPolicyRuntimeSchema,
+  compiledSummary: z.string().min(1),
+});
+export type AgentRuntimeContext = z.infer<typeof AgentRuntimeContextSchema>;
+
 export const AgentProfileSchema = z
   .object({
     id: z.string().min(1),
     name: z.string().min(1),
     description: z.string().optional(),
     model: AgentModelSelectionSchema,
-    instructions: z.string().optional(),
-    soul: z.string().optional(),
-    skills: z.array(z.string().min(1)).default([]),
-    tools: z.array(z.string().min(1)).default([]),
+    templateId: z.string().min(1).optional(),
+    instructions: z.string().default(""),
+    soul: z.string().default(""),
+    userContext: z.string().default(""),
+    toolPolicyPreset: ToolPolicyPresetSchema.default("workspace_editor"),
+    memoryDefaults: z.string().default(""),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -421,10 +484,12 @@ export const AgentProfileCreateRequestSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   model: AgentModelSelectionSchema,
-  instructions: z.string().optional(),
-  soul: z.string().optional(),
-  skills: z.array(z.string().min(1)).default([]),
-  tools: z.array(z.string().min(1)).default([]),
+  templateId: z.string().min(1).optional(),
+  instructions: z.string().default(""),
+  soul: z.string().default(""),
+  userContext: z.string().default(""),
+  toolPolicyPreset: ToolPolicyPresetSchema.default("workspace_editor"),
+  memoryDefaults: z.string().default(""),
 });
 export type AgentProfileCreateRequest = z.infer<typeof AgentProfileCreateRequestSchema>;
 
@@ -434,8 +499,10 @@ export const AgentProfileUpdateRequestSchema = z.object({
   model: AgentModelSelectionSchema.optional(),
   instructions: z.string().optional(),
   soul: z.string().optional(),
-  skills: z.array(z.string().min(1)).optional(),
-  tools: z.array(z.string().min(1)).optional(),
+  templateId: z.string().min(1).optional(),
+  userContext: z.string().optional(),
+  toolPolicyPreset: ToolPolicyPresetSchema.optional(),
+  memoryDefaults: z.string().optional(),
 });
 export type AgentProfileUpdateRequest = z.infer<typeof AgentProfileUpdateRequestSchema>;
 
@@ -446,6 +513,7 @@ export type AgentProfileListResult = z.infer<typeof AgentProfileListResultSchema
 
 export const TaskExecutionConfigSchema = z.object({
   agent: AgentProfileSchema,
+  runtime: AgentRuntimeContextSchema,
   provider: AgentProviderConfigSchema,
   credential: z.object({ apiKey: z.string().min(1) }).optional(),
 });
@@ -518,3 +586,169 @@ export const TaskEventSchema = z.discriminatedUnion("type", [
   ArtifactCreatedEventSchema,
 ]);
 export type TaskEvent = z.infer<typeof TaskEventSchema>;
+
+export const TOOL_POLICY_PRESET_DETAILS: Record<
+  ToolPolicyPreset,
+  {
+    label: string;
+    approvalMode: ToolPolicyRuntime["approvalMode"];
+    summary: string;
+    capabilities: string[];
+    allowedTools: string[];
+  }
+> = {
+  read_only: {
+    label: "Read-only",
+    approvalMode: "never",
+    summary: "Can inspect and search the workspace but cannot make file changes.",
+    capabilities: ["Read files", "List directories", "Search content"],
+    allowedTools: ["workspace_read", "workspace_list", "workspace_search"],
+  },
+  workspace_editor: {
+    label: "Workspace editor",
+    approvalMode: "never",
+    summary: "Can inspect the workspace and update files directly when needed.",
+    capabilities: ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+    allowedTools: [
+      "workspace_read",
+      "workspace_list",
+      "workspace_search",
+      "workspace_write",
+      "workspace_edit",
+    ],
+  },
+  elevated_with_approval: {
+    label: "Elevated with approval",
+    approvalMode: "ask",
+    summary: "Can edit the workspace, but should ask before taking mutating actions.",
+    capabilities: ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+    allowedTools: [
+      "workspace_read",
+      "workspace_list",
+      "workspace_search",
+      "workspace_write",
+      "workspace_edit",
+    ],
+  },
+};
+
+export function resolveToolPolicyPreset(preset: ToolPolicyPreset): ToolPolicyRuntime {
+  const details = TOOL_POLICY_PRESET_DETAILS[preset];
+  return ToolPolicyRuntimeSchema.parse({
+    preset,
+    label: details.label,
+    approvalMode: details.approvalMode,
+    summary: details.summary,
+    capabilities: details.capabilities,
+    allowedTools: details.allowedTools,
+  });
+}
+
+function summarizeSection(text: string, emptyLabel: string): string {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (!normalized) return emptyLabel;
+  if (normalized.length <= 140) return normalized;
+  return `${normalized.slice(0, 137).trimEnd()}...`;
+}
+
+function templateSummary(templateId?: string): string | undefined {
+  return AGENT_PROFILE_TEMPLATES.find((template) => template.id === templateId)?.name;
+}
+
+export function compileAgentRuntimeContext(profile: AgentProfile): AgentRuntimeContext {
+  const toolPolicy = resolveToolPolicyPreset(profile.toolPolicyPreset);
+  const modelSource = profile.model.mode === "override" ? "profile_override" : "global";
+
+  return AgentRuntimeContextSchema.parse({
+    profileId: profile.id,
+    profileName: profile.name,
+    templateId: profile.templateId,
+    templateLabel: templateSummary(profile.templateId),
+    modelSource,
+    sectionSummaries: {
+      instructions: summarizeSection(profile.instructions, "No operating contract added."),
+      soul: summarizeSection(profile.soul, "No tone guidance added."),
+      userContext: summarizeSection(profile.userContext, "No user context added."),
+      memoryDefaults: summarizeSection(profile.memoryDefaults, "No default memory added."),
+    },
+    toolPolicy,
+    compiledSummary:
+      modelSource === "profile_override"
+        ? `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode} and overrides the model configuration.`
+        : `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode} and inherits the workspace model settings.`,
+  });
+}
+
+export const AgentProfileTemplateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().min(1),
+  profile: z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    instructions: z.string(),
+    soul: z.string(),
+    userContext: z.string(),
+    toolPolicyPreset: ToolPolicyPresetSchema,
+    memoryDefaults: z.string(),
+  }),
+});
+export type AgentProfileTemplate = z.infer<typeof AgentProfileTemplateSchema>;
+
+export const AGENT_PROFILE_TEMPLATES: AgentProfileTemplate[] = [
+  {
+    id: "business-operator",
+    name: "Business Operator",
+    description: "Structured delivery for planning, operations, and execution-heavy work.",
+    profile: {
+      name: "Business Operator",
+      description: "Operational partner for planning and execution work.",
+      instructions:
+        "Turn broad business requests into concrete deliverables. Prefer clear next steps, decisions, and artifacts over abstract advice.",
+      soul: "Direct, calm, and concise. Avoid filler and unnecessary flourish.",
+      userContext:
+        "The user is a business operator or founder who wants practical output, not a tutorial.",
+      toolPolicyPreset: "workspace_editor",
+      memoryDefaults:
+        "Reuse workspace terminology, active project names, and known deliverable formats when they are already established.",
+    },
+  },
+  {
+    id: "research-analyst",
+    name: "Research Analyst",
+    description: "Evidence-first profile for market, customer, and strategy research.",
+    profile: {
+      name: "Research Analyst",
+      description: "Evidence-first research and synthesis assistant.",
+      instructions:
+        "Surface evidence, assumptions, and gaps clearly. Distinguish observed facts from recommendations and synthesize findings into concise takeaways.",
+      soul: "Analytical, measured, and precise.",
+      userContext:
+        "The user needs synthesis they can use in strategy documents, memos, or stakeholder updates.",
+      toolPolicyPreset: "read_only",
+      memoryDefaults:
+        "Favor prior research notes, customer language, and recurring business questions already present in the workspace.",
+    },
+  },
+  {
+    id: "exec-partner",
+    name: "Executive Partner",
+    description: "High-trust profile for drafting, refining, and shipping polished outputs.",
+    profile: {
+      name: "Executive Partner",
+      description: "High-trust drafting and execution partner.",
+      instructions:
+        "Produce decision-ready output quickly. When changes are material, confirm the intended direction before making irreversible edits.",
+      soul: "Senior, polished, and brief.",
+      userContext:
+        "The user expects an experienced partner who can draft, revise, and package work at executive quality.",
+      toolPolicyPreset: "elevated_with_approval",
+      memoryDefaults:
+        "Preserve the user's established voice, preferred document structures, and recurring stakeholder context when available.",
+    },
+  },
+];
+
+export function getAgentProfileTemplate(templateId: string): AgentProfileTemplate | undefined {
+  return AGENT_PROFILE_TEMPLATES.find((template) => template.id === templateId);
+}

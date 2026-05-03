@@ -94,36 +94,39 @@ export function TaskDetail({
     return (
       <main className="flex-1 flex flex-col bg-background relative">
         <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
-            <div className="max-w-xl text-center mb-8">
-              <div className="flex items-center justify-center gap-2 mb-3">
-                <Sparkles size={28} className="text-[var(--sun)]" />
-              </div>
-              <h1 className="text-2xl font-bold text-foreground tracking-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
-                {workspaceRoot
-                  ? "What are we working on today?"
-                  : "Select a workspace to start a task"}
-              </h1>
-              {workspaceRoot && (
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Give Tessera a business objective and it will plan, execute, and deliver — so you can focus on what matters.
-                </p>
-              )}
+          <div className="max-w-xl text-center mb-8">
+            <div className="flex items-center justify-center gap-2 mb-3">
+              <Sparkles size={28} className="text-[var(--sun)]" />
             </div>
-
-            <div className="w-full max-w-2xl mb-10">
-              <TaskComposer
-                disabled={!workspaceRoot}
-                busy={creatingTask}
-                placeholder={workspaceRoot ? "How can I help you today?" : "Select a workspace first"}
-                value={content}
-                onChange={setContent}
-                onSend={handleSend}
-                showAgentSelector={true}
-                inline
-              />
-            </div>
-
+            <h1
+              className="text-2xl font-bold text-foreground tracking-tight"
+              style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}
+            >
+              {workspaceRoot
+                ? "What are we working on today?"
+                : "Select a workspace to start a task"}
+            </h1>
+            {workspaceRoot && (
+              <p className="mt-2 text-sm text-muted-foreground">
+                Give Tessera a business objective and it will plan, execute, and deliver — so you
+                can focus on what matters.
+              </p>
+            )}
           </div>
+
+          <div className="w-full max-w-2xl mb-10">
+            <TaskComposer
+              disabled={!workspaceRoot}
+              busy={creatingTask}
+              placeholder={workspaceRoot ? "How can I help you today?" : "Select a workspace first"}
+              value={content}
+              onChange={setContent}
+              onSend={handleSend}
+              showAgentSelector={true}
+              inline
+            />
+          </div>
+        </div>
       </main>
     );
   }
@@ -132,7 +135,9 @@ export function TaskDetail({
     <main className="flex-1 flex flex-col bg-background relative overflow-hidden">
       <div className="h-14 border-b border-border flex items-center justify-between px-6 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <h1 className="font-semibold text-sm leading-tight text-foreground truncate">{task.title}</h1>
+          <h1 className="font-semibold text-sm leading-tight text-foreground truncate">
+            {task.title}
+          </h1>
           <ChevronDown size={14} className="text-muted-foreground shrink-0" />
         </div>
         <div className="flex items-center gap-2">
@@ -140,7 +145,10 @@ export function TaskDetail({
             {task.status === "active" && <Loader2 size={10} className="animate-spin" />}
             {taskStatusLabel(task.status)}
           </span>
-          <AgentInfoPopover agentLabel={task.agentLabel ?? "Tessera"} agentId={task.agentId} />
+          <AgentInfoPopover
+            agentLabel={task.agentLabel ?? "Tessera"}
+            agentContext={task.agentContext}
+          />
         </div>
       </div>
 
@@ -183,7 +191,10 @@ export function TaskDetail({
                 {task.turns.map((turn) => (
                   <div
                     key={turn.id}
-                    className={cn("flex gap-4", turn.role === "user" ? "justify-end" : "justify-start")}
+                    className={cn(
+                      "flex gap-4",
+                      turn.role === "user" ? "justify-end" : "justify-start"
+                    )}
                   >
                     <div
                       className={cn(
@@ -200,10 +211,14 @@ export function TaskDetail({
                         )}
                       >
                         {turnLabel(turn)}
-                        {turn.status === "running" && <Loader2 size={10} className="animate-spin" />}
+                        {turn.status === "running" && (
+                          <Loader2 size={10} className="animate-spin" />
+                        )}
                       </div>
                       <div className="whitespace-pre-wrap text-sm leading-6">{turn.content}</div>
-                      {turn.error && <div className="mt-2 text-xs text-destructive">{turn.error}</div>}
+                      {turn.error && (
+                        <div className="mt-2 text-xs text-destructive">{turn.error}</div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -311,7 +326,11 @@ function TaskComposer({
   const selectedLabel = selectedAgent?.name || "Tessera";
 
   return (
-    <div className={inline ? "w-full" : "absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4"}>
+    <div
+      className={
+        inline ? "w-full" : "absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4"
+      }
+    >
       <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 transition-shadow">
         <textarea
           value={value}
@@ -404,18 +423,15 @@ function TaskComposer({
   );
 }
 
-function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string; agentId: string }) {
-  const [profile, setProfile] = useState<AgentProfile | null>(null);
+function AgentInfoPopover({
+  agentLabel,
+  agentContext,
+}: {
+  agentLabel: string;
+  agentContext?: TaskDetailType["agentContext"];
+}) {
   const [open, setOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (agentId !== "default") {
-      invoke<AgentProfile>("agent_profile_get", { id: agentId })
-        .then(setProfile)
-        .catch(() => {}); // ignore errors, might have been deleted
-    }
-  }, [agentId]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -448,46 +464,22 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string; agentId
             <Bot size={16} className="text-primary" />
             <h4 className="font-semibold text-sm leading-none">{agentLabel}</h4>
           </div>
-          {agentId === "default" ? (
-            <p className="text-sm text-muted-foreground mt-2">
-              The default Tessera workspace agent. Capable of reading, writing, and executing code
-              in your workspace.
-            </p>
-          ) : profile ? (
+          {agentContext ? (
             <div className="space-y-3 mt-3">
-              {profile.description && (
-                <p className="text-sm text-muted-foreground">{profile.description}</p>
-              )}
-              {profile.instructions && (
-                <div>
-                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">
-                    Instructions
-                  </span>
-                  <p className="text-xs text-muted-foreground whitespace-pre-wrap">
-                    {profile.instructions}
-                  </p>
+              <p className="text-sm text-muted-foreground">{agentContext.compiledSummary}</p>
+              <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <div className="rounded-md bg-secondary/50 px-2 py-1">
+                  Tool policy: {agentContext.toolPolicy.label}
                 </div>
-              )}
-              {profile.skills.length > 0 && (
-                <div>
-                  <span className="text-xs font-semibold text-foreground uppercase tracking-wider block mb-1">
-                    Skills
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {profile.skills.map((skill) => (
-                      <span
-                        key={skill}
-                        className="px-1.5 py-0.5 bg-secondary text-secondary-foreground text-[10px] rounded"
-                      >
-                        {skill}
-                      </span>
-                    ))}
-                  </div>
+                <div className="rounded-md bg-secondary/50 px-2 py-1">
+                  Model: {agentContext.modelSource === "profile_override" ? "Override" : "Global"}
                 </div>
-              )}
+              </div>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground mt-2 italic">Agent profile not found.</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              The default Tessera workspace agent with the standard workspace editor policy.
+            </p>
           )}
         </div>
       )}
@@ -495,8 +487,12 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string; agentId
   );
 }
 
-function TaskSidePane({ task, workspaceRoot }: { task: TaskDetailType; workspaceRoot: string | null }) {
+function TaskSidePane({
+  task,
+  workspaceRoot,
+}: { task: TaskDetailType; workspaceRoot: string | null }) {
   const [progressOpen, setProgressOpen] = useState(true);
+  const [agentOpen, setAgentOpen] = useState(true);
   const [contextOpen, setContextOpen] = useState(true);
 
   const completedTurns = task.turns.filter((t) => t.status === "completed").length;
@@ -510,12 +506,18 @@ function TaskSidePane({ task, workspaceRoot }: { task: TaskDetailType; workspace
     { label: "Complete", done: isDone },
   ];
 
-  const folderName = workspaceRoot ? workspaceRoot.split("/").pop() || workspaceRoot : "No workspace";
+  const folderName = workspaceRoot
+    ? workspaceRoot.split("/").pop() || workspaceRoot
+    : "No workspace";
 
   return (
     <aside className="w-72 border-l border-border flex flex-col bg-background shrink-0 overflow-y-auto">
       {/* Progress */}
-      <SidePaneSection title="Progress" open={progressOpen} onToggle={() => setProgressOpen(!progressOpen)}>
+      <SidePaneSection
+        title="Progress"
+        open={progressOpen}
+        onToggle={() => setProgressOpen(!progressOpen)}
+      >
         <div className="flex items-center gap-1 mb-3">
           {progressSteps.map((step, i) => (
             <div key={step.label} className="flex items-center gap-1">
@@ -567,8 +569,61 @@ function TaskSidePane({ task, workspaceRoot }: { task: TaskDetailType; workspace
         </button>
       </SidePaneSection>
 
+      <SidePaneSection
+        title="Agent Context"
+        open={agentOpen}
+        onToggle={() => setAgentOpen(!agentOpen)}
+      >
+        {task.agentContext ? (
+          <div className="space-y-4 text-xs text-muted-foreground">
+            <div>
+              <div className="text-sm font-medium text-foreground">
+                {task.agentContext.profileName}
+              </div>
+              <p className="mt-1">{task.agentContext.compiledSummary}</p>
+            </div>
+            <div className="rounded-xl border border-border bg-secondary/20 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-foreground">
+                Tool Policy
+              </div>
+              <div className="mt-1 text-sm text-foreground">
+                {task.agentContext.toolPolicy.label}
+              </div>
+              <p className="mt-1">{task.agentContext.toolPolicy.summary}</p>
+            </div>
+            {task.agentContext.templateLabel && (
+              <div className="text-xs">
+                Template: <span className="text-foreground">{task.agentContext.templateLabel}</span>
+              </div>
+            )}
+            <div className="space-y-3">
+              {Object.entries(task.agentContext.sectionSummaries).map(([key, value]) => (
+                <div key={key}>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-foreground">
+                    {key === "userContext"
+                      ? "User Context"
+                      : key === "memoryDefaults"
+                        ? "Memory Defaults"
+                        : key}
+                  </div>
+                  <p className="mt-1">{value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Agent context is attached when the task starts and stays fixed for the life of the run.
+          </p>
+        )}
+      </SidePaneSection>
+
       {/* Context */}
-      <SidePaneSection title="Context" open={contextOpen} onToggle={() => setContextOpen(!contextOpen)}>
+      <SidePaneSection
+        title="Context"
+        open={contextOpen}
+        onToggle={() => setContextOpen(!contextOpen)}
+      >
         {task.artifacts.length > 0 ? (
           <div className="space-y-2">
             <div className="flex gap-2 flex-wrap">
@@ -639,8 +694,7 @@ function EmptyStateStatusDot({ status }: { status: TaskSummary["status"] }) {
   if (status === "active")
     return <div className="h-2.5 w-2.5 rounded-full bg-blue-500 ring-2 ring-blue-500/20" />;
   if (status === "done") return <CheckCircle2 size={14} className="text-[var(--leaf)]" />;
-  if (status === "waiting")
-    return <Clock size={14} className="text-amber-500" />;
+  if (status === "waiting") return <Clock size={14} className="text-amber-500" />;
   if (status === "failed") return <XCircle size={14} className="text-destructive" />;
   return <div className="h-2.5 w-2.5 rounded-full bg-border" />;
 }

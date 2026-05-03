@@ -305,20 +305,145 @@ fn default_agent_profile_json() -> serde_json::Value {
         "model": { "mode": "default" },
         "instructions": "You are Tessera's workspace agent. Work inside the selected workspace.",
         "soul": "",
-        "skills": [],
-        "tools": [
-            "workspace_read",
-            "workspace_list",
-            "workspace_search",
-            "workspace_write",
-            "workspace_edit"
-        ],
+        "userContext": "You are helping a business user inside their current workspace.",
+        "toolPolicyPreset": "workspace_editor",
+        "memoryDefaults": "",
         "createdAt": "1970-01-01T00:00:00.000Z",
         "updatedAt": "1970-01-01T00:00:00.000Z"
     })
 }
 
-fn attach_default_task_execution(
+fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
+    match preset {
+        "read_only" => serde_json::json!({
+            "preset": "read_only",
+            "label": "Read-only",
+            "approvalMode": "never",
+            "summary": "Can inspect and search the workspace but cannot make file changes.",
+            "capabilities": ["Read files", "List directories", "Search content"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search"]
+        }),
+        "elevated_with_approval" => serde_json::json!({
+            "preset": "elevated_with_approval",
+            "label": "Elevated with approval",
+            "approvalMode": "ask",
+            "summary": "Can edit the workspace, but should ask before taking mutating actions.",
+            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit"]
+        }),
+        _ => serde_json::json!({
+            "preset": "workspace_editor",
+            "label": "Workspace editor",
+            "approvalMode": "never",
+            "summary": "Can inspect the workspace and update files directly when needed.",
+            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit"]
+        }),
+    }
+}
+
+fn summarize_section(text: Option<&str>, empty: &str) -> String {
+    let normalized = text.unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return empty.to_string();
+    }
+    if normalized.len() <= 140 {
+        return normalized;
+    }
+    format!("{}...", normalized[..137].trim_end())
+}
+
+fn compile_agent_runtime_json(agent: &serde_json::Value) -> serde_json::Value {
+    let preset = agent
+        .get("toolPolicyPreset")
+        .and_then(|value| value.as_str())
+        .unwrap_or("workspace_editor");
+    let model_source = if agent
+        .get("model")
+        .and_then(|model| model.get("mode"))
+        .and_then(|mode| mode.as_str())
+        == Some("override")
+    {
+        "profile_override"
+    } else {
+        "global"
+    };
+
+    let tool_policy = tool_policy_runtime_json(preset);
+    let label = tool_policy
+        .get("label")
+        .and_then(|value| value.as_str())
+        .unwrap_or("Workspace editor");
+    let approval_mode = tool_policy
+        .get("approvalMode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("never");
+
+    let mut runtime = serde_json::json!({
+        "profileId": agent.get("id").and_then(|value| value.as_str()).unwrap_or("default"),
+        "profileName": agent.get("name").and_then(|value| value.as_str()).unwrap_or("Tessera"),
+        "modelSource": model_source,
+        "sectionSummaries": {
+            "instructions": summarize_section(agent.get("instructions").and_then(|value| value.as_str()), "No operating contract added."),
+            "soul": summarize_section(agent.get("soul").and_then(|value| value.as_str()), "No tone guidance added."),
+            "userContext": summarize_section(agent.get("userContext").and_then(|value| value.as_str()), "No user context added."),
+            "memoryDefaults": summarize_section(agent.get("memoryDefaults").and_then(|value| value.as_str()), "No default memory added.")
+        },
+        "toolPolicy": tool_policy,
+        "compiledSummary": if model_source == "profile_override" {
+            format!(
+                "{} uses {} access with approval mode {} and overrides the model configuration.",
+                agent.get("name").and_then(|value| value.as_str()).unwrap_or("Tessera"),
+                label,
+                approval_mode
+            )
+        } else {
+            format!(
+                "{} uses {} access with approval mode {} and inherits the workspace model settings.",
+                agent.get("name").and_then(|value| value.as_str()).unwrap_or("Tessera"),
+                label,
+                approval_mode
+            )
+        }
+    });
+
+    if let Some(template_id) = agent.get("templateId").and_then(|value| value.as_str()) {
+        runtime["templateId"] = serde_json::json!(template_id);
+    }
+
+    if let Some(template_label) = agent.get("templateLabel").and_then(|value| value.as_str()) {
+        runtime["templateLabel"] = serde_json::json!(template_label);
+    }
+
+    runtime
+}
+
+fn parse_model_provider(provider: &str) -> Result<model_settings::ModelProvider, String> {
+    match provider {
+        "openai" => Ok(model_settings::ModelProvider::Openai),
+        "anthropic" => Ok(model_settings::ModelProvider::Anthropic),
+        "openrouter" => Ok(model_settings::ModelProvider::Openrouter),
+        "local" => Ok(model_settings::ModelProvider::Local),
+        other => Err(format!("Unsupported provider: {}", other)),
+    }
+}
+
+async fn resolve_task_agent_json(
+    app: &AppHandle,
+    agent_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    match agent_id {
+        Some(id) if id != "default" => {
+            let handle = app.state::<SidecarHandle>();
+            let path = format!("/agent-profiles/{}", percent_encode(id));
+            let json = handle.get(&path).await.map_err(|e| e.to_string())?;
+            serde_json::from_str(&json).map_err(|e| e.to_string())
+        }
+        _ => Ok(default_agent_profile_json()),
+    }
+}
+
+async fn attach_default_task_execution(
     app: &AppHandle,
     mut request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -333,21 +458,44 @@ fn attach_default_task_execution(
         .join(model_settings::SETTINGS_FILE);
     let settings =
         model_settings::load_settings_file(&settings_path).map_err(|error| error.to_string())?;
-    let provider =
-        model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
+    let agent =
+        resolve_task_agent_json(app, request.get("agentId").and_then(|value| value.as_str()))
+            .await?;
+    let provider = if agent
+        .get("model")
+        .and_then(|model| model.get("mode"))
+        .and_then(|mode| mode.as_str())
+        == Some("override")
+    {
+        agent.get("model")
+            .and_then(|model| model.get("provider"))
+            .cloned()
+            .ok_or_else(|| "Agent model override is missing provider details".to_string())?
+    } else {
+        let selected =
+            model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
+        provider_config_json(&selected)
+    };
+    let credential_provider = parse_model_provider(
+        provider
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Resolved provider is missing a provider id".to_string())?,
+    )?;
     let credential =
-        model_settings::get_credential(provider.provider).map_err(|error| error.to_string())?;
+        model_settings::get_credential(credential_provider).map_err(|error| error.to_string())?;
 
-    if credential.is_none() && provider.provider != model_settings::ModelProvider::Local {
+    if credential.is_none() && credential_provider != model_settings::ModelProvider::Local {
         return Err(format!(
             "{} is not configured. Add an API key in Settings > Model.",
-            provider.provider.label()
+            credential_provider.label()
         ));
     }
 
     let mut execution = serde_json::json!({
-        "agent": default_agent_profile_json(),
-        "provider": provider_config_json(&provider)
+        "agent": agent,
+        "runtime": compile_agent_runtime_json(&agent),
+        "provider": provider
     });
 
     if let Some(api_key) = credential {
@@ -509,7 +657,7 @@ async fn task_create(
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_task_execution(&app, request)?;
+    let request = attach_default_task_execution(&app, request).await?;
     let json = state
         .post("/tasks", &request.to_string())
         .await
@@ -548,7 +696,7 @@ async fn task_create_turn(
     task_id: String,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_task_execution(&app, request)?;
+    let request = attach_default_task_execution(&app, request).await?;
     let path = format!("/tasks/{}/turns", percent_encode(&task_id));
     let json = state
         .post(&path, &request.to_string())

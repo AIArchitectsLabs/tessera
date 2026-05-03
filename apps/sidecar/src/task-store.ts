@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  type AgentRuntimeContext,
   type TaskArtifact,
   TaskArtifactSchema,
   type TaskCreateRequest,
@@ -28,6 +29,7 @@ export interface CreateArtifactInput {
 export type CreateTaskInput = Omit<TaskCreateRequest, "agentLabel" | "agentId" | "execution"> & {
   agentLabel?: string;
   agentId?: string;
+  agentContext?: AgentRuntimeContext;
 };
 
 export interface TaskStore {
@@ -57,6 +59,7 @@ interface TaskRow {
   agent_label: string | null;
   latest_activity: string | null;
   description: string | null;
+  agent_context_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -163,6 +166,7 @@ export function createTaskStore(dbPath: string): TaskStore {
       agent_label TEXT,
       latest_activity TEXT,
       description TEXT,
+      agent_context_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );`
@@ -171,6 +175,9 @@ export function createTaskStore(dbPath: string): TaskStore {
   const taskColumns = db.query<{ name: string }, []>("PRAGMA table_info(tasks)").all();
   if (!taskColumns.some((column) => column.name === "agent_id")) {
     db.exec("ALTER TABLE tasks ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'");
+  }
+  if (!taskColumns.some((column) => column.name === "agent_context_json")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN agent_context_json TEXT");
   }
 
   db.exec(`
@@ -203,9 +210,9 @@ export function createTaskStore(dbPath: string): TaskStore {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks (
-      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, created_at, updated_at
+      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, agent_context_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTurn = db.prepare(`
     INSERT INTO task_turns (id, task_id, role, content, status, created_at, completed_at, error)
@@ -257,6 +264,7 @@ export function createTaskStore(dbPath: string): TaskStore {
     return TaskDetailSchema.parse({
       ...rowToSummary(row),
       description: row.description ?? undefined,
+      agentContext: row.agent_context_json ? JSON.parse(row.agent_context_json) : undefined,
       turns: listTurnRows.all(taskId).map(rowToTurn),
       artifacts: listArtifactRows.all(taskId).map(rowToArtifact),
     });
@@ -347,6 +355,7 @@ export function createTaskStore(dbPath: string): TaskStore {
         parsed.agentLabel ?? "Tessera",
         parsed.initialInstruction,
         parsed.description ?? null,
+        parsed.agentContext ? JSON.stringify(parsed.agentContext) : null,
         createdAt,
         createdAt
       );

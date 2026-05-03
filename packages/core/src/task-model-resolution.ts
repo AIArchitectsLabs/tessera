@@ -6,6 +6,7 @@ import type {
   ModelSettingsRead,
   TaskExecutionConfig,
 } from "@tessera/contracts";
+import { compileAgentRuntimeContext } from "@tessera/contracts";
 
 const now = "1970-01-01T00:00:00.000Z";
 
@@ -15,14 +16,9 @@ export const DEFAULT_AGENT_PROFILE: AgentProfile = {
   model: { mode: "default" },
   instructions: "You are Tessera's workspace agent. Work inside the selected workspace.",
   soul: "",
-  skills: [],
-  tools: [
-    "workspace_read",
-    "workspace_list",
-    "workspace_search",
-    "workspace_write",
-    "workspace_edit",
-  ],
+  userContext: "You are helping a business user inside their current workspace.",
+  toolPolicyPreset: "workspace_editor",
+  memoryDefaults: "",
   createdAt: now,
   updatedAt: now,
 };
@@ -76,6 +72,7 @@ export function resolveTaskExecutionConfig(options: {
 
   return {
     agent,
+    runtime: compileAgentRuntimeContext(agent),
     provider,
     ...(options.credential ? { credential: { apiKey: options.credential } } : {}),
   };

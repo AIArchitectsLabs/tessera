@@ -5,7 +5,8 @@ import {
   SessionManager,
   createAgentSession,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentProfile, AgentProviderConfig } from "@tessera/contracts";
+import type { AgentProfile, AgentProviderConfig, AgentRuntimeContext } from "@tessera/contracts";
+import { compileAgentRuntimeContext } from "@tessera/contracts";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -51,6 +52,7 @@ export interface RunPiTaskTurnOptions {
   onActivity?: (activity: string) => void;
   prompt: string;
   provider: AgentProviderConfig;
+  runtime?: AgentRuntimeContext;
   workspaceRoot: string;
 }
 
@@ -194,9 +196,7 @@ function buildPrompt(
 
   // Tessera identity + any agent-specific instructions go first so the model
   // always sees our business-oriented framing regardless of the SDK system prompt.
-  const identity = [TESSERA_SYSTEM_PROMPT, options.agentInstructions]
-    .filter(Boolean)
-    .join("\n\n");
+  const identity = [TESSERA_SYSTEM_PROMPT, options.agentInstructions].filter(Boolean).join("\n\n");
   if (identity) sections.push(identity);
 
   if (conversationHistory && conversationHistory.length > 0) {
@@ -209,6 +209,25 @@ function buildPrompt(
   return sections.join("\n\n");
 }
 
+function buildAgentInstructions(
+  agent: AgentProfile | undefined,
+  runtime: AgentRuntimeContext | undefined
+): string | undefined {
+  if (!agent && !runtime) return undefined;
+
+  const sections = [
+    agent?.instructions ? `Agent instructions:\n${agent.instructions}` : "",
+    agent?.soul ? `Agent soul:\n${agent.soul}` : "",
+    agent?.userContext ? `User context:\n${agent.userContext}` : "",
+    agent?.memoryDefaults ? `Memory defaults:\n${agent.memoryDefaults}` : "",
+    runtime?.toolPolicy.approvalMode === "ask"
+      ? "Tool policy:\nAsk for approval before using mutating workspace tools."
+      : "",
+  ].filter(Boolean);
+
+  return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
 export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTaskTurnResult> {
   const guard = await createWorkspaceGuard(options.workspaceRoot);
   let boundaryViolations = 0;
@@ -217,7 +236,11 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       boundaryViolations++;
     },
   });
-  const allowedTools = new Set(options.agent?.tools ?? allTools.map((tool) => tool.name));
+  const runtime =
+    options.runtime ?? (options.agent ? compileAgentRuntimeContext(options.agent) : undefined);
+  const allowedTools = new Set(
+    runtime?.toolPolicy.allowedTools ?? allTools.map((tool) => tool.name)
+  );
   const customTools = allTools.filter((tool) => allowedTools.has(tool.name));
 
   const { model, modelRegistry } = await createTesseraModelRegistry({
@@ -232,9 +255,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     workspaceRoot: guard.root,
   });
 
-  const agentInstructions = [options.agent?.instructions, options.agent?.soul]
-    .filter(Boolean)
-    .join("\n\n") || undefined;
+  const agentInstructions = buildAgentInstructions(options.agent, runtime);
 
   let text = "";
   let finalizedText = "";
@@ -287,7 +308,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   try {
     await session.prompt(
       buildPrompt(options.prompt, {
-        agentInstructions,
+        ...(agentInstructions ? { agentInstructions } : {}),
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),

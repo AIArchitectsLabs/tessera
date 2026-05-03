@@ -33,6 +33,7 @@ describe("resolveTaskExecutionConfig", () => {
       apiKeyEnv: "OPENAI_API_KEY",
     });
     expect(result.credential?.apiKey).toBe("sk-openai");
+    expect(result.runtime.toolPolicy.allowedTools).toContain("workspace_write");
     expect("credential" in result.agent).toBe(false);
   });
 
@@ -48,8 +49,11 @@ describe("resolveTaskExecutionConfig", () => {
           apiKeyEnv: "ANTHROPIC_API_KEY",
         },
       },
-      skills: [],
-      tools: [],
+      instructions: "",
+      soul: "",
+      userContext: "",
+      toolPolicyPreset: "read_only",
+      memoryDefaults: "",
       createdAt: now,
       updatedAt: now,
     };
@@ -62,6 +66,7 @@ describe("resolveTaskExecutionConfig", () => {
 
     expect(result.provider.provider).toBe("anthropic");
     expect(result.credential?.apiKey).toBe("sk-anthropic");
+    expect(result.runtime.modelSource).toBe("profile_override");
   });
 
   test("cloud provider without credential fails before Pi session creation", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AgentProfileSchema,
   TaskArtifactSchema,
   TaskCreateRequestSchema,
   TaskCreateTurnRequestSchema,
@@ -7,6 +8,7 @@ import {
   TaskListResultSchema,
   TaskSummarySchema,
   TaskUpdateRequestSchema,
+  compileAgentRuntimeContext,
 } from "./index.js";
 
 describe("task contracts", () => {
@@ -37,11 +39,22 @@ describe("task contracts", () => {
   });
 
   test("accepts task detail with turns and artifacts", () => {
+    const agentContext = compileAgentRuntimeContext(
+      AgentProfileSchema.parse({
+        id: "ops",
+        name: "Ops",
+        model: { mode: "default" },
+        instructions: "Keep deliverables concrete.",
+        createdAt: "2026-04-30T10:00:00.000Z",
+        updatedAt: "2026-04-30T10:00:00.000Z",
+      })
+    );
     const detail = TaskDetailSchema.parse({
       id: "task-1",
       workspaceRoot: "/workspace/acme",
       title: "Draft announcement",
       status: "done",
+      agentContext,
       createdAt: "2026-04-30T10:00:00.000Z",
       updatedAt: "2026-04-30T10:01:00.000Z",
       turns: [
@@ -79,6 +92,7 @@ describe("task contracts", () => {
 
     expect(detail.turns).toHaveLength(2);
     expect(detail.artifacts[0]?.turnId).toBe("turn-2");
+    expect(detail.agentContext?.toolPolicy.preset).toBe("workspace_editor");
   });
 
   test("accepts list, update, turn create, and artifact shapes", () => {

@@ -1,6 +1,7 @@
 import type {
   AgentProfile,
   AgentProviderConfig,
+  AgentRuntimeContext,
   TaskEvent,
   TaskExecutionConfig,
   TaskSummary,
@@ -19,6 +20,7 @@ export interface RunTaskTurnOptions {
     onActivity?: (activity: string) => void;
     prompt: string;
     provider: AgentProviderConfig;
+    runtime?: AgentRuntimeContext;
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
   provider?: AgentProviderConfig;
@@ -108,6 +110,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
       ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
       ...(credential ? { credential } : {}),
+      ...(opts.execution?.runtime !== undefined ? { runtime: opts.execution.runtime } : {}),
       onActivity(activity) {
         store.updateTask(taskId, { latestActivity: activity });
         publish({

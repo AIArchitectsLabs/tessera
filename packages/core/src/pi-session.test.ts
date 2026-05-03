@@ -260,14 +260,21 @@ describe("runPiTaskTurn", () => {
         model: { mode: "default" },
         instructions: "Write crisp updates.",
         soul: "Calm and direct.",
-        skills: [],
-        tools: ["workspace_read", "workspace_write"],
+        userContext: "",
+        toolPolicyPreset: "elevated_with_approval",
+        memoryDefaults: "",
         createdAt: "2026-05-02T00:00:00.000Z",
         updatedAt: "2026-05-02T00:00:00.000Z",
       },
     });
 
-    expect(seen.customToolNames).toEqual(["workspace_read", "workspace_write"]);
+    expect(seen.customToolNames).toEqual([
+      "workspace_edit",
+      "workspace_list",
+      "workspace_read",
+      "workspace_search",
+      "workspace_write",
+    ]);
   });
 
   test("builds prompt with identity, history, and task", async () => {
@@ -290,8 +297,9 @@ describe("runPiTaskTurn", () => {
         model: { mode: "default" },
         instructions: "Write crisp updates.",
         soul: "Calm and direct.",
-        skills: [],
-        tools: ["workspace_read", "workspace_write"],
+        userContext: "Support an operations leader.",
+        toolPolicyPreset: "elevated_with_approval",
+        memoryDefaults: "Reuse the weekly update format.",
         createdAt: "2026-05-02T00:00:00.000Z",
         updatedAt: "2026-05-02T00:00:00.000Z",
       },
@@ -306,6 +314,9 @@ describe("runPiTaskTurn", () => {
 
     expect(prompt).toContain("Write crisp updates.");
     expect(prompt).toContain("Calm and direct.");
+    expect(prompt).toContain("Support an operations leader.");
+    expect(prompt).toContain("Reuse the weekly update format.");
+    expect(prompt).toContain("Ask for approval before using mutating workspace tools.");
     expect(prompt).toContain("Prior conversation:\nUser: Hello\nAssistant: Hi there");
     expect(prompt).toContain("User task:\nDraft");
   });

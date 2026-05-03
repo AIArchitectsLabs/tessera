@@ -14,12 +14,19 @@ import {
   WorkflowResumeRequestSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
+  compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
   AgentProfileCreateRequestSchema,
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
-import { DEMO_WORKFLOW, executeAgentTurn, resumeWorkflowRun, runWorkflow } from "@tessera/core";
+import {
+  DEFAULT_AGENT_PROFILE,
+  DEMO_WORKFLOW,
+  executeAgentTurn,
+  resumeWorkflowRun,
+  runWorkflow,
+} from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
@@ -338,11 +345,25 @@ async function handleTaskCreate(req: Request): Promise<Response> {
     if (execution && parsed.data.agentId !== "default") {
       const profile = agentProfileStore.get(parsed.data.agentId);
       if (profile) {
-        execution = { ...execution, agent: profile };
+        execution = {
+          ...execution,
+          agent: profile,
+          runtime: compileAgentRuntimeContext(profile),
+        };
       }
+    } else if (execution) {
+      const agent = execution.agent ?? DEFAULT_AGENT_PROFILE;
+      execution = {
+        ...execution,
+        agent,
+        runtime: execution.runtime ?? compileAgentRuntimeContext(agent),
+      };
     }
 
-    const task = taskStore.createTask(parsed.data);
+    const task = taskStore.createTask({
+      ...parsed.data,
+      ...(execution?.runtime ? { agentContext: execution.runtime } : {}),
+    });
     const userTurn = task.turns.at(-1);
     if (!userTurn) throw new Error("Created task has no user turn");
     const agentTurn = taskStore.createQueuedAgentTurn(task.id);
@@ -427,8 +448,19 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
     if (execution && parsed.data.agentId !== "default") {
       const profile = agentProfileStore.get(parsed.data.agentId);
       if (profile) {
-        execution = { ...execution, agent: profile };
+        execution = {
+          ...execution,
+          agent: profile,
+          runtime: compileAgentRuntimeContext(profile),
+        };
       }
+    } else if (execution) {
+      const agent = execution.agent ?? DEFAULT_AGENT_PROFILE;
+      execution = {
+        ...execution,
+        agent,
+        runtime: execution.runtime ?? compileAgentRuntimeContext(agent),
+      };
     }
 
     const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);

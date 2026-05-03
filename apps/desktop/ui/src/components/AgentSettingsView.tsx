@@ -1,9 +1,66 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentProfile, AgentProfileListResult } from "@tessera/contracts";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  AGENT_PROFILE_TEMPLATES,
+  type AgentProfile,
+  type AgentProfileListResult,
+  TOOL_POLICY_PRESET_DETAILS,
+  type ToolPolicyPreset,
+} from "@tessera/contracts";
+import { Bot, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+
+type DraftState = {
+  templateId: string | undefined;
+  name: string;
+  description: string;
+  instructions: string;
+  soul: string;
+  userContext: string;
+  toolPolicyPreset: ToolPolicyPreset;
+  memoryDefaults: string;
+};
+
+function draftFromProfile(profile: AgentProfile | null): DraftState {
+  return {
+    templateId: profile?.templateId,
+    name: profile?.name ?? "",
+    description: profile?.description ?? "",
+    instructions: profile?.instructions ?? "",
+    soul: profile?.soul ?? "",
+    userContext: profile?.userContext ?? "",
+    toolPolicyPreset: profile?.toolPolicyPreset ?? "workspace_editor",
+    memoryDefaults: profile?.memoryDefaults ?? "",
+  };
+}
+
+function draftFromTemplate(templateId: string): DraftState {
+  const template = AGENT_PROFILE_TEMPLATES.find((item) => item.id === templateId);
+  if (!template) {
+    return {
+      templateId,
+      name: "",
+      description: "",
+      instructions: "",
+      soul: "",
+      userContext: "",
+      toolPolicyPreset: "workspace_editor",
+      memoryDefaults: "",
+    };
+  }
+
+  return {
+    templateId: template.id,
+    name: template.profile.name,
+    description: template.profile.description ?? "",
+    instructions: template.profile.instructions,
+    soul: template.profile.soul,
+    userContext: template.profile.userContext,
+    toolPolicyPreset: template.profile.toolPolicyPreset,
+    memoryDefaults: template.profile.memoryDefaults,
+  };
+}
 
 export function AgentSettingsView() {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -27,15 +84,16 @@ export function AgentSettingsView() {
     void loadProfiles();
   }, [loadProfiles]);
 
-  const selectedProfile = profiles.find((p) => p.id === selectedId) || null;
+  const selectedProfile = profiles.find((profile) => profile.id === selectedId) || null;
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col px-8 py-6">
+    <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-6">
       <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold text-foreground">Agents</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Configure agent personas, instructions, and tools.
+            Author structured agent profiles with named sections, preset access policy, and reusable
+            templates.
           </p>
         </div>
         <Button
@@ -49,37 +107,37 @@ export function AgentSettingsView() {
       </div>
 
       <div className="mt-6 flex gap-6">
-        <div className="w-64 shrink-0 space-y-2 border-r border-border pr-4">
+        <div className="w-72 shrink-0 space-y-2 border-r border-border pr-4">
           {loading && <Loader2 size={16} className="animate-spin text-muted-foreground" />}
           {!loading && profiles.length === 0 && (
-            <div className="text-sm text-muted-foreground">No custom agents.</div>
+            <div className="text-sm text-muted-foreground">No custom agents yet.</div>
           )}
-          {profiles.map((p) => (
+          {profiles.map((profile) => (
             <button
-              key={p.id}
+              key={profile.id}
               type="button"
-              onClick={() => setSelectedId(p.id)}
+              onClick={() => setSelectedId(profile.id)}
               className={cn(
-                "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors",
-                selectedId === p.id
-                  ? "bg-secondary text-foreground font-medium"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                "w-full rounded-xl border px-3 py-3 text-left transition-colors",
+                selectedId === profile.id
+                  ? "border-primary/30 bg-secondary text-foreground"
+                  : "border-transparent text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
               )}
             >
-              {p.name}
+              <div className="text-sm font-medium">{profile.name}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {TOOL_POLICY_PRESET_DETAILS[profile.toolPolicyPreset].label}
+              </div>
             </button>
           ))}
           {selectedId === "new" && (
-            <button
-              type="button"
-              className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors bg-secondary text-foreground font-medium"
-            >
+            <div className="rounded-xl border border-primary/30 bg-secondary px-3 py-3 text-sm font-medium text-foreground">
               New Agent
-            </button>
+            </div>
           )}
         </div>
 
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0 flex-1">
           {error && (
             <div className="mb-4 rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {error}
@@ -99,8 +157,8 @@ export function AgentSettingsView() {
               }}
             />
           ) : (
-            <div className="text-center text-sm text-muted-foreground mt-12">
-              Select an agent to edit, or create a new one.
+            <div className="mt-12 text-center text-sm text-muted-foreground">
+              Select an agent to edit, or start from a built-in template.
             </div>
           )}
         </div>
@@ -118,56 +176,50 @@ function AgentEditor({
   onSaved: () => void;
   onDeleted: () => void;
 }) {
-  const [name, setName] = useState(profile?.name || "");
-  const [description, setDescription] = useState(profile?.description || "");
-  const [instructions, setInstructions] = useState(profile?.instructions || "");
-  const [soul, setSoul] = useState(profile?.soul || "");
+  const [draft, setDraft] = useState<DraftState>(() => draftFromProfile(profile));
+  const [templateChosen, setTemplateChosen] = useState(Boolean(profile));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // When profile prop changes, update state
   useEffect(() => {
-    setName(profile?.name || "");
-    setDescription(profile?.description || "");
-    setInstructions(profile?.instructions || "");
-    setSoul(profile?.soul || "");
+    setDraft(draftFromProfile(profile));
+    setTemplateChosen(Boolean(profile));
     setError(null);
   }, [profile]);
 
-  const canSave = name.trim().length > 0 && !busy;
+  function updateDraft<K extends keyof DraftState>(key: K, value: DraftState[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  const canSave = draft.name.trim().length > 0 && templateChosen && !busy;
 
   async function handleSave() {
     if (!canSave) return;
     setBusy(true);
     setError(null);
 
+    const request = {
+      name: draft.name.trim(),
+      description: draft.description.trim() || undefined,
+      templateId: draft.templateId,
+      instructions: draft.instructions.trim(),
+      soul: draft.soul.trim(),
+      userContext: draft.userContext.trim(),
+      toolPolicyPreset: draft.toolPolicyPreset,
+      memoryDefaults: draft.memoryDefaults.trim(),
+    };
+
     try {
       if (profile) {
         await invoke("agent_profile_update", {
           id: profile.id,
-          request: {
-            name: name.trim(),
-            description: description.trim() || undefined,
-            instructions: instructions.trim() || undefined,
-            soul: soul.trim() || undefined,
-          },
+          request,
         });
       } else {
         await invoke("agent_profile_create", {
           request: {
-            name: name.trim(),
-            description: description.trim() || undefined,
-            instructions: instructions.trim() || undefined,
-            soul: soul.trim() || undefined,
-            model: { mode: "default" }, // UI doesn't support model override yet per simplified design
-            skills: [],
-            tools: [
-              "workspace_read",
-              "workspace_list",
-              "workspace_search",
-              "workspace_write",
-              "workspace_edit",
-            ],
+            ...request,
+            model: { mode: "default" },
           },
         });
       }
@@ -194,6 +246,41 @@ function AgentEditor({
     }
   }
 
+  if (!templateChosen && !profile) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Choose a template</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Start from a structured profile instead of a blank prompt.
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {AGENT_PROFILE_TEMPLATES.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              className="rounded-2xl border border-border bg-background p-5 text-left transition-colors hover:border-primary/30 hover:bg-secondary/40"
+              onClick={() => {
+                setDraft(draftFromTemplate(template.id));
+                setTemplateChosen(true);
+              }}
+            >
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Bot size={16} className="text-primary" />
+                {template.name}
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">{template.description}</p>
+              <div className="mt-4 text-xs text-muted-foreground">
+                {TOOL_POLICY_PRESET_DETAILS[template.profile.toolPolicyPreset].label}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {error && (
@@ -202,63 +289,104 @@ function AgentEditor({
         </div>
       )}
 
-      <label className="block">
-        <span className="text-sm font-medium text-foreground">Name</span>
-        <input
-          className="input mt-2"
-          value={name}
+      {!profile && (
+        <button
+          type="button"
+          className="text-sm text-muted-foreground hover:text-foreground"
+          onClick={() => setTemplateChosen(false)}
           disabled={busy}
-          placeholder="e.g. Frontend Specialist"
-          onChange={(e) => setName(e.target.value)}
-        />
-      </label>
+        >
+          Change template
+        </button>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <label className="block">
+          <span className="text-sm font-medium text-foreground">Name</span>
+          <input
+            className="input mt-2"
+            value={draft.name}
+            disabled={busy}
+            placeholder="e.g. Operations Partner"
+            onChange={(event) => updateDraft("name", event.target.value)}
+          />
+        </label>
+
+        <label className="block">
+          <span className="text-sm font-medium text-foreground">Description</span>
+          <input
+            className="input mt-2"
+            value={draft.description}
+            disabled={busy}
+            placeholder="Optional short description"
+            onChange={(event) => updateDraft("description", event.target.value)}
+          />
+        </label>
+      </div>
 
       <label className="block">
-        <span className="text-sm font-medium text-foreground">Description</span>
-        <input
-          className="input mt-2"
-          value={description}
-          disabled={busy}
-          placeholder="Optional short description"
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </label>
-
-      <label className="block">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-foreground">Instructions (AGENTS.md)</span>
-        </div>
-        <p className="text-xs text-muted-foreground mt-1 mb-2">
-          Primary directives and context for this agent.
+        <span className="text-sm font-medium text-foreground">Tool Policy</span>
+        <p className="mb-2 mt-1 text-xs text-muted-foreground">
+          Pick the business-friendly capability preset instead of raw tool wiring.
         </p>
-        <textarea
-          className="input min-h-32 resize-y"
-          value={instructions}
+        <select
+          className="input"
+          value={draft.toolPolicyPreset}
           disabled={busy}
-          placeholder="You are a frontend expert. Use React and Tailwind CSS."
-          onChange={(e) => setInstructions(e.target.value)}
-        />
+          onChange={(event) =>
+            updateDraft("toolPolicyPreset", event.target.value as ToolPolicyPreset)
+          }
+        >
+          {Object.entries(TOOL_POLICY_PRESET_DETAILS).map(([preset, details]) => (
+            <option key={preset} value={preset}>
+              {details.label}
+            </option>
+          ))}
+        </select>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {TOOL_POLICY_PRESET_DETAILS[draft.toolPolicyPreset].summary}
+        </p>
       </label>
 
-      <label className="block">
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-foreground">Soul (SOUL.md)</span>
-        </div>
-        <p className="text-xs text-muted-foreground mt-1 mb-2">
-          Personality, tone, and stylistic constraints.
-        </p>
-        <textarea
-          className="input min-h-32 resize-y"
-          value={soul}
-          disabled={busy}
-          placeholder="Be concise. Do not use filler words."
-          onChange={(e) => setSoul(e.target.value)}
-        />
-      </label>
+      <SectionField
+        label="Instructions"
+        hint="Operating contract, constraints, and work rules."
+        placeholder="Turn broad requests into concrete deliverables with explicit next steps."
+        value={draft.instructions}
+        disabled={busy}
+        onChange={(value) => updateDraft("instructions", value)}
+      />
+
+      <SectionField
+        label="Soul"
+        hint="Tone, stance, brevity, and stylistic expectations."
+        placeholder="Brief, direct, and calm. Avoid filler."
+        value={draft.soul}
+        disabled={busy}
+        onChange={(value) => updateDraft("soul", value)}
+      />
+
+      <SectionField
+        label="User Context"
+        hint="Who this agent serves and the domain assumptions it should carry."
+        placeholder="This agent supports an operations leader shipping internal plans and stakeholder updates."
+        value={draft.userContext}
+        disabled={busy}
+        onChange={(value) => updateDraft("userContext", value)}
+      />
+
+      <SectionField
+        label="Memory Defaults"
+        hint="Static authored preferences and reusable non-secret context."
+        placeholder="Reuse the weekly update format and established project names when available."
+        value={draft.memoryDefaults}
+        disabled={busy}
+        onChange={(value) => updateDraft("memoryDefaults", value)}
+      />
 
       <div className="flex items-center justify-between pt-4">
         <Button onClick={handleSave} disabled={!canSave}>
-          {busy && <Loader2 size={16} className="animate-spin mr-2" />}
+          {busy && <Loader2 size={16} className="mr-2 animate-spin" />}
           Save Agent
         </Button>
 
@@ -275,5 +403,35 @@ function AgentEditor({
         )}
       </div>
     </div>
+  );
+}
+
+function SectionField({
+  label,
+  hint,
+  placeholder,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  placeholder: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block rounded-2xl border border-border bg-secondary/20 p-4">
+      <span className="text-sm font-medium text-foreground">{label}</span>
+      <p className="mb-3 mt-1 text-xs text-muted-foreground">{hint}</p>
+      <textarea
+        className="input min-h-28 resize-y"
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { TaskEvent } from "@tessera/contracts";
+import { AgentProfileSchema, type TaskEvent, compileAgentRuntimeContext } from "@tessera/contracts";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 
@@ -92,8 +92,6 @@ describe("task runner", () => {
       expect(toolActivityUpdate.task.latestActivity).toBe("Using workspace_read");
     }
 
-
-
     expect(agentCompleted?.type).toBe("turn.completed");
     if (agentCompleted?.type === "turn.completed") {
       expect(agentCompleted.turn.id).toBe(agentTurn.id);
@@ -126,21 +124,22 @@ describe("task runner", () => {
     const agentTurn = store.createQueuedAgentTurn(task.id);
     const seen: unknown[] = [];
 
+    const defaultAgent = AgentProfileSchema.parse({
+      id: "default",
+      name: "Tessera",
+      model: { mode: "default" },
+      createdAt: "2026-05-02T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
     await runTaskTurn({
       store,
       taskId: task.id,
       userTurnId: userTurn.id,
       agentTurnId: agentTurn.id,
       execution: {
-        agent: {
-          id: "default",
-          name: "Tessera",
-          model: { mode: "default" },
-          skills: [],
-          tools: ["workspace_read"],
-          createdAt: "2026-05-02T00:00:00.000Z",
-          updatedAt: "2026-05-02T00:00:00.000Z",
-        },
+        agent: defaultAgent,
+        runtime: compileAgentRuntimeContext(defaultAgent),
         provider: {
           provider: "anthropic",
           model: "claude-sonnet-4-6",
@@ -229,21 +228,23 @@ describe("task runner", () => {
     const agentTurn = store.createQueuedAgentTurn(task.id);
     let capturedAgent: unknown;
 
+    const writerAgent = AgentProfileSchema.parse({
+      id: "writer",
+      name: "Writer",
+      model: { mode: "default" },
+      toolPolicyPreset: "read_only",
+      createdAt: "2026-05-02T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
     await runTaskTurn({
       store,
       taskId: task.id,
       userTurnId: userTurn.id,
       agentTurnId: agentTurn.id,
       execution: {
-        agent: {
-          id: "writer",
-          name: "Writer",
-          model: { mode: "default" },
-          skills: [],
-          tools: ["workspace_read"],
-          createdAt: "2026-05-02T00:00:00.000Z",
-          updatedAt: "2026-05-02T00:00:00.000Z",
-        },
+        agent: writerAgent,
+        runtime: compileAgentRuntimeContext(writerAgent),
         provider: {
           provider: "anthropic",
           model: "claude-sonnet-4-6",
