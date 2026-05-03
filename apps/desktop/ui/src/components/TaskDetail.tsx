@@ -68,8 +68,21 @@ export function TaskDetail({
   workspaceRoot,
 }: TaskDetailProps) {
   const [content, setContent] = useState("");
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const isBusy = sendingTurn || creatingTask;
   const canSend = Boolean(content.trim() && !isBusy && (task || workspaceRoot));
+  const taskId = task?.id;
+  const turnCount = task?.turns.length ?? 0;
+  const artifactCount = task?.artifacts.length ?? 0;
+
+  useEffect(() => {
+    if (!taskId) return;
+    void turnCount;
+    void artifactCount;
+    const viewport = scrollAreaRef.current?.querySelector("[data-radix-scroll-area-viewport]");
+    if (!(viewport instanceof HTMLDivElement)) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [artifactCount, taskId, turnCount]);
 
   async function handleSend(agentId?: string, agentLabel?: string) {
     if (!canSend) return;
@@ -184,8 +197,8 @@ export function TaskDetail({
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Chat area */}
-        <div className="flex-1 flex flex-col min-w-0 relative">
-          <ScrollArea className="flex-1 pb-28">
+        <div className="flex-1 flex flex-col min-w-0">
+          <ScrollArea ref={scrollAreaRef} className="flex-1">
             <div className="mx-auto max-w-3xl space-y-8 p-6">
               <section className="space-y-4">
                 {task.turns.map((turn) => (
@@ -326,12 +339,8 @@ function TaskComposer({
   const selectedLabel = selectedAgent?.name || "Tessera";
 
   return (
-    <div
-      className={
-        inline ? "w-full" : "absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4"
-      }
-    >
-      <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 transition-shadow">
+    <div className={inline ? "w-full" : "shrink-0 border-t border-border bg-background px-4 py-4"}>
+      <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
         <textarea
           value={value}
           onChange={(event) => onChange(event.target.value)}

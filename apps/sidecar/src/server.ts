@@ -468,6 +468,25 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
     const snapshot = taskStore.getTask(taskId);
     const userTurnId = userTurn.id;
     const agentTurnId = agentTurn.id;
+    const updatedSummary = taskStore.getTaskSummary(taskId);
+    taskEventBus.publish(taskId, {
+      type: "turn.created",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      turn: userTurn,
+    });
+    taskEventBus.publish(taskId, {
+      type: "turn.created",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      turn: agentTurn,
+    });
+    taskEventBus.publish(taskId, {
+      type: "task.updated",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      task: updatedSummary,
+    });
     queueMicrotask(() => {
       void runTaskTurn({
         store: taskStore,

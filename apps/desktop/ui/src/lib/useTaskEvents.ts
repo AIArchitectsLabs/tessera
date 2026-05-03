@@ -28,7 +28,10 @@ export function useTaskEvents({
         if (parsed.success) onEvent(parsed.data);
       });
       unlistenClosed = await listen(`task:event:${taskId}:closed`, () => {
-        if (!cancelled) onReconnect?.();
+        if (!cancelled) {
+          onReconnect?.();
+          void invoke("task_subscribe", { taskId }).catch(() => {});
+        }
       });
       if (cancelled) {
         unlistenEvent?.();

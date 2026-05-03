@@ -14,6 +14,7 @@ import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
 import { applyTaskEvent } from "./lib/applyTaskEvent";
+import { mergeTaskDetail } from "./lib/taskDetails";
 import { mergeTaskSummary, summaryFromDetail } from "./lib/taskSummaries";
 import { useTaskEvents } from "./lib/useTaskEvents";
 
@@ -95,7 +96,9 @@ export default function App() {
   }, []);
 
   const handleSnapshot = useCallback((task: TaskDetail) => {
-    setSelectedTask(task);
+    setSelectedTask((current) =>
+      current && current.id === task.id ? mergeTaskDetail(current, task) : task
+    );
     setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
   }, []);
 
@@ -193,7 +196,7 @@ export default function App() {
         taskId: selectedTaskId,
         request,
       });
-      setSelectedTask(task);
+      setSelectedTask((current) => (current ? mergeTaskDetail(current, task) : task));
       setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
     } catch (error) {
       setTaskDetailError(error instanceof Error ? error.message : String(error));
