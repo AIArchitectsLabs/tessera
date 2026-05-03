@@ -9,6 +9,22 @@ import type { AgentProfile, AgentProviderConfig } from "@tessera/contracts";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
+const TESSERA_SYSTEM_PROMPT = `You are Tessera, an AI workspace assistant for business professionals.
+
+Your purpose is to help users complete business tasks — strategy, planning, research, writing, analysis, operations, and more. You are not limited to coding; you can help with any knowledge-work objective.
+
+When a user asks what you can do, frame your capabilities around their business needs:
+- **Research & Analysis**: Market research, competitive analysis, data interpretation, trend spotting
+- **Strategy & Planning**: Business plans, go-to-market strategies, OKRs, roadmaps
+- **Writing & Communication**: Reports, proposals, emails, presentations, documentation
+- **Operations**: Process design, workflow optimization, checklists, SOPs
+- **Creative Work**: Brainstorming, content creation, naming, messaging frameworks
+- **Technical Support**: Code, scripts, data processing, integrations — when the task requires it
+
+You have access to workspace tools that let you read, write, search, and organize files within the user's workspace. Use these to deliver tangible outputs — documents, plans, analyses — not just advice.
+
+Be direct, professional, and action-oriented. Focus on delivering results, not describing your capabilities at length. When given a task, plan briefly then execute.`;
+
 type PiSessionEventListener = (event: AgentSessionEvent) => void;
 
 export interface PiSessionLike {
@@ -169,11 +185,20 @@ export async function createTesseraModelRegistry(options: {
 function buildPrompt(
   prompt: string,
   options: {
+    agentInstructions?: string;
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
   }
 ): string {
   const { conversationHistory } = options;
   const sections: string[] = [];
+
+  // Tessera identity + any agent-specific instructions go first so the model
+  // always sees our business-oriented framing regardless of the SDK system prompt.
+  const identity = [TESSERA_SYSTEM_PROMPT, options.agentInstructions]
+    .filter(Boolean)
+    .join("\n\n");
+  if (identity) sections.push(identity);
+
   if (conversationHistory && conversationHistory.length > 0) {
     const lines = conversationHistory
       .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.content}`)
@@ -207,15 +232,9 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     workspaceRoot: guard.root,
   });
 
-  if (options.agent?.instructions || options.agent?.soul) {
-    const customInstructions = [options.agent.instructions, options.agent.soul]
-      .filter(Boolean)
-      .join("\n\n");
-    const sessionAny = session as unknown as { agent: { state: { systemPrompt: string } } };
-    const existingSystemPrompt = sessionAny.agent?.state?.systemPrompt ?? "";
-    sessionAny.agent.state.systemPrompt =
-      customInstructions + (existingSystemPrompt ? `\n\n${existingSystemPrompt}` : "");
-  }
+  const agentInstructions = [options.agent?.instructions, options.agent?.soul]
+    .filter(Boolean)
+    .join("\n\n") || undefined;
 
   let text = "";
   let finalizedText = "";
@@ -268,6 +287,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   try {
     await session.prompt(
       buildPrompt(options.prompt, {
+        agentInstructions,
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),

@@ -270,7 +270,7 @@ describe("runPiTaskTurn", () => {
     expect(seen.customToolNames).toEqual(["workspace_read", "workspace_write"]);
   });
 
-  test("builds prompt with history and task; agent instructions go to system prompt", async () => {
+  test("builds prompt with identity, history, and task", async () => {
     const workspaceRoot = await makeWorkspace();
     let capturedSession: FakeSession | undefined;
     const factory: PiSessionFactory = async () => {
@@ -304,13 +304,10 @@ describe("runPiTaskTurn", () => {
     const prompt = capturedSession?.capturedPrompts[0] ?? "";
     const systemPrompt = capturedSession?.capturedSystemPrompt ?? "";
 
-    expect(prompt).not.toContain("Agent instructions:");
-    expect(prompt).not.toContain("Agent soul:");
+    expect(prompt).toContain("Write crisp updates.");
+    expect(prompt).toContain("Calm and direct.");
     expect(prompt).toContain("Prior conversation:\nUser: Hello\nAssistant: Hi there");
     expect(prompt).toContain("User task:\nDraft");
-
-    expect(systemPrompt).toContain("Write crisp updates.");
-    expect(systemPrompt).toContain("Calm and direct.");
   });
 
   test("omits history block when conversationHistory is empty", async () => {
