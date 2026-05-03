@@ -1,9 +1,11 @@
 import type {
   PermissionDecision,
   PermissionGrant,
+  ShellToolCall,
   ToolCapability,
   ToolRisk,
 } from "@tessera/contracts";
+import { findCliCommand } from "./cli-catalog.js";
 
 export interface PermissionRequest {
   toolId: string;
@@ -42,6 +44,73 @@ function hasExactGrant(grants: PermissionGrant[], request: PermissionRequest): b
   );
 }
 
+function allow(toolId: string, reason: string): PermissionDecision {
+  return { decision: "allow", toolId, reason };
+}
+
+function ask(request: PermissionRequest, reason: string): PermissionDecision {
+  return {
+    decision: "ask",
+    toolId: request.toolId,
+    reason,
+    approval: {
+      toolId: request.toolId,
+      args: request.args,
+      capability: request.capability,
+      risk: request.risk,
+      preview: request.preview,
+      reasonCode: reason,
+    },
+  };
+}
+
+function shellDecision(
+  request: PermissionRequest,
+  grants: PermissionGrant[]
+): PermissionDecision | undefined {
+  if (request.toolId !== "shell") return undefined;
+  const policy = findCliCommand(request.args as ShellToolCall);
+  if (!policy) {
+    return {
+      decision: "deny",
+      toolId: request.toolId,
+      reason: "shell_command_denied",
+    };
+  }
+  if (policy.approval === "allow") {
+    return allow(request.toolId, "shell_command_allowed");
+  }
+  if (hasToolGrant(grants, request) || hasExactGrant(grants, request)) {
+    return allow(request.toolId, "shell_command_granted");
+  }
+  return ask(request, "shell_command_requires_approval");
+}
+
+function browserDecision(
+  request: PermissionRequest,
+  grants: PermissionGrant[]
+): PermissionDecision | undefined {
+  if (request.toolId !== "browser") return undefined;
+  const action = typeof request.args.action === "string" ? request.args.action : "";
+  if (["open", "snap", "see", "back", "reload", "close"].includes(action)) {
+    return allow(request.toolId, "browser_action_allowed");
+  }
+  if (action === "eval") {
+    return ask(request, "browser_eval_requires_approval");
+  }
+  if (["click", "type", "select"].includes(action)) {
+    if (hasToolGrant(grants, request) || hasExactGrant(grants, request)) {
+      return allow(request.toolId, "browser_action_granted");
+    }
+    return ask(request, "browser_action_requires_approval");
+  }
+  return {
+    decision: "deny",
+    toolId: request.toolId,
+    reason: "browser_action_denied",
+  };
+}
+
 export function evaluatePermission(
   request: PermissionRequest,
   grants: PermissionGrant[] = []
@@ -54,33 +123,23 @@ export function evaluatePermission(
     };
   }
 
+  if (request.toolId === "todo" || request.toolId === "clarify" || request.toolId === "notify") {
+    return allow(request.toolId, `${request.toolId}_tool_allowed`);
+  }
+
+  const shell = shellDecision(request, grants);
+  if (shell) return shell;
+
+  const browser = browserDecision(request, grants);
+  if (browser) return browser;
+
   if (request.capability === "read") {
-    return {
-      decision: "allow",
-      toolId: request.toolId,
-      reason: "read_tool_allowed",
-    };
+    return allow(request.toolId, "read_tool_allowed");
   }
 
   if (hasToolGrant(grants, request) || hasExactGrant(grants, request)) {
-    return {
-      decision: "allow",
-      toolId: request.toolId,
-      reason: "write_tool_granted",
-    };
+    return allow(request.toolId, "write_tool_granted");
   }
 
-  return {
-    decision: "ask",
-    toolId: request.toolId,
-    reason: "write_requires_approval",
-    approval: {
-      toolId: request.toolId,
-      args: request.args,
-      capability: request.capability,
-      risk: request.risk,
-      preview: request.preview,
-      reasonCode: "write_requires_approval",
-    },
-  };
+  return ask(request, "write_requires_approval");
 }

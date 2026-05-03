@@ -4,6 +4,10 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AgentTurnRequestSchema,
+  AuditRecordSchema,
+  ClarifyRequestSchema,
+  ClarifyResponseSchema,
+  NotifyRequestSchema,
   SidecarReadySchema,
   SpawnRequestSchema,
   type SpawnResult,
@@ -11,6 +15,7 @@ import {
   TaskCreateTurnRequestSchema,
   TaskListResultSchema,
   TaskUpdateRequestSchema,
+  TodoOperationSchema,
   WorkflowResumeRequestSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
@@ -505,6 +510,156 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
   }
 }
 
+async function handleTaskTodo(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = TodoOperationSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.updateTodo(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  taskEventBus.publish(taskId, {
+    type: "task.todo_updated",
+    taskId,
+    emittedAt: new Date().toISOString(),
+    todo: task.todo,
+  });
+  return Response.json(task);
+}
+
+async function handleTaskClarifyRequest(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = ClarifyRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.requestClarify(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  taskEventBus.publish(taskId, {
+    type: "task.clarify_requested",
+    taskId,
+    emittedAt: new Date().toISOString(),
+    clarify: parsed.data,
+  });
+  return Response.json(task);
+}
+
+async function handleTaskClarifyResolve(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = ClarifyResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.clearClarify(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  taskEventBus.publish(taskId, {
+    type: "task.clarify_resolved",
+    taskId,
+    emittedAt: new Date().toISOString(),
+    response: parsed.data,
+  });
+  return Response.json(task);
+}
+
+async function handleTaskNotification(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = NotifyRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.addNotification(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  taskEventBus.publish(taskId, {
+    type: "task.notification",
+    taskId,
+    emittedAt: new Date().toISOString(),
+    notification: parsed.data,
+  });
+  return Response.json(task);
+}
+
+async function handleTaskAudit(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = AuditRecordSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const task = taskStore.appendAuditRecord(taskId, parsed.data);
+  if (!task) {
+    return Response.json({ error: "Unknown task" }, { status: 404 });
+  }
+  taskEventBus.publish(taskId, {
+    type: "task.audit_recorded",
+    taskId,
+    emittedAt: new Date().toISOString(),
+    auditRecord: parsed.data,
+  });
+  return Response.json(task);
+}
+
 async function handleTaskEvents(_req: Request, taskId: string): Promise<Response> {
   const encoder = new TextEncoder();
 
@@ -700,6 +855,36 @@ const server = Bun.serve({
     const taskTurnTaskId = taskTurnMatch?.[1];
     if (taskTurnTaskId) {
       return handleTaskCreateTurn(req, taskTurnTaskId);
+    }
+
+    const taskTodoMatch = pathname.match(/^\/tasks\/([^/]+)\/todo$/);
+    const taskTodoId = taskTodoMatch?.[1];
+    if (taskTodoId) {
+      return handleTaskTodo(req, taskTodoId);
+    }
+
+    const taskClarifyRequestMatch = pathname.match(/^\/tasks\/([^/]+)\/clarify$/);
+    const taskClarifyRequestId = taskClarifyRequestMatch?.[1];
+    if (taskClarifyRequestId) {
+      return handleTaskClarifyRequest(req, taskClarifyRequestId);
+    }
+
+    const taskClarifyResolveMatch = pathname.match(/^\/tasks\/([^/]+)\/clarify\/resolve$/);
+    const taskClarifyResolveId = taskClarifyResolveMatch?.[1];
+    if (taskClarifyResolveId) {
+      return handleTaskClarifyResolve(req, taskClarifyResolveId);
+    }
+
+    const taskNotificationMatch = pathname.match(/^\/tasks\/([^/]+)\/notify$/);
+    const taskNotificationId = taskNotificationMatch?.[1];
+    if (taskNotificationId) {
+      return handleTaskNotification(req, taskNotificationId);
+    }
+
+    const taskAuditMatch = pathname.match(/^\/tasks\/([^/]+)\/audit$/);
+    const taskAuditId = taskAuditMatch?.[1];
+    if (taskAuditId) {
+      return handleTaskAudit(req, taskAuditId);
     }
 
     const taskMatch = pathname.match(/^\/tasks\/([^/]+)$/);

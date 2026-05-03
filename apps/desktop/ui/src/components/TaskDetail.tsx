@@ -5,18 +5,23 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentProfile,
   AgentProfileListResult,
+  ClarifyResponse,
   TaskDetail as TaskDetailType,
   TaskSummary,
   TaskTurn,
+  TodoItemStatus,
+  TodoOperation,
 } from "@tessera/contracts";
 import {
   ArrowUp,
   Bot,
+  Check,
   CheckCircle2,
   ChevronDown,
   Clock,
   FileText,
   FolderOpen,
+  ListTodo,
   Loader2,
   Sparkles,
   XCircle,
@@ -26,9 +31,11 @@ import { useEffect, useRef, useState } from "react";
 interface TaskDetailProps {
   creatingTask: boolean;
   loading: boolean;
+  onClarifyResolve: (response: ClarifyResponse) => Promise<void>;
   onCreateTask: (initialInstruction: string, agentId: string, agentLabel: string) => Promise<void>;
   onCreateTurn: (content: string) => Promise<void>;
   onSelectTask: (taskId: string) => void;
+  onTodoUpdate: (operation: TodoOperation) => Promise<void>;
   sendingTurn: boolean;
   task: TaskDetailType | null;
   tasks: TaskSummary[];
@@ -59,9 +66,11 @@ function turnLabel(turn: TaskTurn) {
 export function TaskDetail({
   creatingTask,
   loading,
+  onClarifyResolve,
   onCreateTask,
   onCreateTurn,
   onSelectTask,
+  onTodoUpdate,
   sendingTurn,
   task,
   tasks,
@@ -74,6 +83,8 @@ export function TaskDetail({
   const taskId = task?.id;
   const turnCount = task?.turns.length ?? 0;
   const artifactCount = task?.artifacts.length ?? 0;
+  const latestNotification = task?.notifications[task.notifications.length - 1];
+  const lastTaskIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!taskId) return;
@@ -81,6 +92,11 @@ export function TaskDetail({
     void artifactCount;
     const viewport = scrollAreaRef.current?.querySelector("[data-radix-scroll-area-viewport]");
     if (!(viewport instanceof HTMLDivElement)) return;
+    const isNewTask = lastTaskIdRef.current !== taskId;
+    lastTaskIdRef.current = taskId;
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const shouldStickToBottom = isNewTask || distanceFromBottom < 96;
+    if (!shouldStickToBottom) return;
     viewport.scrollTop = viewport.scrollHeight;
   }, [artifactCount, taskId, turnCount]);
 
@@ -195,6 +211,13 @@ export function TaskDetail({
         </div>
       )}
 
+      {latestNotification && (
+        <div className="border-b border-border bg-secondary/35 px-6 py-3">
+          <div className="text-sm font-semibold text-foreground">{latestNotification.title}</div>
+          <div className="mt-0.5 text-sm text-muted-foreground">{latestNotification.body}</div>
+        </div>
+      )}
+
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Chat area */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -282,8 +305,10 @@ export function TaskDetail({
         </div>
 
         {/* Right-side detail pane */}
-        <TaskSidePane task={task} workspaceRoot={workspaceRoot} />
+        <TaskSidePane task={task} workspaceRoot={workspaceRoot} onTodoUpdate={onTodoUpdate} />
       </div>
+
+      {task.clarify && <ClarifyDialog clarify={task.clarify} onSubmit={onClarifyResolve} />}
     </main>
   );
 }
@@ -499,8 +524,14 @@ function AgentInfoPopover({
 function TaskSidePane({
   task,
   workspaceRoot,
-}: { task: TaskDetailType; workspaceRoot: string | null }) {
+  onTodoUpdate,
+}: {
+  task: TaskDetailType;
+  workspaceRoot: string | null;
+  onTodoUpdate: (operation: TodoOperation) => Promise<void>;
+}) {
   const [progressOpen, setProgressOpen] = useState(true);
+  const [todoOpen, setTodoOpen] = useState(true);
   const [agentOpen, setAgentOpen] = useState(true);
   const [contextOpen, setContextOpen] = useState(true);
 
@@ -576,6 +607,10 @@ function TaskSidePane({
           <span className="truncate">{folderName}</span>
           <ChevronDown size={14} className="ml-auto shrink-0 text-muted-foreground -rotate-90" />
         </button>
+      </SidePaneSection>
+
+      <SidePaneSection title="Todo" open={todoOpen} onToggle={() => setTodoOpen(!todoOpen)}>
+        <TodoPanel todo={task.todo} onTodoUpdate={onTodoUpdate} />
       </SidePaneSection>
 
       <SidePaneSection
@@ -661,6 +696,152 @@ function TaskSidePane({
         )}
       </SidePaneSection>
     </aside>
+  );
+}
+
+function TodoPanel({
+  todo,
+  onTodoUpdate,
+}: {
+  todo: TaskDetailType["todo"];
+  onTodoUpdate: (operation: TodoOperation) => Promise<void>;
+}) {
+  if (!todo || todo.items.length === 0) {
+    return <p className="text-xs text-muted-foreground">No task checklist yet.</p>;
+  }
+
+  async function toggleStatus(itemId: string, status: TodoItemStatus) {
+    await onTodoUpdate({
+      type: "set_status",
+      itemId,
+      status: status === "completed" ? "pending" : "completed",
+    });
+  }
+
+  return (
+    <div className="space-y-2">
+      {todo.items
+        .slice()
+        .sort((left, right) => left.order - right.order)
+        .map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => toggleStatus(item.id, item.status)}
+            className="flex w-full items-start gap-3 rounded-xl border border-border bg-secondary/20 px-3 py-2 text-left transition-colors hover:bg-secondary/35"
+          >
+            <span
+              className={cn(
+                "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border",
+                item.status === "completed"
+                  ? "border-[var(--leaf)] bg-[var(--leaf-soft)] text-[var(--leaf)]"
+                  : "border-border bg-background text-transparent"
+              )}
+            >
+              <Check size={12} />
+            </span>
+            <span className="min-w-0">
+              <span
+                className={cn(
+                  "block text-sm text-foreground",
+                  item.status === "completed" && "line-through text-muted-foreground"
+                )}
+              >
+                {item.label}
+              </span>
+              {item.note && (
+                <span className="mt-0.5 block text-xs text-muted-foreground">{item.note}</span>
+              )}
+            </span>
+          </button>
+        ))}
+    </div>
+  );
+}
+
+function ClarifyDialog({
+  clarify,
+  onSubmit,
+}: {
+  clarify: NonNullable<TaskDetailType["clarify"]>;
+  onSubmit: (response: ClarifyResponse) => Promise<void>;
+}) {
+  const [selectedOptionId, setSelectedOptionId] = useState<string>(clarify.options[0]?.id ?? "");
+  const [freeform, setFreeform] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(cancelled: boolean) {
+    setSubmitting(true);
+    try {
+      await onSubmit({
+        promptId: clarify.promptId,
+        cancelled,
+        ...(cancelled ? {} : selectedOptionId ? { selectedOptionId } : { freeform }),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 p-6 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-3xl border border-border bg-background p-6 shadow-2xl">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <ListTodo size={16} className="text-primary" />
+          Clarification needed
+        </div>
+        <p className="mt-3 text-sm leading-6 text-foreground">{clarify.message}</p>
+        {clarify.detail && <p className="mt-2 text-sm text-muted-foreground">{clarify.detail}</p>}
+        <div className="mt-4 space-y-2">
+          {clarify.options.map((option) => (
+            <label
+              key={option.id}
+              className="flex cursor-pointer items-start gap-3 rounded-2xl border border-border px-3 py-3"
+            >
+              <input
+                checked={selectedOptionId === option.id}
+                className="mt-1"
+                name={`clarify-${clarify.promptId}`}
+                onChange={() => setSelectedOptionId(option.id)}
+                type="radio"
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">{option.label}</span>
+                {option.description && (
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
+                )}
+              </span>
+            </label>
+          ))}
+        </div>
+        {clarify.allowFreeform && (
+          <textarea
+            value={freeform}
+            onChange={(event) => {
+              setSelectedOptionId("");
+              setFreeform(event.target.value);
+            }}
+            placeholder="Add a custom answer"
+            rows={3}
+            className="mt-4 w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm outline-none"
+          />
+        )}
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={() => void submit(true)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void submit(false)}
+            disabled={submitting || (!selectedOptionId && !freeform.trim())}
+          >
+            {submitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : null}
+            Continue
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

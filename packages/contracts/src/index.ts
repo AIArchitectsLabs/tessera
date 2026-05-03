@@ -257,6 +257,159 @@ export const AgentTurnResultSchema = z.object({
 
 export type AgentTurnResult = z.infer<typeof AgentTurnResultSchema>;
 
+export const ShellCommandNameSchema = z.enum([
+  "web-search",
+  "web-fetch",
+  "gcal",
+  "mail",
+  "drive",
+  "contacts",
+]);
+export type ShellCommandName = z.infer<typeof ShellCommandNameSchema>;
+
+export const ShellToolCallSchema = z.object({
+  command: ShellCommandNameSchema,
+  subcommand: z.string().min(1),
+  args: z.array(z.string()).default([]),
+});
+export type ShellToolCall = z.infer<typeof ShellToolCallSchema>;
+
+export const ShellToolResultSchema = z.object({
+  command: ShellCommandNameSchema,
+  subcommand: z.string().min(1),
+  stdout: z.string().default(""),
+  stderr: z.string().default(""),
+  exitCode: z.number().int(),
+  durationMs: z.number().int().nonnegative(),
+  parsed: z.unknown().optional(),
+});
+export type ShellToolResult = z.infer<typeof ShellToolResultSchema>;
+
+export const BrowserActionSchema = z.enum([
+  "open",
+  "snap",
+  "see",
+  "click",
+  "type",
+  "select",
+  "back",
+  "reload",
+  "eval",
+  "close",
+]);
+export type BrowserAction = z.infer<typeof BrowserActionSchema>;
+
+export const BrowserActionInputSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("open"),
+    url: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("snap"),
+    pageId: z.string().min(1).optional(),
+    fullPage: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal("see"),
+    pageId: z.string().min(1).optional(),
+    query: z.string().min(1).optional(),
+  }),
+  z.object({
+    action: z.literal("click"),
+    pageId: z.string().min(1).optional(),
+    selector: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("type"),
+    pageId: z.string().min(1).optional(),
+    selector: z.string().min(1),
+    text: z.string(),
+    submit: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal("select"),
+    pageId: z.string().min(1).optional(),
+    selector: z.string().min(1),
+    value: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("back"),
+    pageId: z.string().min(1).optional(),
+  }),
+  z.object({
+    action: z.literal("reload"),
+    pageId: z.string().min(1).optional(),
+  }),
+  z.object({
+    action: z.literal("eval"),
+    pageId: z.string().min(1).optional(),
+    expression: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("close"),
+    pageId: z.string().min(1).optional(),
+  }),
+]);
+export type BrowserActionInput = z.infer<typeof BrowserActionInputSchema>;
+
+export const BrowserToolResultSchema = z.object({
+  action: BrowserActionSchema,
+  summary: z.string().optional(),
+  sessionId: z.string().min(1).optional(),
+  pageId: z.string().min(1).optional(),
+  url: z.string().min(1).optional(),
+  content: z.string().optional(),
+  screenshotPath: z.string().min(1).optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+export type BrowserToolResult = z.infer<typeof BrowserToolResultSchema>;
+
+export const ClarifyOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+});
+export type ClarifyOption = z.infer<typeof ClarifyOptionSchema>;
+
+export const ClarifyRequestSchema = z.object({
+  promptId: z.string().min(1),
+  taskId: z.string().min(1),
+  message: z.string().min(1),
+  detail: z.string().optional(),
+  allowFreeform: z.boolean().default(true),
+  options: z.array(ClarifyOptionSchema).default([]),
+  createdAt: z.string().datetime(),
+});
+export type ClarifyRequest = z.infer<typeof ClarifyRequestSchema>;
+
+export const ClarifyResponseSchema = z.object({
+  promptId: z.string().min(1),
+  selectedOptionId: z.string().min(1).optional(),
+  freeform: z.string().optional(),
+  cancelled: z.boolean(),
+});
+export type ClarifyResponse = z.infer<typeof ClarifyResponseSchema>;
+
+export const NotifyRequestSchema = z.object({
+  title: z.string().min(1),
+  body: z.string().min(1),
+  actionLabel: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
+});
+export type NotifyRequest = z.infer<typeof NotifyRequestSchema>;
+
+export const AuditRecordSchema = z.object({
+  id: z.string().min(1),
+  taskId: z.string().min(1).optional(),
+  toolId: z.string().min(1),
+  action: z.string().min(1),
+  summary: z.string().min(1),
+  status: z.enum(["requested", "approved", "denied", "completed", "failed"]),
+  createdAt: z.string().datetime(),
+  metadata: z.record(z.unknown()).optional(),
+});
+export type AuditRecord = z.infer<typeof AuditRecordSchema>;
+
 export const WorkflowInputDefinitionSchema = z.object({
   type: z.enum(["string", "number", "boolean"]),
   required: z.boolean().default(false),
@@ -370,6 +523,24 @@ export const TaskArtifactSchema = z.object({
 });
 export type TaskArtifact = z.infer<typeof TaskArtifactSchema>;
 
+export const TodoItemStatusSchema = z.enum(["pending", "in_progress", "completed"]);
+export type TodoItemStatus = z.infer<typeof TodoItemStatusSchema>;
+
+export const TodoItemSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  status: TodoItemStatusSchema,
+  note: z.string().optional(),
+  order: z.number().int().nonnegative(),
+});
+export type TodoItem = z.infer<typeof TodoItemSchema>;
+
+export const TaskTodoSchema = z.object({
+  items: z.array(TodoItemSchema),
+  updatedAt: z.string().datetime(),
+});
+export type TaskTodo = z.infer<typeof TaskTodoSchema>;
+
 export const TaskSummarySchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1),
@@ -409,10 +580,39 @@ export const TaskDetailSchema = TaskSummarySchema.extend({
       compiledSummary: z.string().min(1),
     })
     .optional(),
+  todo: TaskTodoSchema.optional(),
+  clarify: ClarifyRequestSchema.optional(),
+  notifications: z.array(NotifyRequestSchema).default([]),
+  auditRecords: z.array(AuditRecordSchema).default([]),
   turns: z.array(TaskTurnSchema),
   artifacts: z.array(TaskArtifactSchema),
 });
 export type TaskDetail = z.infer<typeof TaskDetailSchema>;
+
+export const TodoOperationSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("create"),
+    items: z.array(TodoItemSchema),
+  }),
+  z.object({
+    type: z.literal("replace"),
+    items: z.array(TodoItemSchema),
+  }),
+  z.object({
+    type: z.literal("set_status"),
+    itemId: z.string().min(1),
+    status: TodoItemStatusSchema,
+  }),
+  z.object({
+    type: z.literal("append"),
+    item: TodoItemSchema,
+  }),
+  z.object({
+    type: z.literal("remove"),
+    itemId: z.string().min(1),
+  }),
+]);
+export type TodoOperation = z.infer<typeof TodoOperationSchema>;
 
 export const TaskListResultSchema = z.object({
   tasks: z.array(TaskSummarySchema),
@@ -545,6 +745,11 @@ export type TaskCreateTurnRequest = z.infer<typeof TaskCreateTurnRequestSchema>;
 
 export const TaskEventTypeSchema = z.enum([
   "task.updated",
+  "task.todo_updated",
+  "task.clarify_requested",
+  "task.clarify_resolved",
+  "task.notification",
+  "task.audit_recorded",
   "turn.created",
   "turn.status_changed",
   "turn.completed",
@@ -560,6 +765,26 @@ const TaskEventBase = z.object({
 export const TaskUpdatedEventSchema = TaskEventBase.extend({
   type: z.literal("task.updated"),
   task: TaskSummarySchema,
+});
+export const TaskTodoUpdatedEventSchema = TaskEventBase.extend({
+  type: z.literal("task.todo_updated"),
+  todo: TaskTodoSchema.optional(),
+});
+export const TaskClarifyRequestedEventSchema = TaskEventBase.extend({
+  type: z.literal("task.clarify_requested"),
+  clarify: ClarifyRequestSchema,
+});
+export const TaskClarifyResolvedEventSchema = TaskEventBase.extend({
+  type: z.literal("task.clarify_resolved"),
+  response: ClarifyResponseSchema,
+});
+export const TaskNotificationEventSchema = TaskEventBase.extend({
+  type: z.literal("task.notification"),
+  notification: NotifyRequestSchema,
+});
+export const TaskAuditRecordedEventSchema = TaskEventBase.extend({
+  type: z.literal("task.audit_recorded"),
+  auditRecord: AuditRecordSchema,
 });
 export const TurnCreatedEventSchema = TaskEventBase.extend({
   type: z.literal("turn.created"),
@@ -580,6 +805,11 @@ export const ArtifactCreatedEventSchema = TaskEventBase.extend({
 
 export const TaskEventSchema = z.discriminatedUnion("type", [
   TaskUpdatedEventSchema,
+  TaskTodoUpdatedEventSchema,
+  TaskClarifyRequestedEventSchema,
+  TaskClarifyResolvedEventSchema,
+  TaskNotificationEventSchema,
+  TaskAuditRecordedEventSchema,
   TurnCreatedEventSchema,
   TurnStatusChangedEventSchema,
   TurnCompletedEventSchema,
@@ -600,34 +830,53 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
   read_only: {
     label: "Read-only",
     approvalMode: "never",
-    summary: "Can inspect and search the workspace but cannot make file changes.",
-    capabilities: ["Read files", "List directories", "Search content"],
-    allowedTools: ["workspace_read", "workspace_list", "workspace_search"],
+    summary:
+      "Can inspect and search the workspace and maintain the task checklist, but cannot make file changes.",
+    capabilities: ["Read files", "List directories", "Search content", "Manage task checklist"],
+    allowedTools: ["workspace_read", "workspace_list", "workspace_search", "todo"],
   },
   workspace_editor: {
     label: "Workspace editor",
     approvalMode: "never",
-    summary: "Can inspect the workspace and update files directly when needed.",
-    capabilities: ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+    summary:
+      "Can inspect the workspace, maintain the task checklist, and update files directly when needed.",
+    capabilities: [
+      "Read files",
+      "List directories",
+      "Search content",
+      "Write files",
+      "Edit files",
+      "Manage task checklist",
+    ],
     allowedTools: [
       "workspace_read",
       "workspace_list",
       "workspace_search",
       "workspace_write",
       "workspace_edit",
+      "todo",
     ],
   },
   elevated_with_approval: {
     label: "Elevated with approval",
     approvalMode: "ask",
-    summary: "Can edit the workspace, but should ask before taking mutating actions.",
-    capabilities: ["Read files", "List directories", "Search content", "Write files", "Edit files"],
+    summary:
+      "Can edit the workspace and maintain the task checklist, but should ask before taking mutating actions.",
+    capabilities: [
+      "Read files",
+      "List directories",
+      "Search content",
+      "Write files",
+      "Edit files",
+      "Manage task checklist",
+    ],
     allowedTools: [
       "workspace_read",
       "workspace_list",
       "workspace_search",
       "workspace_write",
       "workspace_edit",
+      "todo",
     ],
   },
 };

@@ -5,8 +5,15 @@ import {
   SessionManager,
   createAgentSession,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentProfile, AgentProviderConfig, AgentRuntimeContext } from "@tessera/contracts";
+import type {
+  AgentProfile,
+  AgentProviderConfig,
+  AgentRuntimeContext,
+  TaskTodo,
+  TodoOperation,
+} from "@tessera/contracts";
 import { compileAgentRuntimeContext } from "@tessera/contracts";
+import { createTaskToolDefinitions } from "./task-tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -53,6 +60,9 @@ export interface RunPiTaskTurnOptions {
   prompt: string;
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
+  taskRuntime?: {
+    applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
+  };
   workspaceRoot: string;
 }
 
@@ -211,9 +221,10 @@ function buildPrompt(
 
 function buildAgentInstructions(
   agent: AgentProfile | undefined,
-  runtime: AgentRuntimeContext | undefined
+  runtime: AgentRuntimeContext | undefined,
+  options?: { hasTaskChecklistTool?: boolean }
 ): string | undefined {
-  if (!agent && !runtime) return undefined;
+  if (!agent && !runtime && !options?.hasTaskChecklistTool) return undefined;
 
   const sections = [
     agent?.instructions ? `Agent instructions:\n${agent.instructions}` : "",
@@ -222,6 +233,9 @@ function buildAgentInstructions(
     agent?.memoryDefaults ? `Memory defaults:\n${agent.memoryDefaults}` : "",
     runtime?.toolPolicy.approvalMode === "ask"
       ? "Tool policy:\nAsk for approval before using mutating workspace tools."
+      : "",
+    options?.hasTaskChecklistTool
+      ? "Task checklist guidance:\nWhen the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
       : "",
   ].filter(Boolean);
 
@@ -236,12 +250,14 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       boundaryViolations++;
     },
   });
+  const taskTools = createTaskToolDefinitions(options.taskRuntime);
   const runtime =
     options.runtime ?? (options.agent ? compileAgentRuntimeContext(options.agent) : undefined);
+  const toolDefinitions = [...allTools, ...taskTools];
   const allowedTools = new Set(
-    runtime?.toolPolicy.allowedTools ?? allTools.map((tool) => tool.name)
+    runtime?.toolPolicy.allowedTools ?? toolDefinitions.map((tool) => tool.name)
   );
-  const customTools = allTools.filter((tool) => allowedTools.has(tool.name));
+  const customTools = toolDefinitions.filter((tool) => allowedTools.has(tool.name));
 
   const { model, modelRegistry } = await createTesseraModelRegistry({
     ...(options.credential ? { credential: options.credential } : {}),
@@ -255,7 +271,9 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     workspaceRoot: guard.root,
   });
 
-  const agentInstructions = buildAgentInstructions(options.agent, runtime);
+  const agentInstructions = buildAgentInstructions(options.agent, runtime, {
+    hasTaskChecklistTool: taskTools.some((tool) => tool.name === "todo"),
+  });
 
   let text = "";
   let finalizedText = "";

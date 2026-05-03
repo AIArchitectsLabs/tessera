@@ -37,6 +37,8 @@ describe("taskSummaries", () => {
     const detail: TaskDetail = {
       ...summary,
       description: "desc",
+      notifications: [],
+      auditRecords: [],
       turns: [],
       artifacts: [],
       agentContext: undefined,

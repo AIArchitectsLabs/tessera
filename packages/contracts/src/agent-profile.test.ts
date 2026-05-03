@@ -64,7 +64,7 @@ describe("agent profile contracts", () => {
   test("resolves tool policy presets into concrete capabilities", () => {
     expect(resolveToolPolicyPreset("read_only")).toMatchObject({
       approvalMode: "never",
-      allowedTools: ["workspace_read", "workspace_list", "workspace_search"],
+      allowedTools: ["workspace_read", "workspace_list", "workspace_search", "todo"],
     });
     expect(resolveToolPolicyPreset("elevated_with_approval")).toMatchObject({
       approvalMode: "ask",
@@ -89,6 +89,7 @@ describe("agent profile contracts", () => {
     const runtime = compileAgentRuntimeContext(profile);
     expect(runtime.templateLabel).toBe("Business Operator");
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_write");
+    expect(runtime.toolPolicy.allowedTools).toContain("todo");
     expect(runtime.sectionSummaries.instructions).toContain("Drive concrete next steps");
   });
 

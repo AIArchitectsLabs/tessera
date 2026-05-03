@@ -14,9 +14,19 @@ export {
   type PiTaskTurnResult,
   type RunPiTaskTurnOptions,
 } from "./pi-session.js";
+export { createTaskToolDefinitions, type TaskToolRuntime } from "./task-tools.js";
 export { evaluatePermission, type PermissionRequest } from "./permission.js";
 export {
+  CLI_CATALOG,
+  findCliCommand,
+  formatCliCatalogLine,
+  formatShellPreview,
+} from "./cli-catalog.js";
+export { ShellValidationError, validateShellCall } from "./shell-runtime.js";
+export {
+  type BrowserExecutor,
   createTesseraTools,
+  type ShellExecutor,
   summarizeToolResult,
   toolNameToId,
   type WorkspaceCliExecutor,

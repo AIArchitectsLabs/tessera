@@ -217,6 +217,47 @@ describe("task runner", () => {
     }
   });
 
+  test("task runtime todo updates persist and publish live events", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Prepare launch checklist",
+    });
+    const userTurn = store.createUserTurn(task.id, "Make a checklist");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    const events: TaskEvent[] = [];
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ taskRuntime }) => {
+        await taskRuntime?.applyTodo({
+          type: "create",
+          items: [
+            { id: "todo-1", label: "Draft brief", status: "pending", order: 0 },
+            { id: "todo-2", label: "Review risks", status: "pending", order: 1 },
+          ],
+        });
+        return { text: "Checklist created.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const todoEvent = events.find((event) => event.type === "task.todo_updated");
+    expect(todoEvent?.type).toBe("task.todo_updated");
+    if (todoEvent?.type === "task.todo_updated") {
+      expect(todoEvent.todo?.items.map((item) => item.label)).toEqual([
+        "Draft brief",
+        "Review risks",
+      ]);
+    }
+
+    expect(store.getTask(task.id)?.todo?.items).toHaveLength(2);
+  });
+
   test("forwards execution agent to piRunner", async () => {
     const store = makeStore();
     const task = store.createTask({

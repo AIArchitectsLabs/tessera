@@ -19,6 +19,8 @@ const baseDetail: TaskDetail = {
   agentId: "default",
   createdAt: "2026-05-01T00:00:00.000Z",
   updatedAt: "2026-05-01T00:00:00.000Z",
+  notifications: [],
+  auditRecords: [],
   turns: [baseTurn],
   artifacts: [],
 };
@@ -65,6 +67,20 @@ describe("applyTaskEvent", () => {
     const result = applyTaskEvent(baseDetail, event);
     expect(result.turns.length).toBe(2);
     expect(result.turns[result.turns.length - 1]).toBe(newTurn);
+  });
+
+  test("task.todo_updated replaces the todo snapshot", () => {
+    const result = applyTaskEvent(baseDetail, {
+      type: "task.todo_updated",
+      taskId: "task-1",
+      emittedAt: "2026-05-01T00:00:00.000Z",
+      todo: {
+        updatedAt: "2026-05-01T00:00:00.000Z",
+        items: [{ id: "todo-1", label: "Draft", status: "pending", order: 0 }],
+      },
+    });
+
+    expect(result.todo?.items[0]?.label).toBe("Draft");
   });
 
   test("turn.created deduplicates existing turn", () => {

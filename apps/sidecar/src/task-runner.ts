@@ -5,7 +5,9 @@ import type {
   TaskEvent,
   TaskExecutionConfig,
   TaskSummary,
+  TaskTodo,
   TaskTurn,
+  TodoOperation,
 } from "@tessera/contracts";
 import { type PiTaskTurnResult, runPiTaskTurn } from "@tessera/core";
 import type { TaskStore } from "./task-store.js";
@@ -21,6 +23,9 @@ export interface RunTaskTurnOptions {
     prompt: string;
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
+    taskRuntime?: {
+      applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
+    };
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
   provider?: AgentProviderConfig;
@@ -122,6 +127,18 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       },
       prompt: userTurn.content,
       provider,
+      taskRuntime: {
+        async applyTodo(operation) {
+          const task = store.updateTodo(taskId, operation);
+          publish({
+            type: "task.todo_updated",
+            taskId,
+            emittedAt: new Date().toISOString(),
+            todo: task?.todo,
+          });
+          return task?.todo;
+        },
+      },
       workspaceRoot: task.workspaceRoot,
     });
     const artifactContent = result.text.trim() || "No response was produced.";

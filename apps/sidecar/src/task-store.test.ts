@@ -48,4 +48,36 @@ describe("task store", () => {
       store.close();
     }
   });
+
+  test("persists todo and clarify state with the task", () => {
+    const store = createTaskStore(tempDbPath("tasks.sqlite"));
+    try {
+      const task = store.createTask({
+        workspaceRoot: "/workspace/acme",
+        initialInstruction: "Plan launch work",
+      });
+
+      store.updateTodo(task.id, {
+        type: "create",
+        items: [
+          { id: "todo-1", label: "Draft brief", status: "pending", order: 0 },
+          { id: "todo-2", label: "Review risks", status: "in_progress", order: 1 },
+        ],
+      });
+      store.requestClarify(task.id, {
+        promptId: "prompt-1",
+        taskId: task.id,
+        message: "Which region should launch first?",
+        allowFreeform: true,
+        options: [{ id: "us", label: "US" }],
+        createdAt: "2026-05-03T00:00:00.000Z",
+      });
+
+      const snapshot = store.getTask(task.id);
+      expect(snapshot?.todo?.items).toHaveLength(2);
+      expect(snapshot?.clarify?.promptId).toBe("prompt-1");
+    } finally {
+      store.close();
+    }
+  });
 });

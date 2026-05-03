@@ -3,6 +3,13 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   type AgentRuntimeContext,
+  type AuditRecord,
+  AuditRecordSchema,
+  type ClarifyRequest,
+  ClarifyRequestSchema,
+  type ClarifyResponse,
+  type NotifyRequest,
+  NotifyRequestSchema,
   type TaskArtifact,
   TaskArtifactSchema,
   type TaskCreateRequest,
@@ -11,10 +18,13 @@ import {
   type TaskStatus,
   type TaskSummary,
   TaskSummarySchema,
+  type TaskTodo,
+  TaskTodoSchema,
   type TaskTurn,
   TaskTurnSchema,
   type TaskTurnStatus,
   type TaskUpdateRequest,
+  type TodoOperation,
 } from "@tessera/contracts";
 
 export interface CreateArtifactInput {
@@ -33,6 +43,9 @@ export type CreateTaskInput = Omit<TaskCreateRequest, "agentLabel" | "agentId" |
 };
 
 export interface TaskStore {
+  addNotification(taskId: string, notification: NotifyRequest): TaskDetail | undefined;
+  appendAuditRecord(taskId: string, auditRecord: AuditRecord): TaskDetail | undefined;
+  clearClarify(taskId: string, response: ClarifyResponse): TaskDetail | undefined;
   close(): void;
   createAgentTurn(taskId: string, content: string): TaskTurn;
   createArtifact(input: CreateArtifactInput): TaskArtifact;
@@ -41,8 +54,10 @@ export interface TaskStore {
   createUserTurn(taskId: string, content: string): TaskTurn;
   getTask(taskId: string): TaskDetail | undefined;
   getTaskSummary(taskId: string): TaskSummary;
+  requestClarify(taskId: string, clarify: ClarifyRequest): TaskDetail | undefined;
   getTurn(turnId: string): TaskTurn;
   listTasks(filter: { workspaceRoot: string }): TaskSummary[];
+  updateTodo(taskId: string, operation: TodoOperation): TaskDetail | undefined;
   updateTask(taskId: string, patch: TaskUpdateRequest): TaskDetail | undefined;
   updateTurn(
     turnId: string,
@@ -60,6 +75,10 @@ interface TaskRow {
   latest_activity: string | null;
   description: string | null;
   agent_context_json: string | null;
+  todo_json: string | null;
+  clarify_json: string | null;
+  notifications_json: string | null;
+  audit_records_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -152,6 +171,48 @@ function rowToArtifact(row: ArtifactRow): TaskArtifact {
   });
 }
 
+function parseJsonOrUndefined<T>(
+  value: string | null,
+  schema: { parse: (value: unknown) => T }
+): T | undefined {
+  if (!value) return undefined;
+  return schema.parse(JSON.parse(value));
+}
+
+function parseJsonArray<T>(value: string | null, parseItem: (value: unknown) => T): T[] {
+  if (!value) return [];
+  const parsed = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((item) => parseItem(item));
+}
+
+function applyTodoOperation(current: TaskTodo | undefined, operation: TodoOperation): TaskTodo {
+  const updatedAt = nowIso();
+  const items = current?.items ?? [];
+
+  if (operation.type === "create" || operation.type === "replace") {
+    return TaskTodoSchema.parse({ items: operation.items, updatedAt });
+  }
+
+  if (operation.type === "append") {
+    return TaskTodoSchema.parse({ items: [...items, operation.item], updatedAt });
+  }
+
+  if (operation.type === "remove") {
+    return TaskTodoSchema.parse({
+      items: items.filter((item) => item.id !== operation.itemId),
+      updatedAt,
+    });
+  }
+
+  return TaskTodoSchema.parse({
+    items: items.map((item) =>
+      item.id === operation.itemId ? { ...item, status: operation.status } : item
+    ),
+    updatedAt,
+  });
+}
+
 export function createTaskStore(dbPath: string): TaskStore {
   mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -167,6 +228,10 @@ export function createTaskStore(dbPath: string): TaskStore {
       latest_activity TEXT,
       description TEXT,
       agent_context_json TEXT,
+      todo_json TEXT,
+      clarify_json TEXT,
+      notifications_json TEXT,
+      audit_records_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );`
@@ -178,6 +243,18 @@ export function createTaskStore(dbPath: string): TaskStore {
   }
   if (!taskColumns.some((column) => column.name === "agent_context_json")) {
     db.exec("ALTER TABLE tasks ADD COLUMN agent_context_json TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "todo_json")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN todo_json TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "clarify_json")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN clarify_json TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "notifications_json")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN notifications_json TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "audit_records_json")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN audit_records_json TEXT");
   }
 
   db.exec(`
@@ -210,9 +287,9 @@ export function createTaskStore(dbPath: string): TaskStore {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks (
-      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, agent_context_json, created_at, updated_at
+      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, agent_context_json, todo_json, clarify_json, notifications_json, audit_records_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTurn = db.prepare(`
     INSERT INTO task_turns (id, task_id, role, content, status, created_at, completed_at, error)
@@ -241,6 +318,15 @@ export function createTaskStore(dbPath: string): TaskStore {
         updated_at = ?
     WHERE id = ?
   `);
+  const updateTaskStateRow = db.prepare(`
+    UPDATE tasks
+    SET todo_json = COALESCE(?, todo_json),
+        clarify_json = ?,
+        notifications_json = COALESCE(?, notifications_json),
+        audit_records_json = COALESCE(?, audit_records_json),
+        updated_at = ?
+    WHERE id = ?
+  `);
   const touchTask = db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?");
   const updateTurnRow = db.prepare(`
     UPDATE task_turns
@@ -265,6 +351,14 @@ export function createTaskStore(dbPath: string): TaskStore {
       ...rowToSummary(row),
       description: row.description ?? undefined,
       agentContext: row.agent_context_json ? JSON.parse(row.agent_context_json) : undefined,
+      todo: parseJsonOrUndefined(row.todo_json, TaskTodoSchema),
+      clarify: parseJsonOrUndefined(row.clarify_json, ClarifyRequestSchema),
+      notifications: parseJsonArray(row.notifications_json, (value) =>
+        NotifyRequestSchema.parse(value)
+      ),
+      auditRecords: parseJsonArray(row.audit_records_json, (value) =>
+        AuditRecordSchema.parse(value)
+      ),
       turns: listTurnRows.all(taskId).map(rowToTurn),
       artifacts: listArtifactRows.all(taskId).map(rowToArtifact),
     });
@@ -356,6 +450,10 @@ export function createTaskStore(dbPath: string): TaskStore {
         parsed.initialInstruction,
         parsed.description ?? null,
         parsed.agentContext ? JSON.stringify(parsed.agentContext) : null,
+        null,
+        null,
+        JSON.stringify([]),
+        JSON.stringify([]),
         createdAt,
         createdAt
       );
@@ -376,10 +474,85 @@ export function createTaskStore(dbPath: string): TaskStore {
     createUserTurn(taskId, content) {
       return createTurn({ taskId, role: "user", content, status: "running" });
     },
+    addNotification(taskId, notification) {
+      const task = getTask(taskId);
+      if (!task) return undefined;
+      const nextNotifications = [...task.notifications, NotifyRequestSchema.parse(notification)];
+      const updatedAt = nowIso();
+      updateTaskStateRow.run(
+        null,
+        task.clarify ? JSON.stringify(task.clarify) : null,
+        JSON.stringify(nextNotifications),
+        JSON.stringify(task.auditRecords),
+        updatedAt,
+        taskId
+      );
+      return getTask(taskId);
+    },
+    appendAuditRecord(taskId, auditRecord) {
+      const task = getTask(taskId);
+      if (!task) return undefined;
+      const nextAudit = [...task.auditRecords, AuditRecordSchema.parse(auditRecord)];
+      const updatedAt = nowIso();
+      updateTaskStateRow.run(
+        task.todo ? JSON.stringify(task.todo) : null,
+        task.clarify ? JSON.stringify(task.clarify) : null,
+        JSON.stringify(task.notifications),
+        JSON.stringify(nextAudit),
+        updatedAt,
+        taskId
+      );
+      return getTask(taskId);
+    },
+    clearClarify(taskId, _response) {
+      const task = getTask(taskId);
+      if (!task) return undefined;
+      const updatedAt = nowIso();
+      updateTaskStateRow.run(
+        task.todo ? JSON.stringify(task.todo) : null,
+        null,
+        JSON.stringify(task.notifications),
+        JSON.stringify(task.auditRecords),
+        updatedAt,
+        taskId
+      );
+      return getTask(taskId);
+    },
     getTask,
     listTasks(filter) {
       assertNonEmpty(filter.workspaceRoot, "workspaceRoot");
       return listTaskRows.all(filter.workspaceRoot).map(rowToSummary);
+    },
+    requestClarify(taskId, clarify) {
+      requireTask(taskId);
+      const task = getTask(taskId);
+      if (!task) return undefined;
+      const updatedAt = nowIso();
+      updateTaskStateRow.run(
+        task.todo ? JSON.stringify(task.todo) : null,
+        JSON.stringify(ClarifyRequestSchema.parse(clarify)),
+        JSON.stringify(task.notifications),
+        JSON.stringify(task.auditRecords),
+        updatedAt,
+        taskId
+      );
+      return getTask(taskId);
+    },
+    updateTodo(taskId, operation) {
+      requireTask(taskId);
+      const task = getTask(taskId);
+      if (!task) return undefined;
+      const nextTodo = applyTodoOperation(task.todo, operation);
+      const updatedAt = nowIso();
+      updateTaskStateRow.run(
+        JSON.stringify(nextTodo),
+        task.clarify ? JSON.stringify(task.clarify) : null,
+        JSON.stringify(task.notifications),
+        JSON.stringify(task.auditRecords),
+        updatedAt,
+        taskId
+      );
+      return getTask(taskId);
     },
     updateTask(taskId, patch) {
       requireTask(taskId);

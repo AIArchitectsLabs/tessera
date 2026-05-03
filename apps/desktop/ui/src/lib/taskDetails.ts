@@ -32,10 +32,26 @@ export function mergeTaskDetail(current: TaskDetail, incoming: TaskDetail): Task
     artifactsById.set(artifact.id, artifact);
   }
 
+  const notifications = [...current.notifications, ...incoming.notifications].filter(
+    (notification, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.title === notification.title &&
+          candidate.body === notification.body &&
+          candidate.taskId === notification.taskId
+      ) === index
+  );
+  const auditRecords = [...current.auditRecords, ...incoming.auditRecords].filter(
+    (record, index, all) => all.findIndex((candidate) => candidate.id === record.id) === index
+  );
+
   const base = incoming.updatedAt >= current.updatedAt ? incoming : current;
 
   return {
     ...base,
+    clarify: incoming.clarify ?? current.clarify,
+    notifications,
+    auditRecords,
     turns: [...turnsById.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     artifacts: [...artifactsById.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
   };

@@ -1,110 +1,158 @@
 import { describe, expect, test } from "bun:test";
-import type { SpawnResult } from "@tessera/contracts";
+import type {
+  BrowserToolResult,
+  ClarifyResponse,
+  ShellToolResult,
+  TodoOperation,
+} from "@tessera/contracts";
 import { createTesseraTools, summarizeToolResult } from "./tools.js";
 
-const spawnResult: SpawnResult = {
-  stdout: '{"message":"pong"}\n',
+const shellResult: ShellToolResult = {
+  command: "web-fetch",
+  subcommand: "fetch",
+  stdout: '{"url":"https://example.com"}',
   stderr: "",
   exitCode: 0,
-  signal: null,
   durationMs: 3,
 };
 
 describe("createTesseraTools", () => {
-  test("executes read tools through the CLI executor", async () => {
-    const calls: string[][] = [];
+  test("registers the built-in tool surface", () => {
     const tools = createTesseraTools({
       cli: {
-        async runWorkspaceCli(args) {
-          calls.push(args);
-          return spawnResult;
+        async runWorkspaceCli() {
+          return {};
         },
       },
     });
 
-    const ping = tools.find((tool) => tool.name === "workspace_ping");
-    expect(ping).toBeDefined();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "browser",
+      "clarify",
+      "notify",
+      "shell",
+      "todo",
+      "workspace_ping",
+      "workspace_write_probe",
+    ]);
+  });
 
-    const result = await ping?.execute("call-1", { message: "hello" });
+  test("executes allowed shell commands through the shell runtime", async () => {
+    const calls: Array<{ command: string; subcommand: string; args: string[] }> = [];
+    const tools = createTesseraTools({
+      cli: { async runWorkspaceCli() {} },
+      shell: {
+        async executeShell(call) {
+          calls.push(call);
+          return shellResult;
+        },
+      },
+    });
 
-    expect(calls).toEqual([["ping", "hello"]]);
+    const shell = tools.find((tool) => tool.name === "shell");
+    const result = await shell?.execute("call-1", {
+      command: "web-fetch",
+      subcommand: "fetch",
+      args: ["https://example.com"],
+    });
+
+    expect(calls).toEqual([
+      { command: "web-fetch", subcommand: "fetch", args: ["https://example.com"] },
+    ]);
     expect(result?.content[0]?.type).toBe("text");
   });
 
-  test("rejects malformed tool arguments before execution", async () => {
-    const calls: string[][] = [];
+  test("blocks approval-gated shell mutations without a grant", async () => {
     const tools = createTesseraTools({
-      cli: {
-        async runWorkspaceCli(args) {
-          calls.push(args);
-          return spawnResult;
+      cli: { async runWorkspaceCli() {} },
+      shell: {
+        async executeShell() {
+          return shellResult;
         },
       },
     });
 
-    const ping = tools.find((tool) => tool.name === "workspace_ping");
-
-    await expect(ping?.execute("call-1", { message: 123 })).rejects.toThrow();
-    expect(calls).toEqual([]);
-  });
-
-  test("routes ungranted writes to ask without calling the CLI executor", async () => {
-    const calls: string[][] = [];
-    const decisions: string[] = [];
-    const tools = createTesseraTools({
-      cli: {
-        async runWorkspaceCli(args) {
-          calls.push(args);
-          return spawnResult;
-        },
-      },
-      onPermissionDecision(decision) {
-        decisions.push(decision.decision);
-      },
+    const shell = tools.find((tool) => tool.name === "shell");
+    const result = await shell?.execute("call-1", {
+      command: "mail",
+      subcommand: "draft",
+      args: ["--reply-to", "123"],
     });
 
-    const writeProbe = tools.find((tool) => tool.name === "workspace_write_probe");
-    const result = await writeProbe?.execute("call-1", {
-      target: "lead",
-      value: "qualified",
-    });
-
-    expect(calls).toEqual([]);
-    expect(decisions).toEqual(["ask"]);
     expect(result?.terminate).toBe(true);
     if (!result) {
-      throw new Error("Expected write probe result");
+      throw new Error("Expected shell result");
     }
-
-    const summary = summarizeToolResult("workspace_write_probe", result, false);
+    const summary = summarizeToolResult("shell", result, false);
     expect(summary.status).toBe("blocked");
-    expect(summary.toolId).toBe("workspace.writeProbe");
   });
 
-  test("allows granted write probes without mutating through the CLI", async () => {
-    const calls: string[][] = [];
+  test("routes browser actions through the browser runtime", async () => {
+    const calls: string[] = [];
     const tools = createTesseraTools({
-      cli: {
-        async runWorkspaceCli(args) {
-          calls.push(args);
-          return spawnResult;
+      cli: { async runWorkspaceCli() {} },
+      browser: {
+        async executeBrowser(input): Promise<BrowserToolResult> {
+          calls.push(input.action);
+          return { action: input.action, summary: "Opened page", pageId: "page-1" };
         },
       },
-      grants: [{ type: "tool", toolId: "workspace.writeProbe" }],
     });
 
-    const writeProbe = tools.find((tool) => tool.name === "workspace_write_probe");
-    const result = await writeProbe?.execute("call-1", {
-      target: "lead",
-      value: "qualified",
+    const browser = tools.find((tool) => tool.name === "browser");
+    const result = await browser?.execute("call-1", {
+      action: "open",
+      url: "https://example.com",
     });
 
-    expect(calls).toEqual([]);
-    expect(result?.terminate).toBe(true);
-    expect(result?.details).toEqual({
-      target: "lead",
-      value: "qualified",
-      mutated: false,
+    expect(calls).toEqual(["open"]);
+    expect(result?.content[0]?.type).toBe("text");
+  });
+
+  test("routes todo, clarify, and notify through the task runtime", async () => {
+    const seen: { todo?: TodoOperation; clarify?: string; notify?: string } = {};
+    const clarifyResponse: ClarifyResponse = {
+      promptId: "prompt-1",
+      selectedOptionId: "keep-going",
+      cancelled: false,
+    };
+    const tools = createTesseraTools({
+      cli: { async runWorkspaceCli() {} },
+      taskRuntime: {
+        async applyTodo(operation) {
+          seen.todo = operation;
+          return { summary: "Todo updated." };
+        },
+        async requestClarify(request) {
+          seen.clarify = request.promptId;
+          return clarifyResponse;
+        },
+        async sendNotification(request) {
+          seen.notify = request.title;
+        },
+      },
     });
+
+    await tools
+      .find((tool) => tool.name === "todo")
+      ?.execute("call-1", { type: "remove", itemId: "item-1" });
+    await tools
+      .find((tool) => tool.name === "clarify")
+      ?.execute("call-2", {
+        promptId: "prompt-1",
+        taskId: "task-1",
+        message: "Choose one",
+        createdAt: "2026-05-03T00:00:00.000Z",
+      });
+    await tools
+      .find((tool) => tool.name === "notify")
+      ?.execute("call-3", {
+        title: "Ready",
+        body: "Finished",
+      });
+
+    expect(seen.todo).toEqual({ type: "remove", itemId: "item-1" });
+    expect(seen.clarify).toBe("prompt-1");
+    expect(seen.notify).toBe("Ready");
   });
 });

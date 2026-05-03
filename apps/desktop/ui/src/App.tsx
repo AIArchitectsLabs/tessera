@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ClarifyResponse,
   TaskCreateRequest,
   TaskCreateTurnRequest,
   TaskDetail,
   TaskEvent,
   TaskListResult,
   TaskSummary,
+  TodoOperation,
 } from "@tessera/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -205,6 +207,28 @@ export default function App() {
     }
   }
 
+  async function handleTodoUpdate(operation: TodoOperation) {
+    if (!selectedTaskId) return;
+
+    const task = await invoke<TaskDetail>("task_todo_apply", {
+      taskId: selectedTaskId,
+      request: operation,
+    });
+    setSelectedTask((current) => (current ? mergeTaskDetail(current, task) : task));
+    setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
+  }
+
+  async function handleClarifyResolve(response: ClarifyResponse) {
+    if (!selectedTaskId) return;
+
+    const task = await invoke<TaskDetail>("task_clarify_resolve", {
+      taskId: selectedTaskId,
+      request: response,
+    });
+    setSelectedTask((current) => (current ? mergeTaskDetail(current, task) : task));
+    setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
+  }
+
   const mainPane =
     sidebarMode === "tasks" ? (
       <div className="flex min-w-0 flex-1 flex-col">
@@ -214,11 +238,13 @@ export default function App() {
           </div>
         )}
         <TaskDetailView
+          onClarifyResolve={handleClarifyResolve}
           creatingTask={creatingTask}
           loading={loadingTaskDetail}
           onCreateTask={handleCreateTask}
           onCreateTurn={handleCreateTurn}
           onSelectTask={setSelectedTaskId}
+          onTodoUpdate={handleTodoUpdate}
           sendingTurn={sendingTurn}
           task={selectedTask}
           tasks={tasks}

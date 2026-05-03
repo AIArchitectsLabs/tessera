@@ -319,25 +319,25 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "preset": "read_only",
             "label": "Read-only",
             "approvalMode": "never",
-            "summary": "Can inspect and search the workspace but cannot make file changes.",
-            "capabilities": ["Read files", "List directories", "Search content"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search"]
+            "summary": "Can inspect and search the workspace and maintain the task checklist, but cannot make file changes.",
+            "capabilities": ["Read files", "List directories", "Search content", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "todo"]
         }),
         "elevated_with_approval" => serde_json::json!({
             "preset": "elevated_with_approval",
             "label": "Elevated with approval",
             "approvalMode": "ask",
-            "summary": "Can edit the workspace, but should ask before taking mutating actions.",
-            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit"]
+            "summary": "Can edit the workspace and maintain the task checklist, but should ask before taking mutating actions.",
+            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit", "todo"]
         }),
         _ => serde_json::json!({
             "preset": "workspace_editor",
             "label": "Workspace editor",
             "approvalMode": "never",
-            "summary": "Can inspect the workspace and update files directly when needed.",
-            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit"]
+            "summary": "Can inspect the workspace, maintain the task checklist, and update files directly when needed.",
+            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit", "todo"]
         }),
     }
 }
@@ -706,6 +706,62 @@ async fn task_create_turn(
 }
 
 #[tauri::command]
+async fn task_todo_apply(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/todo", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_clarify_request(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/clarify", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_clarify_resolve(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/clarify/resolve", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_notify(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/notify", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn model_settings_get(app: AppHandle) -> Result<model_settings::ModelSettingsRead, String> {
     model_settings::read(&app).map_err(|error| error.to_string())
 }
@@ -922,10 +978,14 @@ pub fn run() {
             model_settings_save,
             sidecar_ping,
             task_create,
+            task_clarify_request,
+            task_clarify_resolve,
             task_create_turn,
             task_get,
             task_list,
+            task_notify,
             task_subscribe,
+            task_todo_apply,
             task_unsubscribe,
             task_update,
             workflow_list_pending,

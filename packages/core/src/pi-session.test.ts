@@ -384,6 +384,94 @@ describe("runPiTaskTurn", () => {
 
     expect(result.boundaryViolations).toBe(1);
   });
+
+  test("exposes the todo tool when taskRuntime is provided", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { operations: unknown[]; toolNames?: string[] } = { operations: [] };
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const todoTool = factoryOpts.customTools.find((tool) => tool.name === "todo");
+      await todoTool?.execute(
+        "call-1",
+        {
+          type: "append",
+          item: {
+            id: "todo-1",
+            label: "Draft plan",
+            status: "pending",
+            order: 0,
+          },
+        },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      taskRuntime: {
+        async applyTodo(operation) {
+          seen.operations.push(operation);
+          return {
+            updatedAt: "2026-05-03T00:00:00.000Z",
+            items: [
+              {
+                id: "todo-1",
+                label: "Draft plan",
+                status: "pending",
+                order: 0,
+              },
+            ],
+          };
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(seen.toolNames).toContain("todo");
+    expect(seen.operations).toEqual([
+      {
+        type: "append",
+        item: {
+          id: "todo-1",
+          label: "Draft plan",
+          status: "pending",
+          order: 0,
+        },
+      },
+    ]);
+  });
+
+  test("nudges task mode to use todo for plans and multi-step work", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async () => {
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Plan the launch checklist and execute it step by step.",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      taskRuntime: {
+        async applyTodo() {
+          return undefined;
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(capturedSession?.capturedPrompts[0]).toContain(
+      "When the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
+    );
+  });
 });
 
 describe("createTesseraModelRegistry", () => {
