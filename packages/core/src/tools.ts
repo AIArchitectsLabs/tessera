@@ -11,6 +11,7 @@ import type {
   PermissionGrant,
   ShellToolCall,
   ShellToolResult,
+  SpawnResult,
   TodoOperation,
   ToolCapability,
   ToolRisk,
@@ -21,7 +22,7 @@ import { evaluatePermission } from "./permission.js";
 import { validateShellCall } from "./shell-runtime.js";
 
 export interface WorkspaceCliExecutor {
-  runWorkspaceCli(args: string[], timeoutMs?: number): Promise<unknown>;
+  runWorkspaceCli(args: string[], timeoutMs?: number): Promise<SpawnResult>;
 }
 
 export interface ShellExecutor {

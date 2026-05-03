@@ -8,6 +8,7 @@ import type {
   PermissionDecision,
 } from "@tessera/contracts";
 import { createAgentModel, resolveApiKey } from "./model.js";
+import { createSpawnShellExecutor } from "./shell-runtime.js";
 import { type WorkspaceCliExecutor, createTesseraTools, summarizeToolResult } from "./tools.js";
 
 function summarizeMessage(message: unknown): AgentMessageSummary {
@@ -75,7 +76,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
   const agent = new Agent({
     initialState: {
       systemPrompt:
-        "You are Tessera's headless cognitive engine. Use tools only when they directly help the request.",
+        "You are Tessera's headless cognitive engine. Use tools only when they directly help the request. When the user explicitly asks you to search the web, look something up online, research current information, or fetch a URL, prefer the shell tool early. Use `web-search search ...` for web research queries and `web-fetch fetch <url>` when the user wants the contents of a specific public page.",
       model,
       tools: createTesseraTools({
         cli,
@@ -83,6 +84,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
         onPermissionDecision(decision) {
           permissionDecisions.push(decision);
         },
+        shell: createSpawnShellExecutor(cli),
       }),
       thinkingLevel: "off",
     },

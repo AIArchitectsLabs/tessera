@@ -22,7 +22,12 @@ export {
   formatCliCatalogLine,
   formatShellPreview,
 } from "./cli-catalog.js";
-export { ShellValidationError, validateShellCall } from "./shell-runtime.js";
+export {
+  createSpawnShellExecutor,
+  ShellExecutionError,
+  ShellValidationError,
+  validateShellCall,
+} from "./shell-runtime.js";
 export {
   type BrowserExecutor,
   createTesseraTools,

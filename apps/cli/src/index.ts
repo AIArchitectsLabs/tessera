@@ -1,4 +1,5 @@
 import { CORE_VERSION } from "@tessera/core";
+import { executeCliCommand } from "./shell.js";
 
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -25,6 +26,8 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("");
   console.log("Commands:");
   console.log("  ping          Health-check; prints JSON and exits 0");
+  console.log("  web-search    Run a configured web search");
+  console.log("  web-fetch     Fetch and extract a public web page");
   console.log("  run <agent>   Run an agent headlessly");
   console.log("");
   console.log("Options:");
@@ -33,5 +36,11 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   process.exit(0);
 }
 
-console.error(`Unknown command: ${cmd}`);
-process.exit(1);
+const result = await executeCliCommand([cmd, ...args]);
+if (result.stdout) {
+  process.stdout.write(result.stdout);
+}
+if (result.stderr) {
+  process.stderr.write(result.stderr);
+}
+process.exit(result.exitCode);

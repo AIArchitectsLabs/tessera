@@ -447,6 +447,96 @@ describe("runPiTaskTurn", () => {
     ]);
   });
 
+  test("exposes the shell tool when a shell executor is provided", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { toolNames?: string[]; calls: unknown[] } = { calls: [] };
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const shellTool = factoryOpts.customTools.find((tool) => tool.name === "shell");
+      await shellTool?.execute(
+        "call-1",
+        {
+          command: "web-fetch",
+          subcommand: "fetch",
+          args: ["https://example.com"],
+        },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Fetch the page",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      shell: {
+        async executeShell(call) {
+          seen.calls.push(call);
+          return {
+            command: "web-fetch",
+            subcommand: "fetch",
+            stdout: '{"url":"https://example.com","markdown":"Hello","diagnostics":{"status":200}}',
+            stderr: "",
+            exitCode: 0,
+            durationMs: 5,
+            parsed: {
+              url: "https://example.com",
+              markdown: "Hello",
+              diagnostics: { status: 200 },
+            },
+          };
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(seen.toolNames).toContain("shell");
+    expect(seen.calls).toEqual([
+      {
+        command: "web-fetch",
+        subcommand: "fetch",
+        args: ["https://example.com"],
+      },
+    ]);
+  });
+
+  test("does not allow approval-gated shell subcommands in task mode", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      const shellTool = factoryOpts.customTools.find((tool) => tool.name === "shell");
+      await expect(
+        shellTool?.execute(
+          "call-1",
+          {
+            command: "mail",
+            subcommand: "draft",
+            args: ["123"],
+          },
+          undefined,
+          undefined,
+          undefined as never
+        )
+      ).rejects.toThrow("requires approval");
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft an email",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      shell: {
+        async executeShell() {
+          throw new Error("should not be called");
+        },
+      },
+      workspaceRoot,
+    });
+  });
+
   test("nudges task mode to use todo for plans and multi-step work", async () => {
     const workspaceRoot = await makeWorkspace();
     let capturedSession: FakeSession | undefined;
@@ -497,6 +587,46 @@ describe("runPiTaskTurn", () => {
     expect(capturedSession?.capturedPrompts[0]).toContain(
       "If progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
     );
+  });
+
+  test("nudges task mode to use shell early for explicit web research requests", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async () => {
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Search the web for the latest pricing and fetch the official FAQ page.",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      shell: {
+        async executeShell() {
+          return {
+            command: "web-search",
+            subcommand: "search",
+            stdout: "{}",
+            stderr: "",
+            exitCode: 0,
+            durationMs: 1,
+          };
+        },
+      },
+      taskRuntime: {
+        async applyTodo() {
+          return undefined;
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(capturedSession?.capturedPrompts[0]).toContain(
+      "When the user asks you to search the web, check current online information, or fetch the contents of a public URL, use the shell tool early."
+    );
+    expect(capturedSession?.capturedPrompts[0]).toContain("web-search search ...");
+    expect(capturedSession?.capturedPrompts[0]).toContain("web-fetch fetch <url>");
   });
 });
 

@@ -382,6 +382,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         taskId,
         userTurnId,
         agentTurnId,
+        cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
@@ -498,6 +499,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         taskId,
         userTurnId,
         agentTurnId,
+        cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
         publish: (e) => taskEventBus.publish(taskId, e),
       });

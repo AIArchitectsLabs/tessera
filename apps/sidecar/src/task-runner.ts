@@ -9,7 +9,12 @@ import type {
   TaskTurn,
   TodoOperation,
 } from "@tessera/contracts";
-import { type PiTaskTurnResult, runPiTaskTurn } from "@tessera/core";
+import {
+  type PiTaskTurnResult,
+  type WorkspaceCliExecutor,
+  createSpawnShellExecutor,
+  runPiTaskTurn,
+} from "@tessera/core";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
@@ -23,11 +28,19 @@ export interface RunTaskTurnOptions {
     prompt: string;
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
+    shell?: {
+      executeShell(call: {
+        command: "web-search" | "web-fetch" | "gcal" | "mail" | "drive" | "contacts";
+        subcommand: string;
+        args: string[];
+      }): Promise<unknown>;
+    };
     taskRuntime?: {
       applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
     };
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
+  cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   store: TaskStore;
   taskId: string;
@@ -50,6 +63,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const provider = opts.execution?.provider ?? opts.provider ?? DEFAULT_PROVIDER;
   const credential = opts.execution?.credential?.apiKey ?? opts.credential;
   const piRunner = opts.piRunner ?? runPiTaskTurn;
+  const shell = opts.cli ? createSpawnShellExecutor(opts.cli) : undefined;
 
   try {
     const task = store.getTask(taskId);
@@ -127,6 +141,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       },
       prompt: userTurn.content,
       provider,
+      ...(shell ? { shell } : {}),
       taskRuntime: {
         async applyTodo(operation) {
           const task = store.updateTodo(taskId, operation);

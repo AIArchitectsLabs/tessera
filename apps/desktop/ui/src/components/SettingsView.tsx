@@ -1,5 +1,10 @@
 import { Button } from "@/components/ui/button";
 import {
+  INTEGRATION_PROVIDERS,
+  integrationLabel,
+  shouldSendIntegrationCredential,
+} from "@/lib/integrationSettings";
+import {
   MODEL_PROVIDERS,
   defaultDraftForProvider,
   modelPlaceholderForProvider,
@@ -10,11 +15,14 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentProviderConfig,
+  IntegrationConnectionTestResult,
+  IntegrationProvider,
+  IntegrationSettingsRead,
   ModelConnectionTestResult,
   ModelProvider,
   ModelSettingsRead,
 } from "@tessera/contracts";
-import { Bot, Box, KeyRound, Loader2, Trash2, Wifi, X } from "lucide-react";
+import { Bot, Box, KeyRound, Loader2, Search, Trash2, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AgentSettingsView } from "./AgentSettingsView";
 
@@ -53,14 +61,25 @@ async function invokeWithTimeout<T>(
 
 export function SettingsView({ onClose }: SettingsViewProps) {
   const [settings, setSettings] = useState<ModelSettingsRead | null>(null);
+  const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("openai");
+  const [selectedIntegration, setSelectedIntegration] =
+    useState<IntegrationProvider>("brave-search");
   const [draft, setDraft] = useState<AgentProviderConfig>(defaultDraftForProvider("openai"));
   const [apiKey, setApiKey] = useState("");
+  const [integrationApiKey, setIntegrationApiKey] = useState("");
   const [status, setStatus] = useState<StatusMessage | null>(null);
+  const [integrationStatus, setIntegrationStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeAction, setActiveAction] = useState<"remove" | "save" | "test" | null>(null);
-  const [activeTab, setActiveTab] = useState<"model" | "agents">("model");
-  const requestIdRef = useRef(0);
+  const [activeModelAction, setActiveModelAction] = useState<"remove" | "save" | "test" | null>(
+    null
+  );
+  const [activeIntegrationAction, setActiveIntegrationAction] = useState<
+    "remove" | "save" | "test" | null
+  >(null);
+  const [activeTab, setActiveTab] = useState<"model" | "integrations" | "agents">("model");
+  const modelRequestIdRef = useRef(0);
+  const integrationRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -69,12 +88,17 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     async function loadSettings() {
       setLoading(true);
       setStatus(null);
+      setIntegrationStatus(null);
       try {
-        const loaded = await invokeWithTimeout<ModelSettingsRead>("model_settings_get");
+        const [loaded, loadedIntegrations] = await Promise.all([
+          invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
+          invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get"),
+        ]);
         if (!active) {
           return;
         }
         hydrateFromSettings(loaded);
+        hydrateFromIntegrations(loadedIntegrations);
       } catch (error) {
         if (!active) {
           return;
@@ -105,7 +129,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const busy = loading || activeAction !== null;
+  const hasIntegrationCredential = integrations?.providers.braveSearch.hasCredential ?? false;
+  const modelBusy = loading || activeModelAction !== null;
+  const integrationBusy = loading || activeIntegrationAction !== null;
   const requiresBaseUrl = draft.provider === "local";
   const canSubmit =
     draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
@@ -120,8 +146,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setApiKey("");
   }
 
+  function hydrateFromIntegrations(loaded: IntegrationSettingsRead) {
+    setIntegrations(loaded);
+    setSelectedIntegration("brave-search");
+    setIntegrationApiKey("");
+  }
+
   function handleProviderSelect(provider: ModelProvider) {
-    if (busy) {
+    if (modelBusy) {
       return;
     }
     setSelectedProvider(provider);
@@ -134,13 +166,22 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setStatus(null);
   }
 
+  function handleIntegrationSelect(provider: IntegrationProvider) {
+    if (integrationBusy) {
+      return;
+    }
+    setSelectedIntegration(provider);
+    setIntegrationApiKey("");
+    setIntegrationStatus(null);
+  }
+
   async function handleSave() {
     if (!canSubmit) {
       return;
     }
 
-    const requestId = ++requestIdRef.current;
-    setActiveAction("save");
+    const requestId = ++modelRequestIdRef.current;
+    setActiveModelAction("save");
     setStatus(null);
     try {
       const next = await invokeWithTimeout<ModelSettingsRead>("model_settings_save", {
@@ -151,13 +192,13 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
       });
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       hydrateFromSettings(next, selectedProvider);
       setStatus({ message: "Model settings saved", tone: "success" });
     } catch (error) {
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       setStatus({
@@ -165,27 +206,27 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         tone: "error",
       });
     } finally {
-      if (mountedRef.current && requestIdRef.current === requestId) {
-        setActiveAction(null);
+      if (mountedRef.current && modelRequestIdRef.current === requestId) {
+        setActiveModelAction(null);
       }
     }
   }
 
   async function handleRemoveKey() {
-    const requestId = ++requestIdRef.current;
-    setActiveAction("remove");
+    const requestId = ++modelRequestIdRef.current;
+    setActiveModelAction("remove");
     setStatus(null);
     try {
       const next = await invokeWithTimeout<ModelSettingsRead>("model_credential_delete", {
         request: { provider: selectedProvider },
       });
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       hydrateFromSettings(next, selectedProvider);
       setStatus({ message: "Stored key removed", tone: "success" });
     } catch (error) {
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       setStatus({
@@ -193,8 +234,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         tone: "error",
       });
     } finally {
-      if (mountedRef.current && requestIdRef.current === requestId) {
-        setActiveAction(null);
+      if (mountedRef.current && modelRequestIdRef.current === requestId) {
+        setActiveModelAction(null);
       }
     }
   }
@@ -204,8 +245,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       return;
     }
 
-    const requestId = ++requestIdRef.current;
-    setActiveAction("test");
+    const requestId = ++modelRequestIdRef.current;
+    setActiveModelAction("test");
     setStatus(null);
     try {
       const result = await invokeWithTimeout<ModelConnectionTestResult>("model_connection_test", {
@@ -214,12 +255,12 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
       });
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       setStatus({ message: result.message, tone: result.ok ? "success" : "info" });
     } catch (error) {
-      if (!mountedRef.current || requestIdRef.current !== requestId) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
       }
       setStatus({
@@ -227,8 +268,108 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         tone: "error",
       });
     } finally {
-      if (mountedRef.current && requestIdRef.current === requestId) {
-        setActiveAction(null);
+      if (mountedRef.current && modelRequestIdRef.current === requestId) {
+        setActiveModelAction(null);
+      }
+    }
+  }
+
+  async function handleSaveIntegration() {
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("save");
+    setIntegrationStatus(null);
+    try {
+      const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_save", {
+        request: {
+          provider: selectedIntegration,
+          hasExistingCredential: hasIntegrationCredential,
+          ...(shouldSendIntegrationCredential(integrationApiKey)
+            ? { credential: { apiKey: integrationApiKey.trim() } }
+            : {}),
+        },
+      });
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      hydrateFromIntegrations(next);
+      setIntegrationStatus({ message: "Integration settings saved", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleRemoveIntegrationKey() {
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("remove");
+    setIntegrationStatus(null);
+    try {
+      const next = await invokeWithTimeout<IntegrationSettingsRead>(
+        "integration_credential_delete",
+        {
+          request: { provider: selectedIntegration },
+        }
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      hydrateFromIntegrations(next);
+      setIntegrationStatus({ message: "Stored key removed", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleIntegrationTestConnection() {
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("test");
+    setIntegrationStatus(null);
+    try {
+      const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
+        "integration_connection_test",
+        {
+          request: {
+            provider: selectedIntegration,
+            ...(shouldSendIntegrationCredential(integrationApiKey)
+              ? { credential: { apiKey: integrationApiKey.trim() } }
+              : {}),
+          },
+        }
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "info" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
       }
     }
   }
@@ -255,6 +396,19 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         >
           <Box size={16} />
           Model
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("integrations")}
+          className={cn(
+            "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
+            activeTab === "integrations"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+          )}
+        >
+          <Search size={16} />
+          Integrations
         </button>
         <button
           type="button"
@@ -303,7 +457,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       <button
                         key={provider}
                         type="button"
-                        disabled={busy}
+                        disabled={modelBusy}
                         className={cn(
                           "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                           selected
@@ -337,7 +491,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   <input
                     className="input mt-2"
                     value={draft.model}
-                    disabled={busy}
+                    disabled={modelBusy}
                     placeholder={modelPlaceholderForProvider(selectedProvider)}
                     onChange={(event) =>
                       setDraft((current) => ({ ...current, model: event.target.value }))
@@ -351,7 +505,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <input
                       className="input mt-2"
                       value={draft.baseUrl}
-                      disabled={busy}
+                      disabled={modelBusy}
                       placeholder="http://127.0.0.1:11434/v1"
                       onChange={(event) =>
                         setDraft((current) =>
@@ -370,7 +524,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     className="input mt-2"
                     type="password"
                     value={apiKey}
-                    disabled={busy}
+                    disabled={modelBusy}
                     placeholder={credentialPlaceholder}
                     onChange={(event) => setApiKey(event.target.value)}
                   />
@@ -392,8 +546,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" onClick={handleSave} disabled={busy || !canSubmit}>
-                    {activeAction === "save" ? (
+                  <Button type="button" onClick={handleSave} disabled={modelBusy || !canSubmit}>
+                    {activeModelAction === "save" ? (
                       <Loader2 size={16} className="animate-spin" />
                     ) : (
                       <KeyRound size={16} />
@@ -404,9 +558,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     type="button"
                     variant="outline"
                     onClick={handleTestConnection}
-                    disabled={busy || !canSubmit}
+                    disabled={modelBusy || !canSubmit}
                   >
-                    {activeAction === "test" ? (
+                    {activeModelAction === "test" ? (
                       <Loader2 size={16} className="animate-spin" />
                     ) : (
                       <Wifi size={16} />
@@ -417,9 +571,135 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     type="button"
                     variant="outline"
                     onClick={handleRemoveKey}
-                    disabled={busy || !hasCredential}
+                    disabled={modelBusy || !hasCredential}
                   >
-                    {activeAction === "remove" ? (
+                    {activeModelAction === "remove" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={16} />
+                    )}
+                    Remove key
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === "integrations" ? (
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-8 py-6">
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold text-foreground">Integrations</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Credentials for external read-only tools available to agents.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-6">
+              <div className="space-y-3">
+                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                  Providers
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {INTEGRATION_PROVIDERS.map((provider) => {
+                    const selected = provider === selectedIntegration;
+
+                    return (
+                      <button
+                        key={provider}
+                        type="button"
+                        disabled={integrationBusy}
+                        className={cn(
+                          "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                          selected
+                            ? "border-primary bg-secondary text-foreground shadow-sm"
+                            : "border-border bg-background text-foreground hover:bg-secondary/70"
+                        )}
+                        onClick={() => handleIntegrationSelect(provider)}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate text-sm font-medium">
+                            {integrationLabel(provider)}
+                          </span>
+                          {selected && (
+                            <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {hasIntegrationCredential ? "Saved key present" : "No saved key"}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
+                  Brave Search powers the `web-search search` shell command for live agent research.
+                </div>
+
+                <label className="block">
+                  <span className="text-sm font-medium text-foreground">API key</span>
+                  <input
+                    className="input mt-2"
+                    type="password"
+                    value={integrationApiKey}
+                    disabled={integrationBusy}
+                    placeholder={
+                      hasIntegrationCredential ? "Saved key present" : "Paste Brave API key"
+                    }
+                    onChange={(event) => setIntegrationApiKey(event.target.value)}
+                  />
+                </label>
+
+                {integrationStatus && (
+                  <div
+                    className={cn(
+                      "rounded-xl border px-3 py-2 text-sm",
+                      integrationStatus.tone === "error" &&
+                        "border-destructive/25 bg-destructive/5 text-destructive",
+                      integrationStatus.tone === "info" &&
+                        "border-border bg-secondary text-foreground",
+                      integrationStatus.tone === "success" &&
+                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    )}
+                  >
+                    {integrationStatus.message}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={handleSaveIntegration} disabled={integrationBusy}>
+                    {activeIntegrationAction === "save" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <KeyRound size={16} />
+                    )}
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleIntegrationTestConnection}
+                    disabled={integrationBusy}
+                  >
+                    {activeIntegrationAction === "test" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Wifi size={16} />
+                    )}
+                    Test connection
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleRemoveIntegrationKey}
+                    disabled={integrationBusy || !hasIntegrationCredential}
+                  >
+                    {activeIntegrationAction === "remove" ? (
                       <Loader2 size={16} className="animate-spin" />
                     ) : (
                       <Trash2 size={16} />

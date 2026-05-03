@@ -12,6 +12,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 mod model_settings;
+mod integration_settings;
 
 // Compile-time target triple injected by build.rs via `cargo:rustc-env`.
 const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
@@ -597,6 +598,30 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+async fn run_workspace_cli_command(
+    app: &AppHandle,
+    args: &[&str],
+    brave_api_key: Option<&str>,
+) -> Result<SpawnResult, String> {
+    let bin_dir = binaries_dir(app).map_err(|error| error.to_string())?;
+    let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
+    let start = std::time::Instant::now();
+    let mut command = std::process::Command::new(cli_path);
+    command.args(args);
+    if let Some(api_key) = brave_api_key {
+        command.env("TESSERA_BRAVE_SEARCH_API_KEY", api_key);
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+
+    Ok(SpawnResult {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+        signal: None,
+        duration_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
 #[tauri::command]
 async fn workflow_run(
     state: State<'_, SidecarHandle>,
@@ -834,6 +859,69 @@ async fn model_connection_test(
 }
 
 #[tauri::command]
+async fn integration_settings_get(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationSettingsRead, String> {
+    integration_settings::read(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn integration_settings_save(
+    app: AppHandle,
+    request: integration_settings::IntegrationSettingsSaveRequest,
+) -> Result<integration_settings::IntegrationSettingsRead, String> {
+    integration_settings::save(&app, request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn integration_credential_delete(
+    app: AppHandle,
+    request: integration_settings::IntegrationCredentialDeleteRequest,
+) -> Result<integration_settings::IntegrationSettingsRead, String> {
+    integration_settings::delete(&app, request).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn integration_connection_test(
+    app: AppHandle,
+    request: integration_settings::IntegrationConnectionTestRequest,
+) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let credential = match request.credential {
+        Some(input) => {
+            let api_key = input.api_key.trim();
+            (!api_key.is_empty()).then(|| api_key.to_string())
+        }
+        None => integration_settings::get_credential(request.provider)
+            .map_err(|error| error.to_string())?,
+    };
+
+    if credential.is_none() {
+        return Ok(integration_settings::missing_credential_result(request.provider));
+    }
+
+    let result = run_workspace_cli_command(
+        &app,
+        &["web-search", "search", "tessera"],
+        credential.as_deref(),
+    )
+    .await?;
+    let ok = result.exit_code == 0;
+    let message = if ok {
+        "Connection test succeeded".to_string()
+    } else {
+        result
+            .stderr
+            .trim()
+            .split('\n')
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("Connection test failed")
+            .to_string()
+    };
+
+    Ok(integration_settings::IntegrationConnectionTestResult { ok, message })
+}
+
+#[tauri::command]
 async fn task_subscribe(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
@@ -972,6 +1060,10 @@ pub fn run() {
             agent_profile_create,
             agent_profile_update,
             agent_profile_delete,
+            integration_connection_test,
+            integration_credential_delete,
+            integration_settings_get,
+            integration_settings_save,
             model_connection_test,
             model_credential_delete,
             model_settings_get,

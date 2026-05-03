@@ -162,6 +162,57 @@ export const ModelConnectionTestResultSchema = z.object({
 });
 export type ModelConnectionTestResult = z.infer<typeof ModelConnectionTestResultSchema>;
 
+export const IntegrationProviderSchema = z.enum(["brave-search"]);
+export type IntegrationProvider = z.infer<typeof IntegrationProviderSchema>;
+
+const BraveSearchIntegrationSettingsSchema = z.object({
+  provider: z.literal("brave-search"),
+  hasCredential: z.boolean().default(false),
+});
+
+export const IntegrationSettingsReadSchema = z.object({
+  providers: z.object({
+    braveSearch: BraveSearchIntegrationSettingsSchema,
+  }),
+});
+export type IntegrationSettingsRead = z.infer<typeof IntegrationSettingsReadSchema>;
+
+export const IntegrationSettingsSaveRequestSchema = z.object({
+  provider: IntegrationProviderSchema,
+  hasExistingCredential: z.boolean().default(false),
+  credential: z
+    .object({
+      apiKey: z.string().min(1),
+    })
+    .optional(),
+});
+export type IntegrationSettingsSaveRequest = z.infer<typeof IntegrationSettingsSaveRequestSchema>;
+
+export const IntegrationCredentialDeleteRequestSchema = z.object({
+  provider: IntegrationProviderSchema,
+});
+export type IntegrationCredentialDeleteRequest = z.infer<
+  typeof IntegrationCredentialDeleteRequestSchema
+>;
+
+export const IntegrationConnectionTestRequestSchema = z.object({
+  provider: IntegrationProviderSchema,
+  credential: z
+    .object({
+      apiKey: z.string().min(1),
+    })
+    .optional(),
+});
+export type IntegrationConnectionTestRequest = z.infer<
+  typeof IntegrationConnectionTestRequestSchema
+>;
+
+export const IntegrationConnectionTestResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+});
+export type IntegrationConnectionTestResult = z.infer<typeof IntegrationConnectionTestResultSchema>;
+
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;
 
@@ -273,6 +324,32 @@ export const ShellToolCallSchema = z.object({
   args: z.array(z.string()).default([]),
 });
 export type ShellToolCall = z.infer<typeof ShellToolCallSchema>;
+
+export const BraveSearchResultSchema = z.object({
+  query: z.string().min(1),
+  results: z.array(
+    z.object({
+      title: z.string().min(1),
+      url: z.string().url(),
+      snippet: z.string().optional(),
+      source: z.string().optional(),
+    })
+  ),
+});
+export type BraveSearchResult = z.infer<typeof BraveSearchResultSchema>;
+
+export const WebFetchResultSchema = z.object({
+  url: z.string().url(),
+  title: z.string().optional(),
+  markdown: z.string().min(1),
+  author: z.string().optional(),
+  publishedAt: z.string().optional(),
+  diagnostics: z.object({
+    status: z.number().int(),
+    contentType: z.string().optional(),
+  }),
+});
+export type WebFetchResult = z.infer<typeof WebFetchResultSchema>;
 
 export const ShellToolResultSchema = z.object({
   command: ShellCommandNameSchema,
@@ -831,19 +908,26 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     label: "Read-only",
     approvalMode: "never",
     summary:
-      "Can inspect and search the workspace and maintain the task checklist, but cannot make file changes.",
-    capabilities: ["Read files", "List directories", "Search content", "Manage task checklist"],
-    allowedTools: ["workspace_read", "workspace_list", "workspace_search", "todo"],
+      "Can inspect and search the workspace, research the public web, and maintain the task checklist, but cannot make file changes.",
+    capabilities: [
+      "Read files",
+      "List directories",
+      "Search content",
+      "Search and fetch public web pages",
+      "Manage task checklist",
+    ],
+    allowedTools: ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"],
   },
   workspace_editor: {
     label: "Workspace editor",
     approvalMode: "never",
     summary:
-      "Can inspect the workspace, maintain the task checklist, and update files directly when needed.",
+      "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
     capabilities: [
       "Read files",
       "List directories",
       "Search content",
+      "Search and fetch public web pages",
       "Write files",
       "Edit files",
       "Manage task checklist",
@@ -852,6 +936,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_read",
       "workspace_list",
       "workspace_search",
+      "shell",
       "workspace_write",
       "workspace_edit",
       "todo",
@@ -861,11 +946,12 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     label: "Elevated with approval",
     approvalMode: "ask",
     summary:
-      "Can edit the workspace and maintain the task checklist, but should ask before taking mutating actions.",
+      "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
     capabilities: [
       "Read files",
       "List directories",
       "Search content",
+      "Search and fetch public web pages",
       "Write files",
       "Edit files",
       "Manage task checklist",
@@ -874,6 +960,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_read",
       "workspace_list",
       "workspace_search",
+      "shell",
       "workspace_write",
       "workspace_edit",
       "todo",

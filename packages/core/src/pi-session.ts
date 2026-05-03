@@ -1,19 +1,24 @@
+import { Type } from "@mariozechner/pi-ai";
 import type { AgentSessionEvent, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import {
   AuthStorage,
   ModelRegistry,
   SessionManager,
   createAgentSession,
+  defineTool,
 } from "@mariozechner/pi-coding-agent";
 import type {
   AgentProfile,
   AgentProviderConfig,
   AgentRuntimeContext,
+  ShellToolCall,
   TaskTodo,
   TodoOperation,
 } from "@tessera/contracts";
 import { compileAgentRuntimeContext } from "@tessera/contracts";
+import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 import { createTaskToolDefinitions } from "./task-tools.js";
+import type { ShellExecutor } from "./tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -30,6 +35,8 @@ When a user asks what you can do, frame your capabilities around their business 
 - **Technical Support**: Code, scripts, data processing, integrations — when the task requires it
 
 You have access to workspace tools that let you read, write, search, and organize files within the user's workspace. Use these to deliver tangible outputs — documents, plans, analyses — not just advice.
+
+When the user explicitly asks for web research, current online information, or the contents of a URL, proactively use the shell tool early instead of only answering from memory. Use \`web-search search ...\` for search queries and \`web-fetch fetch <url>\` for a specific public page.
 
 Be direct, professional, and action-oriented. Focus on delivering results, not describing your capabilities at length. When given a task, plan briefly then execute.`;
 
@@ -60,6 +67,7 @@ export interface RunPiTaskTurnOptions {
   prompt: string;
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
+  shell?: ShellExecutor;
   taskRuntime?: {
     applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
   };
@@ -240,9 +248,54 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Task clarification guidance:\nIf progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
       : "",
+    options?.hasTaskChecklistTool
+      ? "Web research guidance:\nWhen the user asks you to search the web, check current online information, or fetch the contents of a public URL, use the shell tool early. Prefer `web-search search ...` for research queries and `web-fetch fetch <url>` for specific pages."
+      : "",
   ].filter(Boolean);
 
   return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+function createShellToolDefinition(shell?: ShellExecutor): ToolDefinition[] {
+  if (!shell) return [];
+
+  return [
+    defineTool({
+      name: "shell",
+      label: "Shell",
+      description: "Run approved built-in CLI commands for web search and web fetch.",
+      promptSnippet:
+        "shell: run built-in read-only commands like web-search search <query> and web-fetch fetch <url>.",
+      parameters: Type.Object({
+        command: Type.String(),
+        subcommand: Type.String(),
+        args: Type.Optional(Type.Array(Type.String())),
+      }),
+      async execute(_toolCallId, params) {
+        const call = params as ShellToolCall;
+        const policy = findCliCommand(call);
+        if (!policy || policy.approval !== "allow") {
+          throw new Error(
+            `${formatShellPreview(call)} requires approval and is not available in task mode.`
+          );
+        }
+        const result = await shell.executeShell({
+          command: call.command,
+          subcommand: call.subcommand,
+          args: call.args ?? [],
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: result.stdout || result.stderr || `${formatShellPreview(call)} completed.`,
+            },
+          ],
+          details: result,
+        };
+      },
+    }),
+  ];
 }
 
 export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTaskTurnResult> {
@@ -254,9 +307,10 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     },
   });
   const taskTools = createTaskToolDefinitions(options.taskRuntime);
+  const shellTools = createShellToolDefinition(options.shell);
   const runtime =
     options.runtime ?? (options.agent ? compileAgentRuntimeContext(options.agent) : undefined);
-  const toolDefinitions = [...allTools, ...taskTools];
+  const toolDefinitions = [...allTools, ...taskTools, ...shellTools];
   const allowedTools = new Set(
     runtime?.toolPolicy.allowedTools ?? toolDefinitions.map((tool) => tool.name)
   );

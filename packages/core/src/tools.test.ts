@@ -7,6 +7,14 @@ import type {
 } from "@tessera/contracts";
 import { createTesseraTools, summarizeToolResult } from "./tools.js";
 
+const spawnResult = {
+  stdout: "",
+  stderr: "",
+  exitCode: 0,
+  signal: null,
+  durationMs: 1,
+};
+
 const shellResult: ShellToolResult = {
   command: "web-fetch",
   subcommand: "fetch",
@@ -21,7 +29,7 @@ describe("createTesseraTools", () => {
     const tools = createTesseraTools({
       cli: {
         async runWorkspaceCli() {
-          return {};
+          return spawnResult;
         },
       },
     });
@@ -40,7 +48,11 @@ describe("createTesseraTools", () => {
   test("executes allowed shell commands through the shell runtime", async () => {
     const calls: Array<{ command: string; subcommand: string; args: string[] }> = [];
     const tools = createTesseraTools({
-      cli: { async runWorkspaceCli() {} },
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
       shell: {
         async executeShell(call) {
           calls.push(call);
@@ -64,7 +76,11 @@ describe("createTesseraTools", () => {
 
   test("blocks approval-gated shell mutations without a grant", async () => {
     const tools = createTesseraTools({
-      cli: { async runWorkspaceCli() {} },
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
       shell: {
         async executeShell() {
           return shellResult;
@@ -90,7 +106,11 @@ describe("createTesseraTools", () => {
   test("routes browser actions through the browser runtime", async () => {
     const calls: string[] = [];
     const tools = createTesseraTools({
-      cli: { async runWorkspaceCli() {} },
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
       browser: {
         async executeBrowser(input): Promise<BrowserToolResult> {
           calls.push(input.action);
@@ -117,7 +137,11 @@ describe("createTesseraTools", () => {
       cancelled: false,
     };
     const tools = createTesseraTools({
-      cli: { async runWorkspaceCli() {} },
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
       taskRuntime: {
         async applyTodo(operation) {
           seen.todo = operation;
