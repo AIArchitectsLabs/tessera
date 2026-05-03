@@ -237,6 +237,9 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Task checklist guidance:\nWhen the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
       : "",
+    options?.hasTaskChecklistTool
+      ? "Task clarification guidance:\nIf progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
+      : "",
   ].filter(Boolean);
 
   return sections.length > 0 ? sections.join("\n\n") : undefined;

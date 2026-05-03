@@ -472,6 +472,32 @@ describe("runPiTaskTurn", () => {
       "When the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
     );
   });
+
+  test("nudges task mode to use clarify when blocked by ambiguity", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async () => {
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft the plan, but ask me if any requirement is unclear.",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      taskRuntime: {
+        async applyTodo() {
+          return undefined;
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(capturedSession?.capturedPrompts[0]).toContain(
+      "If progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
+    );
+  });
 });
 
 describe("createTesseraModelRegistry", () => {
