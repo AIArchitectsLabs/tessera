@@ -6,9 +6,21 @@ import type {
   AgentProfile,
   AgentProfileListResult,
   TaskDetail as TaskDetailType,
+  TaskSummary,
   TaskTurn,
 } from "@tessera/contracts";
-import { ArrowUp, Bot, ChevronDown, FileText, Loader2 } from "lucide-react";
+import {
+  ArrowUp,
+  Bot,
+  CheckCircle2,
+  ChevronDown,
+  Clock,
+  FileText,
+  FolderOpen,
+  Loader2,
+  Sparkles,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 interface TaskDetailProps {
@@ -16,8 +28,10 @@ interface TaskDetailProps {
   loading: boolean;
   onCreateTask: (initialInstruction: string, agentId: string, agentLabel: string) => Promise<void>;
   onCreateTurn: (content: string) => Promise<void>;
+  onSelectTask: (taskId: string) => void;
   sendingTurn: boolean;
   task: TaskDetailType | null;
+  tasks: TaskSummary[];
   workspaceRoot: string | null;
 }
 
@@ -47,8 +61,10 @@ export function TaskDetail({
   loading,
   onCreateTask,
   onCreateTurn,
+  onSelectTask,
   sendingTurn,
   task,
+  tasks,
   workspaceRoot,
 }: TaskDetailProps) {
   const [content, setContent] = useState("");
@@ -77,45 +93,54 @@ export function TaskDetail({
   if (!task) {
     return (
       <main className="flex-1 flex flex-col bg-background relative">
-        <div className="flex flex-1 items-center justify-center px-6 pb-28">
-          <div className="max-w-xl text-center">
-            <h1 className="text-xl font-semibold text-foreground">
-              {workspaceRoot
-                ? "What should Tessera work on?"
-                : "Select a workspace to start a task"}
-            </h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {workspaceRoot
-                ? "Describe your objective. Tessera will execute the work, maintain the conversation history, and organize all generated artifacts within this task."
-                : "Tasks are workspace-scoped so outputs and history stay tied to the right files."}
-            </p>
+        <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
+            <div className="max-w-xl text-center mb-8">
+              <div className="flex items-center justify-center gap-2 mb-3">
+                <Sparkles size={28} className="text-[var(--sun)]" />
+              </div>
+              <h1 className="text-2xl font-bold text-foreground tracking-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                {workspaceRoot
+                  ? "What are we working on today?"
+                  : "Select a workspace to start a task"}
+              </h1>
+              {workspaceRoot && (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Give Tessera a business objective and it will plan, execute, and deliver — so you can focus on what matters.
+                </p>
+              )}
+            </div>
+
+            <div className="w-full max-w-2xl mb-10">
+              <TaskComposer
+                disabled={!workspaceRoot}
+                busy={creatingTask}
+                placeholder={workspaceRoot ? "How can I help you today?" : "Select a workspace first"}
+                value={content}
+                onChange={setContent}
+                onSend={handleSend}
+                showAgentSelector={true}
+                inline
+              />
+            </div>
+
           </div>
-        </div>
-        <TaskComposer
-          disabled={!workspaceRoot}
-          busy={creatingTask}
-          placeholder={workspaceRoot ? "Ask Tessera to work on..." : "Select a workspace first"}
-          value={content}
-          onChange={setContent}
-          onSend={handleSend}
-          showAgentSelector={true}
-        />
       </main>
     );
   }
 
   return (
-    <main className="flex-1 flex flex-col bg-background relative">
-      <div className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
-        <div>
-          <h1 className="font-semibold text-sm leading-tight text-foreground">{task.title}</h1>
-          <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground flex items-center gap-1">
-              {task.status === "active" && <Loader2 size={10} className="animate-spin" />}
-              {taskStatusLabel(task.status)}
-            </span>
-            <AgentInfoPopover agentLabel={task.agentLabel ?? "Tessera"} agentId={task.agentId} />
-          </div>
+    <main className="flex-1 flex flex-col bg-background relative overflow-hidden">
+      <div className="h-14 border-b border-border flex items-center justify-between px-6 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="font-semibold text-sm leading-tight text-foreground truncate">{task.title}</h1>
+          <ChevronDown size={14} className="text-muted-foreground shrink-0" />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-muted-foreground flex items-center gap-1">
+            {task.status === "active" && <Loader2 size={10} className="animate-spin" />}
+            {taskStatusLabel(task.status)}
+          </span>
+          <AgentInfoPopover agentLabel={task.agentLabel ?? "Tessera"} agentId={task.agentId} />
         </div>
       </div>
 
@@ -149,80 +174,88 @@ export function TaskDetail({
         </div>
       )}
 
-      <ScrollArea className="flex-1 pb-28">
-        <div className="mx-auto max-w-3xl space-y-8 p-6">
-          <section className="space-y-4">
-            {task.turns.map((turn) => (
-              <div
-                key={turn.id}
-                className={cn("flex gap-4", turn.role === "user" ? "justify-end" : "justify-start")}
-              >
-                <div
-                  className={cn(
-                    "max-w-[78%] rounded-2xl border p-4 shadow-sm",
-                    turn.role === "user"
-                      ? "rounded-tr-sm bg-[#2a2826] text-white border-[#2a2826]"
-                      : "rounded-tl-sm bg-background text-foreground border-border"
-                  )}
-                >
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Chat area */}
+        <div className="flex-1 flex flex-col min-w-0 relative">
+          <ScrollArea className="flex-1 pb-28">
+            <div className="mx-auto max-w-3xl space-y-8 p-6">
+              <section className="space-y-4">
+                {task.turns.map((turn) => (
                   <div
-                    className={cn(
-                      "mb-1 text-xs font-medium flex items-center gap-1.5",
-                      turn.role === "user" ? "text-white/70" : "text-muted-foreground"
-                    )}
+                    key={turn.id}
+                    className={cn("flex gap-4", turn.role === "user" ? "justify-end" : "justify-start")}
                   >
-                    {turnLabel(turn)}
-                    {turn.status === "running" && <Loader2 size={10} className="animate-spin" />}
-                  </div>
-                  <div className="whitespace-pre-wrap text-sm leading-6">{turn.content}</div>
-                  {turn.error && <div className="mt-2 text-xs text-destructive">{turn.error}</div>}
-                </div>
-              </div>
-            ))}
-          </section>
-
-          {task.artifacts.length > 0 && (
-            <section className="space-y-3">
-              <h2 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                Artifacts
-              </h2>
-              {task.artifacts.map((artifact) => (
-                <div
-                  key={artifact.id}
-                  className="rounded-xl border border-border bg-background p-4 shadow-sm"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <FileText size={18} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-foreground">
-                        {artifact.title}
+                    <div
+                      className={cn(
+                        "max-w-[78%] rounded-2xl border p-4 shadow-sm",
+                        turn.role === "user"
+                          ? "rounded-tr-sm bg-[#2a2826] text-white border-[#2a2826]"
+                          : "rounded-tl-sm bg-background text-foreground border-border"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "mb-1 text-xs font-medium flex items-center gap-1.5",
+                          turn.role === "user" ? "text-white/70" : "text-muted-foreground"
+                        )}
+                      >
+                        {turnLabel(turn)}
+                        {turn.status === "running" && <Loader2 size={10} className="animate-spin" />}
                       </div>
-                      <div className="text-xs text-muted-foreground">{artifact.kind}</div>
+                      <div className="whitespace-pre-wrap text-sm leading-6">{turn.content}</div>
+                      {turn.error && <div className="mt-2 text-xs text-destructive">{turn.error}</div>}
                     </div>
                   </div>
-                  {artifact.contentPreview && (
-                    <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                      {artifact.contentPreview}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </section>
-          )}
-        </div>
-      </ScrollArea>
+                ))}
+              </section>
 
-      <TaskComposer
-        disabled={false}
-        busy={sendingTurn}
-        placeholder="Continue this task..."
-        value={content}
-        onChange={setContent}
-        onSend={handleSend}
-        showAgentSelector={false}
-      />
+              {task.artifacts.length > 0 && (
+                <section className="space-y-3">
+                  <h2 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
+                    Artifacts
+                  </h2>
+                  {task.artifacts.map((artifact) => (
+                    <div
+                      key={artifact.id}
+                      className="rounded-xl border border-border bg-background p-4 shadow-sm"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                          <FileText size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-foreground">
+                            {artifact.title}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{artifact.kind}</div>
+                        </div>
+                      </div>
+                      {artifact.contentPreview && (
+                        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                          {artifact.contentPreview}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </section>
+              )}
+            </div>
+          </ScrollArea>
+
+          <TaskComposer
+            disabled={false}
+            busy={sendingTurn}
+            placeholder="Write a message..."
+            value={content}
+            onChange={setContent}
+            onSend={handleSend}
+            showAgentSelector={false}
+          />
+        </div>
+
+        {/* Right-side detail pane */}
+        <TaskSidePane task={task} workspaceRoot={workspaceRoot} />
+      </div>
     </main>
   );
 }
@@ -235,6 +268,7 @@ function TaskComposer({
   placeholder,
   value,
   showAgentSelector,
+  inline,
 }: {
   busy: boolean;
   disabled: boolean;
@@ -243,6 +277,7 @@ function TaskComposer({
   placeholder: string;
   value: string;
   showAgentSelector?: boolean;
+  inline?: boolean;
 }) {
   const canSend = Boolean(value.trim() && !busy && !disabled);
   const [agents, setAgents] = useState<AgentProfile[]>([]);
@@ -276,7 +311,7 @@ function TaskComposer({
   const selectedLabel = selectedAgent?.name || "Tessera";
 
   return (
-    <div className="absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4">
+    <div className={inline ? "w-full" : "absolute bottom-6 left-1/2 w-full max-w-2xl -translate-x-1/2 px-4"}>
       <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden focus-within:ring-2 focus-within:ring-primary/20 transition-shadow">
         <textarea
           value={value}
@@ -458,4 +493,168 @@ function AgentInfoPopover({ agentLabel, agentId }: { agentLabel: string; agentId
       )}
     </div>
   );
+}
+
+function TaskSidePane({ task, workspaceRoot }: { task: TaskDetailType; workspaceRoot: string | null }) {
+  const [progressOpen, setProgressOpen] = useState(true);
+  const [contextOpen, setContextOpen] = useState(true);
+
+  const completedTurns = task.turns.filter((t) => t.status === "completed").length;
+  const totalTurns = task.turns.length;
+  const isDone = task.status === "done";
+  const isActive = task.status === "active";
+
+  const progressSteps = [
+    { label: "Started", done: true },
+    { label: "Processing", done: completedTurns > 0 || isDone },
+    { label: "Complete", done: isDone },
+  ];
+
+  const folderName = workspaceRoot ? workspaceRoot.split("/").pop() || workspaceRoot : "No workspace";
+
+  return (
+    <aside className="w-72 border-l border-border flex flex-col bg-background shrink-0 overflow-y-auto">
+      {/* Progress */}
+      <SidePaneSection title="Progress" open={progressOpen} onToggle={() => setProgressOpen(!progressOpen)}>
+        <div className="flex items-center gap-1 mb-3">
+          {progressSteps.map((step, i) => (
+            <div key={step.label} className="flex items-center gap-1">
+              <div
+                className={cn(
+                  "h-7 w-7 rounded-full border-2 flex items-center justify-center transition-colors",
+                  step.done
+                    ? "border-[var(--leaf)] bg-[var(--leaf-soft)]"
+                    : "border-border bg-secondary"
+                )}
+              >
+                {step.done ? (
+                  <CheckCircle2 size={16} className="text-[var(--leaf)]" />
+                ) : isActive && i === progressSteps.findIndex((s) => !s.done) ? (
+                  <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                ) : (
+                  <div className="h-2.5 w-2.5 rounded-full bg-border" />
+                )}
+              </div>
+              {i < progressSteps.length - 1 && (
+                <div
+                  className={cn(
+                    "w-5 h-0.5 rounded-full",
+                    progressSteps[i + 1]?.done ? "bg-[var(--leaf)]" : "bg-border"
+                  )}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {isDone
+            ? "Task completed successfully."
+            : isActive
+              ? "See task progress for longer tasks."
+              : `${completedTurns} of ${totalTurns} turns completed.`}
+        </p>
+      </SidePaneSection>
+
+      {/* Working folder */}
+      <SidePaneSection title="Working folder" collapsible={false}>
+        <button
+          type="button"
+          className="flex items-center gap-2 text-sm text-foreground hover:text-primary transition-colors w-full text-left"
+        >
+          <FolderOpen size={16} className="shrink-0 text-muted-foreground" />
+          <span className="truncate">{folderName}</span>
+          <ChevronDown size={14} className="ml-auto shrink-0 text-muted-foreground -rotate-90" />
+        </button>
+      </SidePaneSection>
+
+      {/* Context */}
+      <SidePaneSection title="Context" open={contextOpen} onToggle={() => setContextOpen(!contextOpen)}>
+        {task.artifacts.length > 0 ? (
+          <div className="space-y-2">
+            <div className="flex gap-2 flex-wrap">
+              {task.artifacts.slice(0, 4).map((artifact) => (
+                <div
+                  key={artifact.id}
+                  className="h-12 w-12 rounded-lg border border-border bg-secondary flex items-center justify-center"
+                >
+                  <FileText size={18} className="text-muted-foreground" />
+                </div>
+              ))}
+              {task.artifacts.length > 4 && (
+                <div className="h-12 w-12 rounded-lg border border-dashed border-border bg-secondary/50 flex items-center justify-center text-xs text-muted-foreground font-medium">
+                  +{task.artifacts.length - 4}
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Track tools and referenced files used in this task.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Track tools and referenced files used in this task.
+          </p>
+        )}
+      </SidePaneSection>
+    </aside>
+  );
+}
+
+function SidePaneSection({
+  title,
+  children,
+  open,
+  onToggle,
+  collapsible = true,
+}: {
+  title: string;
+  children: React.ReactNode;
+  open?: boolean;
+  onToggle?: () => void;
+  collapsible?: boolean;
+}) {
+  return (
+    <div className="border-b border-border">
+      <button
+        type="button"
+        className="flex items-center justify-between w-full px-4 py-3 text-sm font-semibold text-foreground hover:bg-secondary/30 transition-colors"
+        onClick={collapsible ? onToggle : undefined}
+        style={collapsible ? undefined : { cursor: "default" }}
+      >
+        {title}
+        {collapsible && (
+          <ChevronDown
+            size={14}
+            className={cn("text-muted-foreground transition-transform", open && "rotate-180")}
+          />
+        )}
+        {!collapsible && <ChevronDown size={14} className="text-muted-foreground -rotate-90" />}
+      </button>
+      {(!collapsible || open) && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
+function EmptyStateStatusDot({ status }: { status: TaskSummary["status"] }) {
+  if (status === "active")
+    return <div className="h-2.5 w-2.5 rounded-full bg-blue-500 ring-2 ring-blue-500/20" />;
+  if (status === "done") return <CheckCircle2 size={14} className="text-[var(--leaf)]" />;
+  if (status === "waiting")
+    return <Clock size={14} className="text-amber-500" />;
+  if (status === "failed") return <XCircle size={14} className="text-destructive" />;
+  return <div className="h-2.5 w-2.5 rounded-full bg-border" />;
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = Date.now();
+  const diffMs = now - date.getTime();
+  const diffMins = Math.floor(diffMs / 60_000);
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins} min ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 }

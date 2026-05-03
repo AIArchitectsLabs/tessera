@@ -203,8 +203,10 @@ export default function App() {
           loading={loadingTaskDetail}
           onCreateTask={handleCreateTask}
           onCreateTurn={handleCreateTurn}
+          onSelectTask={setSelectedTaskId}
           sendingTurn={sendingTurn}
           task={selectedTask}
+          tasks={tasks}
           workspaceRoot={workspaceRoot}
         />
       </div>
