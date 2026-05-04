@@ -7,6 +7,7 @@ import {
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
+  WebSearchResultSchema,
   WebFetchResultSchema,
 } from "./index.js";
 
@@ -118,5 +119,85 @@ describe("shell parsed payload contracts", () => {
 
     expect(parsed.diagnostics.status).toBe(200);
     expect(parsed.markdown).toContain("Hello world");
+  });
+
+  test("parses web search payloads with provider metadata", () => {
+    const parsed = WebSearchResultSchema.parse({
+      query: "tessera agent workspace",
+      provider: "brave-search",
+      capability: "search",
+      cached: false,
+      latencyMs: 123,
+      results: [
+        {
+          title: "Tessera",
+          url: "https://example.com",
+          snippet: "Agent workspace for business users.",
+          source: "example.com",
+          position: 1,
+        },
+      ],
+    });
+
+    expect(parsed.provider).toBe("brave-search");
+    expect(parsed.results[0]?.position).toBe(1);
+  });
+});
+
+describe("integration search settings contracts", () => {
+  test("parses search settings with provider credential state", () => {
+    const parsed = IntegrationSettingsReadSchema.parse({
+      providers: {
+        braveSearch: {
+          provider: "brave-search",
+          hasCredential: true,
+        },
+        googleCalendar: {
+          provider: "google-calendar",
+          hasCredential: false,
+        },
+      },
+      search: {
+        mode: "auto",
+        allowKeylessFallback: true,
+        providers: {
+          braveSearch: {
+            provider: "brave-search",
+            hasCredential: true,
+          },
+          tavily: {
+            provider: "tavily",
+            hasCredential: false,
+          },
+          duckduckgo: {
+            provider: "duckduckgo",
+            hasCredential: false,
+          },
+        },
+      },
+    });
+
+    expect(parsed.search.mode).toBe("auto");
+    expect(parsed.search.allowKeylessFallback).toBe(true);
+    expect(parsed.search.providers.duckduckgo.provider).toBe("duckduckgo");
+  });
+
+  test("fills default search settings when omitted", () => {
+    const parsed = IntegrationSettingsReadSchema.parse({
+      providers: {
+        braveSearch: {
+          provider: "brave-search",
+          hasCredential: false,
+        },
+        googleCalendar: {
+          provider: "google-calendar",
+          hasCredential: false,
+        },
+      },
+    });
+
+    expect(parsed.search.mode).toBe("auto");
+    expect(parsed.search.allowKeylessFallback).toBe(false);
+    expect(parsed.search.providers.tavily.hasCredential).toBe(false);
   });
 });

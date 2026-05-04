@@ -175,11 +175,63 @@ const GoogleCalendarIntegrationSettingsSchema = z.object({
   hasCredential: z.boolean().default(false),
 });
 
+export const SearchProviderSchema = z.enum(["brave-search", "tavily", "duckduckgo"]);
+export type SearchProvider = z.infer<typeof SearchProviderSchema>;
+
+export const SearchCapabilitySchema = z.enum(["search"]);
+export type SearchCapability = z.infer<typeof SearchCapabilitySchema>;
+
+export const SearchModeSchema = z.union([z.literal("auto"), SearchProviderSchema]);
+export type SearchMode = z.infer<typeof SearchModeSchema>;
+
+const BraveSearchProviderSettingsSchema = z.object({
+  provider: z.literal("brave-search"),
+  hasCredential: z.boolean().default(false),
+});
+
+const TavilyProviderSettingsSchema = z.object({
+  provider: z.literal("tavily"),
+  hasCredential: z.boolean().default(false),
+});
+
+const DuckDuckGoProviderSettingsSchema = z.object({
+  provider: z.literal("duckduckgo"),
+  hasCredential: z.boolean().default(false),
+});
+
 export const IntegrationSettingsReadSchema = z.object({
   providers: z.object({
     braveSearch: BraveSearchIntegrationSettingsSchema,
     googleCalendar: GoogleCalendarIntegrationSettingsSchema,
   }),
+  search: z
+    .object({
+      mode: SearchModeSchema,
+      allowKeylessFallback: z.boolean(),
+      providers: z.object({
+        braveSearch: BraveSearchProviderSettingsSchema,
+        tavily: TavilyProviderSettingsSchema,
+        duckduckgo: DuckDuckGoProviderSettingsSchema,
+      }),
+    })
+    .default({
+      mode: "auto",
+      allowKeylessFallback: false,
+      providers: {
+        braveSearch: {
+          provider: "brave-search",
+          hasCredential: false,
+        },
+        tavily: {
+          provider: "tavily",
+          hasCredential: false,
+        },
+        duckduckgo: {
+          provider: "duckduckgo",
+          hasCredential: false,
+        },
+      },
+    }),
 });
 export type IntegrationSettingsRead = z.infer<typeof IntegrationSettingsReadSchema>;
 
@@ -363,6 +415,24 @@ export const ShellToolCallSchema = z.object({
   args: z.array(z.string()).default([]),
 });
 export type ShellToolCall = z.infer<typeof ShellToolCallSchema>;
+
+export const WebSearchResultSchema = z.object({
+  query: z.string().min(1),
+  provider: SearchProviderSchema,
+  capability: SearchCapabilitySchema,
+  cached: z.boolean(),
+  latencyMs: z.number().nonnegative(),
+  results: z.array(
+    z.object({
+      title: z.string().min(1),
+      url: z.string().url(),
+      snippet: z.string().optional(),
+      source: z.string().optional(),
+      position: z.number().int().positive(),
+    })
+  ),
+});
+export type WebSearchResult = z.infer<typeof WebSearchResultSchema>;
 
 export const BraveSearchResultSchema = z.object({
   query: z.string().min(1),
