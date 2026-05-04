@@ -3,6 +3,7 @@ import {
   BraveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  IntegrationConnectionTestResultSchema,
   IntegrationConnectionTestRequestSchema,
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
@@ -39,20 +40,87 @@ describe("integration settings contracts", () => {
       credential: { apiKey: "brave-test" },
     });
 
+    expect("provider" in parsed).toBe(true);
+    if (!("provider" in parsed)) {
+      throw new Error("Expected provider request variant");
+    }
     expect(parsed.provider).toBe("brave-search");
     expect(parsed.credential?.apiKey).toBe("brave-test");
   });
 
-  test("accepts delete and test requests for brave search", () => {
-    expect(
-      IntegrationCredentialDeleteRequestSchema.parse({ provider: "brave-search" }).provider
-    ).toBe("brave-search");
-    expect(
+  test("accepts Tavily save requests without a top-level provider", () => {
+    const parsed = IntegrationSettingsSaveRequestSchema.parse({
+      searchProvider: "tavily",
+      hasExistingCredential: false,
+      credential: { apiKey: "tavily-test" },
+      search: {
+        mode: "tavily",
+        allowKeylessFallback: true,
+      },
+    });
+
+    expect("searchProvider" in parsed).toBe(true);
+    if (!("searchProvider" in parsed)) {
+      throw new Error("Expected search provider request variant");
+    }
+    expect(parsed.searchProvider).toBe("tavily");
+    expect(parsed.search?.mode).toBe("tavily");
+    expect(parsed.search?.allowKeylessFallback).toBe(true);
+  });
+
+  test("rejects mixed provider combinations", () => {
+    expect(() =>
+      IntegrationSettingsSaveRequestSchema.parse({
+        provider: "google-calendar",
+        searchProvider: "tavily",
+        hasExistingCredential: false,
+      })
+    ).toThrow();
+    expect(() =>
+      IntegrationCredentialDeleteRequestSchema.parse({
+        provider: "google-calendar",
+        searchProvider: "tavily",
+      })
+    ).toThrow();
+    expect(() =>
       IntegrationConnectionTestRequestSchema.parse({
-        provider: "brave-search",
-        credential: { apiKey: "brave-test" },
-      }).provider
-    ).toBe("brave-search");
+        provider: "google-calendar",
+        searchProvider: "tavily",
+        credential: { apiKey: "test" },
+      })
+    ).toThrow();
+  });
+
+  test("accepts delete and test requests for search providers", () => {
+    const deleteRequest = IntegrationCredentialDeleteRequestSchema.parse({
+      searchProvider: "tavily",
+    });
+    expect("searchProvider" in deleteRequest).toBe(true);
+    if (!("searchProvider" in deleteRequest)) {
+      throw new Error("Expected search provider delete variant");
+    }
+    expect(deleteRequest.searchProvider).toBe("tavily");
+
+    const testRequest = IntegrationConnectionTestRequestSchema.parse({
+      searchProvider: "tavily",
+      credential: { apiKey: "brave-test" },
+    });
+    expect("searchProvider" in testRequest).toBe(true);
+    if (!("searchProvider" in testRequest)) {
+      throw new Error("Expected search provider test variant");
+    }
+    expect(testRequest.searchProvider).toBe("tavily");
+  });
+
+  test("parses connection test results with search-provider provenance", () => {
+    const parsed = IntegrationConnectionTestResultSchema.parse({
+      ok: true,
+      message: "Connection test succeeded",
+      searchProvider: "tavily",
+    });
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.searchProvider).toBe("tavily");
   });
 
   test("parses normalized gcal list payloads", () => {

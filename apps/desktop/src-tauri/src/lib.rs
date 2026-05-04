@@ -601,7 +601,7 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
 async fn run_workspace_cli_command(
     app: &AppHandle,
     args: &[&str],
-    credential_env: Option<(&str, &str)>,
+    credential_env: Option<(String, String)>,
 ) -> Result<SpawnResult, String> {
     let bin_dir = binaries_dir(app).map_err(|error| error.to_string())?;
     let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
@@ -886,32 +886,61 @@ async fn integration_connection_test(
     app: AppHandle,
     request: integration_settings::IntegrationConnectionTestRequest,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
-    let credential = match request.credential {
-        Some(input) => {
-            let api_key = input.api_key.trim();
-            (!api_key.is_empty()).then(|| api_key.to_string())
+    let target = request.target().map_err(|error| error.to_string())?;
+    let (command_args, credential_env, provider, search_provider) = match target {
+        integration_settings::IntegrationRequestTarget::Integration(provider) => {
+            let credential = match request.credential {
+                Some(input) => {
+                    let api_key = input.api_key.trim();
+                    (!api_key.is_empty()).then(|| api_key.to_string())
+                }
+                None => integration_settings::get_credential(provider).map_err(|error| error.to_string())?,
+            };
+
+            if credential.is_none() {
+                return Ok(integration_settings::missing_credential_result(provider));
+            }
+
+            let (command_args, credential_env_name) = match provider {
+                integration_settings::IntegrationProvider::BraveSearch => {
+                    search_connection_command(integration_settings::SearchProvider::BraveSearch)
+                }
+                integration_settings::IntegrationProvider::GoogleCalendar => {
+                    (vec!["gcal", "list"], Some("TESSERA_GOOGLE_CALENDAR_API_KEY"))
+                }
+            };
+
+            let credential_env = credential
+                .as_deref()
+                .and_then(|value| {
+                    credential_env_name.map(|name| (name.to_string(), value.to_string()))
+                });
+            (command_args, credential_env, Some(provider), None)
         }
-        None => integration_settings::get_credential(request.provider)
-            .map_err(|error| error.to_string())?,
-    };
+        integration_settings::IntegrationRequestTarget::Search(search_provider) => {
+            let credential = match request.credential {
+                Some(input) => {
+                    let api_key = input.api_key.trim();
+                    (!api_key.is_empty()).then(|| api_key.to_string())
+                }
+                None => integration_settings::get_search_credential(search_provider)
+                    .map_err(|error| error.to_string())?,
+            };
 
-    if credential.is_none() {
-        return Ok(integration_settings::missing_credential_result(request.provider));
-    }
+            if credential.is_none() && search_provider != integration_settings::SearchProvider::DuckDuckGo {
+                return Ok(integration_settings::missing_search_credential_result(
+                    search_provider,
+                ));
+            }
 
-    let (command_args, credential_env) = match request.provider {
-        integration_settings::IntegrationProvider::BraveSearch => (
-            vec!["web-search", "search", "tessera"],
-            credential
+            let (command_args, credential_env_name) = search_connection_command(search_provider);
+            let credential_env = credential
                 .as_deref()
-                .map(|value| ("TESSERA_BRAVE_SEARCH_API_KEY", value)),
-        ),
-        integration_settings::IntegrationProvider::GoogleCalendar => (
-            vec!["gcal", "list"],
-            credential
-                .as_deref()
-                .map(|value| ("TESSERA_GOOGLE_CALENDAR_API_KEY", value)),
-        ),
+                .and_then(|value| {
+                    credential_env_name.map(|name| (name.to_string(), value.to_string()))
+                });
+            (command_args, credential_env, None, Some(search_provider))
+        }
     };
 
     let result = run_workspace_cli_command(&app, &command_args, credential_env).await?;
@@ -928,7 +957,39 @@ async fn integration_connection_test(
             .to_string()
     };
 
-    Ok(integration_settings::IntegrationConnectionTestResult { ok, message })
+    Ok(connection_test_result(ok, message, provider, search_provider))
+}
+
+fn search_connection_command(
+    provider: integration_settings::SearchProvider,
+) -> (Vec<&'static str>, Option<&'static str>) {
+    match provider {
+        integration_settings::SearchProvider::BraveSearch => (
+            vec!["web-search", "search", "tessera"],
+            Some("TESSERA_BRAVE_SEARCH_API_KEY"),
+        ),
+        integration_settings::SearchProvider::Tavily => (
+            vec!["web-search", "search", "tessera"],
+            Some("TESSERA_TAVILY_API_KEY"),
+        ),
+        integration_settings::SearchProvider::DuckDuckGo => {
+            (vec!["web-search", "search", "tessera"], None)
+        }
+    }
+}
+
+fn connection_test_result(
+    ok: bool,
+    message: String,
+    provider: Option<integration_settings::IntegrationProvider>,
+    search_provider: Option<integration_settings::SearchProvider>,
+) -> integration_settings::IntegrationConnectionTestResult {
+    integration_settings::IntegrationConnectionTestResult {
+        ok,
+        message,
+        provider,
+        search_provider,
+    }
 }
 
 #[tauri::command]
@@ -1117,7 +1178,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::tool_policy_runtime_json;
+    use super::{connection_test_result, search_connection_command, tool_policy_runtime_json};
+    use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
     #[test]
     fn default_task_tool_policies_include_shell_access() {
@@ -1143,5 +1205,41 @@ mod tests {
                 "preset {preset} should advertise web access"
             );
         }
+    }
+
+    #[test]
+    fn connection_test_result_includes_provenance_fields() {
+        let provider_result = connection_test_result(
+            true,
+            "Connection test succeeded".to_string(),
+            Some(IntegrationProvider::GoogleCalendar),
+            None,
+        );
+        assert_eq!(provider_result.provider, Some(IntegrationProvider::GoogleCalendar));
+        assert_eq!(provider_result.search_provider, None);
+
+        let search_result = connection_test_result(
+            true,
+            "Connection test succeeded".to_string(),
+            None,
+            Some(SearchProvider::Tavily),
+        );
+        assert_eq!(search_result.provider, None);
+        assert_eq!(search_result.search_provider, Some(SearchProvider::Tavily));
+    }
+
+    #[test]
+    fn search_connection_command_uses_provider_specific_api_key_env() {
+        let (args, env_name) = search_connection_command(SearchProvider::BraveSearch);
+        assert_eq!(args, vec!["web-search", "search", "tessera"]);
+        assert_eq!(env_name, Some("TESSERA_BRAVE_SEARCH_API_KEY"));
+
+        let (args, env_name) = search_connection_command(SearchProvider::Tavily);
+        assert_eq!(args, vec!["web-search", "search", "tessera"]);
+        assert_eq!(env_name, Some("TESSERA_TAVILY_API_KEY"));
+
+        let (args, env_name) = search_connection_command(SearchProvider::DuckDuckGo);
+        assert_eq!(args, vec!["web-search", "search", "tessera"]);
+        assert_eq!(env_name, None);
     }
 }
