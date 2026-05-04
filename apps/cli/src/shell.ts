@@ -1,8 +1,18 @@
 import { URL } from "node:url";
 import { NodeHtmlMarkdown } from "node-html-markdown";
+import {
+  executeWebSearch,
+  type WebSearchRuntime,
+} from "@tessera/core";
+import {
+  IntegrationSettingsReadSchema,
+  type IntegrationSettingsRead,
+  type SearchProvider,
+} from "@tessera/contracts";
 
 const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
+const TAVILY_SEARCH_ACCOUNT = "integration.tavily";
 const GOOGLE_CALENDAR_ACCOUNT = "integration.google-calendar";
 const MAX_FETCH_BYTES = 1_000_000;
 const BROWSER_HEADERS = {
@@ -28,6 +38,8 @@ export class CliCommandError extends Error {
 export interface ExecuteCliCommandOptions {
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   getBraveApiKey?: () => Promise<string | null>;
+  getTavilyApiKey?: () => Promise<string | null>;
+  getSearchSettings?: () => Promise<IntegrationSettingsRead["search"]>;
   getGoogleCalendarApiKey?: () => Promise<string | null>;
 }
 
@@ -73,23 +85,159 @@ async function runWebSearch(args: string[], options: ExecuteCliCommandOptions) {
     throw new CliCommandError("Usage: web-search search <query>");
   }
 
-  const apiKey =
-    (await options.getBraveApiKey?.()) ?? (await getBraveApiKeyFromSystem().catch(() => null));
-  if (!apiKey) {
-    throw new CliCommandError(
-      "Brave Search is not configured. Add an API key in Settings > Integrations."
+  try {
+    const searchContext = await resolveSearchContext(options);
+    return await executeWebSearch(
+      {
+        query,
+        settings: searchContext.settings,
+      },
+      createWebSearchRuntime(searchContext)
     );
+  } catch (error) {
+    throw error instanceof CliCommandError
+      ? error
+      : new CliCommandError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+type SearchCredentialState = {
+  braveSearch?: string;
+  tavily?: string;
+};
+
+type SearchContext = {
+  settings: IntegrationSettingsRead["search"];
+  credentials: SearchCredentialState;
+  fetchImpl: typeof fetch;
+};
+
+function createWebSearchRuntime(context: SearchContext): WebSearchRuntime {
+  return {
+    cache: new Map(),
+    adapters: {
+      "brave-search": {
+        search: async (request) => searchBraveResults(request),
+      },
+      tavily: {
+        search: async (request) => searchTavilyResults(request),
+      },
+      duckduckgo: {
+        search: async (request) => searchDuckDuckGoResults(request),
+      },
+    },
+    fetchImpl: context.fetchImpl,
+    getCredential: (provider) => {
+      if (provider === "brave-search") {
+        return context.credentials.braveSearch;
+      }
+      if (provider === "tavily") {
+        return context.credentials.tavily;
+      }
+      return undefined;
+    },
+  };
+}
+
+async function resolveSearchContext(
+  options: ExecuteCliCommandOptions
+): Promise<SearchContext> {
+  const settings = (await options.getSearchSettings?.()) ?? getDefaultSearchSettings();
+  const [braveSearch, tavily] = await Promise.all([
+    resolveSearchCredential("brave-search", options),
+    resolveSearchCredential("tavily", options),
+  ]);
+  const credentials: SearchCredentialState = {};
+  if (braveSearch) {
+    credentials.braveSearch = braveSearch;
+  }
+  if (tavily) {
+    credentials.tavily = tavily;
   }
 
+  return {
+    settings: {
+      ...settings,
+      providers: {
+        ...settings.providers,
+        braveSearch: {
+          ...settings.providers.braveSearch,
+          hasCredential: Boolean(braveSearch),
+        },
+        tavily: {
+          ...settings.providers.tavily,
+          hasCredential: Boolean(tavily),
+        },
+      },
+    },
+    credentials,
+    fetchImpl: (options.fetchImpl ?? fetch) as typeof fetch,
+  };
+}
+
+function getDefaultSearchSettings(): IntegrationSettingsRead["search"] {
+  return IntegrationSettingsReadSchema.parse({
+    providers: {
+      braveSearch: {
+        provider: "brave-search",
+        hasCredential: false,
+      },
+      googleCalendar: {
+        provider: "google-calendar",
+        hasCredential: false,
+      },
+    },
+  }).search;
+}
+
+async function resolveSearchCredential(
+  provider: SearchProvider,
+  options: ExecuteCliCommandOptions
+): Promise<string | undefined> {
+  if (provider === "brave-search") {
+    if (options.getBraveApiKey) {
+      return normalizeCredentialValue(await options.getBraveApiKey());
+    }
+    return (await getBraveApiKeyFromSystem().catch(() => null)) ?? undefined;
+  }
+
+  if (provider === "tavily") {
+    if (options.getTavilyApiKey) {
+      return normalizeCredentialValue(await options.getTavilyApiKey());
+    }
+    return (await getTavilyApiKeyFromSystem().catch(() => null)) ?? undefined;
+  }
+
+  return undefined;
+}
+
+type SearchAdapterRequest = {
+  query: string;
+  provider: SearchProvider;
+  capability: "search";
+  credential?: string;
+  fetchImpl: typeof fetch;
+};
+
+type SearchAdapterResponse = {
+  results: Array<{
+    title: string;
+    url: string;
+    snippet?: string;
+    source?: string;
+  }>;
+};
+
+async function searchBraveResults(request: SearchAdapterRequest): Promise<SearchAdapterResponse> {
   const endpoint = new URL("https://api.search.brave.com/res/v1/web/search");
-  endpoint.searchParams.set("q", query);
+  endpoint.searchParams.set("q", request.query);
   endpoint.searchParams.set("count", "10");
 
-  const response = await (options.fetchImpl ?? fetch)(endpoint, {
+  const response = await request.fetchImpl(endpoint, {
     headers: {
       ...BROWSER_HEADERS,
       accept: "application/json",
-      "x-subscription-token": apiKey,
+      "x-subscription-token": request.credential ?? "",
     },
   });
 
@@ -110,16 +258,171 @@ async function runWebSearch(args: string[], options: ExecuteCliCommandOptions) {
     };
   };
 
-  const results = (payload.web?.results ?? [])
-    .filter((item) => typeof item.title === "string" && typeof item.url === "string")
-    .map((item) => ({
-      title: item.title as string,
-      url: item.url as string,
-      ...(item.description ? { snippet: item.description } : {}),
-      source: item.profile?.name || safeHostname(item.url as string),
-    }));
+  return {
+    results: (payload.web?.results ?? [])
+      .filter((item) => typeof item.title === "string" && typeof item.url === "string")
+      .map((item) =>
+        buildSearchResult(
+          item.title as string,
+          item.url as string,
+          item.description,
+          item.profile?.name || safeHostname(item.url as string)
+        )
+      ),
+  };
+}
 
-  return { query, results };
+async function searchTavilyResults(request: SearchAdapterRequest): Promise<SearchAdapterResponse> {
+  const endpoint = new URL("https://api.tavily.com/search");
+
+  const response = await request.fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      ...BROWSER_HEADERS,
+      accept: "application/json",
+      authorization: `Bearer ${request.credential ?? ""}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      query: request.query,
+      search_depth: "basic",
+      max_results: 10,
+      include_answer: false,
+      include_raw_content: false,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new CliCommandError(
+      `Tavily request failed with ${response.status}${await describeResponse(response)}`
+    );
+  }
+
+  const payload = (await response.json()) as {
+    results?: Array<{
+      title?: string;
+      url?: string;
+      content?: string;
+      snippet?: string;
+      raw_content?: string | null;
+      favicon?: string | null;
+    }>;
+  };
+
+  return {
+    results: (payload.results ?? [])
+      .filter((item) => typeof item.title === "string" && typeof item.url === "string")
+      .map((item) =>
+        buildSearchResult(
+          item.title as string,
+          item.url as string,
+          item.content || item.snippet || undefined,
+          safeHostname(item.url as string)
+        )
+      ),
+  };
+}
+
+async function searchDuckDuckGoResults(
+  request: SearchAdapterRequest
+): Promise<SearchAdapterResponse> {
+  const endpoint = new URL("https://api.duckduckgo.com/");
+  endpoint.searchParams.set("q", request.query);
+  endpoint.searchParams.set("format", "json");
+  endpoint.searchParams.set("no_html", "1");
+  endpoint.searchParams.set("no_redirect", "1");
+  endpoint.searchParams.set("skip_disambig", "1");
+  endpoint.searchParams.set("t", "tessera");
+
+  const response = await request.fetchImpl(endpoint, {
+    headers: {
+      ...BROWSER_HEADERS,
+      accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new CliCommandError(
+      `DuckDuckGo request failed with ${response.status}${await describeResponse(response)}`
+    );
+  }
+
+  const payload = (await response.json()) as {
+    AbstractText?: string;
+    AbstractURL?: string;
+    Heading?: string;
+    RelatedTopics?: unknown[];
+  };
+
+  const results: SearchAdapterResponse["results"] = [];
+  if (
+    typeof payload.AbstractText === "string" &&
+    payload.AbstractText.trim().length > 0 &&
+    typeof payload.AbstractURL === "string" &&
+    payload.AbstractURL.trim().length > 0
+  ) {
+    results.push(
+      buildSearchResult(
+        payload.Heading?.trim() || request.query,
+        payload.AbstractURL,
+        payload.AbstractText.trim(),
+        safeHostname(payload.AbstractURL)
+      )
+    );
+  }
+
+  collectDuckDuckGoTopics(payload.RelatedTopics, results);
+  return { results };
+}
+
+function collectDuckDuckGoTopics(topics: unknown, results: SearchAdapterResponse["results"]): void {
+  if (!Array.isArray(topics)) {
+    return;
+  }
+
+  for (const topic of topics) {
+    if (!topic || typeof topic !== "object") {
+      continue;
+    }
+
+    const record = topic as Record<string, unknown>;
+    if (Array.isArray(record.Topics)) {
+      collectDuckDuckGoTopics(record.Topics, results);
+      continue;
+    }
+
+    if (
+      typeof record.Text === "string" &&
+      record.Text.trim().length > 0 &&
+      typeof record.FirstURL === "string" &&
+      record.FirstURL.trim().length > 0
+    ) {
+      results.push(
+        buildSearchResult(
+          record.Text.trim(),
+          record.FirstURL,
+          record.Text.trim(),
+          safeHostname(record.FirstURL)
+        )
+      );
+    }
+  }
+}
+
+function buildSearchResult(
+  title: string,
+  url: string,
+  snippet?: string,
+  source?: string
+): SearchAdapterResponse["results"][number] {
+  const result: SearchAdapterResponse["results"][number] = { title, url };
+  if (snippet) {
+    result.snippet = snippet;
+  }
+  if (source) {
+    result.source = source;
+  }
+  return result;
 }
 
 async function runWebFetch(args: string[], options: ExecuteCliCommandOptions) {
@@ -492,6 +795,11 @@ function isGcalAllDay(value: unknown): boolean {
   return typeof dateValue.date === "string";
 }
 
+function normalizeCredentialValue(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
 async function getBraveApiKeyFromSystem(): Promise<string | null> {
   const envValue = process.env.TESSERA_BRAVE_SEARCH_API_KEY?.trim();
   if (envValue) {
@@ -518,6 +826,38 @@ async function getBraveApiKeyFromSystem(): Promise<string | null> {
       KEYCHAIN_SERVICE,
       "account",
       BRAVE_SEARCH_ACCOUNT,
+    ]);
+  }
+
+  return null;
+}
+
+async function getTavilyApiKeyFromSystem(): Promise<string | null> {
+  const envValue = process.env.TESSERA_TAVILY_API_KEY?.trim();
+  if (envValue) {
+    return envValue;
+  }
+
+  if (process.platform === "darwin") {
+    return readSecret([
+      "security",
+      "find-generic-password",
+      "-a",
+      TAVILY_SEARCH_ACCOUNT,
+      "-s",
+      KEYCHAIN_SERVICE,
+      "-w",
+    ]);
+  }
+
+  if (process.platform === "linux") {
+    return readSecret([
+      "secret-tool",
+      "lookup",
+      "service",
+      KEYCHAIN_SERVICE,
+      "account",
+      TAVILY_SEARCH_ACCOUNT,
     ]);
   }
 
