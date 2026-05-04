@@ -3,6 +3,7 @@ import { NodeHtmlMarkdown } from "node-html-markdown";
 
 const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
+const GOOGLE_CALENDAR_ACCOUNT = "integration.google-calendar";
 const MAX_FETCH_BYTES = 1_000_000;
 const BROWSER_HEADERS = {
   "user-agent": "Tessera/0.1.0 (+https://tessera.app)",
@@ -27,6 +28,7 @@ export class CliCommandError extends Error {
 export interface ExecuteCliCommandOptions {
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   getBraveApiKey?: () => Promise<string | null>;
+  getGoogleCalendarApiKey?: () => Promise<string | null>;
 }
 
 export async function executeCliCommand(
@@ -42,6 +44,16 @@ export async function executeCliCommand(
 
     if (command === "web-fetch" && subcommand === "fetch") {
       const payload = await runWebFetch(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "gcal" && subcommand === "list") {
+      const payload = await runGcalList(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "gcal" && subcommand === "read") {
+      const payload = await runGcalRead(args, options);
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
     }
 
@@ -177,6 +189,82 @@ async function runWebFetch(args: string[], options: ExecuteCliCommandOptions) {
   };
 }
 
+async function runGcalList(args: string[], options: ExecuteCliCommandOptions) {
+  const { calendarId, limit } = parseGcalListArgs(args);
+  const apiKey =
+    (await options.getGoogleCalendarApiKey?.()) ??
+    (await getGoogleCalendarApiKeyFromSystem().catch(() => null));
+  if (!apiKey) {
+    throw new CliCommandError(
+      "Google Calendar is not configured. Add an API key in Settings > Integrations."
+    );
+  }
+
+  const endpoint = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
+  );
+  endpoint.searchParams.set("maxResults", String(limit));
+  endpoint.searchParams.set("singleEvents", "true");
+  endpoint.searchParams.set("orderBy", "startTime");
+  endpoint.searchParams.set("timeMin", new Date().toISOString());
+
+  const response = await (options.fetchImpl ?? fetch)(endpoint, {
+    headers: {
+      ...BROWSER_HEADERS,
+      accept: "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new CliCommandError(
+      `Google Calendar request failed with ${response.status}${await describeResponse(response)}`
+    );
+  }
+
+  const payload = (await response.json()) as { items?: Array<Record<string, unknown>> };
+  return {
+    calendarId,
+    events: (payload.items ?? []).map((item) => normalizeGcalEvent(item)),
+  };
+}
+
+async function runGcalRead(args: string[], options: ExecuteCliCommandOptions) {
+  const { calendarId, eventId } = parseGcalReadArgs(args);
+  const apiKey =
+    (await options.getGoogleCalendarApiKey?.()) ??
+    (await getGoogleCalendarApiKeyFromSystem().catch(() => null));
+  if (!apiKey) {
+    throw new CliCommandError(
+      "Google Calendar is not configured. Add an API key in Settings > Integrations."
+    );
+  }
+
+  const endpoint = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
+  );
+
+  const response = await (options.fetchImpl ?? fetch)(endpoint, {
+    headers: {
+      ...BROWSER_HEADERS,
+      accept: "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new CliCommandError(
+      `Google Calendar request failed with ${response.status}${await describeResponse(response)}`
+    );
+  }
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  return {
+    calendarId,
+    event: normalizeGcalEvent(payload, true),
+  };
+}
+
 async function describeResponse(response: Response): Promise<string> {
   const text = (await response.text()).trim().slice(0, 200);
   return text ? `: ${text}` : "";
@@ -286,6 +374,115 @@ function safeHostname(value: string): string | undefined {
   }
 }
 
+function parseGcalListArgs(args: string[]): { calendarId: string; limit: number } {
+  let calendarId = "primary";
+  let limit = 10;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      const parsed = Number(value);
+      if (!value || !Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError("Usage: gcal list [--limit <n>] [--calendar <id>]");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === "--calendar") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError("Usage: gcal list [--limit <n>] [--calendar <id>]");
+      }
+      calendarId = value;
+      index += 1;
+      continue;
+    }
+    throw new CliCommandError("Usage: gcal list [--limit <n>] [--calendar <id>]");
+  }
+
+  return { calendarId, limit };
+}
+
+function parseGcalReadArgs(args: string[]): { calendarId: string; eventId: string } {
+  const eventId = args[0]?.trim();
+  if (!eventId) {
+    throw new CliCommandError("Usage: gcal read <event-id> [--calendar <id>]");
+  }
+
+  let calendarId = "primary";
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--calendar") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError("Usage: gcal read <event-id> [--calendar <id>]");
+      }
+      calendarId = value;
+      index += 1;
+      continue;
+    }
+    throw new CliCommandError("Usage: gcal read <event-id> [--calendar <id>]");
+  }
+
+  return { calendarId, eventId };
+}
+
+function normalizeGcalEvent(
+  item: Record<string, unknown>,
+  includeAttendees = false
+): Record<string, unknown> {
+  const startValue = readGcalDate(item.start);
+  const endValue = readGcalDate(item.end);
+  const allDay = isGcalAllDay(item.start);
+  const normalized: Record<string, unknown> = {
+    id: typeof item.id === "string" ? item.id : "",
+    title: typeof item.summary === "string" ? item.summary : "Untitled event",
+    start: startValue,
+    isAllDay: allDay,
+  };
+
+  if (typeof item.status === "string") normalized.status = item.status;
+  if (typeof item.description === "string") normalized.description = item.description;
+  if (typeof item.location === "string") normalized.location = item.location;
+  if (typeof endValue === "string" && endValue.length > 0) normalized.end = endValue;
+  if (typeof item.htmlLink === "string") normalized.htmlLink = item.htmlLink;
+
+  const organizer = item.organizer;
+  if (organizer && typeof organizer === "object" && typeof organizer.email === "string") {
+    normalized.organizerEmail = organizer.email;
+  }
+
+  if (includeAttendees && Array.isArray(item.attendees)) {
+    normalized.attendees = item.attendees
+      .filter((attendee): attendee is Record<string, unknown> => !!attendee && typeof attendee === "object")
+      .map((attendee) => ({
+        email: typeof attendee.email === "string" ? attendee.email : "",
+        ...(typeof attendee.displayName === "string"
+          ? { displayName: attendee.displayName }
+          : {}),
+        ...(typeof attendee.responseStatus === "string"
+          ? { responseStatus: attendee.responseStatus }
+          : {}),
+      }))
+      .filter((attendee) => attendee.email.length > 0);
+  }
+
+  return normalized;
+}
+
+function readGcalDate(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  if (typeof value.dateTime === "string") return value.dateTime;
+  if (typeof value.date === "string") return value.date;
+  return "";
+}
+
+function isGcalAllDay(value: unknown): boolean {
+  return !!value && typeof value === "object" && typeof value.date === "string";
+}
+
 async function getBraveApiKeyFromSystem(): Promise<string | null> {
   const envValue = process.env.TESSERA_BRAVE_SEARCH_API_KEY?.trim();
   if (envValue) {
@@ -312,6 +509,38 @@ async function getBraveApiKeyFromSystem(): Promise<string | null> {
       KEYCHAIN_SERVICE,
       "account",
       BRAVE_SEARCH_ACCOUNT,
+    ]);
+  }
+
+  return null;
+}
+
+async function getGoogleCalendarApiKeyFromSystem(): Promise<string | null> {
+  const envValue = process.env.TESSERA_GOOGLE_CALENDAR_API_KEY?.trim();
+  if (envValue) {
+    return envValue;
+  }
+
+  if (process.platform === "darwin") {
+    return readSecret([
+      "security",
+      "find-generic-password",
+      "-a",
+      GOOGLE_CALENDAR_ACCOUNT,
+      "-s",
+      KEYCHAIN_SERVICE,
+      "-w",
+    ]);
+  }
+
+  if (process.platform === "linux") {
+    return readSecret([
+      "secret-tool",
+      "lookup",
+      "service",
+      KEYCHAIN_SERVICE,
+      "account",
+      GOOGLE_CALENDAR_ACCOUNT,
     ]);
   }
 

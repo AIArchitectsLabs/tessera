@@ -28,6 +28,7 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("  ping          Health-check; prints JSON and exits 0");
   console.log("  web-search    Run a configured web search");
   console.log("  web-fetch     Fetch and extract a public web page");
+  console.log("  gcal          Read Google Calendar events");
   console.log("  run <agent>   Run an agent headlessly");
   console.log("");
   console.log("Options:");
