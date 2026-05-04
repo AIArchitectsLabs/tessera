@@ -7,6 +7,7 @@ import type {
   TaskEvent,
   TaskListResult,
   TaskSummary,
+  TaskUpdateRequest,
   TodoOperation,
 } from "@tessera/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,6 +16,7 @@ import { RailNav, type SidebarMode } from "@/components/RailNav";
 import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
+import type { TaskListView } from "@/components/TaskList";
 import { applyTaskEvent } from "./lib/applyTaskEvent";
 import { mergeTaskDetail } from "./lib/taskDetails";
 import { mergeTaskSummary, summaryFromDetail } from "./lib/taskSummaries";
@@ -29,6 +31,7 @@ export default function App() {
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("files");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [taskListView, setTaskListView] = useState<TaskListView>("active");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
   const [taskListError, setTaskListError] = useState<string | null>(null);
@@ -44,6 +47,7 @@ export default function App() {
   const handleWorkspaceSelect = (path: string) => {
     setWorkspaceRoot(path);
     localStorage.setItem(WORKSPACE_STORAGE_KEY, path);
+    setTaskListView("active");
     setSelectedTaskId(null);
     setSelectedTask(null);
   };
@@ -133,6 +137,7 @@ export default function App() {
     setSelectedTask(null);
     setTaskDetailError(null);
     setSendingTurn(false);
+    setTaskListView("active");
   };
 
   const handleLogout = () => {
@@ -229,6 +234,24 @@ export default function App() {
     setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
   }
 
+  async function handleArchiveToggle(task: TaskSummary, archived: boolean) {
+    setTaskListError(null);
+    try {
+      const request: TaskUpdateRequest = { archived };
+      const updatedTask = await invoke<TaskDetail>("task_update", {
+        taskId: task.id,
+        request,
+      });
+      setSelectedTask((current) =>
+        current && current.id === updatedTask.id ? mergeTaskDetail(current, updatedTask) : current
+      );
+      setTasks((current) => mergeTaskSummary(current, summaryFromDetail(updatedTask)));
+      setTaskListView(archived ? "archived" : "active");
+    } catch (error) {
+      setTaskListError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const mainPane =
     sidebarMode === "tasks" ? (
       <div className="flex min-w-0 flex-1 flex-col">
@@ -279,12 +302,15 @@ export default function App() {
             error={taskListError}
             loadingTasks={loadingTasks}
             mode={sidebarMode}
+            onArchiveToggle={handleArchiveToggle}
             onNewTask={handleNewTask}
             onRetryTasks={loadTasks}
             onSelectTask={setSelectedTaskId}
+            onTaskListViewChange={setTaskListView}
             onWorkspaceSelect={handleWorkspaceSelect}
             selectedTaskId={selectedTaskId}
             tasks={tasks}
+            taskListView={taskListView}
             workspaceRoot={workspaceRoot}
           />
           {mainPane}

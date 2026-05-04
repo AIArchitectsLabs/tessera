@@ -2,15 +2,28 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { TaskSummary } from "@tessera/contracts";
-import { CheckCircle2, Clock, Loader2, RotateCw, XCircle } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  RotateCw,
+  XCircle,
+} from "lucide-react";
+
+export type TaskListView = "active" | "archived";
 
 interface TaskListProps {
   error: string | null;
   loading: boolean;
+  onArchiveToggle: (task: TaskSummary, archived: boolean) => void;
   onRetry: () => void;
   onSelectTask: (taskId: string) => void;
+  onViewChange: (view: TaskListView) => void;
   selectedTaskId: string | null;
   tasks: TaskSummary[];
+  view: TaskListView;
   workspaceRoot: string | null;
 }
 
@@ -38,12 +51,19 @@ function formatUpdatedAt(value: string) {
 export function TaskList({
   error,
   loading,
+  onArchiveToggle,
   onRetry,
   onSelectTask,
+  onViewChange,
   selectedTaskId,
   tasks,
+  view,
   workspaceRoot,
 }: TaskListProps) {
+  const visibleTasks = tasks.filter((task) =>
+    view === "archived" ? Boolean(task.archivedAt) : !task.archivedAt
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {!workspaceRoot && (
@@ -69,44 +89,110 @@ export function TaskList({
         </div>
       )}
 
-      {workspaceRoot && !loading && !error && tasks.length === 0 && (
+      {workspaceRoot && !loading && !error && tasks.length > 0 && (
+        <div className="px-3 pb-2">
+          <div className="inline-flex rounded-lg bg-background/70 p-1">
+            <button
+              type="button"
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                view === "active"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+              onClick={() => onViewChange("active")}
+            >
+              History
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                view === "archived"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+              onClick={() => onViewChange("archived")}
+            >
+              Archived
+            </button>
+          </div>
+        </div>
+      )}
+
+      {workspaceRoot && !loading && !error && visibleTasks.length === 0 && (
         <div className="mx-4 mt-2 rounded-lg border border-dashed border-border bg-background/60 p-4 text-center text-sm text-muted-foreground">
-          No task history yet. Start from the composer in the main pane.
+          {view === "archived"
+            ? "No archived tasks yet."
+            : "No task history yet. Start from the composer in the main pane."}
         </div>
       )}
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-1 px-2 py-2">
-          {tasks.map((task) => (
-            <button
-              type="button"
+          {visibleTasks.map((task) => (
+            <TaskRow
               key={task.id}
-              onClick={() => onSelectTask(task.id)}
-              className={cn(
-                "w-full rounded-lg px-3 py-2 text-left transition-colors",
-                selectedTaskId === task.id ? "bg-background shadow-sm" : "hover:bg-black/5"
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium text-foreground">{task.title}</span>
-                <span className="shrink-0 text-[10px] text-muted-foreground">
-                  {formatUpdatedAt(task.updatedAt)}
-                </span>
-              </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <StatusIcon status={task.status} />
-                <span>{formatStatus(task.status)}</span>
-                {task.agentLabel && <span>• {task.agentLabel}</span>}
-              </div>
-              {task.latestActivity && (
-                <div className="mt-1 truncate text-xs text-muted-foreground/80">
-                  {task.latestActivity}
-                </div>
-              )}
-            </button>
+              task={task}
+              view={view}
+              selected={selectedTaskId === task.id}
+              onSelectTask={onSelectTask}
+              onArchiveToggle={onArchiveToggle}
+            />
           ))}
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+interface TaskRowProps {
+  task: TaskSummary;
+  view: TaskListView;
+  selected: boolean;
+  onSelectTask: (taskId: string) => void;
+  onArchiveToggle: (task: TaskSummary, archived: boolean) => void;
+}
+
+function TaskRow({ task, view, selected, onSelectTask, onArchiveToggle }: TaskRowProps) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg transition-colors hover:bg-black/5",
+        selected ? "bg-background shadow-sm" : ""
+      )}
+    >
+      <div className="flex flex-col px-3 py-2">
+        <button
+          type="button"
+          onClick={() => onSelectTask(task.id)}
+          className="text-left"
+        >
+          <span className="block truncate text-sm font-medium text-foreground">
+            {task.title}
+          </span>
+          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <StatusIcon status={task.status} />
+            <span>{formatStatus(task.status)}</span>
+            {task.agentLabel && <span>• {task.agentLabel}</span>}
+          </div>
+          {task.latestActivity && (
+            <div className="mt-0.5 truncate text-xs text-muted-foreground/80">
+              {task.latestActivity}
+            </div>
+          )}
+        </button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1 self-start h-6 -ml-2 gap-1 px-2 text-[11px] text-muted-foreground"
+          aria-label={view === "active" ? "Archive task" : "Restore task"}
+          onClick={(e) => { e.stopPropagation(); onArchiveToggle(task, view === "active"); }}
+        >
+          {view === "active" ? <><Archive size={11} /> Archive</> : <><ArchiveRestore size={11} /> Restore</>}
+        </Button>
+      </div>
     </div>
   );
 }

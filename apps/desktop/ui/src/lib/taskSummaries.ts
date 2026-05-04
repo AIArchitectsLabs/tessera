@@ -9,6 +9,7 @@ export function summaryFromDetail(detail: TaskDetail): TaskSummary {
     agentId: detail.agentId,
     agentLabel: detail.agentLabel,
     latestActivity: detail.latestActivity,
+    archivedAt: detail.archivedAt,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt,
   };
@@ -21,4 +22,21 @@ export function mergeTaskSummary(current: TaskSummary[], nextSummary: TaskSummar
   }
 
   return current.map((task) => (task.id === nextSummary.id ? nextSummary : task));
+}
+
+export function categorizeTaskSummaries(tasks: TaskSummary[]): {
+  active: TaskSummary[];
+  archived: TaskSummary[];
+} {
+  return tasks.reduce(
+    (groups, task) => {
+      if (task.archivedAt) {
+        groups.archived.push(task);
+      } else {
+        groups.active.push(task);
+      }
+      return groups;
+    },
+    { active: [] as TaskSummary[], archived: [] as TaskSummary[] }
+  );
 }

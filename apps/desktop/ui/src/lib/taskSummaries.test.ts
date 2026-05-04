@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TaskDetail, TaskSummary } from "@tessera/contracts";
-import { mergeTaskSummary, summaryFromDetail } from "./taskSummaries.js";
+import { categorizeTaskSummaries, mergeTaskSummary, summaryFromDetail } from "./taskSummaries.js";
 
 const summary: TaskSummary = {
   id: "task-1",
@@ -10,6 +10,7 @@ const summary: TaskSummary = {
   agentId: "default",
   agentLabel: "Tessera",
   latestActivity: "Starting",
+  archivedAt: undefined,
   createdAt: "2026-05-03T00:00:00.000Z",
   updatedAt: "2026-05-03T00:00:00.000Z",
 };
@@ -44,5 +45,18 @@ describe("taskSummaries", () => {
       agentContext: undefined,
     };
     expect(summaryFromDetail(detail)).toEqual(summary);
+  });
+
+  test("splits active and archived task summaries", () => {
+    const archivedSummary: TaskSummary = {
+      ...summary,
+      id: "task-2",
+      archivedAt: "2026-05-03T01:00:00.000Z",
+    };
+
+    expect(categorizeTaskSummaries([summary, archivedSummary])).toEqual({
+      active: [summary],
+      archived: [archivedSummary],
+    });
   });
 });

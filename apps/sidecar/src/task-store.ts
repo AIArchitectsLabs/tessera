@@ -79,6 +79,7 @@ interface TaskRow {
   clarify_json: string | null;
   notifications_json: string | null;
   audit_records_json: string | null;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -140,6 +141,7 @@ function rowToSummary(row: TaskRow): TaskSummary {
     agentId: row.agent_id,
     agentLabel: row.agent_label ?? undefined,
     latestActivity: row.latest_activity ?? undefined,
+    archivedAt: row.archived_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -232,6 +234,7 @@ export function createTaskStore(dbPath: string): TaskStore {
       clarify_json TEXT,
       notifications_json TEXT,
       audit_records_json TEXT,
+      archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );`
@@ -255,6 +258,9 @@ export function createTaskStore(dbPath: string): TaskStore {
   }
   if (!taskColumns.some((column) => column.name === "audit_records_json")) {
     db.exec("ALTER TABLE tasks ADD COLUMN audit_records_json TEXT");
+  }
+  if (!taskColumns.some((column) => column.name === "archived_at")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN archived_at TEXT");
   }
 
   db.exec(`
@@ -287,9 +293,9 @@ export function createTaskStore(dbPath: string): TaskStore {
 
   const insertTask = db.prepare(`
     INSERT INTO tasks (
-      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, agent_context_json, todo_json, clarify_json, notifications_json, audit_records_json, created_at, updated_at
+      id, workspace_root, title, status, agent_id, agent_label, latest_activity, description, agent_context_json, todo_json, clarify_json, notifications_json, audit_records_json, archived_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTurn = db.prepare(`
     INSERT INTO task_turns (id, task_id, role, content, status, created_at, completed_at, error)
@@ -315,6 +321,7 @@ export function createTaskStore(dbPath: string): TaskStore {
     SET title = COALESCE(?, title),
         status = COALESCE(?, status),
         latest_activity = COALESCE(?, latest_activity),
+        archived_at = ?,
         updated_at = ?
     WHERE id = ?
   `);
@@ -454,6 +461,7 @@ export function createTaskStore(dbPath: string): TaskStore {
         null,
         JSON.stringify([]),
         JSON.stringify([]),
+        null,
         createdAt,
         createdAt
       );
@@ -556,11 +564,15 @@ export function createTaskStore(dbPath: string): TaskStore {
     },
     updateTask(taskId, patch) {
       requireTask(taskId);
+      const existing = requireTask(taskId);
       const updatedAt = nowIso();
+      const archivedAt =
+        patch.archived === undefined ? existing.archived_at : patch.archived ? updatedAt : null;
       updateTaskRow.run(
         patch.title?.trim() || null,
         patch.status ?? null,
         patch.latestActivity ?? null,
+        archivedAt,
         updatedAt,
         taskId
       );

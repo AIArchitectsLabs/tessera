@@ -80,4 +80,24 @@ describe("task store", () => {
       store.close();
     }
   });
+
+  test("archives tasks without removing them and supports restoring them", () => {
+    const store = createTaskStore(tempDbPath("tasks.sqlite"));
+    try {
+      const task = store.createTask({
+        workspaceRoot: "/workspace/acme",
+        initialInstruction: "Prepare weekly report",
+      });
+
+      const archived = store.updateTask(task.id, { archived: true });
+      expect(archived?.archivedAt).toBeString();
+      expect(store.listTasks({ workspaceRoot: "/workspace/acme" })[0]?.archivedAt).toBeString();
+
+      const restored = store.updateTask(task.id, { archived: false });
+      expect(restored?.archivedAt).toBeUndefined();
+      expect(store.getTask(task.id)?.archivedAt).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
 });

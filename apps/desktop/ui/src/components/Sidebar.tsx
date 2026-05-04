@@ -1,6 +1,6 @@
 import { FileExplorer } from "@/components/FileExplorer";
 import type { SidebarMode } from "@/components/RailNav";
-import { TaskList } from "@/components/TaskList";
+import { TaskList, type TaskListView } from "@/components/TaskList";
 import { WorkspacePicker } from "@/components/WorkspacePicker";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -11,12 +11,15 @@ interface SidebarProps {
   error: string | null;
   loadingTasks: boolean;
   mode: SidebarMode;
+  onArchiveToggle: (task: TaskSummary, archived: boolean) => void;
   onNewTask: () => void;
   onRetryTasks: () => void;
   onSelectTask: (taskId: string) => void;
+  onTaskListViewChange: (view: TaskListView) => void;
   onWorkspaceSelect: (path: string) => void;
   selectedTaskId: string | null;
   tasks: TaskSummary[];
+  taskListView: TaskListView;
   workspaceRoot: string | null;
 }
 
@@ -24,12 +27,15 @@ export function Sidebar({
   error,
   loadingTasks,
   mode,
+  onArchiveToggle,
   onNewTask,
   onRetryTasks,
   onSelectTask,
+  onTaskListViewChange,
   onWorkspaceSelect,
   selectedTaskId,
   tasks,
+  taskListView,
   workspaceRoot,
 }: SidebarProps) {
   return (
@@ -66,10 +72,13 @@ export function Sidebar({
           <TaskList
             error={error}
             loading={loadingTasks}
+            onArchiveToggle={onArchiveToggle}
             onRetry={onRetryTasks}
             onSelectTask={onSelectTask}
+            onViewChange={onTaskListViewChange}
             selectedTaskId={selectedTaskId}
             tasks={tasks}
+            view={taskListView}
             workspaceRoot={workspaceRoot}
           />
         </div>

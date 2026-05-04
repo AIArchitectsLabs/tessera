@@ -665,6 +665,7 @@ export const TaskSummarySchema = z.object({
   agentId: z.string().min(1).default("default"),
   agentLabel: z.string().min(1).optional(),
   latestActivity: z.string().optional(),
+  archivedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -849,6 +850,7 @@ export const TaskUpdateRequestSchema = z.object({
   title: z.string().min(1).optional(),
   status: TaskStatusSchema.optional(),
   latestActivity: z.string().optional(),
+  archived: z.boolean().optional(),
 });
 export type TaskUpdateRequest = z.infer<typeof TaskUpdateRequestSchema>;
 
