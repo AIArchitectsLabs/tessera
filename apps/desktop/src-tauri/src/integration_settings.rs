@@ -21,18 +21,21 @@ fn keychain_lock() -> &'static Mutex<()> {
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationProvider {
     BraveSearch,
+    GoogleCalendar,
 }
 
 impl IntegrationProvider {
     pub fn account(self) -> &'static str {
         match self {
             Self::BraveSearch => "integration.brave-search",
+            Self::GoogleCalendar => "integration.google-calendar",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::BraveSearch => "Brave Search",
+            Self::GoogleCalendar => "Google Calendar",
         }
     }
 }
@@ -53,7 +56,10 @@ pub struct ProviderSettings {
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsProviders {
+    #[serde(default = "default_brave_search_provider_config")]
     pub brave_search: ProviderConfig,
+    #[serde(default = "default_google_calendar_provider_config")]
+    pub google_calendar: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +72,7 @@ pub struct SettingsFile {
 #[serde(rename_all = "camelCase")]
 pub struct ReadProviders {
     pub brave_search: ProviderSettings,
+    pub google_calendar: ProviderSettings,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -121,10 +128,21 @@ pub fn missing_credential_result(provider: IntegrationProvider) -> IntegrationCo
 pub fn default_settings_file() -> SettingsFile {
     SettingsFile {
         providers: SettingsProviders {
-            brave_search: ProviderConfig {
-                provider: IntegrationProvider::BraveSearch,
-            },
+            brave_search: default_brave_search_provider_config(),
+            google_calendar: default_google_calendar_provider_config(),
         },
+    }
+}
+
+fn default_brave_search_provider_config() -> ProviderConfig {
+    ProviderConfig {
+        provider: IntegrationProvider::BraveSearch,
+    }
+}
+
+fn default_google_calendar_provider_config() -> ProviderConfig {
+    ProviderConfig {
+        provider: IntegrationProvider::GoogleCalendar,
     }
 }
 
@@ -295,6 +313,10 @@ fn redact(_settings: SettingsFile) -> Result<IntegrationSettingsRead> {
             brave_search: ProviderSettings {
                 provider: IntegrationProvider::BraveSearch,
                 has_credential: get_credential(IntegrationProvider::BraveSearch)?.is_some(),
+            },
+            google_calendar: ProviderSettings {
+                provider: IntegrationProvider::GoogleCalendar,
+                has_credential: get_credential(IntegrationProvider::GoogleCalendar)?.is_some(),
             },
         },
     })

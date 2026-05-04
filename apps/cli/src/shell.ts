@@ -450,18 +450,22 @@ function normalizeGcalEvent(
   if (typeof item.htmlLink === "string") normalized.htmlLink = item.htmlLink;
 
   const organizer = item.organizer;
-  if (organizer && typeof organizer === "object" && typeof organizer.email === "string") {
-    normalized.organizerEmail = organizer.email;
+  if (organizer && typeof organizer === "object") {
+    const organizerRecord = organizer as Record<string, unknown>;
+    if (typeof organizerRecord.email === "string") {
+      normalized.organizerEmail = organizerRecord.email;
+    }
   }
 
   if (includeAttendees && Array.isArray(item.attendees)) {
     normalized.attendees = item.attendees
-      .filter((attendee): attendee is Record<string, unknown> => !!attendee && typeof attendee === "object")
+      .filter(
+        (attendee): attendee is Record<string, unknown> =>
+          !!attendee && typeof attendee === "object"
+      )
       .map((attendee) => ({
         email: typeof attendee.email === "string" ? attendee.email : "",
-        ...(typeof attendee.displayName === "string"
-          ? { displayName: attendee.displayName }
-          : {}),
+        ...(typeof attendee.displayName === "string" ? { displayName: attendee.displayName } : {}),
         ...(typeof attendee.responseStatus === "string"
           ? { responseStatus: attendee.responseStatus }
           : {}),
@@ -474,13 +478,18 @@ function normalizeGcalEvent(
 
 function readGcalDate(value: unknown): string {
   if (!value || typeof value !== "object") return "";
-  if (typeof value.dateTime === "string") return value.dateTime;
-  if (typeof value.date === "string") return value.date;
+  const dateValue = value as Record<string, unknown>;
+  if (typeof dateValue.dateTime === "string") return dateValue.dateTime;
+  if (typeof dateValue.date === "string") return dateValue.date;
   return "";
 }
 
 function isGcalAllDay(value: unknown): boolean {
-  return !!value && typeof value === "object" && typeof value.date === "string";
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const dateValue = value as Record<string, unknown>;
+  return typeof dateValue.date === "string";
 }
 
 async function getBraveApiKeyFromSystem(): Promise<string | null> {

@@ -601,15 +601,15 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
 async fn run_workspace_cli_command(
     app: &AppHandle,
     args: &[&str],
-    brave_api_key: Option<&str>,
+    credential_env: Option<(&str, &str)>,
 ) -> Result<SpawnResult, String> {
     let bin_dir = binaries_dir(app).map_err(|error| error.to_string())?;
     let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(cli_path);
     command.args(args);
-    if let Some(api_key) = brave_api_key {
-        command.env("TESSERA_BRAVE_SEARCH_API_KEY", api_key);
+    if let Some((env_name, credential)) = credential_env {
+        command.env(env_name, credential);
     }
     let output = command.output().map_err(|error| error.to_string())?;
 
@@ -899,12 +899,22 @@ async fn integration_connection_test(
         return Ok(integration_settings::missing_credential_result(request.provider));
     }
 
-    let result = run_workspace_cli_command(
-        &app,
-        &["web-search", "search", "tessera"],
-        credential.as_deref(),
-    )
-    .await?;
+    let (command_args, credential_env) = match request.provider {
+        integration_settings::IntegrationProvider::BraveSearch => (
+            vec!["web-search", "search", "tessera"],
+            credential
+                .as_deref()
+                .map(|value| ("TESSERA_BRAVE_SEARCH_API_KEY", value)),
+        ),
+        integration_settings::IntegrationProvider::GoogleCalendar => (
+            vec!["gcal", "list"],
+            credential
+                .as_deref()
+                .map(|value| ("TESSERA_GOOGLE_CALENDAR_API_KEY", value)),
+        ),
+    };
+
+    let result = run_workspace_cli_command(&app, &command_args, credential_env).await?;
     let ok = result.exit_code == 0;
     let message = if ok {
         "Connection test succeeded".to_string()

@@ -64,7 +64,7 @@ describe("agent profile contracts", () => {
   test("resolves tool policy presets into concrete capabilities", () => {
     expect(resolveToolPolicyPreset("read_only")).toMatchObject({
       approvalMode: "never",
-      allowedTools: ["workspace_read", "workspace_list", "workspace_search", "todo"],
+      allowedTools: ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"],
     });
     expect(resolveToolPolicyPreset("elevated_with_approval")).toMatchObject({
       approvalMode: "ask",

@@ -129,7 +129,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const hasIntegrationCredential = integrations?.providers.braveSearch.hasCredential ?? false;
+  const hasIntegrationCredential =
+    selectedIntegration === "brave-search"
+      ? (integrations?.providers.braveSearch.hasCredential ?? false)
+      : (integrations?.providers.googleCalendar.hasCredential ?? false);
   const modelBusy = loading || activeModelAction !== null;
   const integrationBusy = loading || activeIntegrationAction !== null;
   const requiresBaseUrl = draft.provider === "local";
@@ -148,7 +151,6 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   function hydrateFromIntegrations(loaded: IntegrationSettingsRead) {
     setIntegrations(loaded);
-    setSelectedIntegration("brave-search");
     setIntegrationApiKey("");
   }
 
@@ -638,7 +640,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
               <div className="space-y-4">
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  Brave Search powers the `web-search search` shell command for live agent research.
+                  {selectedIntegration === "brave-search"
+                    ? "Brave Search powers the `web-search search` shell command for live agent research."
+                    : "Google Calendar powers the `gcal list` and `gcal read` shell commands for calendar context."}
                 </div>
 
                 <label className="block">

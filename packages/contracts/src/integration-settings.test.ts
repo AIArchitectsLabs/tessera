@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   BraveSearchResultSchema,
+  GcalListResultSchema,
+  GcalReadResultSchema,
   IntegrationConnectionTestRequestSchema,
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
-  GcalListResultSchema,
-  GcalReadResultSchema,
   WebFetchResultSchema,
 } from "./index.js";
 

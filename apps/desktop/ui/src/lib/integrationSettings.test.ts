@@ -11,6 +11,7 @@ import {
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
     expect(integrationLabel("brave-search")).toBe("Brave Search");
+    expect(integrationLabel("google-calendar")).toBe("Google Calendar");
   });
 
   test("omits blank credential replacements", () => {
@@ -20,7 +21,7 @@ describe("integration settings UI helpers", () => {
   });
 
   test("exports every supported integration provider", () => {
-    const expected: IntegrationProvider[] = ["brave-search"];
+    const expected: IntegrationProvider[] = ["brave-search", "google-calendar"];
     expect(INTEGRATION_PROVIDERS).toEqual(expected);
   });
 });
