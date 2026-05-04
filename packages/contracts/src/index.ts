@@ -162,7 +162,7 @@ export const ModelConnectionTestResultSchema = z.object({
 });
 export type ModelConnectionTestResult = z.infer<typeof ModelConnectionTestResultSchema>;
 
-export const IntegrationProviderSchema = z.enum(["brave-search"]);
+export const IntegrationProviderSchema = z.enum(["brave-search", "google-calendar"]);
 export type IntegrationProvider = z.infer<typeof IntegrationProviderSchema>;
 
 const BraveSearchIntegrationSettingsSchema = z.object({
@@ -170,9 +170,15 @@ const BraveSearchIntegrationSettingsSchema = z.object({
   hasCredential: z.boolean().default(false),
 });
 
+const GoogleCalendarIntegrationSettingsSchema = z.object({
+  provider: z.literal("google-calendar"),
+  hasCredential: z.boolean().default(false),
+});
+
 export const IntegrationSettingsReadSchema = z.object({
   providers: z.object({
     braveSearch: BraveSearchIntegrationSettingsSchema,
+    googleCalendar: GoogleCalendarIntegrationSettingsSchema,
   }),
 });
 export type IntegrationSettingsRead = z.infer<typeof IntegrationSettingsReadSchema>;
@@ -212,6 +218,39 @@ export const IntegrationConnectionTestResultSchema = z.object({
   message: z.string(),
 });
 export type IntegrationConnectionTestResult = z.infer<typeof IntegrationConnectionTestResultSchema>;
+
+export const GcalEventSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  status: z.string().optional(),
+  description: z.string().optional(),
+  location: z.string().optional(),
+  start: z.string().min(1),
+  end: z.string().optional(),
+  isAllDay: z.boolean(),
+  organizerEmail: z.string().optional(),
+  htmlLink: z.string().optional(),
+});
+
+export const GcalListResultSchema = z.object({
+  calendarId: z.string().min(1),
+  events: z.array(GcalEventSchema),
+});
+
+export const GcalReadResultSchema = z.object({
+  calendarId: z.string().min(1),
+  event: GcalEventSchema.extend({
+    attendees: z
+      .array(
+        z.object({
+          email: z.string().min(1),
+          displayName: z.string().optional(),
+          responseStatus: z.string().optional(),
+        })
+      )
+      .optional(),
+  }),
+});
 
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;

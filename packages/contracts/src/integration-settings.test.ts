@@ -5,6 +5,8 @@ import {
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
+  GcalListResultSchema,
+  GcalReadResultSchema,
   WebFetchResultSchema,
 } from "./index.js";
 
@@ -16,10 +18,16 @@ describe("integration settings contracts", () => {
           provider: "brave-search",
           hasCredential: true,
         },
+        googleCalendar: {
+          provider: "google-calendar",
+          hasCredential: false,
+        },
       },
     });
 
     expect(parsed.providers.braveSearch.hasCredential).toBe(true);
+    expect(parsed.providers.googleCalendar.provider).toBe("google-calendar");
+    expect(parsed.providers.googleCalendar.hasCredential).toBe(false);
     expect("apiKey" in parsed.providers.braveSearch).toBe(false);
   });
 
@@ -44,6 +52,37 @@ describe("integration settings contracts", () => {
         credential: { apiKey: "brave-test" },
       }).provider
     ).toBe("brave-search");
+  });
+
+  test("parses normalized gcal list payloads", () => {
+    const parsed = GcalListResultSchema.parse({
+      calendarId: "primary",
+      events: [
+        {
+          id: "evt-1",
+          title: "Weekly review",
+          start: "2026-05-04T09:00:00Z",
+          end: "2026-05-04T09:30:00Z",
+          isAllDay: false,
+        },
+      ],
+    });
+
+    expect(parsed.events[0]?.title).toBe("Weekly review");
+  });
+
+  test("parses normalized gcal read payloads", () => {
+    const parsed = GcalReadResultSchema.parse({
+      calendarId: "primary",
+      event: {
+        id: "evt-1",
+        title: "Weekly review",
+        start: "2026-05-04",
+        isAllDay: true,
+      },
+    });
+
+    expect(parsed.event.isAllDay).toBe(true);
   });
 });
 
