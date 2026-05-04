@@ -1,5 +1,7 @@
 import {
   BraveSearchResultSchema,
+  GcalListResultSchema,
+  GcalReadResultSchema,
   type ShellToolCall,
   type ShellToolResult,
   ShellToolResultSchema,
@@ -35,6 +37,12 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   }
   if (call.command === "web-fetch") {
     return WebFetchResultSchema.parse(json);
+  }
+  if (call.command === "gcal" && call.subcommand === "list") {
+    return GcalListResultSchema.parse(json);
+  }
+  if (call.command === "gcal" && call.subcommand === "read") {
+    return GcalReadResultSchema.parse(json);
   }
   return json;
 }

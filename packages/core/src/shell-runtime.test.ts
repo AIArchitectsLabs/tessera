@@ -107,4 +107,46 @@ describe("shell runtime", () => {
       "Brave Search is not configured. Add an API key in Settings > Integrations."
     );
   });
+
+  test("parses successful gcal list payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            calendarId: "primary",
+            events: [
+              {
+                id: "evt-1",
+                title: "Weekly review",
+                start: "2026-05-04T09:00:00Z",
+                isAllDay: false,
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 12,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "gcal",
+      subcommand: "list",
+      args: [],
+    });
+
+    expect(result.parsed).toEqual({
+      calendarId: "primary",
+      events: [
+        {
+          id: "evt-1",
+          title: "Weekly review",
+          start: "2026-05-04T09:00:00Z",
+          isAllDay: false,
+        },
+      ],
+    });
+  });
 });
