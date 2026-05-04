@@ -670,21 +670,34 @@ function TaskSidePane({
       >
         {task.artifacts.length > 0 ? (
           <div className="space-y-2">
-            <div className="flex gap-2 flex-wrap">
-              {task.artifacts.slice(0, 4).map((artifact) => (
-                <div
-                  key={artifact.id}
-                  className="h-12 w-12 rounded-lg border border-border bg-secondary flex items-center justify-center"
-                >
-                  <FileText size={18} className="text-muted-foreground" />
+            {task.artifacts.slice(0, 4).map((artifact) => (
+              <div
+                key={artifact.id}
+                className="rounded-xl border border-border bg-secondary/20 px-3 py-2"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground">
+                    <FileText size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {artifact.title}
+                    </div>
+                    {artifact.contentPreview && (
+                      <p className="mt-0.5 break-words text-xs text-muted-foreground">
+                        {artifact.contentPreview}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              ))}
-              {task.artifacts.length > 4 && (
-                <div className="h-12 w-12 rounded-lg border border-dashed border-border bg-secondary/50 flex items-center justify-center text-xs text-muted-foreground font-medium">
-                  +{task.artifacts.length - 4}
-                </div>
-              )}
-            </div>
+              </div>
+            ))}
+            {task.artifacts.length > 4 && (
+              <p className="text-xs text-muted-foreground">
+                +{task.artifacts.length - 4} more context item
+                {task.artifacts.length - 4 === 1 ? "" : "s"}.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               Track tools and referenced files used in this task.
             </p>

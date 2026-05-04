@@ -25,6 +25,7 @@ export interface RunTaskTurnOptions {
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
     credential?: string;
     onActivity?: (activity: string) => void;
+    onToolStart?: (tool: { name: string; args: unknown }) => void;
     prompt: string;
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
@@ -56,6 +57,41 @@ const DEFAULT_PROVIDER: AgentProviderConfig = {
   model: "gpt-5.4",
   apiKeyEnv: "OPENAI_API_KEY",
 };
+
+function summarizeToolArgs(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+
+  if (toolName === "shell") {
+    const shellCall = args as { command?: string; subcommand?: string; args?: string[] };
+    const command = [shellCall.command, shellCall.subcommand].filter(Boolean).join(" ");
+    const values = Array.isArray(shellCall.args) ? shellCall.args : [];
+    const preview = values.join(" ").trim();
+    return [command, preview].filter(Boolean).join(" | ").trim() || undefined;
+  }
+
+  const input = args as Record<string, unknown>;
+  const firstUseful = [
+    input.path,
+    input.query,
+    input.url,
+    input.selector,
+    input.itemId,
+    input.message,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  if (typeof firstUseful === "string") return firstUseful.trim();
+
+  return undefined;
+}
+
+function toolArtifactTitle(toolName: string, args: unknown): string {
+  if (toolName === "shell" && args && typeof args === "object") {
+    const shellCall = args as { command?: string; subcommand?: string };
+    const label = [shellCall.command, shellCall.subcommand].filter(Boolean).join(" ");
+    if (label) return label;
+  }
+
+  return toolName.replace(/_/g, " ");
+}
 
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const { store, taskId, userTurnId, agentTurnId, publish } = opts;
@@ -137,6 +173,22 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
           taskId,
           emittedAt: new Date().toISOString(),
           task: store.getTaskSummary(taskId),
+        });
+      },
+      onToolStart(tool) {
+        const contentPreview = summarizeToolArgs(tool.name, tool.args);
+        const artifact = store.createArtifact({
+          taskId,
+          turnId: agentTurnId,
+          kind: "text",
+          title: toolArtifactTitle(tool.name, tool.args),
+          ...(contentPreview ? { contentPreview } : {}),
+        });
+        publish({
+          type: "artifact.created",
+          taskId,
+          emittedAt: new Date().toISOString(),
+          artifact,
         });
       },
       prompt: userTurn.content,

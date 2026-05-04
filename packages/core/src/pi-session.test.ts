@@ -195,6 +195,7 @@ describe("runPiTaskTurn", () => {
   test("reports tool activity", async () => {
     const workspaceRoot = await makeWorkspace();
     const activity: string[] = [];
+    const tools: Array<{ name: string; args: unknown }> = [];
     const factory: PiSessionFactory = async () =>
       new FakeSession([
         {
@@ -209,12 +210,14 @@ describe("runPiTaskTurn", () => {
       credential: "sk-test",
       factory,
       onActivity: (value) => activity.push(value),
+      onToolStart: (tool) => tools.push(tool),
       prompt: "Read",
       provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
       workspaceRoot,
     });
 
     expect(activity).toEqual(["Using workspace_read"]);
+    expect(tools).toEqual([{ name: "workspace_read", args: { path: "README.md" } }]);
   });
 
   test("fails before session creation when cloud credentials are missing", async () => {

@@ -320,25 +320,25 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "preset": "read_only",
             "label": "Read-only",
             "approvalMode": "never",
-            "summary": "Can inspect and search the workspace and maintain the task checklist, but cannot make file changes.",
-            "capabilities": ["Read files", "List directories", "Search content", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "todo"]
+            "summary": "Can inspect and search the workspace, research the public web, and maintain the task checklist, but cannot make file changes.",
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"]
         }),
         "elevated_with_approval" => serde_json::json!({
             "preset": "elevated_with_approval",
             "label": "Elevated with approval",
             "approvalMode": "ask",
-            "summary": "Can edit the workspace and maintain the task checklist, but should ask before taking mutating actions.",
-            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit", "todo"]
+            "summary": "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo"]
         }),
         _ => serde_json::json!({
             "preset": "workspace_editor",
             "label": "Workspace editor",
             "approvalMode": "never",
-            "summary": "Can inspect the workspace, maintain the task checklist, and update files directly when needed.",
-            "capabilities": ["Read files", "List directories", "Search content", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "workspace_write", "workspace_edit", "todo"]
+            "summary": "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo"]
         }),
     }
 }
@@ -1113,4 +1113,35 @@ pub fn run() {
                 kill_sidecar(app_handle);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_policy_runtime_json;
+
+    #[test]
+    fn default_task_tool_policies_include_shell_access() {
+        for preset in ["read_only", "workspace_editor", "elevated_with_approval"] {
+            let tool_policy = tool_policy_runtime_json(preset);
+            let allowed_tools = tool_policy
+                .get("allowedTools")
+                .and_then(|value| value.as_array())
+                .expect("allowedTools should be an array");
+            assert!(
+                allowed_tools.iter().any(|value| value.as_str() == Some("shell")),
+                "preset {preset} should include shell access"
+            );
+
+            let capabilities = tool_policy
+                .get("capabilities")
+                .and_then(|value| value.as_array())
+                .expect("capabilities should be an array");
+            assert!(
+                capabilities.iter().any(
+                    |value| value.as_str() == Some("Search and fetch public web pages")
+                ),
+                "preset {preset} should advertise web access"
+            );
+        }
+    }
 }

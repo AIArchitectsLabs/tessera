@@ -258,6 +258,50 @@ describe("task runner", () => {
     expect(store.getTask(task.id)?.todo?.items).toHaveLength(2);
   });
 
+  test("records tool usage as task artifacts", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Summarize this article",
+    });
+    const userTurn = store.createUserTurn(task.id, "Summarize the URL");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    const events: TaskEvent[] = [];
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolStart }) => {
+        onToolStart?.({
+          name: "shell",
+          args: {
+            command: "web-fetch",
+            subcommand: "fetch",
+            args: ["https://example.com/post"],
+          },
+        });
+        return { text: "Summary complete.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const artifactEvent = events.find((event) => event.type === "artifact.created");
+    expect(artifactEvent?.type).toBe("artifact.created");
+    if (artifactEvent?.type === "artifact.created") {
+      expect(artifactEvent.artifact.title).toBe("web-fetch fetch");
+      expect(artifactEvent.artifact.contentPreview).toBe(
+        "web-fetch fetch | https://example.com/post"
+      );
+    }
+
+    const finalTask = store.getTask(task.id);
+    expect(finalTask?.artifacts).toHaveLength(1);
+    expect(finalTask?.artifacts[0]?.title).toBe("web-fetch fetch");
+  });
+
   test("forwards execution agent to piRunner", async () => {
     const store = makeStore();
     const task = store.createTask({

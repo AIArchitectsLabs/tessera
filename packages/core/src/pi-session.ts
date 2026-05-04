@@ -64,6 +64,7 @@ export interface RunPiTaskTurnOptions {
   credential?: string;
   factory?: PiSessionFactory;
   onActivity?: (activity: string) => void;
+  onToolStart?: (tool: { name: string; args: unknown }) => void;
   prompt: string;
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
@@ -341,6 +342,10 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     if (delta) text += delta;
     if (event.type === "tool_execution_start") {
       options.onActivity?.(`Using ${event.toolName}`);
+      options.onToolStart?.({
+        name: event.toolName,
+        args: "args" in event ? event.args : undefined,
+      });
     }
     // The SDK fires message_end for user messages too (before the model call).
     // Only capture text from assistant messages so we don't pick up the echoed prompt.
