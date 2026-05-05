@@ -684,6 +684,105 @@ async fn workflow_resume(
 }
 
 #[tauri::command]
+async fn inbox_list(
+    state: State<'_, SidecarHandle>,
+    status: Option<String>,
+    message_type: Option<String>,
+    workspace_root: Option<String>,
+    task_id: Option<String>,
+    workflow_run_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    if let Some(status) = status {
+        params.push(format!("status={}", percent_encode(&status)));
+    }
+    if let Some(message_type) = message_type {
+        params.push(format!("type={}", percent_encode(&message_type)));
+    }
+    if let Some(workspace_root) = workspace_root {
+        params.push(format!("workspaceRoot={}", percent_encode(&workspace_root)));
+    }
+    if let Some(task_id) = task_id {
+        params.push(format!("taskId={}", percent_encode(&task_id)));
+    }
+    if let Some(workflow_run_id) = workflow_run_id {
+        params.push(format!("workflowRunId={}", percent_encode(&workflow_run_id)));
+    }
+
+    let path = if params.is_empty() {
+        "/inbox".to_string()
+    } else {
+        format!("/inbox?{}", params.join("&"))
+    };
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inbox_get(
+    state: State<'_, SidecarHandle>,
+    message_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/inbox/{}", percent_encode(&message_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inbox_create(
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let json = state
+        .post("/inbox", &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inbox_resolve(
+    state: State<'_, SidecarHandle>,
+    message_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/inbox/{}/resolve", percent_encode(&message_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inbox_snooze(
+    state: State<'_, SidecarHandle>,
+    message_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/inbox/{}/snooze", percent_encode(&message_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn inbox_cancel(
+    state: State<'_, SidecarHandle>,
+    message_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/inbox/{}/cancel", percent_encode(&message_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn task_list(
     state: State<'_, SidecarHandle>,
     workspace_root: String,
@@ -1148,6 +1247,12 @@ pub fn run() {
             agent_profile_create,
             agent_profile_update,
             agent_profile_delete,
+            inbox_cancel,
+            inbox_create,
+            inbox_get,
+            inbox_list,
+            inbox_resolve,
+            inbox_snooze,
             integration_connection_test,
             integration_credential_delete,
             integration_settings_get,

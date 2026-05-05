@@ -728,6 +728,135 @@ export const WorkflowResumeRequestSchema = z.object({
 
 export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;
 
+const SECRET_FIELD_NAMES = new Set([
+  "apikey",
+  "api_key",
+  "token",
+  "secret",
+  "password",
+  "credential",
+]);
+
+function containsSecretField(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((item) => containsSecretField(item));
+
+  return Object.entries(value).some(([key, nested]) => {
+    const normalized = key.toLowerCase().replace(/[-\s]/g, "_");
+    return SECRET_FIELD_NAMES.has(normalized) || containsSecretField(nested);
+  });
+}
+
+const SecretFreeJsonSchema = z.unknown().superRefine((value, ctx) => {
+  if (!containsSecretField(value)) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: "Inbox payloads must not contain secret-bearing fields",
+  });
+});
+
+export const InboxSourceSchema = z.enum(["task", "workflow", "agent", "system", "integration"]);
+export type InboxSource = z.infer<typeof InboxSourceSchema>;
+
+export const InboxMessageTypeSchema = z.enum([
+  "approval",
+  "input_required",
+  "review",
+  "exception",
+  "credential",
+  "policy_override",
+  "artifact_review",
+  "production_promotion",
+]);
+export type InboxMessageType = z.infer<typeof InboxMessageTypeSchema>;
+
+export const InboxStatusSchema = z.enum(["open", "snoozed", "resolved", "expired", "cancelled"]);
+export type InboxStatus = z.infer<typeof InboxStatusSchema>;
+
+export const InboxSeveritySchema = z.enum(["info", "warning", "critical"]);
+export type InboxSeverity = z.infer<typeof InboxSeveritySchema>;
+
+export const InboxActionSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    style: z.enum(["primary", "secondary", "danger"]).default("secondary"),
+    payloadHint: z.string().optional(),
+  })
+  .strict();
+export type InboxAction = z.infer<typeof InboxActionSchema>;
+
+export const InboxAuditEntrySchema = z.object({
+  id: z.string().min(1),
+  messageId: z.string().min(1),
+  event: z.string().min(1),
+  actor: z.string().min(1),
+  payload: SecretFreeJsonSchema.optional(),
+  createdAt: z.string().datetime(),
+});
+export type InboxAuditEntry = z.infer<typeof InboxAuditEntrySchema>;
+
+export const InboxMessageSchema = z.object({
+  id: z.string().min(1),
+  workspaceRoot: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
+  workflowRunId: z.string().min(1).optional(),
+  turnId: z.string().min(1).optional(),
+  source: InboxSourceSchema,
+  type: InboxMessageTypeSchema,
+  severity: InboxSeveritySchema,
+  status: InboxStatusSchema,
+  title: z.string().min(1),
+  body: z.string().optional(),
+  context: SecretFreeJsonSchema,
+  actions: z.array(InboxActionSchema),
+  deadline: z.string().datetime().optional(),
+  snoozedUntil: z.string().datetime().optional(),
+  resolvedAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  audit: z.array(InboxAuditEntrySchema).default([]),
+});
+export type InboxMessage = z.infer<typeof InboxMessageSchema>;
+
+export const InboxCreateRequestSchema = z.object({
+  workspaceRoot: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
+  workflowRunId: z.string().min(1).optional(),
+  turnId: z.string().min(1).optional(),
+  source: InboxSourceSchema,
+  type: InboxMessageTypeSchema,
+  severity: InboxSeveritySchema,
+  title: z.string().min(1),
+  body: z.string().optional(),
+  context: SecretFreeJsonSchema.default({}),
+  actions: z.array(InboxActionSchema).default([]),
+  deadline: z.string().datetime().optional(),
+});
+export type InboxCreateRequest = z.infer<typeof InboxCreateRequestSchema>;
+
+export const InboxListResultSchema = z.object({
+  messages: z.array(InboxMessageSchema),
+});
+export type InboxListResult = z.infer<typeof InboxListResultSchema>;
+
+export const InboxResolveRequestSchema = z.object({
+  actionId: z.string().min(1),
+  payload: SecretFreeJsonSchema.optional(),
+});
+export type InboxResolveRequest = z.infer<typeof InboxResolveRequestSchema>;
+
+export const InboxSnoozeRequestSchema = z.object({
+  snoozedUntil: z.string().datetime(),
+  reason: z.string().optional(),
+});
+export type InboxSnoozeRequest = z.infer<typeof InboxSnoozeRequestSchema>;
+
+export const InboxCancelRequestSchema = z.object({
+  reason: z.string().optional(),
+});
+export type InboxCancelRequest = z.infer<typeof InboxCancelRequestSchema>;
+
 export const TaskStatusSchema = z.enum(["active", "waiting", "done", "failed"]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
