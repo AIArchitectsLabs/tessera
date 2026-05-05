@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ClarifyResponse,
+  InboxListResult,
+  InboxMessage,
+  InboxStatus,
   TaskCreateRequest,
   TaskCreateTurnRequest,
   TaskDetail,
@@ -12,7 +15,8 @@ import type {
 } from "@tessera/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { RailNav } from "@/components/RailNav";
+import { InboxView } from "@/components/InboxView";
+import { type AppView, RailNav } from "@/components/RailNav";
 import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
@@ -28,6 +32,7 @@ export default function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
     return localStorage.getItem(WORKSPACE_STORAGE_KEY);
   });
+  const [activeView, setActiveView] = useState<AppView>("tasks");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [taskListView, setTaskListView] = useState<TaskListView>("active");
@@ -39,6 +44,11 @@ export default function App() {
   const [loadingTaskDetail, setLoadingTaskDetail] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [sendingTurn, setSendingTurn] = useState(false);
+  const [inboxStatus, setInboxStatus] = useState<InboxStatus>("open");
+  const [inboxMessages, setInboxMessages] = useState<InboxMessage[]>([]);
+  const [selectedInboxId, setSelectedInboxId] = useState<string | null>(null);
+  const [loadingInbox, setLoadingInbox] = useState(false);
+  const [inboxError, setInboxError] = useState<string | null>(null);
   const taskDetailRequestId = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -53,6 +63,7 @@ export default function App() {
     setTaskListView("active");
     setSelectedTaskId(null);
     setSelectedTask(null);
+    setSelectedInboxId(null);
   };
 
   const loadTasks = useCallback(async () => {
@@ -80,6 +91,26 @@ export default function App() {
       setLoadingTasks(false);
     }
   }, [workspaceRoot]);
+
+  const loadInbox = useCallback(async () => {
+    setLoadingInbox(true);
+    setInboxError(null);
+    try {
+      const result = await invoke<InboxListResult>("inbox_list", {
+        status: inboxStatus,
+        workspaceRoot: workspaceRoot ?? undefined,
+      });
+      setInboxMessages(result.messages);
+      setSelectedInboxId((current) => {
+        if (current && result.messages.some((message) => message.id === current)) return current;
+        return result.messages[0]?.id ?? null;
+      });
+    } catch (error) {
+      setInboxError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingInbox(false);
+    }
+  }, [inboxStatus, workspaceRoot]);
 
   const loadTaskDetail = useCallback(async (taskId: string, options?: { background?: boolean }) => {
     const background = options?.background ?? false;
@@ -166,6 +197,12 @@ export default function App() {
   useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    if (activeView === "inbox") {
+      void loadInbox();
+    }
+  }, [activeView, loadInbox]);
 
   useEffect(() => {
     if (selectedTaskId) {
@@ -269,11 +306,62 @@ export default function App() {
     }
   }
 
+  async function handleInboxResolve(message: InboxMessage, actionId: string) {
+    try {
+      const updated = await invoke<InboxMessage>("inbox_resolve", {
+        messageId: message.id,
+        request: { actionId },
+      });
+      setInboxMessages((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+    } catch (error) {
+      setInboxError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleInboxSnooze(message: InboxMessage) {
+    const snoozedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    try {
+      const updated = await invoke<InboxMessage>("inbox_snooze", {
+        messageId: message.id,
+        request: { snoozedUntil },
+      });
+      setInboxMessages((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+    } catch (error) {
+      setInboxError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const selectedInboxMessage =
+    inboxMessages.find((message) => message.id === selectedInboxId) ?? null;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans">
-      <RailNav onLogout={handleLogout} onOpenSettings={() => setSettingsOpen(true)} />
+      <RailNav
+        activeView={activeView}
+        onLogout={handleLogout}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onViewChange={setActiveView}
+      />
       {settingsOpen ? (
         <SettingsView onClose={() => setSettingsOpen(false)} />
+      ) : activeView === "inbox" ? (
+        <InboxView
+          error={inboxError}
+          loading={loadingInbox}
+          messages={inboxMessages}
+          onRefresh={loadInbox}
+          onResolve={handleInboxResolve}
+          onSelectMessage={setSelectedInboxId}
+          onSnooze={handleInboxSnooze}
+          onStatusChange={setInboxStatus}
+          selectedMessage={selectedInboxMessage}
+          status={inboxStatus}
+          workspaceRoot={workspaceRoot}
+        />
       ) : (
         <>
           <Sidebar

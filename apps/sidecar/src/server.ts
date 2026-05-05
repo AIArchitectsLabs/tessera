@@ -7,6 +7,13 @@ import {
   AuditRecordSchema,
   ClarifyRequestSchema,
   ClarifyResponseSchema,
+  InboxCancelRequestSchema,
+  InboxCreateRequestSchema,
+  InboxListResultSchema,
+  InboxMessageTypeSchema,
+  InboxResolveRequestSchema,
+  InboxSnoozeRequestSchema,
+  InboxStatusSchema,
   NotifyRequestSchema,
   SidecarReadySchema,
   SpawnRequestSchema,
@@ -33,6 +40,7 @@ import {
   runWorkflow,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
+import { createInboxStore } from "./inbox-store.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
@@ -48,6 +56,7 @@ const TASK_DB_PATH =
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
+const inboxStore = createInboxStore(TASK_DB_PATH);
 const taskEventBus = createTaskEventBus();
 const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
 
@@ -59,6 +68,7 @@ process.on("exit", () => {
   workflowStore.close();
   taskStore.close();
   agentProfileStore.close();
+  inboxStore.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => process.exit(0));
@@ -237,6 +247,7 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
       },
     });
     workflowStore.save(result);
+    ensureWorkflowApprovalInbox(result);
     return Response.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -259,6 +270,205 @@ function handleWorkflowRunList(req: Request): Response {
     runs: workflowStore.list(status === "blocked" ? { status } : undefined),
   });
   return Response.json(result);
+}
+
+function ensureWorkflowApprovalInbox(result: {
+  runId: string;
+  status: string;
+  approval?:
+    | {
+        preview: string;
+        risk: { destructive: boolean };
+      }
+    | undefined;
+}): void {
+  if (result.status !== "blocked" || !result.approval) return;
+  const existing = inboxStore.list({
+    workflowRunId: result.runId,
+    type: "approval",
+    status: "open",
+  });
+  if (existing.length > 0) return;
+
+  inboxStore.create({
+    workflowRunId: result.runId,
+    source: "workflow",
+    type: "approval",
+    severity: result.approval.risk.destructive ? "critical" : "warning",
+    title: "Workflow approval needed",
+    body: result.approval.preview,
+    context: { approval: result.approval },
+    actions: [
+      { id: "approve", label: "Approve", style: "primary" },
+      { id: "deny", label: "Deny", style: "danger" },
+    ],
+  });
+}
+
+function handleInboxList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get("status") ?? "open";
+  const type = searchParams.get("type");
+  const parsedStatus = InboxStatusSchema.safeParse(status);
+  if (!parsedStatus.success) {
+    return Response.json({ error: parsedStatus.error.message }, { status: 400 });
+  }
+  const parsedType = type ? InboxMessageTypeSchema.safeParse(type) : undefined;
+  if (parsedType && !parsedType.success) {
+    return Response.json({ error: parsedType.error.message }, { status: 400 });
+  }
+
+  const workspaceRoot = searchParams.get("workspaceRoot");
+  const taskId = searchParams.get("taskId");
+  const workflowRunId = searchParams.get("workflowRunId");
+  const result = InboxListResultSchema.parse({
+    messages: inboxStore.list({
+      status: parsedStatus.data,
+      ...(parsedType?.success ? { type: parsedType.data } : {}),
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(workflowRunId ? { workflowRunId } : {}),
+    }),
+  });
+  return Response.json(result);
+}
+
+async function handleInboxCreate(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = InboxCreateRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    return Response.json(inboxStore.create(parsed.data));
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+function handleInboxGet(req: Request, messageId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const message = inboxStore.get(messageId);
+  if (!message) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+  return Response.json(message);
+}
+
+async function handleInboxResolve(req: Request, messageId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = InboxResolveRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const existing = inboxStore.get(messageId);
+    if (!existing) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+
+    if (
+      existing.type === "approval" &&
+      existing.source === "workflow" &&
+      existing.workflowRunId &&
+      (parsed.data.actionId === "approve" || parsed.data.actionId === "deny")
+    ) {
+      const run = workflowStore.get(existing.workflowRunId);
+      if (!run) return Response.json({ error: "Unknown workflow run" }, { status: 404 });
+      const definition = workflowRegistry.get(run.workflowId);
+      if (!definition) return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+      const result = await resumeWorkflowRun({
+        run,
+        decision: parsed.data.actionId,
+        definition,
+        cli: {
+          runWorkspaceCli,
+        },
+      });
+      workflowStore.save(result);
+      ensureWorkflowApprovalInbox(result);
+    }
+
+    const message = inboxStore.resolve(messageId, parsed.data);
+    return Response.json(message);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 }
+    );
+  }
+}
+
+async function handleInboxSnooze(req: Request, messageId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = InboxSnoozeRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const message = inboxStore.snooze(messageId, parsed.data);
+  if (!message) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+  return Response.json(message);
+}
+
+async function handleInboxCancel(req: Request, messageId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = InboxCancelRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const message = inboxStore.cancel(messageId, parsed.data);
+  if (!message) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+  return Response.json(message);
 }
 
 async function handleWorkflowResume(req: Request, runId: string): Promise<Response> {
@@ -563,6 +773,17 @@ async function handleTaskClarifyRequest(req: Request, taskId: string): Promise<R
   if (!task) {
     return Response.json({ error: "Unknown task" }, { status: 404 });
   }
+  inboxStore.create({
+    workspaceRoot: task.workspaceRoot,
+    taskId,
+    source: "task",
+    type: "input_required",
+    severity: "warning",
+    title: "Clarification needed",
+    body: parsed.data.message,
+    context: { clarify: parsed.data },
+    actions: [{ id: "respond", label: "Respond", style: "primary" }],
+  });
   taskEventBus.publish(taskId, {
     type: "task.clarify_requested",
     taskId,
@@ -623,6 +844,19 @@ async function handleTaskNotification(req: Request, taskId: string): Promise<Res
   if (!task) {
     return Response.json({ error: "Unknown task" }, { status: 404 });
   }
+  inboxStore.create({
+    workspaceRoot: task.workspaceRoot,
+    taskId,
+    source: "task",
+    type: "review",
+    severity: "info",
+    title: parsed.data.title,
+    body: parsed.data.body,
+    context: { notification: parsed.data },
+    actions: [
+      { id: "acknowledge", label: parsed.data.actionLabel ?? "Acknowledge", style: "secondary" },
+    ],
+  });
   taskEventBus.publish(taskId, {
     type: "task.notification",
     taskId,
@@ -828,6 +1062,11 @@ const server = Bun.serve({
       return handleWorkflowRunList(req);
     }
 
+    if (pathname === "/inbox") {
+      if (req.method === "GET") return handleInboxList(req);
+      return handleInboxCreate(req);
+    }
+
     if (pathname === "/tasks") {
       if (req.method === "GET") return handleTaskList(req);
       return handleTaskCreate(req);
@@ -844,6 +1083,25 @@ const server = Bun.serve({
       if (req.method === "GET") return handleAgentProfileGet(req, agentProfileId);
       if (req.method === "PATCH") return handleAgentProfileUpdate(req, agentProfileId);
       if (req.method === "DELETE") return handleAgentProfileDelete(req, agentProfileId);
+    }
+
+    const inboxActionMatch = pathname.match(/^\/inbox\/([^/]+)\/(resolve|snooze|cancel)$/);
+    const inboxActionId = inboxActionMatch?.[1];
+    const inboxAction = inboxActionMatch?.[2];
+    if (inboxActionId && inboxAction) {
+      if (inboxAction === "resolve") {
+        return handleInboxResolve(req, decodeURIComponent(inboxActionId));
+      }
+      if (inboxAction === "snooze") {
+        return handleInboxSnooze(req, decodeURIComponent(inboxActionId));
+      }
+      return handleInboxCancel(req, decodeURIComponent(inboxActionId));
+    }
+
+    const inboxMatch = pathname.match(/^\/inbox\/([^/]+)$/);
+    const inboxId = inboxMatch?.[1];
+    if (inboxId) {
+      return handleInboxGet(req, decodeURIComponent(inboxId));
     }
 
     const taskEventsMatch = pathname.match(/^\/tasks\/([^/]+)\/events$/);

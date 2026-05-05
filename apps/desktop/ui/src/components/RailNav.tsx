@@ -1,17 +1,25 @@
 import { Button } from "@/components/ui/button";
-import { Blocks, CheckCircle2, LogOut, Settings, User } from "lucide-react";
+import { Blocks, CheckCircle2, Inbox, LogOut, Settings, User } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+export type AppView = "tasks" | "inbox";
+
 interface RailNavProps {
+  activeView: AppView;
   onLogout: () => void;
   onOpenSettings: () => void;
+  onViewChange: (view: AppView) => void;
 }
 
-export function RailNav({ onLogout, onOpenSettings }: RailNavProps) {
+export function RailNav({ activeView, onLogout, onOpenSettings, onViewChange }: RailNavProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const firstMenuItemRef = useRef<HTMLButtonElement>(null);
+  const navItemClass = (view: AppView) =>
+    activeView === view
+      ? "rounded-full bg-background text-foreground shadow-sm hover:bg-background"
+      : "rounded-full text-muted-foreground hover:text-foreground";
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -55,11 +63,23 @@ export function RailNav({ onLogout, onOpenSettings }: RailNavProps) {
           type="button"
           variant="ghost"
           size="icon"
-          className="rounded-full bg-background text-foreground shadow-sm hover:bg-background"
+          className={navItemClass("tasks")}
           title="Tasks"
-          aria-current="page"
+          aria-current={activeView === "tasks" ? "page" : undefined}
+          onClick={() => onViewChange("tasks")}
         >
           <CheckCircle2 size={20} />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={navItemClass("inbox")}
+          title="Inbox"
+          aria-current={activeView === "inbox" ? "page" : undefined}
+          onClick={() => onViewChange("inbox")}
+        >
+          <Inbox size={20} />
         </Button>
       </div>
       <div className="mt-auto" ref={menuRef}>
