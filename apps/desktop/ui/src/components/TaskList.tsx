@@ -163,14 +163,8 @@ function TaskRow({ task, view, selected, onSelectTask, onArchiveToggle }: TaskRo
       )}
     >
       <div className="flex flex-col px-3 py-2">
-        <button
-          type="button"
-          onClick={() => onSelectTask(task.id)}
-          className="text-left"
-        >
-          <span className="block truncate text-sm font-medium text-foreground">
-            {task.title}
-          </span>
+        <button type="button" onClick={() => onSelectTask(task.id)} className="text-left">
+          <span className="block truncate text-sm font-medium text-foreground">{task.title}</span>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             <StatusIcon status={task.status} />
             <span>{formatStatus(task.status)}</span>
@@ -188,9 +182,20 @@ function TaskRow({ task, view, selected, onSelectTask, onArchiveToggle }: TaskRo
           size="sm"
           className="mt-1 self-start h-6 -ml-2 gap-1 px-2 text-[11px] text-muted-foreground"
           aria-label={view === "active" ? "Archive task" : "Restore task"}
-          onClick={(e) => { e.stopPropagation(); onArchiveToggle(task, view === "active"); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchiveToggle(task, view === "active");
+          }}
         >
-          {view === "active" ? <><Archive size={11} /> Archive</> : <><ArchiveRestore size={11} /> Restore</>}
+          {view === "active" ? (
+            <>
+              <Archive size={11} /> Archive
+            </>
+          ) : (
+            <>
+              <ArchiveRestore size={11} /> Restore
+            </>
+          )}
         </Button>
       </div>
     </div>
