@@ -52,13 +52,13 @@ run("bun", ["run", "--filter", "@tessera/cli", "build"]);
 
 mkdirSync(binDir, { recursive: true });
 
-const sidecarSrc = join(repoRoot, "apps/sidecar/dist/sidecar");
+const sidecarSrc = join(repoRoot, `apps/sidecar/dist/sidecar${ext}`);
 const sidecarDst = join(binDir, `tessera-sidecar-${triple}${ext}`);
 copyFileSync(sidecarSrc, sidecarDst);
 if (!isWindows) chmodSync(sidecarDst, 0o755);
 console.log(`[build-sidecar] copied sidecar → ${sidecarDst}`);
 
-const cliSrc = join(repoRoot, "apps/cli/dist/cli");
+const cliSrc = join(repoRoot, `apps/cli/dist/cli${ext}`);
 const cliDst = join(binDir, `tessera-cli-${triple}${ext}`);
 copyFileSync(cliSrc, cliDst);
 if (!isWindows) chmodSync(cliDst, 0o755);
