@@ -6,6 +6,7 @@ import type {
   AgentProfile,
   AgentProfileListResult,
   ClarifyResponse,
+  TaskArtifact,
   TaskDetail as TaskDetailType,
   TaskSummary,
   TaskTurn,
@@ -224,72 +225,58 @@ export function TaskDetail({
           <ScrollArea ref={scrollAreaRef} className="flex-1">
             <div className="mx-auto max-w-3xl space-y-8 p-6">
               <section className="space-y-4">
-                {task.turns.map((turn) => (
-                  <div
-                    key={turn.id}
-                    className={cn(
-                      "flex gap-4",
-                      turn.role === "user" ? "justify-end" : "justify-start"
-                    )}
-                  >
+                {task.turns.map((turn) => {
+                  const isUser = turn.role === "user";
+                  const isAgent = turn.role === "agent";
+                  const turnArtifacts = task.artifacts.filter((a) => a.turnId === turn.id);
+                  return (
                     <div
-                      className={cn(
-                        "max-w-[78%] rounded-2xl border p-4 shadow-sm",
-                        turn.role === "user"
-                          ? "rounded-tr-sm bg-[#2a2826] text-white border-[#2a2826]"
-                          : "rounded-tl-sm bg-background text-foreground border-border"
-                      )}
+                      key={turn.id}
+                      className={cn("flex gap-4 w-full", isUser ? "justify-end" : "justify-start")}
                     >
                       <div
                         className={cn(
-                          "mb-1 text-xs font-medium flex items-center gap-1.5",
-                          turn.role === "user" ? "text-white/70" : "text-muted-foreground"
+                          isUser
+                            ? "max-w-[78%] rounded-2xl rounded-tr-sm bg-[#2a2826] px-5 py-4 text-white shadow-sm border border-[#2a2826]"
+                            : "w-full max-w-full text-foreground py-2"
                         )}
                       >
-                        {turnLabel(turn)}
-                        {turn.status === "running" && (
-                          <Loader2 size={10} className="animate-spin" />
+                        {isAgent && (
+                          <TurnTimeline
+                            artifacts={turnArtifacts}
+                            isRunning={turn.status === "running"}
+                          />
+                        )}
+                        {(!isAgent || turn.role === "system") && (
+                          <div
+                            className={cn(
+                              "mb-1 text-xs font-medium flex items-center gap-1.5",
+                              isUser ? "text-white/70" : "text-muted-foreground"
+                            )}
+                          >
+                            {turnLabel(turn)}
+                          </div>
+                        )}
+                        {turn.content && (
+                          <div
+                            className={cn(
+                              "whitespace-pre-wrap text-sm leading-6",
+                              isAgent &&
+                                (turnArtifacts.length > 0 || turn.status === "running") &&
+                                "mt-3"
+                            )}
+                          >
+                            {turn.content}
+                          </div>
+                        )}
+                        {turn.error && (
+                          <div className="mt-2 text-xs text-destructive">{turn.error}</div>
                         )}
                       </div>
-                      <div className="whitespace-pre-wrap text-sm leading-6">{turn.content}</div>
-                      {turn.error && (
-                        <div className="mt-2 text-xs text-destructive">{turn.error}</div>
-                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </section>
-
-              {task.artifacts.length > 0 && (
-                <section className="space-y-3">
-                  <h2 className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-                    Artifacts
-                  </h2>
-                  {task.artifacts.map((artifact) => (
-                    <div
-                      key={artifact.id}
-                      className="rounded-xl border border-border bg-background p-4 shadow-sm"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                          <FileText size={18} />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold text-foreground">
-                            {artifact.title}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{artifact.kind}</div>
-                        </div>
-                      </div>
-                      {artifact.contentPreview && (
-                        <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                          {artifact.contentPreview}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </section>
-              )}
             </div>
           </ScrollArea>
 
@@ -914,4 +901,57 @@ function formatRelativeTime(dateStr: string): string {
   if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+}
+
+function TurnTimeline({ artifacts, isRunning }: { artifacts: TaskArtifact[]; isRunning: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (artifacts.length === 0 && !isRunning) return null;
+
+  const visibleArtifacts = expanded ? artifacts : artifacts.slice(-3);
+  const hiddenCount = artifacts.length - visibleArtifacts.length;
+
+  return (
+    <div className="space-y-2 font-mono text-sm">
+      {hiddenCount > 0 && !expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-secondary/50 transition-colors"
+        >
+          <ChevronDown size={14} className="-rotate-90" />
+          {hiddenCount} previous tool calls
+        </button>
+      )}
+      {visibleArtifacts.map((artifact) => (
+        <div key={artifact.id} className="flex items-start gap-2 text-muted-foreground">
+          <span className="shrink-0 mt-1.5">
+            <Bot size={14} className="opacity-50" />
+          </span>
+          <div className="bg-secondary/30 border border-border/50 rounded-md px-3 py-1.5 flex-1 min-w-0 text-xs">
+            <div className="truncate font-semibold">{artifact.title}</div>
+            {artifact.contentPreview && (
+              <div className="truncate opacity-75 mt-0.5">{artifact.contentPreview}</div>
+            )}
+          </div>
+        </div>
+      ))}
+      {isRunning && (
+        <div className="flex items-center gap-2 text-muted-foreground mt-2 px-1">
+          <ThinkingAnimation />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingAnimation() {
+  const [dots, setDots] = useState("");
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots((d) => (d.length >= 3 ? "" : `${d}.`));
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+  return <span className="text-sm italic">Thinking{dots}</span>;
 }
