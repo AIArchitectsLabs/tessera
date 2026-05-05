@@ -93,6 +93,11 @@ function toolArtifactTitle(toolName: string, args: unknown): string {
   return toolName.replace(/_/g, " ");
 }
 
+function completedTodoItems(todo: TaskTodo): TaskTodo["items"] | undefined {
+  if (!todo.items.some((item) => item.status !== "completed")) return undefined;
+  return todo.items.map((item) => ({ ...item, status: "completed" as const }));
+}
+
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const { store, taskId, userTurnId, agentTurnId, publish } = opts;
   const delayMs = opts.delayMs ?? 120;
@@ -229,6 +234,17 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
         latestActivity: "Paused: agent reached workspace boundary",
       });
     } else {
+      const todoItems = store.getTask(taskId)?.todo;
+      const completedItems = todoItems ? completedTodoItems(todoItems) : undefined;
+      if (completedItems) {
+        const task = store.updateTodo(taskId, { type: "replace", items: completedItems });
+        publish({
+          type: "task.todo_updated",
+          taskId,
+          emittedAt: new Date().toISOString(),
+          todo: task?.todo,
+        });
+      }
       store.updateTask(taskId, { status: "done", latestActivity: "Completed" });
     }
     const finalSummary = store.getTaskSummary(taskId);

@@ -258,6 +258,51 @@ describe("task runner", () => {
     expect(store.getTask(task.id)?.todo?.items).toHaveLength(2);
   });
 
+  test("marks unfinished todo items completed when the task finishes successfully", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Prepare launch checklist",
+    });
+    const userTurn = store.createUserTurn(task.id, "Make a checklist");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    const events: TaskEvent[] = [];
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ taskRuntime }) => {
+        await taskRuntime?.applyTodo({
+          type: "create",
+          items: [
+            { id: "todo-1", label: "Draft brief", status: "pending", order: 0 },
+            { id: "todo-2", label: "Review risks", status: "in_progress", order: 1 },
+          ],
+        });
+        return { text: "Checklist complete.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    expect(store.getTask(task.id)?.todo?.items.map((item) => item.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+
+    const todoEvents = events.filter((event) => event.type === "task.todo_updated");
+    expect(todoEvents).toHaveLength(2);
+    const completedTodoEvent = todoEvents.at(-1);
+    if (completedTodoEvent?.type === "task.todo_updated") {
+      expect(completedTodoEvent.todo?.items.map((item) => item.status)).toEqual([
+        "completed",
+        "completed",
+      ]);
+    }
+  });
+
   test("records tool usage as task artifacts", async () => {
     const store = makeStore();
     const task = store.createTask({
