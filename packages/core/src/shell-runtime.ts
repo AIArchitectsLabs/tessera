@@ -1,5 +1,4 @@
 import {
-  BraveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
   type ShellToolCall,
@@ -8,6 +7,7 @@ import {
   type SpawnResult,
   SpawnResultSchema,
   WebFetchResultSchema,
+  WebSearchResultSchema,
 } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 
@@ -33,7 +33,7 @@ export function validateShellCall(call: ShellToolCall): ShellToolCall {
 function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   const json = JSON.parse(stdout);
   if (call.command === "web-search") {
-    return BraveSearchResultSchema.parse(json);
+    return WebSearchResultSchema.parse(json);
   }
   if (call.command === "web-fetch") {
     return WebFetchResultSchema.parse(json);

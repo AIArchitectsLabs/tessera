@@ -1,187 +1,216 @@
-import {
-  type SearchProvider,
-  type WebSearchResult,
-  WebSearchResultSchema,
-} from "@tessera/contracts";
+import type { IntegrationSettingsRead, SearchProvider, WebSearchResult } from "@tessera/contracts";
+import { WebSearchResultSchema } from "@tessera/contracts";
+import { z } from "zod";
 
-const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
-const DEFAULT_CACHE = new Map<string, CachedSearchResult>();
 const SEARCH_PROVIDER_ORDER: SearchProvider[] = ["brave-search", "tavily", "duckduckgo"];
+const SEARCH_CAPABILITY = "search" as const;
 
-type SearchProviderResult = {
-  title: string;
-  url: string;
-  snippet?: string;
-  source?: string;
-};
+const WebSearchResultItemSchema = z.object({
+  title: z.string().min(1),
+  url: z.string().url(),
+  snippet: z.string().optional(),
+  source: z.string().optional(),
+});
 
-type CachedSearchResult = {
-  expiresAt: number;
-  value: WebSearchResult;
-};
+const WebSearchAdapterResponseSchema = z.object({
+  results: z.array(WebSearchResultItemSchema),
+});
 
-type SearchProviderSettings = {
+type WebSearchAdapterResponse = z.infer<typeof WebSearchAdapterResponseSchema>;
+
+export interface WebSearchAdapterRequest {
+  query: string;
   provider: SearchProvider;
-  hasCredential: boolean;
-};
+  capability: typeof SEARCH_CAPABILITY;
+  credential?: string;
+  fetchImpl: typeof fetch;
+}
 
-type SearchProviderSettingsRecord = {
-  braveSearch: SearchProviderSettings & { provider: "brave-search" };
-  tavily: SearchProviderSettings & { provider: "tavily" };
-  duckduckgo: SearchProviderSettings & { provider: "duckduckgo" };
-};
+export interface WebSearchAdapter {
+  search(request: WebSearchAdapterRequest): Promise<WebSearchAdapterResponse>;
+}
 
-type SearchAdapterResponse = {
-  results: SearchProviderResult[];
-};
+export interface WebSearchCacheEntry {
+  expiresAt: number;
+  result: WebSearchResult;
+}
 
-type MaybePromise<T> = T | Promise<T>;
+export type WebSearchCache = Map<string, WebSearchCacheEntry>;
+
+export interface WebSearchRuntime {
+  adapters?: Partial<Record<SearchProvider, WebSearchAdapter>>;
+  cache?: WebSearchCache;
+  cacheTtlMs?: number;
+  fetchImpl?: typeof fetch;
+  getCredential?: (provider: SearchProvider) => string | undefined | Promise<string | undefined>;
+  now?: () => number;
+}
 
 export interface ExecuteWebSearchOptions {
   query: string;
-  settings: {
-    mode: "auto" | SearchProvider;
-    allowKeylessFallback: boolean;
-    providers: SearchProviderSettingsRecord;
-  };
+  settings: IntegrationSettingsRead["search"];
 }
 
-export interface WebSearchRuntime {
-  adapters: Record<
-    SearchProvider,
-    {
-      search(request: { query: string; credential?: string }): MaybePromise<SearchAdapterResponse>;
+interface SearchProviderMetadata {
+  credentialed: boolean;
+  settingsKey: keyof IntegrationSettingsRead["search"]["providers"];
+}
+
+const SEARCH_PROVIDER_METADATA: Record<SearchProvider, SearchProviderMetadata> = {
+  "brave-search": {
+    credentialed: true,
+    settingsKey: "braveSearch",
+  },
+  tavily: {
+    credentialed: true,
+    settingsKey: "tavily",
+  },
+  duckduckgo: {
+    credentialed: false,
+    settingsKey: "duckduckgo",
+  },
+};
+
+function normalizeQuery(query: string): string {
+  const normalized = query.trim().replace(/\s+/g, " ");
+  if (normalized.length === 0) {
+    throw new Error("Web search query must not be empty.");
+  }
+  return normalized;
+}
+
+function cacheKey(provider: SearchProvider, query: string): string {
+  return `${provider}:${SEARCH_CAPABILITY}:${query}`;
+}
+
+function isProviderConfigured(
+  settings: IntegrationSettingsRead["search"],
+  provider: SearchProvider
+): boolean {
+  const metadata = SEARCH_PROVIDER_METADATA[provider];
+  return settings.providers[metadata.settingsKey].hasCredential;
+}
+
+function resolveProvider(settings: IntegrationSettingsRead["search"]): SearchProvider {
+  if (settings.mode !== "auto") {
+    if (!SEARCH_PROVIDER_METADATA[settings.mode].credentialed) {
+      return settings.mode;
     }
-  >;
-  cache?: Map<string, unknown>;
-  cacheTtlMs?: number;
-  getCredential(provider: SearchProvider): MaybePromise<string | undefined>;
-  now(): number;
-}
-
-export async function executeWebSearch(
-  options: ExecuteWebSearchOptions,
-  runtime: WebSearchRuntime
-): Promise<WebSearchResult> {
-  const query = normalizeQuery(options.query);
-  if (!query) {
-    throw new Error("Search query is required.");
-  }
-
-  const target = await resolveSearchTarget(options, runtime);
-  const cache: Map<string, unknown> = runtime.cache ?? DEFAULT_CACHE;
-  const cacheKey = `${target.provider}::search::${query}`;
-  const cached = asCachedSearchResult(cache.get(cacheKey));
-  const now = runtime.now();
-  if (cached && cached.expiresAt > now) {
-    return WebSearchResultSchema.parse({
-      ...cached.value,
-      cached: true,
-    });
-  }
-
-  const startedAt = now;
-  const adapter = runtime.adapters[target.provider];
-  const payload = await adapter.search(
-    target.credential ? { query, credential: target.credential } : { query }
-  );
-  const result = WebSearchResultSchema.parse({
-    query,
-    provider: target.provider,
-    capability: "search",
-    cached: false,
-    latencyMs: Math.max(0, runtime.now() - startedAt),
-    results: payload.results.map((item, index) => ({
-      ...item,
-      position: index + 1,
-    })),
-  });
-
-  cache.set(cacheKey, {
-    expiresAt: runtime.now() + (runtime.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS),
-    value: result,
-  });
-  return result;
-}
-
-async function resolveSearchTarget(
-  options: ExecuteWebSearchOptions,
-  runtime: WebSearchRuntime
-): Promise<{ provider: SearchProvider; credential?: string }> {
-  if (options.settings.mode !== "auto") {
-    return resolveConfiguredProvider(options.settings.mode, options, runtime);
+    if (isProviderConfigured(settings, settings.mode)) {
+      return settings.mode;
+    }
+    throw new Error(`${settings.mode} is not configured.`);
   }
 
   for (const provider of SEARCH_PROVIDER_ORDER) {
-    const resolved = await resolveEligibleProvider(provider, options, runtime);
-    if (resolved) {
-      return resolved;
+    if (provider === "duckduckgo") {
+      break;
     }
+    if (isProviderConfigured(settings, provider)) {
+      return provider;
+    }
+  }
+
+  if (settings.allowKeylessFallback) {
+    return "duckduckgo";
   }
 
   throw new Error("No search provider is configured.");
 }
 
-async function resolveConfiguredProvider(
-  provider: SearchProvider,
-  options: ExecuteWebSearchOptions,
-  runtime: WebSearchRuntime
-): Promise<{ provider: SearchProvider; credential?: string }> {
-  const resolved = await resolveEligibleProvider(provider, options, runtime);
-  if (!resolved) {
-    throw new Error("No search provider is configured.");
+function resolveAdapter(provider: SearchProvider, runtime: WebSearchRuntime): WebSearchAdapter {
+  const adapter = runtime.adapters?.[provider];
+  if (!adapter) {
+    throw new Error(`${provider} search adapter is not registered.`);
   }
-  return resolved;
+  return adapter;
 }
 
-async function resolveEligibleProvider(
+function buildWebSearchResult(
+  query: string,
   provider: SearchProvider,
-  options: ExecuteWebSearchOptions,
+  cached: boolean,
+  latencyMs: number,
+  response: WebSearchAdapterResponse
+): WebSearchResult {
+  return WebSearchResultSchema.parse({
+    query,
+    provider,
+    capability: SEARCH_CAPABILITY,
+    cached,
+    latencyMs,
+    results: response.results.map((result, index) => ({
+      ...result,
+      position: index + 1,
+    })),
+  });
+}
+
+function getNow(runtime: WebSearchRuntime): number {
+  return runtime.now?.() ?? Date.now();
+}
+
+function getCache(runtime: WebSearchRuntime): WebSearchCache {
+  return runtime.cache ?? new Map<string, WebSearchCacheEntry>();
+}
+
+async function resolveCredential(
+  provider: SearchProvider,
+  settings: IntegrationSettingsRead["search"],
   runtime: WebSearchRuntime
-): Promise<{ provider: SearchProvider; credential?: string } | undefined> {
-  const configured = getProviderSettings(options.settings.providers, provider);
-
-  if (provider === "duckduckgo") {
-    if (!options.settings.allowKeylessFallback) {
-      return undefined;
-    }
-    return { provider };
-  }
-
-  if (!configured.hasCredential) {
+): Promise<string | undefined> {
+  if (!SEARCH_PROVIDER_METADATA[provider].credentialed) {
     return undefined;
   }
-
-  const credential = await runtime.getCredential(provider);
+  if (!isProviderConfigured(settings, provider)) {
+    throw new Error(`${provider} is not configured.`);
+  }
+  const credential = await runtime.getCredential?.(provider);
   if (!credential) {
-    return undefined;
+    throw new Error(`${provider} credential is missing.`);
   }
-
-  return { provider, credential };
+  return credential;
 }
 
-function getProviderSettings(
-  providers: SearchProviderSettingsRecord,
-  provider: SearchProvider
-): SearchProviderSettings {
-  if (provider === "brave-search") return providers.braveSearch;
-  if (provider === "tavily") return providers.tavily;
-  return providers.duckduckgo;
-}
+export async function executeWebSearch(
+  options: ExecuteWebSearchOptions,
+  runtime: WebSearchRuntime = {}
+): Promise<WebSearchResult> {
+  const rawQuery = options.query;
+  const query = normalizeQuery(rawQuery);
+  const provider = resolveProvider(options.settings);
+  const key = cacheKey(provider, rawQuery);
+  const cache = getCache(runtime);
+  const cachedEntry = cache.get(key);
+  const now = getNow(runtime);
 
-function normalizeQuery(query: string): string {
-  return query.trim().replace(/\s+/g, " ");
-}
-
-function asCachedSearchResult(value: unknown): CachedSearchResult | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
+  if (cachedEntry && cachedEntry.expiresAt > now) {
+    return buildWebSearchResult(query, provider, true, 0, {
+      results: cachedEntry.result.results,
+    });
   }
 
-  const candidate = value as Partial<CachedSearchResult>;
-  if (typeof candidate.expiresAt !== "number" || !candidate.value) {
-    return undefined;
+  const adapter = resolveAdapter(provider, runtime);
+  const credential = await resolveCredential(provider, options.settings, runtime);
+  const fetchImpl = runtime.fetchImpl ?? fetch;
+  const startedAt = now;
+  const request: WebSearchAdapterRequest = {
+    query,
+    provider,
+    capability: SEARCH_CAPABILITY,
+    fetchImpl,
+  };
+  if (credential !== undefined) {
+    request.credential = credential;
   }
+  const response = WebSearchAdapterResponseSchema.parse(await adapter.search(request));
+  const finishedAt = getNow(runtime);
+  const result = buildWebSearchResult(query, provider, false, finishedAt - startedAt, response);
 
-  return candidate as CachedSearchResult;
+  cache.set(key, {
+    expiresAt: startedAt + (runtime.cacheTtlMs ?? 30_000),
+    result,
+  });
+
+  return result;
 }

@@ -26,12 +26,17 @@ describe("shell runtime", () => {
         return {
           stdout: JSON.stringify({
             query: "tessera",
+            provider: "brave-search",
+            capability: "search",
+            cached: false,
+            latencyMs: 12,
             results: [
               {
                 title: "Tessera",
                 url: "https://example.com",
                 snippet: "Agent workspace",
                 source: "example.com",
+                position: 1,
               },
             ],
           }),
@@ -52,12 +57,17 @@ describe("shell runtime", () => {
     expect(calls).toEqual([["web-search", "search", "tessera"]]);
     expect(result.parsed).toEqual({
       query: "tessera",
+      provider: "brave-search",
+      capability: "search",
+      cached: false,
+      latencyMs: 12,
       results: [
         {
           title: "Tessera",
           url: "https://example.com",
           snippet: "Agent workspace",
           source: "example.com",
+          position: 1,
         },
       ],
     });

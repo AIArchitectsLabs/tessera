@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { WebSearchResultSchema } from "@tessera/contracts";
+import type { WebSearchCacheEntry, WebSearchRuntime } from "./web-search.js";
 import { executeWebSearch } from "./web-search.js";
 
 type SearchAdapterCall = {
@@ -8,9 +9,17 @@ type SearchAdapterCall = {
   credential: string | undefined;
 };
 
-function makeRuntime() {
+type TestRuntime = {
+  calls: SearchAdapterCall[];
+  adapters: NonNullable<WebSearchRuntime["adapters"]>;
+  cache: Map<string, WebSearchCacheEntry>;
+  now: () => number;
+  getCredential: NonNullable<WebSearchRuntime["getCredential"]>;
+};
+
+function makeRuntime(): TestRuntime {
   const calls: SearchAdapterCall[] = [];
-  const adapters = {
+  const adapters: TestRuntime["adapters"] = {
     "brave-search": {
       async search(request: { query: string; credential?: string }) {
         calls.push({
@@ -69,7 +78,7 @@ function makeRuntime() {
   return {
     calls,
     adapters,
-    cache: new Map<string, unknown>(),
+    cache: new Map<string, WebSearchCacheEntry>(),
     now: () => 1_000,
     getCredential: (provider: "brave-search" | "tavily" | "duckduckgo") => {
       if (provider === "brave-search") return "brave-key";
@@ -157,7 +166,11 @@ describe("executeWebSearch", () => {
 
   test("does not silently fail over when an explicit provider fails", async () => {
     const runtime = makeRuntime();
-    runtime.adapters["brave-search"].search = async () => {
+    const braveAdapter = runtime.adapters["brave-search"];
+    if (!braveAdapter) {
+      throw new Error("brave-search adapter is missing.");
+    }
+    braveAdapter.search = async () => {
       runtime.calls.push({ provider: "brave-search", query: "tessera", credential: "brave-key" });
       throw new Error("brave failed");
     };
@@ -185,7 +198,7 @@ describe("executeWebSearch", () => {
     ]);
   });
 
-  test("reuses cached results for the same normalized query within the ttl", async () => {
+  test("reuses cached results for the exact same query string within the ttl", async () => {
     const runtime = makeRuntime();
     const resultA = await executeWebSearch(
       {
@@ -203,14 +216,13 @@ describe("executeWebSearch", () => {
       {
         ...runtime,
         cacheTtlMs: 10_000,
-        cache: runtime.cache,
         now: () => 1_000,
       }
     );
 
     const resultB = await executeWebSearch(
       {
-        query: "  tessera   search  ",
+        query: "tessera search",
         settings: {
           mode: "auto",
           allowKeylessFallback: false,
@@ -224,7 +236,6 @@ describe("executeWebSearch", () => {
       {
         ...runtime,
         cacheTtlMs: 10_000,
-        cache: runtime.cache,
         now: () => 5_000,
       }
     );
@@ -234,5 +245,102 @@ describe("executeWebSearch", () => {
     expect(resultB.cached).toBe(true);
     expect(resultB.provider).toBe(resultA.provider);
     expect(resultB.results).toEqual(resultA.results);
+  });
+
+  test("does not share a cache entry across whitespace variants", async () => {
+    const runtime = makeRuntime();
+
+    const resultA = await executeWebSearch(
+      {
+        query: "tessera search",
+        settings: {
+          mode: "auto",
+          allowKeylessFallback: false,
+          providers: {
+            braveSearch: { provider: "brave-search", hasCredential: true },
+            tavily: { provider: "tavily", hasCredential: true },
+            duckduckgo: { provider: "duckduckgo", hasCredential: false },
+          },
+        },
+      },
+      {
+        ...runtime,
+        cacheTtlMs: 10_000,
+        now: () => 1_000,
+      }
+    );
+
+    const resultB = await executeWebSearch(
+      {
+        query: "tessera   search",
+        settings: {
+          mode: "auto",
+          allowKeylessFallback: false,
+          providers: {
+            braveSearch: { provider: "brave-search", hasCredential: true },
+            tavily: { provider: "tavily", hasCredential: true },
+            duckduckgo: { provider: "duckduckgo", hasCredential: false },
+          },
+        },
+      },
+      {
+        ...runtime,
+        cacheTtlMs: 10_000,
+        now: () => 2_000,
+      }
+    );
+
+    expect(runtime.calls).toHaveLength(2);
+    expect(resultA.cached).toBe(false);
+    expect(resultB.cached).toBe(false);
+    expect(resultB.query).toBe("tessera search");
+  });
+
+  test("does not retain cache state across calls when no cache is provided", async () => {
+    const runtime = makeRuntime();
+    const runtimeWithoutCache = {
+      adapters: runtime.adapters,
+      now: () => 1_000,
+      getCredential: runtime.getCredential,
+    };
+
+    const resultA = await executeWebSearch(
+      {
+        query: "tessera search",
+        settings: {
+          mode: "auto",
+          allowKeylessFallback: false,
+          providers: {
+            braveSearch: { provider: "brave-search", hasCredential: true },
+            tavily: { provider: "tavily", hasCredential: true },
+            duckduckgo: { provider: "duckduckgo", hasCredential: false },
+          },
+        },
+      },
+      runtimeWithoutCache
+    );
+
+    const resultB = await executeWebSearch(
+      {
+        query: "tessera search",
+        settings: {
+          mode: "auto",
+          allowKeylessFallback: false,
+          providers: {
+            braveSearch: { provider: "brave-search", hasCredential: true },
+            tavily: { provider: "tavily", hasCredential: true },
+            duckduckgo: { provider: "duckduckgo", hasCredential: false },
+          },
+        },
+      },
+      {
+        ...runtimeWithoutCache,
+        now: () => 2_000,
+      }
+    );
+
+    expect(runtime.calls).toHaveLength(2);
+    expect(resultA.cached).toBe(false);
+    expect(resultB.cached).toBe(false);
   });
 });

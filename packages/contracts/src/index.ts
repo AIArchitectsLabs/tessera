@@ -175,40 +175,142 @@ const GoogleCalendarIntegrationSettingsSchema = z.object({
   hasCredential: z.boolean().default(false),
 });
 
+export const SearchProviderSchema = z.enum(["brave-search", "tavily", "duckduckgo"]);
+export type SearchProvider = z.infer<typeof SearchProviderSchema>;
+
+export const SearchCapabilitySchema = z.enum(["search"]);
+export type SearchCapability = z.infer<typeof SearchCapabilitySchema>;
+
+export const SearchModeSchema = z.union([z.literal("auto"), SearchProviderSchema]);
+export type SearchMode = z.infer<typeof SearchModeSchema>;
+
+export const SearchSettingsSchema = z.object({
+  mode: SearchModeSchema,
+  allowKeylessFallback: z.boolean(),
+});
+export type SearchSettings = z.infer<typeof SearchSettingsSchema>;
+
+const BraveSearchProviderSettingsSchema = z.object({
+  provider: z.literal("brave-search"),
+  hasCredential: z.boolean().default(false),
+});
+
+const TavilyProviderSettingsSchema = z.object({
+  provider: z.literal("tavily"),
+  hasCredential: z.boolean().default(false),
+});
+
+const DuckDuckGoProviderSettingsSchema = z.object({
+  provider: z.literal("duckduckgo"),
+  hasCredential: z.boolean().default(false),
+});
+
 export const IntegrationSettingsReadSchema = z.object({
   providers: z.object({
     braveSearch: BraveSearchIntegrationSettingsSchema,
     googleCalendar: GoogleCalendarIntegrationSettingsSchema,
   }),
+  search: z
+    .object({
+      mode: SearchModeSchema,
+      allowKeylessFallback: z.boolean(),
+      providers: z.object({
+        braveSearch: BraveSearchProviderSettingsSchema,
+        tavily: TavilyProviderSettingsSchema,
+        duckduckgo: DuckDuckGoProviderSettingsSchema,
+      }),
+    })
+    .default({
+      mode: "auto",
+      allowKeylessFallback: false,
+      providers: {
+        braveSearch: {
+          provider: "brave-search",
+          hasCredential: false,
+        },
+        tavily: {
+          provider: "tavily",
+          hasCredential: false,
+        },
+        duckduckgo: {
+          provider: "duckduckgo",
+          hasCredential: false,
+        },
+      },
+    }),
 });
 export type IntegrationSettingsRead = z.infer<typeof IntegrationSettingsReadSchema>;
 
-export const IntegrationSettingsSaveRequestSchema = z.object({
-  provider: IntegrationProviderSchema,
-  hasExistingCredential: z.boolean().default(false),
-  credential: z
-    .object({
-      apiKey: z.string().min(1),
-    })
-    .optional(),
-});
+const IntegrationSettingsSaveProviderRequestSchema = z
+  .object({
+    provider: IntegrationProviderSchema,
+    hasExistingCredential: z.boolean().default(false),
+    credential: z
+      .object({
+        apiKey: z.string().min(1),
+      })
+      .optional(),
+    search: SearchSettingsSchema.optional(),
+  })
+  .strict();
+
+const IntegrationSettingsSaveSearchProviderRequestSchema = z
+  .object({
+    searchProvider: SearchProviderSchema,
+    hasExistingCredential: z.boolean().default(false),
+    credential: z
+      .object({
+        apiKey: z.string().min(1),
+      })
+      .optional(),
+    search: SearchSettingsSchema.optional(),
+  })
+  .strict();
+
+export const IntegrationSettingsSaveRequestSchema = z.union([
+  IntegrationSettingsSaveProviderRequestSchema,
+  IntegrationSettingsSaveSearchProviderRequestSchema,
+]);
 export type IntegrationSettingsSaveRequest = z.infer<typeof IntegrationSettingsSaveRequestSchema>;
 
-export const IntegrationCredentialDeleteRequestSchema = z.object({
-  provider: IntegrationProviderSchema,
-});
+export const IntegrationCredentialDeleteRequestSchema = z.union([
+  z
+    .object({
+      provider: IntegrationProviderSchema,
+    })
+    .strict(),
+  z
+    .object({
+      searchProvider: SearchProviderSchema,
+    })
+    .strict(),
+]);
 export type IntegrationCredentialDeleteRequest = z.infer<
   typeof IntegrationCredentialDeleteRequestSchema
 >;
 
-export const IntegrationConnectionTestRequestSchema = z.object({
-  provider: IntegrationProviderSchema,
-  credential: z
+export const IntegrationConnectionTestRequestSchema = z.union([
+  z
     .object({
-      apiKey: z.string().min(1),
+      provider: IntegrationProviderSchema,
+      credential: z
+        .object({
+          apiKey: z.string().min(1),
+        })
+        .optional(),
     })
-    .optional(),
-});
+    .strict(),
+  z
+    .object({
+      searchProvider: SearchProviderSchema,
+      credential: z
+        .object({
+          apiKey: z.string().min(1),
+        })
+        .optional(),
+    })
+    .strict(),
+]);
 export type IntegrationConnectionTestRequest = z.infer<
   typeof IntegrationConnectionTestRequestSchema
 >;
@@ -216,6 +318,8 @@ export type IntegrationConnectionTestRequest = z.infer<
 export const IntegrationConnectionTestResultSchema = z.object({
   ok: z.boolean(),
   message: z.string(),
+  provider: IntegrationProviderSchema.optional(),
+  searchProvider: SearchProviderSchema.optional(),
 });
 export type IntegrationConnectionTestResult = z.infer<typeof IntegrationConnectionTestResultSchema>;
 
@@ -364,13 +468,10 @@ export const ShellToolCallSchema = z.object({
 });
 export type ShellToolCall = z.infer<typeof ShellToolCallSchema>;
 
-export const SearchProviderSchema = z.enum(["brave-search", "tavily", "duckduckgo"]);
-export type SearchProvider = z.infer<typeof SearchProviderSchema>;
-
 export const WebSearchResultSchema = z.object({
   query: z.string().min(1),
   provider: SearchProviderSchema,
-  capability: z.literal("search"),
+  capability: SearchCapabilitySchema,
   cached: z.boolean(),
   latencyMs: z.number().nonnegative(),
   results: z.array(

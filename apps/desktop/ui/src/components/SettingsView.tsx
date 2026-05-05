@@ -1,7 +1,12 @@
 import { Button } from "@/components/ui/button";
 import {
   INTEGRATION_PROVIDERS,
+  SEARCH_MODE_OPTIONS,
+  SEARCH_PROVIDERS,
   integrationLabel,
+  searchModeLabel,
+  searchProviderLabel,
+  searchProviderSupportsCredential,
   shouldSendIntegrationCredential,
 } from "@/lib/integrationSettings";
 import {
@@ -15,12 +20,17 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentProviderConfig,
+  IntegrationConnectionTestRequest,
   IntegrationConnectionTestResult,
+  IntegrationCredentialDeleteRequest,
   IntegrationProvider,
   IntegrationSettingsRead,
+  IntegrationSettingsSaveRequest,
   ModelConnectionTestResult,
   ModelProvider,
   ModelSettingsRead,
+  SearchMode,
+  SearchProvider,
 } from "@tessera/contracts";
 import { Bot, Box, KeyRound, Loader2, Search, Trash2, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -64,12 +74,18 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("openai");
   const [selectedIntegration, setSelectedIntegration] =
-    useState<IntegrationProvider>("brave-search");
+    useState<IntegrationProvider>("google-calendar");
+  const [selectedSearchProvider, setSelectedSearchProvider] =
+    useState<SearchProvider>("brave-search");
+  const [searchMode, setSearchMode] = useState<SearchMode>("auto");
+  const [allowKeylessFallback, setAllowKeylessFallback] = useState(false);
   const [draft, setDraft] = useState<AgentProviderConfig>(defaultDraftForProvider("openai"));
   const [apiKey, setApiKey] = useState("");
   const [integrationApiKey, setIntegrationApiKey] = useState("");
+  const [searchApiKey, setSearchApiKey] = useState("");
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<StatusMessage | null>(null);
+  const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeModelAction, setActiveModelAction] = useState<"remove" | "save" | "test" | null>(
     null
@@ -77,9 +93,13 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
     "remove" | "save" | "test" | null
   >(null);
+  const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
+    null
+  );
   const [activeTab, setActiveTab] = useState<"model" | "integrations" | "agents">("model");
   const modelRequestIdRef = useRef(0);
   const integrationRequestIdRef = useRef(0);
+  const searchRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -89,6 +109,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       setLoading(true);
       setStatus(null);
       setIntegrationStatus(null);
+      setSearchStatus(null);
       try {
         const [loaded, loadedIntegrations] = await Promise.all([
           invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
@@ -129,12 +150,13 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const hasIntegrationCredential =
-    selectedIntegration === "brave-search"
-      ? (integrations?.providers.braveSearch.hasCredential ?? false)
-      : (integrations?.providers.googleCalendar.hasCredential ?? false);
+  const hasIntegrationCredential = integrations?.providers.googleCalendar.hasCredential ?? false;
+  const hasSearchCredential =
+    searchProviderSettings(integrations, selectedSearchProvider)?.hasCredential ?? false;
+  const searchProviderAllowsCredentials = searchProviderSupportsCredential(selectedSearchProvider);
   const modelBusy = loading || activeModelAction !== null;
   const integrationBusy = loading || activeIntegrationAction !== null;
+  const searchBusy = loading || activeSearchAction !== null;
   const requiresBaseUrl = draft.provider === "local";
   const canSubmit =
     draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
@@ -151,7 +173,13 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   function hydrateFromIntegrations(loaded: IntegrationSettingsRead) {
     setIntegrations(loaded);
+    setSearchMode(loaded.search.mode);
+    setAllowKeylessFallback(loaded.search.allowKeylessFallback);
+    setSelectedSearchProvider((current) =>
+      loaded.search.mode === "auto" ? current : loaded.search.mode
+    );
     setIntegrationApiKey("");
+    setSearchApiKey("");
   }
 
   function handleProviderSelect(provider: ModelProvider) {
@@ -175,6 +203,26 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setSelectedIntegration(provider);
     setIntegrationApiKey("");
     setIntegrationStatus(null);
+  }
+
+  function handleSearchProviderSelect(provider: SearchProvider) {
+    if (searchBusy) {
+      return;
+    }
+    setSelectedSearchProvider(provider);
+    if (searchProviderSupportsCredential(provider)) {
+      setSearchApiKey("");
+    }
+    setSearchStatus(null);
+  }
+
+  function handleSearchModeSelect(mode: SearchMode) {
+    if (searchBusy) {
+      return;
+    }
+    setSearchMode(mode);
+    setSelectedSearchProvider((current) => nextSelectedSearchProvider(mode, current));
+    setSearchStatus(null);
   }
 
   async function handleSave() {
@@ -372,6 +420,111 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     } finally {
       if (mountedRef.current && integrationRequestIdRef.current === requestId) {
         setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleSaveSearchSettings() {
+    const requestId = ++searchRequestIdRef.current;
+    setActiveSearchAction("save");
+    setSearchStatus(null);
+    try {
+      const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_save", {
+        request: buildSearchSettingsSaveRequest({
+          selectedSearchProvider,
+          hasExistingCredential: hasSearchCredential,
+          searchMode,
+          allowKeylessFallback,
+          apiKey: searchApiKey,
+        }),
+      });
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      hydrateFromIntegrations(next);
+      setSearchStatus({ message: "Search settings saved", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSearchStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && searchRequestIdRef.current === requestId) {
+        setActiveSearchAction(null);
+      }
+    }
+  }
+
+  async function handleRemoveSearchKey() {
+    if (!searchProviderSupportsCredential(selectedSearchProvider)) {
+      return;
+    }
+    const requestId = ++searchRequestIdRef.current;
+    setActiveSearchAction("remove");
+    setSearchStatus(null);
+    try {
+      const deleteRequest = buildSearchCredentialDeleteRequest(selectedSearchProvider);
+      if (!deleteRequest) {
+        return;
+      }
+      const next = await invokeWithTimeout<IntegrationSettingsRead>(
+        "integration_credential_delete",
+        {
+          request: deleteRequest,
+        }
+      );
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      hydrateFromIntegrations(next);
+      setSearchStatus({ message: "Stored key removed", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSearchStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && searchRequestIdRef.current === requestId) {
+        setActiveSearchAction(null);
+      }
+    }
+  }
+
+  async function handleSearchTestConnection() {
+    const requestId = ++searchRequestIdRef.current;
+    setActiveSearchAction("test");
+    setSearchStatus(null);
+    try {
+      const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
+        "integration_connection_test",
+        {
+          request: buildSearchConnectionTestRequest({
+            selectedSearchProvider,
+            apiKey: searchApiKey,
+          }),
+        }
+      );
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSearchStatus({ message: result.message, tone: result.ok ? "success" : "info" });
+    } catch (error) {
+      if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSearchStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && searchRequestIdRef.current === requestId) {
+        setActiveSearchAction(null);
       }
     }
   }
@@ -592,57 +745,237 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               <div className="min-w-0">
                 <h1 className="text-xl font-semibold text-foreground">Integrations</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Credentials for external read-only tools available to agents.
+                  Search providers and calendar access for Tessera tools.
                 </p>
               </div>
             </div>
 
-            <div className="mt-6 space-y-6">
-              <div className="space-y-3">
-                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                  Providers
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {INTEGRATION_PROVIDERS.map((provider) => {
-                    const selected = provider === selectedIntegration;
+            <div className="mt-6 space-y-8">
+              <section className="space-y-4">
+                <div className="space-y-3">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                    Search mode
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    {SEARCH_MODE_OPTIONS.map((mode) => {
+                      const selected = mode === searchMode;
 
-                    return (
-                      <button
-                        key={provider}
-                        type="button"
-                        disabled={integrationBusy}
-                        className={cn(
-                          "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                          selected
-                            ? "border-primary bg-secondary text-foreground shadow-sm"
-                            : "border-border bg-background text-foreground hover:bg-secondary/70"
-                        )}
-                        onClick={() => handleIntegrationSelect(provider)}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate text-sm font-medium">
-                            {integrationLabel(provider)}
-                          </span>
-                          {selected && (
-                            <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              Selected
-                            </span>
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          disabled={searchBusy}
+                          className={cn(
+                            "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                            selected
+                              ? "border-primary bg-secondary text-foreground shadow-sm"
+                              : "border-border bg-background text-foreground hover:bg-secondary/70"
                           )}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {hasIntegrationCredential ? "Saved key present" : "No saved key"}
-                        </div>
-                      </button>
-                    );
-                  })}
+                          onClick={() => handleSearchModeSelect(mode)}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate text-sm font-medium">
+                              {searchModeLabel(mode)}
+                            </span>
+                            {selected && (
+                              <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {mode === "auto"
+                              ? "Let Tessera choose the active search provider."
+                              : `Use ${searchProviderLabel(mode)} as the active search provider.`}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-4">
+                <label className="flex items-center gap-3 text-sm text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={allowKeylessFallback}
+                    disabled={searchBusy}
+                    onChange={(event) => setAllowKeylessFallback(event.target.checked)}
+                  />
+                  Allow keyless fallback
+                </label>
+              </section>
+
+              <section className="space-y-4">
+                <div className="space-y-3">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                    Search providers
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {SEARCH_PROVIDERS.map((provider) => {
+                      const providerSettings = searchProviderSettings(integrations, provider);
+                      const selected = provider === selectedSearchProvider;
+
+                      return (
+                        <button
+                          key={provider}
+                          type="button"
+                          disabled={searchBusy}
+                          className={cn(
+                            "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                            selected
+                              ? "border-primary bg-secondary text-foreground shadow-sm"
+                              : "border-border bg-background text-foreground hover:bg-secondary/70"
+                          )}
+                          onClick={() => handleSearchProviderSelect(provider)}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate text-sm font-medium">
+                              {searchProviderLabel(provider)}
+                            </span>
+                            {selected && (
+                              <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {provider === "duckduckgo"
+                              ? "Keyless provider"
+                              : providerSettings?.hasCredential
+                                ? "Saved key present"
+                                : "No saved key"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  {selectedIntegration === "brave-search"
-                    ? "Brave Search powers the `web-search search` shell command for live agent research."
-                    : "Google Calendar powers the `gcal list` and `gcal read` shell commands for calendar context."}
+                  {searchProviderDescription(selectedSearchProvider)}
+                </div>
+
+                {searchProviderAllowsCredentials ? (
+                  <label className="block">
+                    <span className="text-sm font-medium text-foreground">API key</span>
+                    <input
+                      className="input mt-2"
+                      type="password"
+                      value={searchApiKey}
+                      disabled={searchBusy}
+                      placeholder={
+                        hasSearchCredential
+                          ? "Saved key present"
+                          : `Paste ${searchProviderLabel(selectedSearchProvider)} API key`
+                      }
+                      onChange={(event) => setSearchApiKey(event.target.value)}
+                    />
+                  </label>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border bg-secondary/20 px-4 py-3 text-sm text-muted-foreground">
+                    DuckDuckGo uses keyless search. No API key is required or stored.
+                  </div>
+                )}
+
+                {searchStatus && (
+                  <div
+                    className={cn(
+                      "rounded-xl border px-3 py-2 text-sm",
+                      searchStatus.tone === "error" &&
+                        "border-destructive/25 bg-destructive/5 text-destructive",
+                      searchStatus.tone === "info" && "border-border bg-secondary text-foreground",
+                      searchStatus.tone === "success" &&
+                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    )}
+                  >
+                    {searchStatus.message}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={handleSaveSearchSettings} disabled={searchBusy}>
+                    {activeSearchAction === "save" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <KeyRound size={16} />
+                    )}
+                    Save
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleSearchTestConnection}
+                    disabled={searchBusy}
+                  >
+                    {activeSearchAction === "test" ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Wifi size={16} />
+                    )}
+                    Test connection
+                  </Button>
+                  {searchProviderAllowsCredentials && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleRemoveSearchKey}
+                      disabled={searchBusy || !hasSearchCredential}
+                    >
+                      {activeSearchAction === "remove" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={16} />
+                      )}
+                      Remove key
+                    </Button>
+                  )}
+                </div>
+              </section>
+
+              <section className="space-y-4">
+                <div className="space-y-3">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                    Calendar integration
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {INTEGRATION_PROVIDERS.map((provider) => {
+                      const selected = provider === selectedIntegration;
+
+                      return (
+                        <button
+                          key={provider}
+                          type="button"
+                          disabled={integrationBusy}
+                          className={cn(
+                            "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                            selected
+                              ? "border-primary bg-secondary text-foreground shadow-sm"
+                              : "border-border bg-background text-foreground hover:bg-secondary/70"
+                          )}
+                          onClick={() => handleIntegrationSelect(provider)}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate text-sm font-medium">
+                              {integrationLabel(provider)}
+                            </span>
+                            {selected && (
+                              <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {hasIntegrationCredential ? "Saved key present" : "No saved key"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
+                  Google Calendar powers the `gcal list` and `gcal read` shell commands for calendar
+                  context.
                 </div>
 
                 <label className="block">
@@ -653,7 +986,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     value={integrationApiKey}
                     disabled={integrationBusy}
                     placeholder={
-                      hasIntegrationCredential ? "Saved key present" : "Paste Brave API key"
+                      hasIntegrationCredential
+                        ? "Saved key present"
+                        : "Paste Google Calendar API key"
                     }
                     onChange={(event) => setIntegrationApiKey(event.target.value)}
                   />
@@ -711,7 +1046,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     Remove key
                   </Button>
                 </div>
-              </div>
+              </section>
             </div>
           </div>
         ) : (
@@ -751,4 +1086,105 @@ function providerConfigFromSettings(
         baseUrl: settings.baseUrl ?? "http://127.0.0.1:11434/v1",
       };
   }
+}
+
+function searchProviderSettings(
+  integrations: IntegrationSettingsRead | null,
+  provider: SearchProvider
+) {
+  if (!integrations) {
+    return null;
+  }
+
+  switch (provider) {
+    case "brave-search":
+      return integrations.search.providers.braveSearch;
+    case "tavily":
+      return integrations.search.providers.tavily;
+    case "duckduckgo":
+      return integrations.search.providers.duckduckgo;
+  }
+}
+
+function searchProviderDescription(provider: SearchProvider): string {
+  switch (provider) {
+    case "brave-search":
+      return "Brave Search powers the `web-search search` shell command for live agent research.";
+    case "tavily":
+      return "Tavily powers the `web-search search` shell command for live agent research.";
+    case "duckduckgo":
+      return "DuckDuckGo powers the `web-search search` shell command and uses keyless search.";
+  }
+}
+
+export function nextSelectedSearchProvider(
+  mode: SearchMode,
+  currentProvider: SearchProvider
+): SearchProvider {
+  return mode === "auto" ? currentProvider : mode;
+}
+
+export function buildSearchSettingsSaveRequest(params: {
+  selectedSearchProvider: SearchProvider;
+  hasExistingCredential: boolean;
+  searchMode: SearchMode;
+  allowKeylessFallback: boolean;
+  apiKey: string;
+}): IntegrationSettingsSaveRequest {
+  const credential = shouldSendIntegrationCredential(params.apiKey)
+    ? { credential: { apiKey: params.apiKey.trim() } }
+    : {};
+
+  if (!searchProviderSupportsCredential(params.selectedSearchProvider)) {
+    return {
+      searchProvider: params.selectedSearchProvider,
+      hasExistingCredential: false,
+      search: {
+        mode: params.searchMode,
+        allowKeylessFallback: params.allowKeylessFallback,
+      },
+    };
+  }
+
+  return {
+    searchProvider: params.selectedSearchProvider,
+    hasExistingCredential: params.hasExistingCredential,
+    search: {
+      mode: params.searchMode,
+      allowKeylessFallback: params.allowKeylessFallback,
+    },
+    ...credential,
+  };
+}
+
+export function buildSearchConnectionTestRequest(params: {
+  selectedSearchProvider: SearchProvider;
+  apiKey: string;
+}): IntegrationConnectionTestRequest {
+  if (!searchProviderSupportsCredential(params.selectedSearchProvider)) {
+    return {
+      searchProvider: params.selectedSearchProvider,
+    };
+  }
+
+  const credential = shouldSendIntegrationCredential(params.apiKey)
+    ? { credential: { apiKey: params.apiKey.trim() } }
+    : {};
+
+  return {
+    searchProvider: params.selectedSearchProvider,
+    ...credential,
+  };
+}
+
+export function buildSearchCredentialDeleteRequest(
+  provider: SearchProvider
+): IntegrationCredentialDeleteRequest | null {
+  if (!searchProviderSupportsCredential(provider)) {
+    return null;
+  }
+
+  return {
+    searchProvider: provider,
+  };
 }

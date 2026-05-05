@@ -4,14 +4,27 @@ import { describe, expect, test } from "bun:test";
 import type { IntegrationProvider } from "@tessera/contracts";
 import {
   INTEGRATION_PROVIDERS,
+  KEYLESS_SEARCH_PROVIDERS,
+  SEARCH_MODE_OPTIONS,
+  SEARCH_PROVIDERS,
   integrationLabel,
+  searchModeLabel,
+  searchProviderLabel,
+  searchProviderSupportsCredential,
   shouldSendIntegrationCredential,
 } from "./integrationSettings";
 
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
-    expect(integrationLabel("brave-search")).toBe("Brave Search");
     expect(integrationLabel("google-calendar")).toBe("Google Calendar");
+  });
+
+  test("labels supported search providers and modes", () => {
+    expect(searchProviderLabel("brave-search")).toBe("Brave Search");
+    expect(searchProviderLabel("tavily")).toBe("Tavily");
+    expect(searchProviderLabel("duckduckgo")).toBe("DuckDuckGo");
+    expect(searchModeLabel("auto")).toBe("Auto");
+    expect(searchModeLabel("tavily")).toBe("Tavily");
   });
 
   test("omits blank credential replacements", () => {
@@ -21,7 +34,18 @@ describe("integration settings UI helpers", () => {
   });
 
   test("exports every supported integration provider", () => {
-    const expected: IntegrationProvider[] = ["brave-search", "google-calendar"];
+    const expected: IntegrationProvider[] = ["google-calendar"];
     expect(INTEGRATION_PROVIDERS).toEqual(expected);
+  });
+
+  test("exports every supported search provider and mode option", () => {
+    expect(SEARCH_PROVIDERS).toEqual(["brave-search", "tavily", "duckduckgo"]);
+    expect(SEARCH_MODE_OPTIONS).toEqual(["auto", "brave-search", "tavily", "duckduckgo"]);
+  });
+
+  test("marks DuckDuckGo as keyless", () => {
+    expect(KEYLESS_SEARCH_PROVIDERS).toEqual(["duckduckgo"]);
+    expect(searchProviderSupportsCredential("brave-search")).toBe(true);
+    expect(searchProviderSupportsCredential("duckduckgo")).toBe(false);
   });
 });
