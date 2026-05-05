@@ -1,8 +1,11 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { URL } from "node:url";
 import {
   type IntegrationSettingsRead,
   IntegrationSettingsReadSchema,
   type SearchProvider,
+  SearchSettingsSchema,
 } from "@tessera/contracts";
 import { type WebSearchRuntime, executeWebSearch } from "@tessera/core";
 import { NodeHtmlMarkdown } from "node-html-markdown";
@@ -11,6 +14,7 @@ const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
 const TAVILY_SEARCH_ACCOUNT = "integration.tavily";
 const GOOGLE_CALENDAR_ACCOUNT = "integration.google-calendar";
+const INTEGRATION_SETTINGS_FILE = "integration-settings.json";
 const MAX_FETCH_BYTES = 1_000_000;
 const BROWSER_HEADERS = {
   "user-agent": "Tessera/0.1.0 (+https://tessera.app)",
@@ -137,7 +141,10 @@ function createWebSearchRuntime(context: SearchContext): WebSearchRuntime {
 }
 
 async function resolveSearchContext(options: ExecuteCliCommandOptions): Promise<SearchContext> {
-  const settings = (await options.getSearchSettings?.()) ?? getDefaultSearchSettings();
+  const settings =
+    (await options.getSearchSettings?.()) ??
+    (await loadSearchSettingsFromSystem().catch(() => null)) ??
+    getDefaultSearchSettings();
   const [braveSearch, tavily] = await Promise.all([
     resolveSearchCredential("brave-search", options),
     resolveSearchCredential("tavily", options),
@@ -167,6 +174,27 @@ async function resolveSearchContext(options: ExecuteCliCommandOptions): Promise<
     },
     credentials,
     fetchImpl: (options.fetchImpl ?? fetch) as typeof fetch,
+  };
+}
+
+async function loadSearchSettingsFromSystem(): Promise<IntegrationSettingsRead["search"] | null> {
+  const appConfigDir = process.env.TESSERA_APP_CONFIG_DIR?.trim();
+  if (!appConfigDir) {
+    return null;
+  }
+
+  const path = join(appConfigDir, INTEGRATION_SETTINGS_FILE);
+  const text = await readFile(path, "utf8");
+  const parsed = JSON.parse(text) as { search?: unknown };
+  if (!parsed.search) {
+    return null;
+  }
+
+  const persisted = SearchSettingsSchema.parse(parsed.search);
+  return {
+    ...getDefaultSearchSettings(),
+    mode: persisted.mode,
+    allowKeylessFallback: persisted.allowKeylessFallback,
   };
 }
 

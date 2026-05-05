@@ -516,7 +516,12 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .path()
         .app_data_dir()
         .context("Could not resolve app data dir")?;
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .context("Could not resolve app config dir")?;
     fs::create_dir_all(&app_data_dir).context("Could not create app data dir")?;
+    fs::create_dir_all(&app_config_dir).context("Could not create app config dir")?;
     let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
     let task_db_path = app_data_dir.join("tasks.sqlite");
 
@@ -532,6 +537,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .env(
             "TESSERA_TASK_DB_PATH",
             task_db_path.to_string_lossy().as_ref(),
+        )
+        .env(
+            "TESSERA_APP_CONFIG_DIR",
+            app_config_dir.to_string_lossy().as_ref(),
         )
         // pi-coding-agent resolves its package dir via dirname(process.execPath) when
         // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
@@ -605,9 +614,17 @@ async fn run_workspace_cli_command(
 ) -> Result<SpawnResult, String> {
     let bin_dir = binaries_dir(app).map_err(|error| error.to_string())?;
     let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(cli_path);
     command.args(args);
+    command.env(
+        "TESSERA_APP_CONFIG_DIR",
+        app_config_dir.to_string_lossy().as_ref(),
+    );
     if let Some((env_name, credential)) = credential_env {
         command.env(env_name, credential);
     }

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { executeCliCommand } from "./shell.js";
 import type { ExecuteCliCommandOptions } from "./shell.js";
 
@@ -111,6 +114,60 @@ describe("workspace cli shell commands", () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("No search provider is configured.");
+  });
+
+  test("loads persisted search settings for keyless fallback when none are injected", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "tessera-search-settings-"));
+    const previousConfigDir = process.env.TESSERA_APP_CONFIG_DIR;
+    process.env.TESSERA_APP_CONFIG_DIR = dir;
+
+    try {
+      await writeFile(
+        join(dir, "integration-settings.json"),
+        JSON.stringify({
+          providers: {
+            braveSearch: { provider: "brave-search" },
+            googleCalendar: { provider: "google-calendar" },
+          },
+          search: {
+            mode: "duckduckgo",
+            allowKeylessFallback: true,
+          },
+        })
+      );
+
+      const result = await executeCliCommand(["web-search", "search", "tessera"], {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              AbstractText: "Tessera summary",
+              AbstractURL: "https://example.com/tessera",
+              Heading: "Tessera",
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }
+          ),
+        getBraveApiKey: async () => null,
+        getTavilyApiKey: async () => null,
+      });
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload).toMatchObject({
+        query: "tessera",
+        provider: "duckduckgo",
+        capability: "search",
+        cached: false,
+      });
+    } finally {
+      if (previousConfigDir === undefined) {
+        process.env.TESSERA_APP_CONFIG_DIR = undefined;
+      } else {
+        process.env.TESSERA_APP_CONFIG_DIR = previousConfigDir;
+      }
+    }
   });
 
   test("returns markdown extraction for fetched html pages", async () => {
