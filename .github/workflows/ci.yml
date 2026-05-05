@@ -49,10 +49,22 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
+          FUSE_PACKAGE=libfuse2
+          if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+            FUSE_PACKAGE=libfuse2t64
+          fi
           sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf \
+            wget \
+            "$FUSE_PACKAGE"
       - run: bun install --frozen-lockfile
       - name: Compile sidecar and CLI binaries
         run: bun run build:sidecar
