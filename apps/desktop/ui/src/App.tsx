@@ -43,6 +43,10 @@ export default function App() {
   const taskDetailRequestId = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep a ref to selectedTaskId so stable callbacks can read the latest value
+  // without becoming a dependency that causes effect re-runs.
+  const selectedTaskIdRef = useRef<string | null>(null);
+  selectedTaskIdRef.current = selectedTaskId;
 
   const handleWorkspaceSelect = (path: string) => {
     setWorkspaceRoot(path);
@@ -64,7 +68,10 @@ export default function App() {
     try {
       const res = await invoke<TaskListResult>("task_list", { workspaceRoot });
       setTasks(res.tasks);
-      if (selectedTaskId && !res.tasks.some((task) => task.id === selectedTaskId)) {
+      // Read the current value from the ref so this callback doesn't need
+      // selectedTaskId as a dependency (which would cause spurious re-runs).
+      const currentTaskId = selectedTaskIdRef.current;
+      if (currentTaskId && !res.tasks.some((task) => task.id === currentTaskId)) {
         setSelectedTaskId(null);
         setSelectedTask(null);
       }
@@ -73,22 +80,29 @@ export default function App() {
     } finally {
       setLoadingTasks(false);
     }
-  }, [selectedTaskId, workspaceRoot]);
+  }, [workspaceRoot]);
 
-  const loadTaskDetail = useCallback(async (taskId: string) => {
+  const loadTaskDetail = useCallback(async (taskId: string, options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
     const requestId = ++taskDetailRequestId.current;
-    setLoadingTaskDetail(true);
-    setTaskDetailError(null);
+    if (!background) {
+      setLoadingTaskDetail(true);
+      setTaskDetailError(null);
+    }
     try {
       const task = await invoke<TaskDetail>("task_get", { taskId });
       if (taskDetailRequestId.current !== requestId) return;
-      setSelectedTask(task);
+      setSelectedTask((current) =>
+        current && current.id === task.id ? mergeTaskDetail(current, task) : task
+      );
     } catch (error) {
       if (taskDetailRequestId.current !== requestId) return;
       setTaskDetailError(error instanceof Error ? error.message : String(error));
-      setSelectedTask(null);
+      if (!background) {
+        setSelectedTask(null);
+      }
     } finally {
-      if (taskDetailRequestId.current === requestId) {
+      if (!background && taskDetailRequestId.current === requestId) {
         setLoadingTaskDetail(false);
       }
     }
@@ -108,6 +122,11 @@ export default function App() {
     setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
   }, []);
 
+  // Stable callback — reads selectedTaskId and loadTaskDetail from refs so the
+  // useTaskEvents subscription is not torn down every time selectedTaskId changes.
+  const loadTaskDetailRef = useRef(loadTaskDetail);
+  loadTaskDetailRef.current = loadTaskDetail;
+
   const handleReconnect = useCallback(() => {
     const attempt = reconnectAttemptsRef.current;
     if (attempt >= 3) {
@@ -118,11 +137,12 @@ export default function App() {
     reconnectAttemptsRef.current = attempt + 1;
     const delays = [250, 750, 2250];
     retryTimerRef.current = setTimeout(async () => {
-      if (selectedTaskId) {
-        await loadTaskDetail(selectedTaskId);
+      const taskId = selectedTaskIdRef.current;
+      if (taskId) {
+        await loadTaskDetailRef.current(taskId, { background: true });
       }
     }, delays[attempt] ?? 250);
-  }, [selectedTaskId, loadTaskDetail]);
+  }, []);
 
   useTaskEvents({
     taskId: selectedTaskId,
@@ -263,7 +283,7 @@ export default function App() {
         <TaskDetailView
           onClarifyResolve={handleClarifyResolve}
           creatingTask={creatingTask}
-          loading={loadingTaskDetail}
+          loading={loadingTaskDetail && (!selectedTask || selectedTask.id !== selectedTaskId)}
           onCreateTask={handleCreateTask}
           onCreateTurn={handleCreateTurn}
           onSelectTask={setSelectedTaskId}
