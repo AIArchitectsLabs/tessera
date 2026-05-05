@@ -564,6 +564,9 @@ describe("runPiTaskTurn", () => {
     expect(capturedSession?.capturedPrompts[0]).toContain(
       "When the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
     );
+    expect(capturedSession?.capturedPrompts[0]).toContain(
+      "Move items to in_progress or completed as the work advances, and make sure finished work is reflected in the checklist before you end your turn."
+    );
   });
 
   test("nudges task mode to use clarify when blocked by ambiguity", async () => {

@@ -244,7 +244,7 @@ function buildAgentInstructions(
       ? "Tool policy:\nAsk for approval before using mutating workspace tools."
       : "",
     options?.hasTaskChecklistTool
-      ? "Task checklist guidance:\nWhen the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work."
+      ? "Task checklist guidance:\nWhen the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work. Move items to in_progress or completed as the work advances, and make sure finished work is reflected in the checklist before you end your turn."
       : "",
     options?.hasTaskChecklistTool
       ? "Task clarification guidance:\nIf progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."

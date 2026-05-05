@@ -188,12 +188,28 @@ function parseJsonArray<T>(value: string | null, parseItem: (value: unknown) => 
   return parsed.map((item) => parseItem(item));
 }
 
+function normalizeTodoLabel(label: string): string {
+  return label.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 function applyTodoOperation(current: TaskTodo | undefined, operation: TodoOperation): TaskTodo {
   const updatedAt = nowIso();
   const items = current?.items ?? [];
 
   if (operation.type === "create" || operation.type === "replace") {
-    return TaskTodoSchema.parse({ items: operation.items, updatedAt });
+    const existingById = new Map(items.map((item) => [item.id, item]));
+    const existingByLabel = new Map(items.map((item) => [normalizeTodoLabel(item.label), item]));
+    return TaskTodoSchema.parse({
+      items: operation.items.map((item) => {
+        const previous =
+          existingById.get(item.id) ?? existingByLabel.get(normalizeTodoLabel(item.label));
+        if (!previous || previous.status !== "completed" || item.status === "completed") {
+          return item;
+        }
+        return { ...item, status: "completed" as const };
+      }),
+      updatedAt,
+    });
   }
 
   if (operation.type === "append") {

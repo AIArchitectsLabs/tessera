@@ -81,6 +81,45 @@ describe("task store", () => {
     }
   });
 
+  test("preserves completed todo items when the checklist is regenerated", () => {
+    const store = createTaskStore(tempDbPath("tasks.sqlite"));
+    try {
+      const task = store.createTask({
+        workspaceRoot: "/workspace/acme",
+        initialInstruction: "Ship the launch plan",
+      });
+
+      store.updateTodo(task.id, {
+        type: "create",
+        items: [
+          { id: "todo-1", label: "Draft brief", status: "pending", order: 0 },
+          { id: "todo-2", label: "Review risks", status: "pending", order: 1 },
+        ],
+      });
+      store.updateTodo(task.id, {
+        type: "set_status",
+        itemId: "todo-1",
+        status: "completed",
+      });
+      store.updateTodo(task.id, {
+        type: "replace",
+        items: [
+          { id: "todo-1b", label: "Draft brief", status: "pending", order: 0 },
+          { id: "todo-2", label: "Review risks", status: "in_progress", order: 1 },
+          { id: "todo-3", label: "Publish update", status: "pending", order: 2 },
+        ],
+      });
+
+      expect(store.getTask(task.id)?.todo?.items).toEqual([
+        { id: "todo-1b", label: "Draft brief", status: "completed", order: 0 },
+        { id: "todo-2", label: "Review risks", status: "in_progress", order: 1 },
+        { id: "todo-3", label: "Publish update", status: "pending", order: 2 },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("archives tasks without removing them and supports restoring them", () => {
     const store = createTaskStore(tempDbPath("tasks.sqlite"));
     try {

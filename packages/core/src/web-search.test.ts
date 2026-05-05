@@ -5,7 +5,7 @@ import { executeWebSearch } from "./web-search.js";
 type SearchAdapterCall = {
   provider: "brave-search" | "tavily" | "duckduckgo";
   query: string;
-  credential?: string;
+  credential: string | undefined;
 };
 
 function makeRuntime() {
@@ -13,7 +13,11 @@ function makeRuntime() {
   const adapters = {
     "brave-search": {
       async search(request: { query: string; credential?: string }) {
-        calls.push({ provider: "brave-search", query: request.query, credential: request.credential });
+        calls.push({
+          provider: "brave-search",
+          query: request.query,
+          credential: request.credential,
+        });
         return {
           results: [
             {
@@ -145,7 +149,9 @@ describe("executeWebSearch", () => {
       runtime
     );
 
-    expect(runtime.calls).toEqual([{ provider: "duckduckgo", query: "tessera", credential: undefined }]);
+    expect(runtime.calls).toEqual([
+      { provider: "duckduckgo", query: "tessera", credential: undefined },
+    ]);
     expect(fallbackResult.provider).toBe("duckduckgo");
   });
 
@@ -174,7 +180,9 @@ describe("executeWebSearch", () => {
       )
     ).rejects.toThrow("brave failed");
 
-    expect(runtime.calls).toEqual([{ provider: "brave-search", query: "tessera", credential: "brave-key" }]);
+    expect(runtime.calls).toEqual([
+      { provider: "brave-search", query: "tessera", credential: "brave-key" },
+    ]);
   });
 
   test("reuses cached results for the same normalized query within the ttl", async () => {

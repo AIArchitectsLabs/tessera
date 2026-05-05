@@ -364,6 +364,27 @@ export const ShellToolCallSchema = z.object({
 });
 export type ShellToolCall = z.infer<typeof ShellToolCallSchema>;
 
+export const SearchProviderSchema = z.enum(["brave-search", "tavily", "duckduckgo"]);
+export type SearchProvider = z.infer<typeof SearchProviderSchema>;
+
+export const WebSearchResultSchema = z.object({
+  query: z.string().min(1),
+  provider: SearchProviderSchema,
+  capability: z.literal("search"),
+  cached: z.boolean(),
+  latencyMs: z.number().nonnegative(),
+  results: z.array(
+    z.object({
+      title: z.string().min(1),
+      url: z.string().url(),
+      snippet: z.string().optional(),
+      source: z.string().optional(),
+      position: z.number().int().positive(),
+    })
+  ),
+});
+export type WebSearchResult = z.infer<typeof WebSearchResultSchema>;
+
 export const BraveSearchResultSchema = z.object({
   query: z.string().min(1),
   results: z.array(
