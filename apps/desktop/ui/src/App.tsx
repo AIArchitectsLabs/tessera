@@ -12,7 +12,7 @@ import type {
 } from "@tessera/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { RailNav, type SidebarMode } from "@/components/RailNav";
+import { RailNav } from "@/components/RailNav";
 import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
@@ -28,7 +28,6 @@ export default function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
     return localStorage.getItem(WORKSPACE_STORAGE_KEY);
   });
-  const [sidebarMode, setSidebarMode] = useState<SidebarMode>("files");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [taskListView, setTaskListView] = useState<TaskListView>("active");
@@ -165,10 +164,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (sidebarMode === "tasks") {
-      void loadTasks();
-    }
-  }, [loadTasks, sidebarMode]);
+    void loadTasks();
+  }, [loadTasks]);
 
   useEffect(() => {
     if (selectedTaskId) {
@@ -272,48 +269,9 @@ export default function App() {
     }
   }
 
-  const mainPane =
-    sidebarMode === "tasks" ? (
-      <div className="flex min-w-0 flex-1 flex-col">
-        {taskDetailError && (
-          <div className="border-b border-destructive/20 bg-destructive/5 px-6 py-2 text-sm text-destructive">
-            {taskDetailError}
-          </div>
-        )}
-        <TaskDetailView
-          onClarifyResolve={handleClarifyResolve}
-          creatingTask={creatingTask}
-          loading={loadingTaskDetail && (!selectedTask || selectedTask.id !== selectedTaskId)}
-          onCreateTask={handleCreateTask}
-          onCreateTurn={handleCreateTurn}
-          onSelectTask={setSelectedTaskId}
-          onTodoUpdate={handleTodoUpdate}
-          sendingTurn={sendingTurn}
-          task={selectedTask}
-          tasks={tasks}
-          workspaceRoot={workspaceRoot}
-        />
-      </div>
-    ) : (
-      <main className="flex-1 flex items-center justify-center bg-background">
-        <div className="max-w-sm text-center">
-          <h1 className="text-lg font-semibold text-foreground">Workspace files</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Select a workspace to browse files, or open Tasks from the rail to work with task
-            history.
-          </p>
-        </div>
-      </main>
-    );
-
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans">
-      <RailNav
-        mode={sidebarMode}
-        onLogout={handleLogout}
-        onModeChange={setSidebarMode}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+      <RailNav onLogout={handleLogout} onOpenSettings={() => setSettingsOpen(true)} />
       {settingsOpen ? (
         <SettingsView onClose={() => setSettingsOpen(false)} />
       ) : (
@@ -321,7 +279,6 @@ export default function App() {
           <Sidebar
             error={taskListError}
             loadingTasks={loadingTasks}
-            mode={sidebarMode}
             onArchiveToggle={handleArchiveToggle}
             onNewTask={handleNewTask}
             onRetryTasks={loadTasks}
@@ -333,7 +290,26 @@ export default function App() {
             taskListView={taskListView}
             workspaceRoot={workspaceRoot}
           />
-          {mainPane}
+          <div className="flex min-w-0 flex-1 flex-col">
+            {taskDetailError && (
+              <div className="border-b border-destructive/20 bg-destructive/5 px-6 py-2 text-sm text-destructive">
+                {taskDetailError}
+              </div>
+            )}
+            <TaskDetailView
+              onClarifyResolve={handleClarifyResolve}
+              creatingTask={creatingTask}
+              loading={loadingTaskDetail && (!selectedTask || selectedTask.id !== selectedTaskId)}
+              onCreateTask={handleCreateTask}
+              onCreateTurn={handleCreateTurn}
+              onSelectTask={setSelectedTaskId}
+              onTodoUpdate={handleTodoUpdate}
+              sendingTurn={sendingTurn}
+              task={selectedTask}
+              tasks={tasks}
+              workspaceRoot={workspaceRoot}
+            />
+          </div>
         </>
       )}
     </div>

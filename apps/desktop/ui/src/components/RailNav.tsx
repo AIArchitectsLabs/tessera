@@ -1,34 +1,17 @@
 import { Button } from "@/components/ui/button";
-import {
-  Blocks,
-  CheckCircle2,
-  FolderTree,
-  LogOut,
-  MessageSquare,
-  Settings,
-  Sparkles,
-  User,
-} from "lucide-react";
+import { Blocks, CheckCircle2, LogOut, Settings, User } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-export type SidebarMode = "files" | "tasks";
-
 interface RailNavProps {
-  mode: SidebarMode;
   onLogout: () => void;
-  onModeChange: (mode: SidebarMode) => void;
   onOpenSettings: () => void;
 }
 
-export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNavProps) {
+export function RailNav({ onLogout, onOpenSettings }: RailNavProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const firstMenuItemRef = useRef<HTMLButtonElement>(null);
-  const itemClass = (active: boolean) =>
-    active
-      ? "rounded-full bg-background text-foreground shadow-sm hover:bg-background"
-      : "rounded-full text-muted-foreground hover:text-foreground";
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -72,39 +55,11 @@ export function RailNav({ mode, onLogout, onModeChange, onOpenSettings }: RailNa
           type="button"
           variant="ghost"
           size="icon"
-          className={itemClass(mode === "files")}
-          onClick={() => onModeChange("files")}
-          title="Files"
-        >
-          <FolderTree size={20} />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={itemClass(mode === "tasks")}
-          onClick={() => onModeChange("tasks")}
+          className="rounded-full bg-background text-foreground shadow-sm hover:bg-background"
           title="Tasks"
+          aria-current="page"
         >
           <CheckCircle2 size={20} />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="rounded-full text-muted-foreground hover:text-foreground"
-          title="Messages"
-        >
-          <MessageSquare size={20} />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="rounded-full text-muted-foreground hover:text-foreground"
-          title="Agents"
-        >
-          <Sparkles size={20} />
         </Button>
       </div>
       <div className="mt-auto" ref={menuRef}>
