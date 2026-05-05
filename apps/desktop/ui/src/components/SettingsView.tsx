@@ -1,12 +1,12 @@
 import { Button } from "@/components/ui/button";
 import {
   INTEGRATION_PROVIDERS,
-  integrationLabel,
-  searchProviderSupportsCredential,
   SEARCH_MODE_OPTIONS,
   SEARCH_PROVIDERS,
+  integrationLabel,
   searchModeLabel,
   searchProviderLabel,
+  searchProviderSupportsCredential,
   shouldSendIntegrationCredential,
 } from "@/lib/integrationSettings";
 import {
@@ -20,8 +20,8 @@ import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentProviderConfig,
-  IntegrationConnectionTestResult,
   IntegrationConnectionTestRequest,
+  IntegrationConnectionTestResult,
   IntegrationCredentialDeleteRequest,
   IntegrationProvider,
   IntegrationSettingsRead,
@@ -986,7 +986,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     value={integrationApiKey}
                     disabled={integrationBusy}
                     placeholder={
-                      hasIntegrationCredential ? "Saved key present" : "Paste Google Calendar API key"
+                      hasIntegrationCredential
+                        ? "Saved key present"
+                        : "Paste Google Calendar API key"
                     }
                     onChange={(event) => setIntegrationApiKey(event.target.value)}
                   />

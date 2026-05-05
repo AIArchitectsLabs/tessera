@@ -158,7 +158,9 @@ describe("executeWebSearch", () => {
       runtime
     );
 
-    expect(runtime.calls).toEqual([{ provider: "duckduckgo", query: "tessera", credential: undefined }]);
+    expect(runtime.calls).toEqual([
+      { provider: "duckduckgo", query: "tessera", credential: undefined },
+    ]);
     expect(fallbackResult.provider).toBe("duckduckgo");
   });
 
@@ -191,7 +193,9 @@ describe("executeWebSearch", () => {
       )
     ).rejects.toThrow("brave failed");
 
-    expect(runtime.calls).toEqual([{ provider: "brave-search", query: "tessera", credential: "brave-key" }]);
+    expect(runtime.calls).toEqual([
+      { provider: "brave-search", query: "tessera", credential: "brave-key" },
+    ]);
   });
 
   test("reuses cached results for the exact same query string within the ttl", async () => {

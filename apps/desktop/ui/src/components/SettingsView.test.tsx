@@ -1,9 +1,6 @@
 /// <reference types="bun" />
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
-import { JSDOM } from "jsdom";
-import React from "react";
 import type {
   IntegrationConnectionTestResult,
   IntegrationSettingsRead,
@@ -11,6 +8,9 @@ import type {
   ModelSettingsRead,
   SearchProvider,
 } from "@tessera/contracts";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { JSDOM } from "jsdom";
+import React from "react";
 
 function installDom() {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {

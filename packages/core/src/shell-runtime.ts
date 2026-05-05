@@ -6,8 +6,8 @@ import {
   ShellToolResultSchema,
   type SpawnResult,
   SpawnResultSchema,
-  WebSearchResultSchema,
   WebFetchResultSchema,
+  WebSearchResultSchema,
 } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 

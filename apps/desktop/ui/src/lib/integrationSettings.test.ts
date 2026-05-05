@@ -5,9 +5,9 @@ import type { IntegrationProvider } from "@tessera/contracts";
 import {
   INTEGRATION_PROVIDERS,
   KEYLESS_SEARCH_PROVIDERS,
-  integrationLabel,
   SEARCH_MODE_OPTIONS,
   SEARCH_PROVIDERS,
+  integrationLabel,
   searchModeLabel,
   searchProviderLabel,
   searchProviderSupportsCredential,

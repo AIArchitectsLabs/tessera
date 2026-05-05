@@ -3,13 +3,13 @@ import {
   BraveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
-  IntegrationConnectionTestResultSchema,
   IntegrationConnectionTestRequestSchema,
+  IntegrationConnectionTestResultSchema,
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
-  WebSearchResultSchema,
   WebFetchResultSchema,
+  WebSearchResultSchema,
 } from "./index.js";
 
 describe("integration settings contracts", () => {

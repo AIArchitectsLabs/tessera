@@ -1,8 +1,4 @@
-import type {
-  IntegrationSettingsRead,
-  SearchProvider,
-  WebSearchResult,
-} from "@tessera/contracts";
+import type { IntegrationSettingsRead, SearchProvider, WebSearchResult } from "@tessera/contracts";
 import { WebSearchResultSchema } from "@tessera/contracts";
 import { z } from "zod";
 

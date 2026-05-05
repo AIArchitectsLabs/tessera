@@ -1,14 +1,11 @@
 import { URL } from "node:url";
-import { NodeHtmlMarkdown } from "node-html-markdown";
 import {
-  executeWebSearch,
-  type WebSearchRuntime,
-} from "@tessera/core";
-import {
-  IntegrationSettingsReadSchema,
   type IntegrationSettingsRead,
+  IntegrationSettingsReadSchema,
   type SearchProvider,
 } from "@tessera/contracts";
+import { type WebSearchRuntime, executeWebSearch } from "@tessera/core";
+import { NodeHtmlMarkdown } from "node-html-markdown";
 
 const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
@@ -139,9 +136,7 @@ function createWebSearchRuntime(context: SearchContext): WebSearchRuntime {
   };
 }
 
-async function resolveSearchContext(
-  options: ExecuteCliCommandOptions
-): Promise<SearchContext> {
+async function resolveSearchContext(options: ExecuteCliCommandOptions): Promise<SearchContext> {
   const settings = (await options.getSearchSettings?.()) ?? getDefaultSearchSettings();
   const [braveSearch, tavily] = await Promise.all([
     resolveSearchCredential("brave-search", options),
