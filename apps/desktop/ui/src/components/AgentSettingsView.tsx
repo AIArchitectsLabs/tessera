@@ -5,10 +5,12 @@ import {
   AGENT_PROFILE_TEMPLATES,
   type AgentProfile,
   type AgentProfileListResult,
+  type SkillListResult,
+  type SkillSummary,
   TOOL_POLICY_PRESET_DETAILS,
   type ToolPolicyPreset,
 } from "@tessera/contracts";
-import { Bot, Loader2, Plus, Trash2 } from "lucide-react";
+import { Bot, Loader2, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 type DraftState = {
@@ -18,6 +20,7 @@ type DraftState = {
   instructions: string;
   soul: string;
   userContext: string;
+  skills: string[];
   toolPolicyPreset: ToolPolicyPreset;
   memoryDefaults: string;
 };
@@ -30,6 +33,7 @@ function draftFromProfile(profile: AgentProfile | null): DraftState {
     instructions: profile?.instructions ?? "",
     soul: profile?.soul ?? "",
     userContext: profile?.userContext ?? "",
+    skills: profile?.skills ?? [],
     toolPolicyPreset: profile?.toolPolicyPreset ?? "workspace_editor",
     memoryDefaults: profile?.memoryDefaults ?? "",
   };
@@ -45,6 +49,7 @@ function draftFromTemplate(templateId: string): DraftState {
       instructions: "",
       soul: "",
       userContext: "",
+      skills: [],
       toolPolicyPreset: "workspace_editor",
       memoryDefaults: "",
     };
@@ -57,6 +62,7 @@ function draftFromTemplate(templateId: string): DraftState {
     instructions: template.profile.instructions,
     soul: template.profile.soul,
     userContext: template.profile.userContext,
+    skills: template.profile.skills ?? [],
     toolPolicyPreset: template.profile.toolPolicyPreset,
     memoryDefaults: template.profile.memoryDefaults,
   };
@@ -180,6 +186,8 @@ function AgentEditor({
   const [templateChosen, setTemplateChosen] = useState(Boolean(profile));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const isDefaultProfile = profile?.id === "default";
 
   useEffect(() => {
     setDraft(draftFromProfile(profile));
@@ -187,11 +195,17 @@ function AgentEditor({
     setError(null);
   }, [profile]);
 
+  useEffect(() => {
+    invoke<SkillListResult>("skill_list")
+      .then((result) => setSkills(result.skills))
+      .catch(() => setSkills([]));
+  }, []);
+
   function updateDraft<K extends keyof DraftState>(key: K, value: DraftState[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
-  const canSave = draft.name.trim().length > 0 && templateChosen && !busy;
+  const canSave = (isDefaultProfile || draft.name.trim().length > 0) && templateChosen && !busy;
 
   async function handleSave() {
     if (!canSave) return;
@@ -199,12 +213,17 @@ function AgentEditor({
     setError(null);
 
     const request = {
-      name: draft.name.trim(),
-      description: draft.description.trim() || undefined,
-      templateId: draft.templateId,
+      ...(!isDefaultProfile
+        ? {
+            name: draft.name.trim(),
+            description: draft.description.trim() || undefined,
+            templateId: draft.templateId,
+          }
+        : {}),
       instructions: draft.instructions.trim(),
       soul: draft.soul.trim(),
       userContext: draft.userContext.trim(),
+      skills: draft.skills,
       toolPolicyPreset: draft.toolPolicyPreset,
       memoryDefaults: draft.memoryDefaults.trim(),
     };
@@ -227,6 +246,21 @@ function AgentEditor({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!profile || !isDefaultProfile) return;
+    if (!confirm("Reset Tessera to the shipped default profile?")) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("agent_profile_reset", { id: profile.id });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   }
@@ -306,10 +340,15 @@ function AgentEditor({
           <input
             className="input mt-2"
             value={draft.name}
-            disabled={busy}
+            disabled={busy || isDefaultProfile}
             placeholder="e.g. Operations Partner"
             onChange={(event) => updateDraft("name", event.target.value)}
           />
+          {isDefaultProfile && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Tessera is the protected default profile.
+            </p>
+          )}
         </label>
 
         <label className="block">
@@ -317,10 +356,13 @@ function AgentEditor({
           <input
             className="input mt-2"
             value={draft.description}
-            disabled={busy}
+            disabled={busy || isDefaultProfile}
             placeholder="Optional short description"
             onChange={(event) => updateDraft("description", event.target.value)}
           />
+          {isDefaultProfile && (
+            <p className="mt-2 text-xs text-muted-foreground">Model: global workspace default.</p>
+          )}
         </label>
       </div>
 
@@ -375,6 +417,13 @@ function AgentEditor({
         onChange={(value) => updateDraft("userContext", value)}
       />
 
+      <SkillPicker
+        skills={skills}
+        selected={draft.skills}
+        disabled={busy}
+        onChange={(selected) => updateDraft("skills", selected)}
+      />
+
       <SectionField
         label="Memory Defaults"
         hint="Static authored preferences and reusable non-secret context."
@@ -387,10 +436,17 @@ function AgentEditor({
       <div className="flex items-center justify-between pt-4">
         <Button onClick={handleSave} disabled={!canSave}>
           {busy && <Loader2 size={16} className="mr-2 animate-spin" />}
-          Save Agent
+          {isDefaultProfile ? "Save Tessera" : "Save Agent"}
         </Button>
 
-        {profile && (
+        {isDefaultProfile && (
+          <Button variant="ghost" onClick={handleReset} disabled={busy}>
+            <RotateCcw size={16} className="mr-2" />
+            Reset to Default
+          </Button>
+        )}
+
+        {profile && !isDefaultProfile && (
           <Button
             variant="ghost"
             className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -402,6 +458,86 @@ function AgentEditor({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+function sourceLabel(skill: SkillSummary): string {
+  if (skill.source === "external") {
+    return skill.externalProvider === "claude-code" ? "Claude Code" : "Codex";
+  }
+  if (skill.source === "curated") return "Built-in";
+  if (skill.source === "workspace") return "Workspace";
+  return "User";
+}
+
+function SkillPicker({
+  skills,
+  selected,
+  disabled,
+  onChange,
+}: {
+  skills: SkillSummary[];
+  selected: string[];
+  disabled: boolean;
+  onChange: (selected: string[]) => void;
+}) {
+  const selectedSet = new Set(selected);
+
+  function toggle(skillId: string) {
+    if (selectedSet.has(skillId)) {
+      onChange(selected.filter((id) => id !== skillId));
+    } else {
+      onChange([...selected, skillId]);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-secondary/20 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-foreground">Skills</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Enable procedural instruction bundles for this agent.
+          </p>
+        </div>
+        <div className="text-xs text-muted-foreground">{selected.length} selected</div>
+      </div>
+
+      {skills.length === 0 ? (
+        <div className="mt-4 text-sm text-muted-foreground">No local skills found.</div>
+      ) : (
+        <div className="mt-4 grid gap-2">
+          {skills.map((skill) => (
+            <label
+              key={skill.id}
+              className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2"
+            >
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={selectedSet.has(skill.id)}
+                disabled={disabled}
+                onChange={() => toggle(skill.id)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  {skill.name}
+                  <span className="rounded border border-border px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                    {sourceLabel(skill)}
+                  </span>
+                  {skill.conflict && (
+                    <span className="text-[11px] font-normal text-amber-600">Shadowing</span>
+                  )}
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  {skill.description}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

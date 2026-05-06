@@ -3,6 +3,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type AgentProfile,
   AgentTurnRequestSchema,
   AuditRecordSchema,
   ClarifyRequestSchema,
@@ -21,6 +22,7 @@ import {
   TaskCreateRequestSchema,
   TaskCreateTurnRequestSchema,
   TaskListResultSchema,
+  type TaskSkillActivation,
   TaskUpdateRequestSchema,
   TodoOperationSchema,
   WorkflowResumeRequestSchema,
@@ -35,7 +37,9 @@ import {
 import {
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
+  createSkillRegistry,
   executeAgentTurn,
+  resolveSlashSkillInvocation,
   resumeWorkflowRun,
   runWorkflow,
 } from "@tessera/core";
@@ -59,6 +63,47 @@ const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
 const taskEventBus = createTaskEventBus();
 const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
+
+function profileForAgentId(agentId: string): AgentProfile {
+  if (agentId === "default") return defaultAgentProfile();
+  return agentProfileStore.get(agentId) ?? DEFAULT_AGENT_PROFILE;
+}
+
+function defaultAgentProfile(): AgentProfile {
+  const override = agentProfileStore.get("default");
+  if (!override) return DEFAULT_AGENT_PROFILE;
+  return {
+    ...override,
+    id: DEFAULT_AGENT_PROFILE.id,
+    name: DEFAULT_AGENT_PROFILE.name,
+    model: DEFAULT_AGENT_PROFILE.model,
+  };
+}
+
+function allowedSkillIdsForAgent(agentId: string): string[] {
+  return profileForAgentId(agentId).skills ?? [];
+}
+
+async function parseSkillInvocation(options: {
+  text: string;
+  workspaceRoot: string;
+  agentId: string;
+}): Promise<{ content: string; skill?: Omit<TaskSkillActivation, "activatedAt"> }> {
+  const registry = createSkillRegistry({ workspaceRoot: options.workspaceRoot });
+  const allowedSkillIds = allowedSkillIdsForAgent(options.agentId);
+  const invocation = await resolveSlashSkillInvocation(options.text, registry, { allowedSkillIds });
+  if (!invocation) return { content: options.text };
+  const detail = await registry.loadSkill(invocation.skillId, { allowedSkillIds });
+  return {
+    content: invocation.instruction,
+    skill: {
+      skillId: detail.id,
+      name: detail.name,
+      source: detail.source,
+      ...(detail.externalProvider ? { externalProvider: detail.externalProvider } : {}),
+    },
+  };
+}
 
 const isWindows = process.platform === "win32";
 const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid}.sock`);
@@ -556,9 +601,18 @@ async function handleTaskCreate(req: Request): Promise<Response> {
   }
 
   try {
+    const invocation = await parseSkillInvocation({
+      text: parsed.data.initialInstruction,
+      workspaceRoot: parsed.data.workspaceRoot,
+      agentId: parsed.data.agentId,
+    });
+    const taskInput = {
+      ...parsed.data,
+      initialInstruction: invocation.content,
+    };
     let execution = parsed.data.execution;
-    if (execution && parsed.data.agentId !== "default") {
-      const profile = agentProfileStore.get(parsed.data.agentId);
+    if (execution && taskInput.agentId !== "default") {
+      const profile = agentProfileStore.get(taskInput.agentId);
       if (profile) {
         execution = {
           ...execution,
@@ -567,20 +621,26 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         };
       }
     } else if (execution) {
-      const agent = execution.agent ?? DEFAULT_AGENT_PROFILE;
+      const agent = defaultAgentProfile();
       execution = {
         ...execution,
         agent,
-        runtime: execution.runtime ?? compileAgentRuntimeContext(agent),
+        runtime: compileAgentRuntimeContext(agent),
       };
     }
 
     const task = taskStore.createTask({
-      ...parsed.data,
+      ...taskInput,
       ...(execution?.runtime ? { agentContext: execution.runtime } : {}),
     });
     const userTurn = task.turns.at(-1);
     if (!userTurn) throw new Error("Created task has no user turn");
+    if (invocation.skill) {
+      taskStore.addActiveSkill(task.id, {
+        ...invocation.skill,
+        activatedByTurnId: userTurn.id,
+      });
+    }
     const agentTurn = taskStore.createQueuedAgentTurn(task.id);
     const snapshot = taskStore.getTask(task.id);
     const taskId = task.id;
@@ -660,9 +720,20 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
   }
 
   try {
+    const task = taskStore.getTask(taskId);
+    if (!task) return Response.json({ error: "Unknown task" }, { status: 404 });
+    const invocation = await parseSkillInvocation({
+      text: parsed.data.content,
+      workspaceRoot: task.workspaceRoot,
+      agentId: parsed.data.agentId,
+    });
+    const turnInput = {
+      ...parsed.data,
+      content: invocation.content,
+    };
     let execution = parsed.data.execution;
-    if (execution && parsed.data.agentId !== "default") {
-      const profile = agentProfileStore.get(parsed.data.agentId);
+    if (execution && turnInput.agentId !== "default") {
+      const profile = agentProfileStore.get(turnInput.agentId);
       if (profile) {
         execution = {
           ...execution,
@@ -671,15 +742,21 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         };
       }
     } else if (execution) {
-      const agent = execution.agent ?? DEFAULT_AGENT_PROFILE;
+      const agent = defaultAgentProfile();
       execution = {
         ...execution,
         agent,
-        runtime: execution.runtime ?? compileAgentRuntimeContext(agent),
+        runtime: compileAgentRuntimeContext(agent),
       };
     }
 
-    const userTurn = taskStore.createUserTurn(taskId, parsed.data.content);
+    const userTurn = taskStore.createUserTurn(taskId, turnInput.content);
+    if (invocation.skill) {
+      taskStore.addActiveSkill(taskId, {
+        ...invocation.skill,
+        activatedByTurnId: userTurn.id,
+      });
+    }
     const agentTurn = taskStore.createQueuedAgentTurn(taskId);
     const snapshot = taskStore.getTask(taskId);
     const userTurnId = userTurn.id;
@@ -950,7 +1027,12 @@ function handleAgentProfileList(req: Request): Response {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const result = { profiles: agentProfileStore.list() };
+  const result = {
+    profiles: [
+      defaultAgentProfile(),
+      ...agentProfileStore.list().filter((profile) => profile.id !== "default"),
+    ],
+  };
   return Response.json(result);
 }
 
@@ -959,7 +1041,7 @@ function handleAgentProfileGet(req: Request, id: string): Response {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const profile = agentProfileStore.get(id);
+  const profile = id === "default" ? defaultAgentProfile() : agentProfileStore.get(id);
   if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json(profile);
 }
@@ -1009,19 +1091,109 @@ async function handleAgentProfileUpdate(req: Request, id: string): Promise<Respo
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
 
-  const profile = agentProfileStore.update(id, parsed.data);
+  const profile =
+    id === "default"
+      ? agentProfileStore.updateDefault(DEFAULT_AGENT_PROFILE, parsed.data)
+      : agentProfileStore.update(id, parsed.data);
   if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json(profile);
+}
+
+function handleAgentProfileReset(req: Request, id: string): Response {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  if (id !== "default") {
+    return Response.json({ error: "Only the default profile can be reset" }, { status: 400 });
+  }
+
+  agentProfileStore.resetDefault();
+  return Response.json(DEFAULT_AGENT_PROFILE);
 }
 
 function handleAgentProfileDelete(req: Request, id: string): Response {
   if (req.method !== "DELETE") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  if (id === "default") {
+    return Response.json({ error: "The default agent profile cannot be deleted" }, { status: 400 });
+  }
 
   const deleted = agentProfileStore.delete(id);
   if (!deleted) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json({ ok: true });
+}
+
+function skillRegistryForUrl(req: Request) {
+  const url = new URL(req.url);
+  const workspaceRoot = url.searchParams.get("workspaceRoot") ?? undefined;
+  return createSkillRegistry(workspaceRoot ? { workspaceRoot } : {});
+}
+
+async function handleSkillList(req: Request): Promise<Response> {
+  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+  try {
+    const registry = skillRegistryForUrl(req);
+    return Response.json({ skills: await registry.listSkills() });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleSkillGet(req: Request, id: string): Promise<Response> {
+  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+  try {
+    const registry = skillRegistryForUrl(req);
+    return Response.json(await registry.loadSkill(decodeURIComponent(id)));
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 404 }
+    );
+  }
+}
+
+async function handleTaskSkillCreate(req: Request, taskId: string): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const skillId = typeof input.skillId === "string" ? input.skillId : "";
+  if (!skillId) return Response.json({ error: "skillId is required" }, { status: 400 });
+
+  const task = taskStore.getTask(taskId);
+  if (!task) return Response.json({ error: "Unknown task" }, { status: 404 });
+  try {
+    const registry = createSkillRegistry({ workspaceRoot: task.workspaceRoot });
+    const allowedSkillIds = allowedSkillIdsForAgent(task.agentId);
+    const detail = await registry.loadSkill(skillId, { allowedSkillIds });
+    const updated = taskStore.addActiveSkill(taskId, {
+      skillId: detail.id,
+      name: detail.name,
+      source: detail.source,
+      ...(detail.externalProvider ? { externalProvider: detail.externalProvider } : {}),
+    });
+    return Response.json(updated);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 }
+    );
+  }
+}
+
+function handleTaskSkillDelete(req: Request, taskId: string, skillId: string): Response {
+  if (req.method !== "DELETE") return new Response("Method Not Allowed", { status: 405 });
+  const updated = taskStore.removeActiveSkill(taskId, decodeURIComponent(skillId));
+  if (!updated) return Response.json({ error: "Unknown task" }, { status: 404 });
+  return Response.json(updated);
 }
 
 const server = Bun.serve({
@@ -1072,9 +1244,25 @@ const server = Bun.serve({
       return handleTaskCreate(req);
     }
 
+    if (pathname === "/skills") {
+      return handleSkillList(req);
+    }
+
+    const skillMatch = pathname.match(/^\/skills\/([^/]+)$/);
+    const skillId = skillMatch?.[1];
+    if (skillId) {
+      return handleSkillGet(req, skillId);
+    }
+
     if (pathname === "/agent-profiles") {
       if (req.method === "GET") return handleAgentProfileList(req);
       return handleAgentProfileCreate(req);
+    }
+
+    const agentProfileResetMatch = pathname.match(/^\/agent-profiles\/([^/]+)\/reset$/);
+    const resetAgentProfileId = agentProfileResetMatch?.[1];
+    if (resetAgentProfileId) {
+      return handleAgentProfileReset(req, resetAgentProfileId);
     }
 
     const agentProfileMatch = pathname.match(/^\/agent-profiles\/([^/]+)$/);
@@ -1115,6 +1303,23 @@ const server = Bun.serve({
     const taskTurnTaskId = taskTurnMatch?.[1];
     if (taskTurnTaskId) {
       return handleTaskCreateTurn(req, taskTurnTaskId);
+    }
+
+    const taskSkillMatch = pathname.match(/^\/tasks\/([^/]+)\/skills$/);
+    const taskSkillTaskId = taskSkillMatch?.[1];
+    if (taskSkillTaskId) {
+      return handleTaskSkillCreate(req, decodeURIComponent(taskSkillTaskId));
+    }
+
+    const taskSkillDeleteMatch = pathname.match(/^\/tasks\/([^/]+)\/skills\/([^/]+)$/);
+    const taskSkillDeleteTaskId = taskSkillDeleteMatch?.[1];
+    const taskSkillDeleteSkillId = taskSkillDeleteMatch?.[2];
+    if (taskSkillDeleteTaskId && taskSkillDeleteSkillId) {
+      return handleTaskSkillDelete(
+        req,
+        decodeURIComponent(taskSkillDeleteTaskId),
+        taskSkillDeleteSkillId
+      );
     }
 
     const taskTodoMatch = pathname.match(/^\/tasks\/([^/]+)\/todo$/);

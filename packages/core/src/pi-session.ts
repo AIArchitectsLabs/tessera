@@ -12,6 +12,9 @@ import type {
   AgentProviderConfig,
   AgentRuntimeContext,
   ShellToolCall,
+  SkillDetail,
+  SkillSummary,
+  TaskSkillActivation,
   TaskTodo,
   TodoOperation,
 } from "@tessera/contracts";
@@ -69,6 +72,12 @@ export interface RunPiTaskTurnOptions {
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
   shell?: ShellExecutor;
+  skillRuntime?: {
+    activeSkills?: TaskSkillActivation[];
+    allowedSkillIds?: string[];
+    listSkills(): Promise<SkillSummary[]>;
+    loadSkill(skillId: string): Promise<SkillDetail>;
+  };
   taskRuntime?: {
     applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
   };
@@ -207,6 +216,7 @@ function buildPrompt(
   prompt: string,
   options: {
     agentInstructions?: string;
+    activeSkillContent?: string;
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
   }
 ): string {
@@ -217,6 +227,10 @@ function buildPrompt(
   // always sees our business-oriented framing regardless of the SDK system prompt.
   const identity = [TESSERA_SYSTEM_PROMPT, options.agentInstructions].filter(Boolean).join("\n\n");
   if (identity) sections.push(identity);
+
+  if (options.activeSkillContent) {
+    sections.push(options.activeSkillContent);
+  }
 
   if (conversationHistory && conversationHistory.length > 0) {
     const lines = conversationHistory
@@ -252,9 +266,74 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Web research guidance:\nWhen the user asks you to search the web, check current online information, or fetch the contents of a public URL, use the shell tool early. Prefer `web-search search ...` for research queries and `web-fetch fetch <url>` for specific pages."
       : "",
+    "Skill guidance:\nUse skill_list to discover enabled procedural skills and skill_load to load a specific skill when it would materially improve the work. Active task skills are already included in this prompt and should be followed when relevant.",
   ].filter(Boolean);
 
   return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+function createSkillToolDefinitions(
+  skillRuntime?: RunPiTaskTurnOptions["skillRuntime"]
+): ToolDefinition[] {
+  if (!skillRuntime) return [];
+
+  return [
+    defineTool({
+      name: "skill_list",
+      label: "List Skills",
+      description: "List procedural skills enabled for this agent and task.",
+      promptSnippet: "skill_list: list enabled procedural skills.",
+      parameters: Type.Object({}),
+      async execute() {
+        const skills = await skillRuntime.listSkills();
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ skills }),
+            },
+          ],
+          details: { skills },
+        };
+      },
+    }),
+    defineTool({
+      name: "skill_load",
+      label: "Load Skill",
+      description: "Load the full instruction content for one enabled skill.",
+      promptSnippet: "skill_load: load full instructions for a specific enabled skill.",
+      parameters: Type.Object({
+        skillId: Type.String(),
+      }),
+      async execute(_toolCallId, params) {
+        const input = params as { skillId?: string };
+        if (!input.skillId) throw new Error("skillId is required");
+        const skill = await skillRuntime.loadSkill(input.skillId);
+        return {
+          content: [
+            {
+              type: "text",
+              text: skill.content,
+            },
+          ],
+          details: { skill },
+        };
+      },
+    }),
+  ];
+}
+
+async function activeSkillContent(
+  skillRuntime?: RunPiTaskTurnOptions["skillRuntime"]
+): Promise<string | undefined> {
+  if (!skillRuntime?.activeSkills || skillRuntime.activeSkills.length === 0) return undefined;
+  const sections: string[] = [];
+  for (const active of skillRuntime.activeSkills) {
+    const skill = await skillRuntime.loadSkill(active.skillId).catch(() => undefined);
+    if (!skill) continue;
+    sections.push(`Active skill: ${skill.name}\n${skill.content}`);
+  }
+  return sections.length > 0 ? `Active task skills:\n\n${sections.join("\n\n")}` : undefined;
 }
 
 function createShellToolDefinition(shell?: ShellExecutor): ToolDefinition[] {
@@ -309,9 +388,10 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   });
   const taskTools = createTaskToolDefinitions(options.taskRuntime);
   const shellTools = createShellToolDefinition(options.shell);
+  const skillTools = createSkillToolDefinitions(options.skillRuntime);
   const runtime =
     options.runtime ?? (options.agent ? compileAgentRuntimeContext(options.agent) : undefined);
-  const toolDefinitions = [...allTools, ...taskTools, ...shellTools];
+  const toolDefinitions = [...allTools, ...taskTools, ...shellTools, ...skillTools];
   const allowedTools = new Set(
     runtime?.toolPolicy.allowedTools ?? toolDefinitions.map((tool) => tool.name)
   );
@@ -332,6 +412,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   const agentInstructions = buildAgentInstructions(options.agent, runtime, {
     hasTaskChecklistTool: taskTools.some((tool) => tool.name === "todo"),
   });
+  const activeSkills = await activeSkillContent(options.skillRuntime);
 
   let text = "";
   let finalizedText = "";
@@ -389,6 +470,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     await session.prompt(
       buildPrompt(options.prompt, {
         ...(agentInstructions ? { agentInstructions } : {}),
+        ...(activeSkills ? { activeSkillContent: activeSkills } : {}),
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),

@@ -8,6 +8,7 @@ import type {
   ClarifyResponse,
   TaskArtifact,
   TaskDetail as TaskDetailType,
+  TaskSkillActivation,
   TaskSummary,
   TaskTurn,
   TodoItemStatus,
@@ -36,6 +37,7 @@ interface TaskDetailProps {
   onCreateTask: (initialInstruction: string, agentId: string, agentLabel: string) => Promise<void>;
   onCreateTurn: (content: string) => Promise<void>;
   onSelectTask: (taskId: string) => void;
+  onSkillRemove: (skillId: string) => Promise<void>;
   onTodoUpdate: (operation: TodoOperation) => Promise<void>;
   sendingTurn: boolean;
   task: TaskDetailType | null;
@@ -71,6 +73,7 @@ export function TaskDetail({
   onCreateTask,
   onCreateTurn,
   onSelectTask,
+  onSkillRemove,
   onTodoUpdate,
   sendingTurn,
   task,
@@ -292,7 +295,12 @@ export function TaskDetail({
         </div>
 
         {/* Right-side detail pane */}
-        <TaskSidePane task={task} workspaceRoot={workspaceRoot} onTodoUpdate={onTodoUpdate} />
+        <TaskSidePane
+          task={task}
+          workspaceRoot={workspaceRoot}
+          onSkillRemove={onSkillRemove}
+          onTodoUpdate={onTodoUpdate}
+        />
       </div>
 
       {task.clarify && <ClarifyDialog clarify={task.clarify} onSubmit={onClarifyResolve} />}
@@ -381,26 +389,6 @@ function TaskComposer({
                     <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       Agents
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedAgentId("default");
-                        setPopoverOpen(false);
-                      }}
-                      className={cn(
-                        "w-full text-left px-2 py-1.5 text-sm rounded-sm flex items-center justify-between",
-                        selectedAgentId === "default"
-                          ? "bg-secondary text-foreground"
-                          : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      <span>Tessera</span>
-                      {selectedAgentId === "default" && (
-                        <span className="text-xs bg-background rounded px-1 border border-border">
-                          Default
-                        </span>
-                      )}
-                    </button>
                     {agents.map((agent) => (
                       <button
                         key={agent.id}
@@ -419,7 +407,7 @@ function TaskComposer({
                         <span className="truncate">{agent.name}</span>
                         {selectedAgentId === agent.id && (
                           <span className="text-xs bg-background rounded px-1 border border-border shrink-0">
-                            Selected
+                            {agent.id === "default" ? "Default" : "Selected"}
                           </span>
                         )}
                       </button>
@@ -511,10 +499,12 @@ function AgentInfoPopover({
 function TaskSidePane({
   task,
   workspaceRoot,
+  onSkillRemove,
   onTodoUpdate,
 }: {
   task: TaskDetailType;
   workspaceRoot: string | null;
+  onSkillRemove: (skillId: string) => Promise<void>;
   onTodoUpdate: (operation: TodoOperation) => Promise<void>;
 }) {
   const [progressOpen, setProgressOpen] = useState(true);
@@ -641,6 +631,7 @@ function TaskSidePane({
                 </div>
               ))}
             </div>
+            <ActiveSkills skills={task.activeSkills} onRemove={onSkillRemove} />
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">
@@ -696,6 +687,54 @@ function TaskSidePane({
         )}
       </SidePaneSection>
     </aside>
+  );
+}
+
+function activeSkillSourceLabel(skill: TaskSkillActivation): string {
+  if (skill.source === "external") {
+    return skill.externalProvider === "claude-code" ? "Claude Code" : "Codex";
+  }
+  if (skill.source === "curated") return "Built-in";
+  if (skill.source === "workspace") return "Workspace";
+  return "User";
+}
+
+function ActiveSkills({
+  skills,
+  onRemove,
+}: {
+  skills: TaskSkillActivation[];
+  onRemove: (skillId: string) => Promise<void>;
+}) {
+  if (skills.length === 0) return null;
+
+  return (
+    <div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-foreground">
+        Active Skills
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {skills.map((skill) => (
+          <span
+            key={skill.skillId}
+            className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+          >
+            <span className="truncate">{skill.name}</span>
+            <span className="text-[10px] text-muted-foreground">
+              {activeSkillSourceLabel(skill)}
+            </span>
+            <button
+              type="button"
+              className="ml-1 text-muted-foreground hover:text-foreground"
+              onClick={() => void onRemove(skill.skillId)}
+              aria-label={`Remove ${skill.name}`}
+            >
+              x
+            </button>
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

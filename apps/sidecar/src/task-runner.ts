@@ -12,6 +12,7 @@ import type {
 import {
   type PiTaskTurnResult,
   type WorkspaceCliExecutor,
+  createSkillRegistry,
   createSpawnShellExecutor,
   runPiTaskTurn,
 } from "@tessera/core";
@@ -35,6 +36,12 @@ export interface RunTaskTurnOptions {
         subcommand: string;
         args: string[];
       }): Promise<unknown>;
+    };
+    skillRuntime?: {
+      activeSkills?: NonNullable<ReturnType<TaskStore["getTask"]>>["activeSkills"];
+      allowedSkillIds?: string[];
+      listSkills(): Promise<unknown[]>;
+      loadSkill(skillId: string): Promise<unknown>;
     };
     taskRuntime?: {
       applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
@@ -166,6 +173,13 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     });
     await sleep(delayMs);
 
+    const agent = opts.execution?.agent;
+    const activeSkills = store.getTask(taskId)?.activeSkills ?? [];
+    const allowedSkillIds = Array.from(
+      new Set([...(agent?.skills ?? []), ...activeSkills.map((skill) => skill.skillId)])
+    );
+    const registry = createSkillRegistry({ workspaceRoot: task.workspaceRoot });
+
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
       ...(conversationHistory.length > 0 ? { conversationHistory } : {}),
@@ -199,6 +213,16 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       prompt: userTurn.content,
       provider,
       ...(shell ? { shell } : {}),
+      skillRuntime: {
+        activeSkills,
+        allowedSkillIds,
+        listSkills() {
+          return registry.listSkills({ allowedSkillIds });
+        },
+        loadSkill(skillId) {
+          return registry.loadSkill(skillId, { allowedSkillIds });
+        },
+      },
       taskRuntime: {
         async applyTodo(operation) {
           const task = store.updateTodo(taskId, operation);

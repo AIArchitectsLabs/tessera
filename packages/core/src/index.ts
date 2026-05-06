@@ -52,6 +52,13 @@ export {
   resolveTaskExecutionConfig,
 } from "./task-model-resolution.js";
 export {
+  createSkillRegistry,
+  resolveSlashSkillInvocation,
+  type SkillEligibility,
+  type SkillRegistry,
+  type SkillRegistryOptions,
+} from "./skills.js";
+export {
   DEMO_WORKFLOW,
   loadWorkflowDefinition,
   resumeWorkflowRun,

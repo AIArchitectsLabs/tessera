@@ -908,6 +908,53 @@ export const TaskTodoSchema = z.object({
 });
 export type TaskTodo = z.infer<typeof TaskTodoSchema>;
 
+export const SkillSlugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
+  message: "Skill names must be lowercase slugs",
+});
+export const SkillIdSchema = z.string().regex(/^(?:[a-z0-9][a-z0-9-]*:)?[a-z0-9][a-z0-9-]*$/, {
+  message: "Skill ids must be lowercase slugs, optionally prefixed by provider",
+});
+export const SkillSourceSchema = z.enum(["curated", "user", "workspace", "external"]);
+export type SkillSource = z.infer<typeof SkillSourceSchema>;
+export const ExternalSkillProviderSchema = z.enum(["claude-code", "codex"]);
+export type ExternalSkillProvider = z.infer<typeof ExternalSkillProviderSchema>;
+
+export const SkillSummarySchema = z.object({
+  id: SkillIdSchema,
+  name: SkillSlugSchema,
+  description: z.string().min(1),
+  source: SkillSourceSchema,
+  externalProvider: ExternalSkillProviderSchema.optional(),
+  path: z.string().min(1).optional(),
+  updatedAt: z.string().datetime().optional(),
+  conflict: z
+    .object({
+      shadowedSources: z.array(SkillSourceSchema),
+    })
+    .optional(),
+});
+export type SkillSummary = z.infer<typeof SkillSummarySchema>;
+
+export const SkillDetailSchema = SkillSummarySchema.extend({
+  content: z.string().min(1),
+});
+export type SkillDetail = z.infer<typeof SkillDetailSchema>;
+
+export const SkillListResultSchema = z.object({
+  skills: z.array(SkillSummarySchema),
+});
+export type SkillListResult = z.infer<typeof SkillListResultSchema>;
+
+export const TaskSkillActivationSchema = z.object({
+  skillId: SkillIdSchema,
+  name: SkillSlugSchema,
+  source: SkillSourceSchema,
+  externalProvider: ExternalSkillProviderSchema.optional(),
+  activatedAt: z.string().datetime(),
+  activatedByTurnId: z.string().min(1).optional(),
+});
+export type TaskSkillActivation = z.infer<typeof TaskSkillActivationSchema>;
+
 export const TaskSummarySchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1),
@@ -952,6 +999,7 @@ export const TaskDetailSchema = TaskSummarySchema.extend({
   clarify: ClarifyRequestSchema.optional(),
   notifications: z.array(NotifyRequestSchema).default([]),
   auditRecords: z.array(AuditRecordSchema).default([]),
+  activeSkills: z.array(TaskSkillActivationSchema).default([]),
   turns: z.array(TaskTurnSchema),
   artifacts: z.array(TaskArtifactSchema),
 });
@@ -1040,6 +1088,7 @@ export const AgentProfileSchema = z
     instructions: z.string().default(""),
     soul: z.string().default(""),
     userContext: z.string().default(""),
+    skills: z.array(SkillIdSchema).default([]),
     toolPolicyPreset: ToolPolicyPresetSchema.default("workspace_editor"),
     memoryDefaults: z.string().default(""),
     createdAt: z.string().datetime(),
@@ -1056,6 +1105,7 @@ export const AgentProfileCreateRequestSchema = z.object({
   instructions: z.string().default(""),
   soul: z.string().default(""),
   userContext: z.string().default(""),
+  skills: z.array(SkillIdSchema).default([]),
   toolPolicyPreset: ToolPolicyPresetSchema.default("workspace_editor"),
   memoryDefaults: z.string().default(""),
 });
@@ -1069,6 +1119,7 @@ export const AgentProfileUpdateRequestSchema = z.object({
   soul: z.string().optional(),
   templateId: z.string().min(1).optional(),
   userContext: z.string().optional(),
+  skills: z.array(SkillIdSchema).optional(),
   toolPolicyPreset: ToolPolicyPresetSchema.optional(),
   memoryDefaults: z.string().optional(),
 });
@@ -1208,7 +1259,15 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Search and fetch public web pages",
       "Manage task checklist",
     ],
-    allowedTools: ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"],
+    allowedTools: [
+      "workspace_read",
+      "workspace_list",
+      "workspace_search",
+      "shell",
+      "todo",
+      "skill_list",
+      "skill_load",
+    ],
   },
   workspace_editor: {
     label: "Workspace editor",
@@ -1232,6 +1291,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_write",
       "workspace_edit",
       "todo",
+      "skill_list",
+      "skill_load",
     ],
   },
   elevated_with_approval: {
@@ -1256,6 +1317,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_write",
       "workspace_edit",
       "todo",
+      "skill_list",
+      "skill_load",
     ],
   },
 };
@@ -1286,6 +1349,11 @@ function templateSummary(templateId?: string): string | undefined {
 export function compileAgentRuntimeContext(profile: AgentProfile): AgentRuntimeContext {
   const toolPolicy = resolveToolPolicyPreset(profile.toolPolicyPreset);
   const modelSource = profile.model.mode === "override" ? "profile_override" : "global";
+  const profileSkills = profile.skills ?? [];
+  const skillSummary =
+    profileSkills.length === 0
+      ? "No profile skills enabled."
+      : `${profileSkills.length} profile skill${profileSkills.length === 1 ? "" : "s"} enabled.`;
 
   return AgentRuntimeContextSchema.parse({
     profileId: profile.id,
@@ -1302,8 +1370,8 @@ export function compileAgentRuntimeContext(profile: AgentProfile): AgentRuntimeC
     toolPolicy,
     compiledSummary:
       modelSource === "profile_override"
-        ? `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode} and overrides the model configuration.`
-        : `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode} and inherits the workspace model settings.`,
+        ? `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode}, overrides the model configuration, and has ${skillSummary}`
+        : `${profile.name} uses ${toolPolicy.label} access with approval mode ${toolPolicy.approvalMode}, inherits the workspace model settings, and has ${skillSummary}`,
   });
 }
 
@@ -1317,6 +1385,7 @@ export const AgentProfileTemplateSchema = z.object({
     instructions: z.string(),
     soul: z.string(),
     userContext: z.string(),
+    skills: z.array(SkillIdSchema).default([]),
     toolPolicyPreset: ToolPolicyPresetSchema,
     memoryDefaults: z.string(),
   }),
@@ -1336,6 +1405,7 @@ export const AGENT_PROFILE_TEMPLATES: AgentProfileTemplate[] = [
       soul: "Direct, calm, and concise. Avoid filler and unnecessary flourish.",
       userContext:
         "The user is a business operator or founder who wants practical output, not a tutorial.",
+      skills: [],
       toolPolicyPreset: "workspace_editor",
       memoryDefaults:
         "Reuse workspace terminology, active project names, and known deliverable formats when they are already established.",
@@ -1353,6 +1423,7 @@ export const AGENT_PROFILE_TEMPLATES: AgentProfileTemplate[] = [
       soul: "Analytical, measured, and precise.",
       userContext:
         "The user needs synthesis they can use in strategy documents, memos, or stakeholder updates.",
+      skills: [],
       toolPolicyPreset: "read_only",
       memoryDefaults:
         "Favor prior research notes, customer language, and recurring business questions already present in the workspace.",
@@ -1370,6 +1441,7 @@ export const AGENT_PROFILE_TEMPLATES: AgentProfileTemplate[] = [
       soul: "Senior, polished, and brief.",
       userContext:
         "The user expects an experienced partner who can draft, revise, and package work at executive quality.",
+      skills: [],
       toolPolicyPreset: "elevated_with_approval",
       memoryDefaults:
         "Preserve the user's established voice, preferred document structures, and recurring stakeholder context when available.",

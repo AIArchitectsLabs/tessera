@@ -34,6 +34,14 @@ describe("resolveTaskExecutionConfig", () => {
     });
     expect(result.credential?.apiKey).toBe("sk-openai");
     expect(result.runtime.toolPolicy.allowedTools).toContain("workspace_write");
+    expect(result.agent.skills).toEqual([
+      "planning",
+      "research-synthesis",
+      "document-drafting",
+      "workspace-delivery",
+      "decision-briefs",
+    ]);
+    expect(result.runtime.compiledSummary).toContain("5 profile skills enabled");
     expect("credential" in result.agent).toBe(false);
   });
 
@@ -52,6 +60,7 @@ describe("resolveTaskExecutionConfig", () => {
       instructions: "",
       soul: "",
       userContext: "",
+      skills: [],
       toolPolicyPreset: "read_only",
       memoryDefaults: "",
       createdAt: now,

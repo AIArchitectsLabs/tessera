@@ -23,6 +23,7 @@ const baseDetail: TaskDetail = {
   updatedAt: "2026-05-03T00:00:03.000Z",
   notifications: [],
   auditRecords: [],
+  activeSkills: [],
   turns: [baseTurn],
   artifacts: [],
 };

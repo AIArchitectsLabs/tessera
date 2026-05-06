@@ -62,10 +62,12 @@ describe("agent profile contracts", () => {
   });
 
   test("resolves tool policy presets into concrete capabilities", () => {
-    expect(resolveToolPolicyPreset("read_only")).toMatchObject({
-      approvalMode: "never",
-      allowedTools: ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"],
-    });
+    const readOnly = resolveToolPolicyPreset("read_only");
+    expect(readOnly.approvalMode).toBe("never");
+    expect(readOnly.allowedTools).toContain("workspace_read");
+    expect(readOnly.allowedTools).toContain("todo");
+    expect(readOnly.allowedTools).toContain("skill_list");
+    expect(readOnly.allowedTools).toContain("skill_load");
     expect(resolveToolPolicyPreset("elevated_with_approval")).toMatchObject({
       approvalMode: "ask",
     });
@@ -80,6 +82,7 @@ describe("agent profile contracts", () => {
       instructions: "Drive concrete next steps.",
       soul: "Brief and direct.",
       userContext: "Supports business operators.",
+      skills: ["planning", "research-synthesis"],
       toolPolicyPreset: "workspace_editor",
       memoryDefaults: "Reuse prior meeting doc formats.",
       createdAt: "2026-05-02T00:00:00.000Z",
@@ -91,6 +94,7 @@ describe("agent profile contracts", () => {
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_write");
     expect(runtime.toolPolicy.allowedTools).toContain("todo");
     expect(runtime.sectionSummaries.instructions).toContain("Drive concrete next steps");
+    expect(runtime.compiledSummary).toContain("2 profile skills enabled");
   });
 
   test("exposes built-in agent profile templates", () => {

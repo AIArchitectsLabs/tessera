@@ -139,4 +139,34 @@ describe("task store", () => {
       store.close();
     }
   });
+
+  test("persists active task skills in task details", () => {
+    const store = createTaskStore(tempDbPath("tasks.sqlite"));
+    try {
+      const task = store.createTask({
+        workspaceRoot: "/workspace/acme",
+        initialInstruction: "Prepare weekly report",
+      });
+
+      const active = store.addActiveSkill(task.id, {
+        skillId: "planning",
+        name: "planning",
+        source: "curated",
+        activatedByTurnId: "turn-1",
+      });
+      expect(active?.activeSkills).toMatchObject([
+        {
+          skillId: "planning",
+          name: "planning",
+          source: "curated",
+          activatedByTurnId: "turn-1",
+        },
+      ]);
+
+      expect(store.getTask(task.id)?.activeSkills).toHaveLength(1);
+      expect(store.removeActiveSkill(task.id, "planning")?.activeSkills).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
 });

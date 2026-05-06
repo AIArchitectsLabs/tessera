@@ -40,6 +40,7 @@ describe("taskSummaries", () => {
       description: "desc",
       notifications: [],
       auditRecords: [],
+      activeSkills: [],
       turns: [],
       artifacts: [],
       agentContext: undefined,

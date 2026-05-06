@@ -1,0 +1,152 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtemp, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSkillRegistry, resolveSlashSkillInvocation } from "./skills.js";
+
+const tempDirs: string[] = [];
+
+async function tempRoot(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "tessera-skills-"));
+  tempDirs.push(dir);
+  return realpath(dir);
+}
+
+function writeSkill(root: string, slug: string, description = `Use ${slug}.`, body = "Do work.") {
+  const dir = join(root, slug);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "SKILL.md"),
+    `---\nname: ${slug}\ndescription: ${description}\n---\n\n# ${slug}\n\n${body}\n`
+  );
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("skill registry", () => {
+  test("ships the compact curated business-operator skill core", async () => {
+    const registry = createSkillRegistry();
+    const skills = await registry.listSkills();
+    const curatedSkills = skills.filter((skill) => skill.source === "curated");
+
+    expect(curatedSkills.map((skill) => skill.id)).toEqual([
+      "decision-briefs",
+      "document-drafting",
+      "planning",
+      "research-synthesis",
+      "workspace-delivery",
+    ]);
+    await expect(registry.loadSkill("workspace-delivery")).resolves.toMatchObject({
+      source: "curated",
+      content: expect.stringContaining("create or update concrete files"),
+    });
+    await expect(registry.loadSkill("decision-briefs")).resolves.toMatchObject({
+      source: "curated",
+      content: expect.stringContaining("state a recommendation"),
+    });
+  });
+
+  test("discovers owned skills with workspace precedence and conflict metadata", async () => {
+    const curatedRoot = await tempRoot();
+    const userRoot = await tempRoot();
+    const workspaceRoot = await tempRoot();
+    const workspaceSkillsRoot = join(workspaceRoot, ".tessera", "skills");
+    writeSkill(curatedRoot, "planning", "Curated planning.");
+    writeSkill(userRoot, "planning", "User planning.");
+    writeSkill(workspaceSkillsRoot, "planning", "Workspace planning.");
+
+    const registry = createSkillRegistry({ curatedRoot, userRoot, workspaceRoot });
+    const skills = await registry.listSkills();
+
+    expect(skills).toHaveLength(1);
+    expect(skills[0]).toMatchObject({
+      id: "planning",
+      name: "planning",
+      description: "Workspace planning.",
+      source: "workspace",
+      conflict: { shadowedSources: ["user", "curated"] },
+    });
+  });
+
+  test("discovers Claude Code and Codex skills as external opt-in candidates", async () => {
+    const curatedRoot = await tempRoot();
+    const claudeUserRoot = await tempRoot();
+    const codexUserRoot = await tempRoot();
+    writeSkill(curatedRoot, "planning", "Curated planning.");
+    writeSkill(claudeUserRoot, "pdf-workflow", "Claude PDF workflow.");
+    writeSkill(codexUserRoot, "review", "Codex review workflow.");
+
+    const registry = createSkillRegistry({ curatedRoot, claudeUserRoot, codexUserRoot });
+    const skills = await registry.listSkills();
+
+    expect(skills.map((skill) => [skill.id, skill.source, skill.externalProvider])).toEqual([
+      ["planning", "curated", undefined],
+      ["claude-code:pdf-workflow", "external", "claude-code"],
+      ["codex:review", "external", "codex"],
+    ]);
+  });
+
+  test("loads only eligible skills for an agent and blocks path escape", async () => {
+    const curatedRoot = await tempRoot();
+    const outsideRoot = await tempRoot();
+    writeSkill(curatedRoot, "planning", "Curated planning.", "Plan in phases.");
+    writeSkill(outsideRoot, "escape", "Escaped skill.");
+    symlinkSync(join(outsideRoot, "escape"), join(curatedRoot, "escape"));
+
+    const registry = createSkillRegistry({ curatedRoot });
+
+    await expect(
+      registry.loadSkill("planning", { allowedSkillIds: ["planning"] })
+    ).resolves.toMatchObject({
+      id: "planning",
+      content: expect.stringContaining("Plan in phases."),
+    });
+    await expect(registry.loadSkill("planning", { allowedSkillIds: [] })).rejects.toThrow(
+      "not enabled"
+    );
+    await expect(registry.loadSkill("escape", { allowedSkillIds: ["escape"] })).rejects.toThrow(
+      "outside"
+    );
+  });
+
+  test("parses slash invocations and leaves unknown direct slash text alone", async () => {
+    const curatedRoot = await tempRoot();
+    writeSkill(curatedRoot, "planning", "Curated planning.");
+    const registry = createSkillRegistry({ curatedRoot });
+
+    await expect(
+      resolveSlashSkillInvocation("/planning draft the launch plan", registry, {
+        allowedSkillIds: ["planning"],
+      })
+    ).resolves.toMatchObject({
+      skillId: "planning",
+      instruction: "draft the launch plan",
+    });
+
+    await expect(
+      resolveSlashSkillInvocation("/skill planning", registry, {
+        allowedSkillIds: ["planning"],
+      })
+    ).resolves.toMatchObject({
+      skillId: "planning",
+      instruction: "Use the planning skill for this task.",
+    });
+
+    await expect(
+      resolveSlashSkillInvocation("/skill missing do work", registry, {
+        allowedSkillIds: ["planning"],
+      })
+    ).rejects.toThrow("Unknown skill");
+
+    await expect(
+      resolveSlashSkillInvocation("/not-a-skill do work", registry, {
+        allowedSkillIds: ["planning"],
+      })
+    ).resolves.toBeUndefined();
+  });
+});

@@ -299,21 +299,6 @@ fn model_connection_test_body(
     body
 }
 
-fn default_agent_profile_json() -> serde_json::Value {
-    serde_json::json!({
-        "id": "default",
-        "name": "Tessera",
-        "model": { "mode": "default" },
-        "instructions": "You are Tessera's workspace agent. Work inside the selected workspace.",
-        "soul": "",
-        "userContext": "You are helping a business user inside their current workspace.",
-        "toolPolicyPreset": "workspace_editor",
-        "memoryDefaults": "",
-        "createdAt": "1970-01-01T00:00:00.000Z",
-        "updatedAt": "1970-01-01T00:00:00.000Z"
-    })
-}
-
 fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
     match preset {
         "read_only" => serde_json::json!({
@@ -322,7 +307,7 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "approvalMode": "never",
             "summary": "Can inspect and search the workspace, research the public web, and maintain the task checklist, but cannot make file changes.",
             "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "todo"]
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "todo", "skill_list", "skill_load"]
         }),
         "elevated_with_approval" => serde_json::json!({
             "preset": "elevated_with_approval",
@@ -330,7 +315,7 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "approvalMode": "ask",
             "summary": "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
             "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo"]
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load"]
         }),
         _ => serde_json::json!({
             "preset": "workspace_editor",
@@ -338,7 +323,7 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "approvalMode": "never",
             "summary": "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
             "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo"]
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load"]
         }),
     }
 }
@@ -379,6 +364,16 @@ fn compile_agent_runtime_json(agent: &serde_json::Value) -> serde_json::Value {
         .get("approvalMode")
         .and_then(|value| value.as_str())
         .unwrap_or("never");
+    let skill_count = agent
+        .get("skills")
+        .and_then(|value| value.as_array())
+        .map(|skills| skills.len())
+        .unwrap_or(0);
+    let skill_summary = match skill_count {
+        0 => "No profile skills enabled.".to_string(),
+        1 => "1 profile skill enabled.".to_string(),
+        count => format!("{} profile skills enabled.", count),
+    };
 
     let mut runtime = serde_json::json!({
         "profileId": agent.get("id").and_then(|value| value.as_str()).unwrap_or("default"),
@@ -393,17 +388,19 @@ fn compile_agent_runtime_json(agent: &serde_json::Value) -> serde_json::Value {
         "toolPolicy": tool_policy,
         "compiledSummary": if model_source == "profile_override" {
             format!(
-                "{} uses {} access with approval mode {} and overrides the model configuration.",
+                "{} uses {} access with approval mode {}, overrides the model configuration, and has {}",
                 agent.get("name").and_then(|value| value.as_str()).unwrap_or("Tessera"),
                 label,
-                approval_mode
+                approval_mode,
+                skill_summary
             )
         } else {
             format!(
-                "{} uses {} access with approval mode {} and inherits the workspace model settings.",
+                "{} uses {} access with approval mode {}, inherits the workspace model settings, and has {}",
                 agent.get("name").and_then(|value| value.as_str()).unwrap_or("Tessera"),
                 label,
-                approval_mode
+                approval_mode,
+                skill_summary
             )
         }
     });
@@ -433,15 +430,11 @@ async fn resolve_task_agent_json(
     app: &AppHandle,
     agent_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    match agent_id {
-        Some(id) if id != "default" => {
-            let handle = app.state::<SidecarHandle>();
-            let path = format!("/agent-profiles/{}", percent_encode(id));
-            let json = handle.get(&path).await.map_err(|e| e.to_string())?;
-            serde_json::from_str(&json).map_err(|e| e.to_string())
-        }
-        _ => Ok(default_agent_profile_json()),
-    }
+    let id = agent_id.unwrap_or("default");
+    let handle = app.state::<SidecarHandle>();
+    let path = format!("/agent-profiles/{}", percent_encode(id));
+    let json = handle.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
 async fn attach_default_task_execution(
@@ -903,6 +896,83 @@ async fn task_notify(
 }
 
 #[tauri::command]
+async fn skill_list(
+    state: State<'_, SidecarHandle>,
+    workspace_root: Option<String>,
+    agent_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    if let Some(workspace_root) = workspace_root {
+        params.push(format!("workspaceRoot={}", percent_encode(&workspace_root)));
+    }
+    if let Some(agent_id) = agent_id {
+        params.push(format!("agentId={}", percent_encode(&agent_id)));
+    }
+    let path = if params.is_empty() {
+        "/skills".to_string()
+    } else {
+        format!("/skills?{}", params.join("&"))
+    };
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn skill_get(
+    state: State<'_, SidecarHandle>,
+    id: String,
+    workspace_root: Option<String>,
+    agent_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    if let Some(workspace_root) = workspace_root {
+        params.push(format!("workspaceRoot={}", percent_encode(&workspace_root)));
+    }
+    if let Some(agent_id) = agent_id {
+        params.push(format!("agentId={}", percent_encode(&agent_id)));
+    }
+    let path = if params.is_empty() {
+        format!("/skills/{}", percent_encode(&id))
+    } else {
+        format!("/skills/{}?{}", percent_encode(&id), params.join("&"))
+    };
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_skill_add(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/tasks/{}/skills", percent_encode(&task_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn task_skill_remove(
+    state: State<'_, SidecarHandle>,
+    task_id: String,
+    skill_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!(
+        "/tasks/{}/skills/{}",
+        percent_encode(&task_id),
+        percent_encode(&skill_id)
+    );
+    let json = state
+        .request("DELETE", &path, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn model_settings_get(app: AppHandle) -> Result<model_settings::ModelSettingsRead, String> {
     model_settings::read(&app).map_err(|error| error.to_string())
 }
@@ -1233,6 +1303,19 @@ async fn agent_profile_delete(
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn agent_profile_reset(
+    state: State<'_, SidecarHandle>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/agent-profiles/{}/reset", percent_encode(&id));
+    let json = state
+        .post(&path, "{}")
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() {
@@ -1247,6 +1330,7 @@ pub fn run() {
             agent_profile_create,
             agent_profile_update,
             agent_profile_delete,
+            agent_profile_reset,
             inbox_cancel,
             inbox_create,
             inbox_get,
@@ -1262,6 +1346,8 @@ pub fn run() {
             model_settings_get,
             model_settings_save,
             sidecar_ping,
+            skill_get,
+            skill_list,
             task_create,
             task_clarify_request,
             task_clarify_resolve,
@@ -1269,6 +1355,8 @@ pub fn run() {
             task_get,
             task_list,
             task_notify,
+            task_skill_add,
+            task_skill_remove,
             task_subscribe,
             task_todo_apply,
             task_unsubscribe,

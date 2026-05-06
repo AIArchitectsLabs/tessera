@@ -6,6 +6,7 @@ import {
   type AgentProfileCreateRequest,
   AgentProfileSchema,
   type AgentProfileUpdateRequest,
+  SkillIdSchema,
   type ToolPolicyPreset,
 } from "@tessera/contracts";
 
@@ -15,6 +16,8 @@ export interface AgentProfileStore {
   get(id: string): AgentProfile | undefined;
   list(): AgentProfile[];
   update(id: string, patch: AgentProfileUpdateRequest): AgentProfile | undefined;
+  updateDefault(base: AgentProfile, patch: AgentProfileUpdateRequest): AgentProfile;
+  resetDefault(): boolean;
   delete(id: string): boolean;
 }
 
@@ -54,6 +57,18 @@ function legacyToolsToPreset(toolsJson: string): ToolPolicyPreset {
   return hasWrite ? "workspace_editor" : "read_only";
 }
 
+function parseSkills(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => (typeof item === "string" ? item : ""))
+      .filter((item) => SkillIdSchema.safeParse(item).success);
+  } catch {
+    return [];
+  }
+}
+
 function rowToProfile(row: AgentProfileRow): AgentProfile {
   let model: AgentProfile["model"];
   if (row.model_mode === "override" && row.model_provider_json) {
@@ -74,6 +89,7 @@ function rowToProfile(row: AgentProfileRow): AgentProfile {
     instructions: row.instructions ?? "",
     soul: row.soul ?? "",
     userContext: row.user_context ?? "",
+    skills: parseSkills(row.skills_json),
     toolPolicyPreset:
       row.tool_policy_preset === "read_only" ||
       row.tool_policy_preset === "workspace_editor" ||
@@ -123,6 +139,12 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
   if (!profileColumns.some((column) => column.name === "memory_defaults")) {
     db.exec("ALTER TABLE agent_profiles ADD COLUMN memory_defaults TEXT");
   }
+  if (!profileColumns.some((column) => column.name === "skills_json")) {
+    db.exec("ALTER TABLE agent_profiles ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]'");
+  }
+  if (!profileColumns.some((column) => column.name === "tools_json")) {
+    db.exec("ALTER TABLE agent_profiles ADD COLUMN tools_json TEXT NOT NULL DEFAULT '[]'");
+  }
 
   const insertProfile = db.prepare(`
     INSERT INTO agent_profiles (
@@ -160,6 +182,29 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
     return row ? rowToProfile(row) : undefined;
   }
 
+  function insertProfileRow(id: string, profile: AgentProfile): void {
+    const modelProviderJson =
+      profile.model.mode === "override" ? JSON.stringify(profile.model.provider) : null;
+
+    insertProfile.run(
+      id,
+      profile.name.trim(),
+      profile.description ?? null,
+      profile.model.mode,
+      modelProviderJson,
+      profile.templateId ?? null,
+      profile.instructions,
+      profile.soul,
+      profile.userContext,
+      profile.toolPolicyPreset,
+      profile.memoryDefaults,
+      JSON.stringify(profile.skills ?? []),
+      "[]",
+      profile.createdAt,
+      profile.updatedAt
+    );
+  }
+
   return {
     close() {
       db.close();
@@ -184,7 +229,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         input.userContext,
         input.toolPolicyPreset,
         input.memoryDefaults,
-        "[]",
+        input.skills ? JSON.stringify(input.skills) : "[]",
         "[]",
         createdAt,
         createdAt
@@ -221,14 +266,46 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         patch.userContext !== undefined ? patch.userContext : null,
         patch.toolPolicyPreset !== undefined ? patch.toolPolicyPreset : null,
         patch.memoryDefaults !== undefined ? patch.memoryDefaults : null,
-        null,
+        patch.skills !== undefined ? JSON.stringify(patch.skills) : null,
         null,
         nowIso(),
         id
       );
       return get(id);
     },
+    updateDefault(base, patch) {
+      const existing = get("default");
+      if (!existing) {
+        insertProfileRow("default", base);
+      }
+
+      const updated = this.update("default", {
+        description: patch.description,
+        instructions: patch.instructions,
+        soul: patch.soul,
+        userContext: patch.userContext,
+        skills: patch.skills,
+        toolPolicyPreset: patch.toolPolicyPreset,
+        memoryDefaults: patch.memoryDefaults,
+        name: base.name,
+        model: base.model,
+        templateId: base.templateId,
+      });
+      if (!updated) throw new Error("Could not persist default agent profile");
+
+      return AgentProfileSchema.parse({
+        ...updated,
+        id: base.id,
+        name: base.name,
+        model: base.model,
+      });
+    },
+    resetDefault() {
+      const info = deleteProfileRow.run("default");
+      return info.changes > 0;
+    },
     delete(id) {
+      if (id === "default") return false;
       const info = deleteProfileRow.run(id);
       return info.changes > 0;
     },

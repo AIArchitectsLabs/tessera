@@ -264,6 +264,7 @@ describe("runPiTaskTurn", () => {
         instructions: "Write crisp updates.",
         soul: "Calm and direct.",
         userContext: "",
+        skills: [],
         toolPolicyPreset: "elevated_with_approval",
         memoryDefaults: "",
         createdAt: "2026-05-02T00:00:00.000Z",
@@ -301,6 +302,7 @@ describe("runPiTaskTurn", () => {
         instructions: "Write crisp updates.",
         soul: "Calm and direct.",
         userContext: "Support an operations leader.",
+        skills: [],
         toolPolicyPreset: "elevated_with_approval",
         memoryDefaults: "Reuse the weekly update format.",
         createdAt: "2026-05-02T00:00:00.000Z",
@@ -504,6 +506,84 @@ describe("runPiTaskTurn", () => {
         args: ["https://example.com"],
       },
     ]);
+  });
+
+  test("exposes skill tools and preloads active task skills", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const seen: { toolNames?: string[]; loaded?: unknown } = {};
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const skillLoad = factoryOpts.customTools.find((tool) => tool.name === "skill_load");
+      seen.loaded = await skillLoad?.execute(
+        "call-1",
+        { skillId: "planning" },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+      agent: {
+        id: "default",
+        name: "Tessera",
+        model: { mode: "default" },
+        instructions: "",
+        soul: "",
+        userContext: "",
+        skills: ["planning"],
+        toolPolicyPreset: "workspace_editor",
+        memoryDefaults: "",
+        createdAt: "2026-05-05T00:00:00.000Z",
+        updatedAt: "2026-05-05T00:00:00.000Z",
+      },
+      skillRuntime: {
+        allowedSkillIds: ["planning"],
+        activeSkills: [
+          {
+            skillId: "planning",
+            name: "planning",
+            source: "curated",
+            activatedAt: "2026-05-05T00:00:00.000Z",
+          },
+        ],
+        async listSkills() {
+          return [
+            {
+              id: "planning",
+              name: "planning",
+              description: "Plan work.",
+              source: "curated",
+            },
+          ];
+        },
+        async loadSkill(skillId) {
+          return {
+            id: skillId,
+            name: "planning",
+            description: "Plan work.",
+            source: "curated",
+            content: "# Planning\n\nBreak work into verifiable steps.",
+          };
+        },
+      },
+    });
+
+    expect(seen.toolNames).toContain("skill_list");
+    expect(seen.toolNames).toContain("skill_load");
+    expect(seen.loaded).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("Break work") }],
+    });
+    expect(capturedSession?.capturedPrompts[0]).toContain("Active skill: planning");
+    expect(capturedSession?.capturedPrompts[0]).toContain("Break work into verifiable steps.");
   });
 
   test("does not allow approval-gated shell subcommands in task mode", async () => {

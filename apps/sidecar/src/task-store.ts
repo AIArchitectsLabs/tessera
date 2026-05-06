@@ -15,6 +15,8 @@ import {
   type TaskCreateRequest,
   type TaskDetail,
   TaskDetailSchema,
+  type TaskSkillActivation,
+  TaskSkillActivationSchema,
   type TaskStatus,
   type TaskSummary,
   TaskSummarySchema,
@@ -43,6 +45,10 @@ export type CreateTaskInput = Omit<TaskCreateRequest, "agentLabel" | "agentId" |
 };
 
 export interface TaskStore {
+  addActiveSkill(
+    taskId: string,
+    skill: Omit<TaskSkillActivation, "activatedAt">
+  ): TaskDetail | undefined;
   addNotification(taskId: string, notification: NotifyRequest): TaskDetail | undefined;
   appendAuditRecord(taskId: string, auditRecord: AuditRecord): TaskDetail | undefined;
   clearClarify(taskId: string, response: ClarifyResponse): TaskDetail | undefined;
@@ -55,6 +61,7 @@ export interface TaskStore {
   getTask(taskId: string): TaskDetail | undefined;
   getTaskSummary(taskId: string): TaskSummary;
   requestClarify(taskId: string, clarify: ClarifyRequest): TaskDetail | undefined;
+  removeActiveSkill(taskId: string, skillId: string): TaskDetail | undefined;
   getTurn(turnId: string): TaskTurn;
   listTasks(filter: { workspaceRoot: string }): TaskSummary[];
   updateTodo(taskId: string, operation: TodoOperation): TaskDetail | undefined;
@@ -104,6 +111,16 @@ interface ArtifactRow {
   path: string | null;
   content_preview: string | null;
   created_at: string;
+}
+
+interface TaskSkillRow {
+  task_id: string;
+  skill_id: string;
+  name: string;
+  source: TaskSkillActivation["source"];
+  external_provider: TaskSkillActivation["externalProvider"] | null;
+  activated_at: string;
+  activated_by_turn_id: string | null;
 }
 
 function nowIso(): string {
@@ -170,6 +187,17 @@ function rowToArtifact(row: ArtifactRow): TaskArtifact {
     path: row.path ?? undefined,
     contentPreview: row.content_preview ?? undefined,
     createdAt: row.created_at,
+  });
+}
+
+function rowToActiveSkill(row: TaskSkillRow): TaskSkillActivation {
+  return TaskSkillActivationSchema.parse({
+    skillId: row.skill_id,
+    name: row.name,
+    source: row.source,
+    externalProvider: row.external_provider ?? undefined,
+    activatedAt: row.activated_at,
+    activatedByTurnId: row.activated_by_turn_id ?? undefined,
   });
 }
 
@@ -305,6 +333,18 @@ export function createTaskStore(dbPath: string): TaskStore {
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
       FOREIGN KEY (turn_id) REFERENCES task_turns(id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS task_active_skills (
+      task_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      source TEXT NOT NULL,
+      external_provider TEXT,
+      activated_at TEXT NOT NULL,
+      activated_by_turn_id TEXT,
+      PRIMARY KEY (task_id, skill_id),
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    );
   `);
 
   const insertTask = db.prepare(`
@@ -331,6 +371,24 @@ export function createTaskStore(dbPath: string): TaskStore {
   );
   const listArtifactRows = db.prepare<ArtifactRow, [string]>(
     "SELECT * FROM task_artifacts WHERE task_id = ? ORDER BY created_at ASC, rowid ASC"
+  );
+  const listActiveSkillRows = db.prepare<TaskSkillRow, [string]>(
+    "SELECT * FROM task_active_skills WHERE task_id = ? ORDER BY activated_at ASC, skill_id ASC"
+  );
+  const upsertActiveSkill = db.prepare(`
+    INSERT INTO task_active_skills (
+      task_id, skill_id, name, source, external_provider, activated_at, activated_by_turn_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id, skill_id) DO UPDATE SET
+      name = excluded.name,
+      source = excluded.source,
+      external_provider = excluded.external_provider,
+      activated_at = excluded.activated_at,
+      activated_by_turn_id = excluded.activated_by_turn_id
+  `);
+  const deleteActiveSkill = db.prepare(
+    "DELETE FROM task_active_skills WHERE task_id = ? AND skill_id = ?"
   );
   const updateTaskRow = db.prepare(`
     UPDATE tasks
@@ -382,6 +440,7 @@ export function createTaskStore(dbPath: string): TaskStore {
       auditRecords: parseJsonArray(row.audit_records_json, (value) =>
         AuditRecordSchema.parse(value)
       ),
+      activeSkills: listActiveSkillRows.all(taskId).map(rowToActiveSkill),
       turns: listTurnRows.all(taskId).map(rowToTurn),
       artifacts: listArtifactRows.all(taskId).map(rowToArtifact),
     });
@@ -417,6 +476,22 @@ export function createTaskStore(dbPath: string): TaskStore {
   return {
     close() {
       db.close();
+    },
+    addActiveSkill(taskId, skill) {
+      requireTask(taskId);
+      const activatedAt = nowIso();
+      const parsed = TaskSkillActivationSchema.parse({ ...skill, activatedAt });
+      upsertActiveSkill.run(
+        taskId,
+        parsed.skillId,
+        parsed.name,
+        parsed.source,
+        parsed.externalProvider ?? null,
+        parsed.activatedAt,
+        parsed.activatedByTurnId ?? null
+      );
+      touchTask.run(activatedAt, taskId);
+      return getTask(taskId);
     },
     createAgentTurn(taskId, content) {
       return createTurn({ taskId, role: "agent", content, status: "completed" });
@@ -560,6 +635,13 @@ export function createTaskStore(dbPath: string): TaskStore {
         updatedAt,
         taskId
       );
+      return getTask(taskId);
+    },
+    removeActiveSkill(taskId, skillId) {
+      requireTask(taskId);
+      const updatedAt = nowIso();
+      deleteActiveSkill.run(taskId, skillId);
+      touchTask.run(updatedAt, taskId);
       return getTask(taskId);
     },
     updateTodo(taskId, operation) {

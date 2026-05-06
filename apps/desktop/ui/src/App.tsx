@@ -288,6 +288,17 @@ export default function App() {
     setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
   }
 
+  async function handleSkillRemove(skillId: string) {
+    if (!selectedTaskId) return;
+
+    const task = await invoke<TaskDetail>("task_skill_remove", {
+      taskId: selectedTaskId,
+      skillId,
+    });
+    setSelectedTask((current) => (current ? mergeTaskDetail(current, task) : task));
+    setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
+  }
+
   async function handleArchiveToggle(task: TaskSummary, archived: boolean) {
     setTaskListError(null);
     try {
@@ -391,6 +402,7 @@ export default function App() {
               onCreateTask={handleCreateTask}
               onCreateTurn={handleCreateTurn}
               onSelectTask={setSelectedTaskId}
+              onSkillRemove={handleSkillRemove}
               onTodoUpdate={handleTodoUpdate}
               sendingTurn={sendingTurn}
               task={selectedTask}
