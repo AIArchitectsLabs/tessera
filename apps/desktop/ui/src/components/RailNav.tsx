@@ -18,8 +18,8 @@ export function RailNav({ activeView, onLogout, onOpenSettings, onViewChange }: 
   const firstMenuItemRef = useRef<HTMLButtonElement>(null);
   const navItemClass = (view: AppView) =>
     activeView === view
-      ? "rounded-full bg-background text-foreground shadow-sm hover:bg-background"
-      : "rounded-full text-muted-foreground hover:text-foreground";
+      ? "rounded-full bg-accent text-accent-foreground shadow-sm hover:bg-accent/80"
+      : "rounded-full text-muted-foreground hover:text-foreground hover:bg-black/5";
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -53,7 +53,7 @@ export function RailNav({ activeView, onLogout, onOpenSettings, onViewChange }: 
   }, [menuOpen]);
 
   return (
-    <nav className="relative flex w-16 flex-shrink-0 flex-col items-center gap-6 border-r border-border bg-secondary py-4">
+    <nav className="relative flex w-16 flex-shrink-0 flex-col items-center gap-6 border-r border-border bg-sidebar py-4">
       <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-background text-primary shadow-sm">
         <div className="absolute -left-[18px] top-1/2 -translate-y-1/2 w-1 h-5 bg-primary rounded-r-full" />
         <Blocks size={20} strokeWidth={2.5} />

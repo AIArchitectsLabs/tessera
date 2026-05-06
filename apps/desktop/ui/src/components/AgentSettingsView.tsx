@@ -120,8 +120,8 @@ export function AgentSettingsView() {
               className={cn(
                 "w-full rounded-xl border px-3 py-3 text-left transition-colors",
                 selectedId === profile.id
-                  ? "border-primary/30 bg-secondary text-foreground"
-                  : "border-transparent text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                  ? "border-primary bg-accent text-accent-foreground"
+                  : "border-transparent text-muted-foreground hover:bg-muted hover:text-foreground"
               )}
             >
               <div className="text-sm font-medium">{profile.name}</div>
@@ -131,7 +131,7 @@ export function AgentSettingsView() {
             </button>
           ))}
           {selectedId === "new" && (
-            <div className="rounded-xl border border-primary/30 bg-secondary px-3 py-3 text-sm font-medium text-foreground">
+            <div className="rounded-xl border border-primary bg-accent px-3 py-3 text-sm font-medium text-accent-foreground">
               New Agent
             </div>
           )}
@@ -260,7 +260,7 @@ function AgentEditor({
             <button
               key={template.id}
               type="button"
-              className="rounded-2xl border border-border bg-background p-5 text-left transition-colors hover:border-primary/30 hover:bg-secondary/40"
+              className="rounded-2xl border border-border bg-card p-5 text-left transition-colors hover:border-primary/30 hover:bg-accent"
               onClick={() => {
                 setDraft(draftFromTemplate(template.id));
                 setTemplateChosen(true);
@@ -422,7 +422,7 @@ function SectionField({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="block rounded-2xl border border-border bg-secondary/20 p-4">
+    <label className="block rounded-2xl border border-border bg-muted/20 p-4">
       <span className="text-sm font-medium text-foreground">{label}</span>
       <p className="mb-3 mt-1 text-xs text-muted-foreground">{hint}</p>
       <textarea

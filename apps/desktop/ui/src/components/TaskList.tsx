@@ -35,9 +35,9 @@ function formatStatus(status: TaskSummary["status"]) {
 }
 
 function StatusIcon({ status }: { status: TaskSummary["status"] }) {
-  if (status === "active") return <Loader2 size={12} className="animate-spin" />;
-  if (status === "done") return <CheckCircle2 size={12} className="text-green-500" />;
-  if (status === "waiting") return <Clock size={12} className="text-amber-500" />;
+  if (status === "active") return <Loader2 size={12} className="animate-spin text-primary" />;
+  if (status === "done") return <CheckCircle2 size={12} className="text-success" />;
+  if (status === "waiting") return <Clock size={12} className="text-warning" />;
   if (status === "failed") return <XCircle size={12} className="text-destructive" />;
   return <CheckCircle2 size={12} />;
 }
@@ -159,13 +159,13 @@ function TaskRow({ task, view, selected, onSelectTask, onArchiveToggle }: TaskRo
     <div
       className={cn(
         "rounded-lg transition-colors hover:bg-black/5",
-        selected ? "bg-background shadow-sm" : ""
+        selected ? "bg-accent shadow-sm" : ""
       )}
     >
       <div className="flex flex-col px-3 py-2">
         <button type="button" onClick={() => onSelectTask(task.id)} className="text-left">
-          <span className="block truncate text-sm font-medium text-foreground">{task.title}</span>
-          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+          <span className={cn("block truncate text-sm font-medium transition-colors", selected ? "text-accent-foreground" : "text-foreground")}>{task.title}</span>
+          <div className={cn("mt-1 flex items-center gap-2 text-xs transition-colors", selected ? "text-accent-foreground/80" : "text-muted-foreground")}>
             <StatusIcon status={task.status} />
             <span>{formatStatus(task.status)}</span>
             {task.agentLabel && <span>• {task.agentLabel}</span>}

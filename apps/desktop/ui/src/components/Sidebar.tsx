@@ -34,7 +34,7 @@ export function Sidebar({
   workspaceRoot,
 }: SidebarProps) {
   return (
-    <aside className="w-64 flex-shrink-0 bg-secondary flex flex-col border-r border-border">
+    <aside className="w-64 flex-shrink-0 bg-sidebar flex flex-col border-r border-border">
       <WorkspacePicker currentWorkspace={workspaceRoot} onWorkspaceSelect={onWorkspaceSelect} />
 
       <div className="flex min-h-0 flex-1 flex-col">

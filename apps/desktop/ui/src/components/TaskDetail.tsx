@@ -126,7 +126,7 @@ export function TaskDetail({
         <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
           <div className="max-w-xl text-center mb-8">
             <div className="flex items-center justify-center gap-2 mb-3">
-              <Sparkles size={28} className="text-[var(--sun)]" />
+              <Sparkles size={28} className="text-primary" />
             </div>
             <h1
               className="text-2xl font-bold text-foreground tracking-tight"
@@ -237,7 +237,7 @@ export function TaskDetail({
                       <div
                         className={cn(
                           isUser
-                            ? "max-w-[78%] rounded-2xl rounded-tr-sm bg-[#2a2826] px-5 py-4 text-white shadow-sm border border-[#2a2826]"
+                            ? "max-w-[85%] rounded-2xl rounded-tr-sm bg-soft-blue px-5 py-4 text-foreground shadow-sm border border-primary/10"
                             : "w-full max-w-full text-foreground py-2"
                         )}
                       >
@@ -248,12 +248,7 @@ export function TaskDetail({
                           />
                         )}
                         {(!isAgent || turn.role === "system") && (
-                          <div
-                            className={cn(
-                              "mb-1 text-xs font-medium flex items-center gap-1.5",
-                              isUser ? "text-white/70" : "text-muted-foreground"
-                            )}
-                          >
+                          <div className="mb-1 text-xs font-medium flex items-center gap-1.5 text-muted-foreground">
                             {turnLabel(turn)}
                           </div>
                         )}
@@ -352,7 +347,7 @@ function TaskComposer({
 
   return (
     <div className={inline ? "w-full" : "shrink-0 border-t border-border bg-background px-4 py-4"}>
-      <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
+      <div className="flex flex-col rounded-2xl border border-border bg-card shadow-sm overflow-hidden transition-all focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
         <textarea
           value={value}
           onChange={(event) => onChange(event.target.value)}
@@ -432,7 +427,7 @@ function TaskComposer({
           <Button
             type="button"
             size="icon"
-            className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary-hover disabled:opacity-50 transition-colors"
             disabled={!canSend}
             onClick={() => onSend(selectedAgentId, selectedLabel)}
           >
@@ -552,12 +547,12 @@ function TaskSidePane({
                 className={cn(
                   "h-7 w-7 rounded-full border-2 flex items-center justify-center transition-colors",
                   step.done
-                    ? "border-[var(--leaf)] bg-[var(--leaf-soft)]"
-                    : "border-border bg-secondary"
+                    ? "border-success bg-success/10"
+                    : "border-border bg-muted"
                 )}
               >
                 {step.done ? (
-                  <CheckCircle2 size={16} className="text-[var(--leaf)]" />
+                  <CheckCircle2 size={16} className="text-success" />
                 ) : isActive && i === progressSteps.findIndex((s) => !s.done) ? (
                   <Loader2 size={14} className="animate-spin text-muted-foreground" />
                 ) : (
@@ -568,7 +563,7 @@ function TaskSidePane({
                 <div
                   className={cn(
                     "w-5 h-0.5 rounded-full",
-                    progressSteps[i + 1]?.done ? "bg-[var(--leaf)]" : "bg-border"
+                    progressSteps[i + 1]?.done ? "bg-success" : "bg-border"
                   )}
                 />
               )}
@@ -613,7 +608,7 @@ function TaskSidePane({
               </div>
               <p className="mt-1">{task.agentContext.compiledSummary}</p>
             </div>
-            <div className="rounded-xl border border-border bg-secondary/20 p-3">
+            <div className="rounded-xl border border-border bg-muted/30 p-3">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-foreground">
                 Tool Policy
               </div>
@@ -660,7 +655,7 @@ function TaskSidePane({
             {task.artifacts.slice(0, 4).map((artifact) => (
               <div
                 key={artifact.id}
-                className="rounded-xl border border-border bg-secondary/20 px-3 py-2"
+                className="rounded-xl border border-border bg-card px-3 py-2 shadow-sm"
               >
                 <div className="flex items-start gap-3">
                   <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground">
@@ -732,10 +727,10 @@ function TodoPanel({
           >
             <span
               className={cn(
-                "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border",
+                "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors",
                 item.status === "completed"
-                  ? "border-[var(--leaf)] bg-[var(--leaf-soft)] text-[var(--leaf)]"
-                  : "border-border bg-background text-transparent"
+                  ? "border-success bg-success/10 text-success"
+                  : "border-border bg-card text-transparent"
               )}
             >
               <Check size={12} />

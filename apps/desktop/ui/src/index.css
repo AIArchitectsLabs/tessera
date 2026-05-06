@@ -14,35 +14,41 @@
   :root {
     --radius: 0.875rem;
 
-    --paper: oklch(0.984 0.006 85);
-    --desk: oklch(0.955 0.012 85);
-    --divider: oklch(0.905 0.015 82);
-    --ink: oklch(0.24 0.02 60);
-    --ink-muted: oklch(0.56 0.022 70);
-    --sun: oklch(0.72 0.12 55);
-    --sun-soft: oklch(0.92 0.05 65);
-    --leaf: oklch(0.66 0.07 140);
-    --leaf-soft: oklch(0.92 0.04 140);
-
-    --background: var(--paper);
-    --foreground: var(--ink);
-    --card: oklch(1 0 0);
-    --card-foreground: var(--ink);
-    --popover: oklch(1 0 0);
-    --popover-foreground: var(--ink);
-    --primary: var(--ink);
-    --primary-foreground: var(--paper);
-    --secondary: var(--desk);
-    --secondary-foreground: var(--ink);
-    --muted: var(--desk);
-    --muted-foreground: var(--ink-muted);
-    --accent: var(--sun-soft);
-    --accent-foreground: var(--ink);
-    --destructive: oklch(0.6 0.2 28);
-    --destructive-foreground: oklch(0.99 0.005 85);
-    --border: var(--divider);
-    --input: var(--divider);
-    --ring: var(--sun);
+    /* Clean B2B SaaS Palette */
+    --background: #F8FAFC;
+    --foreground: #0F172A;
+    --card: #FFFFFF;
+    --card-foreground: #0F172A;
+    --popover: #FFFFFF;
+    --popover-foreground: #0F172A;
+    
+    --primary: #2563EB;
+    --primary-foreground: #FFFFFF;
+    --primary-hover: #1E3A8A;
+    
+    --secondary: #FFFFFF;
+    --secondary-foreground: #0F172A;
+    
+    --muted: #F1F5F9;
+    --muted-foreground: #64748B;
+    
+    --accent: #E0ECFF;
+    --accent-foreground: #1E3A8A;
+    
+    --destructive: #DC2626;
+    --destructive-foreground: #FFFFFF;
+    
+    --border: #E2E8F0;
+    --input: #E2E8F0;
+    --ring: #2563EB;
+    
+    --sidebar-bg: #F1F5F9;
+    --disabled: #94A3B8;
+    
+    --success: #22C55E;
+    --warning: #F59E0B;
+    --warning-bg: #FEF3C7;
+    --soft-blue: #EFF6FF;
   }
 
   .dark {
@@ -50,7 +56,7 @@
   }
 
   * {
-    border-color: var(--color-border, var(--border));
+    border-color: var(--border);
   }
 
   html,
@@ -60,14 +66,14 @@
   }
 
   body {
-    background-color: var(--color-paper, var(--paper));
-    color: var(--color-ink, var(--ink));
+    background-color: var(--background);
+    color: var(--foreground);
     font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--sun) 30%, transparent);
+    background: color-mix(in srgb, var(--primary) 20%, transparent);
   }
 }
 
@@ -77,7 +83,7 @@
     height: 8px;
   }
   .scrollbar-subtle::-webkit-scrollbar-thumb {
-    background: color-mix(in oklab, var(--ink) 12%, transparent);
+    background: color-mix(in srgb, var(--foreground) 12%, transparent);
     border-radius: 999px;
   }
   .scrollbar-subtle::-webkit-scrollbar-track {
@@ -86,31 +92,31 @@
 
   .input {
     width: 100%;
-    background: var(--card);
-    border: 1px solid var(--divider);
+    background: #FFFFFF;
+    border: 1px solid var(--input);
     border-radius: 0.625rem;
     padding: 0.55rem 0.75rem;
     font-size: 0.875rem;
-    color: var(--ink);
+    color: var(--foreground);
     outline: none;
     transition: border-color 120ms, box-shadow 120ms;
     font-family: inherit;
   }
   .input:focus {
-    border-color: var(--sun);
-    box-shadow: 0 0 0 3px color-mix(in oklab, var(--sun) 25%, transparent);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 20%, transparent);
   }
   .input::placeholder {
-    color: color-mix(in oklab, var(--ink-muted) 80%, transparent);
+    color: var(--muted-foreground);
   }
 }
 
-/* Document preview markdown styling — warm, editorial */
+/* Document preview markdown styling — Notion/Linear style */
 .prose-doc {
-  color: color-mix(in oklab, var(--ink) 92%, transparent);
-  font-family: "Newsreader", ui-serif, Georgia, serif;
+  color: var(--foreground);
+  font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
   font-size: 15px;
-  line-height: 1.7;
+  line-height: 1.6;
   text-wrap: pretty;
 }
 .prose-doc > *:first-child {
@@ -123,44 +129,42 @@
 .prose-doc h2,
 .prose-doc h3,
 .prose-doc h4 {
-  font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  color: var(--ink);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
-  margin-top: 1.6em;
+  color: var(--foreground);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-top: 1.5em;
   margin-bottom: 0.5em;
 }
 .prose-doc h1 {
-  font-size: 1.7rem;
-  margin-top: 0.2em;
+  font-size: 1.875rem;
+  margin-top: 0;
 }
 .prose-doc h2 {
-  font-size: 1.3rem;
+  font-size: 1.5rem;
 }
 .prose-doc h3 {
-  font-size: 1.1rem;
+  font-size: 1.25rem;
 }
 .prose-doc p {
-  margin: 0.85em 0;
+  margin: 1em 0;
 }
 .prose-doc strong {
-  color: var(--ink);
   font-weight: 600;
 }
 .prose-doc em {
   font-style: italic;
 }
 .prose-doc a {
-  color: var(--ink);
+  color: var(--primary);
   text-decoration: underline;
-  text-decoration-color: var(--sun);
-  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  text-underline-offset: 4px;
 }
 .prose-doc ul,
 .prose-doc ol {
-  margin: 0.85em 0;
-  padding-left: 1.4em;
+  margin: 1em 0;
+  padding-left: 1.5em;
 }
 .prose-doc ul {
   list-style: disc;
@@ -169,55 +173,56 @@
   list-style: decimal;
 }
 .prose-doc li {
-  margin: 0.3em 0;
+  margin: 0.25em 0;
 }
 .prose-doc li::marker {
-  color: var(--sun);
+  color: var(--muted-foreground);
 }
 .prose-doc blockquote {
-  border-left: 3px solid var(--sun);
-  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
   margin: 1em 0;
-  color: var(--ink-muted);
-  font-style: italic;
+  color: var(--muted-foreground);
 }
 .prose-doc code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.88em;
-  background: color-mix(in oklab, var(--ink) 7%, transparent);
-  padding: 0.12em 0.35em;
+  font-size: 0.875em;
+  background: var(--muted);
+  color: var(--foreground);
+  padding: 0.15em 0.4em;
   border-radius: 4px;
 }
 .prose-doc pre {
-  background: color-mix(in oklab, var(--ink) 6%, transparent);
+  background: var(--background);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.9em 1em;
+  padding: 1em;
   overflow-x: auto;
-  margin: 1em 0;
+  margin: 1.5em 0;
 }
 .prose-doc pre code {
   background: none;
   padding: 0;
+  color: var(--foreground);
 }
 .prose-doc hr {
   border: none;
-  border-top: 1px solid var(--divider);
-  margin: 1.6em 0;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
 }
 .prose-doc table {
   width: 100%;
   border-collapse: collapse;
-  margin: 1em 0;
-  font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  font-size: 0.9rem;
+  margin: 1.5em 0;
+  font-size: 0.875rem;
 }
 .prose-doc th,
 .prose-doc td {
-  border: 1px solid var(--divider);
-  padding: 0.5em 0.75em;
+  border: 1px solid var(--border);
+  padding: 0.75em 1em;
   text-align: left;
 }
 .prose-doc th {
-  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  background: var(--muted);
   font-weight: 600;
 }

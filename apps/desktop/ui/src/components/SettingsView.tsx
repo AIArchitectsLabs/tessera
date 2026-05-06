@@ -537,7 +537,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   return (
     <main className="flex min-w-0 flex-1 bg-background">
-      <aside className="flex w-56 flex-shrink-0 flex-col border-r border-border bg-secondary px-4 py-5 gap-2">
+      <aside className="flex w-56 flex-shrink-0 flex-col border-r border-border bg-sidebar px-4 py-5 gap-2">
         <div className="text-sm font-semibold text-foreground mb-3">Settings</div>
         <button
           type="button"
@@ -546,7 +546,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
             activeTab === "model"
               ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+              : "text-muted-foreground hover:bg-black/5 hover:text-foreground"
           )}
         >
           <Box size={16} />
@@ -559,7 +559,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
             activeTab === "integrations"
               ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+              : "text-muted-foreground hover:bg-black/5 hover:text-foreground"
           )}
         >
           <Search size={16} />
@@ -572,7 +572,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
             activeTab === "agents"
               ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+              : "text-muted-foreground hover:bg-black/5 hover:text-foreground"
           )}
         >
           <Bot size={16} />
@@ -691,9 +691,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       "rounded-xl border px-3 py-2 text-sm",
                       status.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
-                      status.tone === "info" && "border-border bg-secondary text-foreground",
+                      status.tone === "info" && "border-border bg-muted text-foreground",
                       status.tone === "success" &&
-                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                        "border-success bg-success/10 text-success"
                     )}
                   >
                     {status.message}
@@ -768,8 +768,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                           className={cn(
                             "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                             selected
-                              ? "border-primary bg-secondary text-foreground shadow-sm"
-                              : "border-border bg-background text-foreground hover:bg-secondary/70"
+                              ? "border-primary bg-accent text-accent-foreground shadow-sm"
+                              : "border-border bg-card text-foreground hover:bg-muted"
                           )}
                           onClick={() => handleSearchModeSelect(mode)}
                         >
@@ -851,7 +851,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
+                <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
                   {searchProviderDescription(selectedSearchProvider)}
                 </div>
 
@@ -872,7 +872,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     />
                   </label>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-border bg-secondary/20 px-4 py-3 text-sm text-muted-foreground">
+                  <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
                     DuckDuckGo uses keyless search. No API key is required or stored.
                   </div>
                 )}
@@ -883,9 +883,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       "rounded-xl border px-3 py-2 text-sm",
                       searchStatus.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
-                      searchStatus.tone === "info" && "border-border bg-secondary text-foreground",
+                      searchStatus.tone === "info" && "border-border bg-muted text-foreground",
                       searchStatus.tone === "success" &&
-                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                        "border-success bg-success/10 text-success"
                     )}
                   >
                     {searchStatus.message}
@@ -949,8 +949,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                           className={cn(
                             "rounded-xl border px-4 py-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                             selected
-                              ? "border-primary bg-secondary text-foreground shadow-sm"
-                              : "border-border bg-background text-foreground hover:bg-secondary/70"
+                              ? "border-primary bg-accent text-accent-foreground shadow-sm"
+                              : "border-border bg-card text-foreground hover:bg-muted"
                           )}
                           onClick={() => handleIntegrationSelect(provider)}
                         >
@@ -973,7 +973,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
+                <div className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
                   Google Calendar powers the `gcal list` and `gcal read` shell commands for calendar
                   context.
                 </div>
@@ -1001,9 +1001,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       integrationStatus.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
                       integrationStatus.tone === "info" &&
-                        "border-border bg-secondary text-foreground",
+                        "border-border bg-muted text-foreground",
                       integrationStatus.tone === "success" &&
-                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                        "border-success bg-success/10 text-success"
                     )}
                   >
                     {integrationStatus.message}

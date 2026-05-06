@@ -44,7 +44,7 @@ export function InboxView({
 }: InboxViewProps) {
   return (
     <main className="flex min-w-0 flex-1 bg-background">
-      <aside className="flex w-80 flex-shrink-0 flex-col border-r border-border bg-secondary">
+      <aside className="flex w-80 flex-shrink-0 flex-col border-r border-border bg-sidebar">
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <div>
@@ -99,7 +99,7 @@ export function InboxView({
                   className={cn(
                     "w-full border-l-2 px-4 py-3 text-left transition-colors hover:bg-background/70",
                     selectedMessage?.id === message.id
-                      ? "border-primary bg-background"
+                      ? "border-primary bg-accent"
                       : "border-transparent"
                   )}
                   onClick={() => onSelectMessage(message.id)}
@@ -163,7 +163,7 @@ export function InboxView({
                   <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                     Context
                   </h3>
-                  <pre className="mt-2 overflow-auto rounded-md border border-border bg-secondary p-3 text-xs text-foreground">
+                  <pre className="mt-2 overflow-auto rounded-md border border-border bg-muted/30 p-3 text-xs text-foreground">
                     {formatJson(selectedMessage.context)}
                   </pre>
                 </div>
