@@ -164,8 +164,20 @@ function TaskRow({ task, view, selected, onSelectTask, onArchiveToggle }: TaskRo
     >
       <div className="flex flex-col px-3 py-2">
         <button type="button" onClick={() => onSelectTask(task.id)} className="text-left">
-          <span className={cn("block truncate text-sm font-medium transition-colors", selected ? "text-accent-foreground" : "text-foreground")}>{task.title}</span>
-          <div className={cn("mt-1 flex items-center gap-2 text-xs transition-colors", selected ? "text-accent-foreground/80" : "text-muted-foreground")}>
+          <span
+            className={cn(
+              "block truncate text-sm font-medium transition-colors",
+              selected ? "text-accent-foreground" : "text-foreground"
+            )}
+          >
+            {task.title}
+          </span>
+          <div
+            className={cn(
+              "mt-1 flex items-center gap-2 text-xs transition-colors",
+              selected ? "text-accent-foreground/80" : "text-muted-foreground"
+            )}
+          >
             <StatusIcon status={task.status} />
             <span>{formatStatus(task.status)}</span>
             {task.agentLabel && <span>• {task.agentLabel}</span>}

@@ -546,9 +546,7 @@ function TaskSidePane({
               <div
                 className={cn(
                   "h-7 w-7 rounded-full border-2 flex items-center justify-center transition-colors",
-                  step.done
-                    ? "border-success bg-success/10"
-                    : "border-border bg-muted"
+                  step.done ? "border-success bg-success/10" : "border-border bg-muted"
                 )}
               >
                 {step.done ? (

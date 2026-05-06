@@ -692,8 +692,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       status.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
                       status.tone === "info" && "border-border bg-muted text-foreground",
-                      status.tone === "success" &&
-                        "border-success bg-success/10 text-success"
+                      status.tone === "success" && "border-success bg-success/10 text-success"
                     )}
                   >
                     {status.message}
@@ -884,8 +883,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       searchStatus.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
                       searchStatus.tone === "info" && "border-border bg-muted text-foreground",
-                      searchStatus.tone === "success" &&
-                        "border-success bg-success/10 text-success"
+                      searchStatus.tone === "success" && "border-success bg-success/10 text-success"
                     )}
                   >
                     {searchStatus.message}
@@ -1000,8 +998,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       "rounded-xl border px-3 py-2 text-sm",
                       integrationStatus.tone === "error" &&
                         "border-destructive/25 bg-destructive/5 text-destructive",
-                      integrationStatus.tone === "info" &&
-                        "border-border bg-muted text-foreground",
+                      integrationStatus.tone === "info" && "border-border bg-muted text-foreground",
                       integrationStatus.tone === "success" &&
                         "border-success bg-success/10 text-success"
                     )}

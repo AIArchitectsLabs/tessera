@@ -15,40 +15,40 @@
     --radius: 0.875rem;
 
     /* Clean B2B SaaS Palette */
-    --background: #F8FAFC;
-    --foreground: #0F172A;
-    --card: #FFFFFF;
-    --card-foreground: #0F172A;
-    --popover: #FFFFFF;
-    --popover-foreground: #0F172A;
-    
-    --primary: #2563EB;
-    --primary-foreground: #FFFFFF;
-    --primary-hover: #1E3A8A;
-    
-    --secondary: #FFFFFF;
-    --secondary-foreground: #0F172A;
-    
-    --muted: #F1F5F9;
-    --muted-foreground: #64748B;
-    
-    --accent: #E0ECFF;
-    --accent-foreground: #1E3A8A;
-    
-    --destructive: #DC2626;
-    --destructive-foreground: #FFFFFF;
-    
-    --border: #E2E8F0;
-    --input: #E2E8F0;
-    --ring: #2563EB;
-    
-    --sidebar-bg: #F1F5F9;
-    --disabled: #94A3B8;
-    
-    --success: #22C55E;
-    --warning: #F59E0B;
-    --warning-bg: #FEF3C7;
-    --soft-blue: #EFF6FF;
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --primary-hover: #1e3a8a;
+
+    --secondary: #ffffff;
+    --secondary-foreground: #0f172a;
+
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+
+    --accent: #e0ecff;
+    --accent-foreground: #1e3a8a;
+
+    --destructive: #dc2626;
+    --destructive-foreground: #ffffff;
+
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #2563eb;
+
+    --sidebar-bg: #f1f5f9;
+    --disabled: #94a3b8;
+
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --warning-bg: #fef3c7;
+    --soft-blue: #eff6ff;
   }
 
   .dark {
@@ -92,7 +92,7 @@
 
   .input {
     width: 100%;
-    background: #FFFFFF;
+    background: #ffffff;
     border: 1px solid var(--input);
     border-radius: 0.625rem;
     padding: 0.55rem 0.75rem;
