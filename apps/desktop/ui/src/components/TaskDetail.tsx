@@ -404,16 +404,17 @@ function TaskComposer({
   const matchingSkills =
     slashQuery === undefined
       ? []
-      : enabledSkills.filter((skill) => skillMatchesQuery(skill, slashQuery)).slice(0, 8);
+      : enabledSkills.filter((skill) => skillMatchesQuery(skill, slashQuery.query)).slice(0, 8);
   const skillMenuOpen = slashQuery !== undefined;
   const highlightedSkill = matchingSkills[Math.min(skillMenuIndex, matchingSkills.length - 1)];
 
   function applySkillCompletion(skill: SkillSummary) {
-    onChange(`/${skill.id} `);
-    setCursorPosition(skill.id.length + 2);
+    const nextValue = slashQuery?.mode === "generic" ? `/skill ${skill.id} ` : `/${skill.id} `;
+    onChange(nextValue);
+    setCursorPosition(nextValue.length);
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(skill.id.length + 2, skill.id.length + 2);
+      textareaRef.current?.setSelectionRange(nextValue.length, nextValue.length);
     });
   }
 
@@ -460,7 +461,7 @@ function TaskComposer({
                     )}
                   >
                     <span className="mt-0.5 rounded bg-background px-1.5 py-0.5 font-mono text-xs text-foreground">
-                      /{skill.id}
+                      {slashQuery.mode === "generic" ? `/skill ${skill.id}` : `/${skill.id}`}
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium">{skill.name}</span>
@@ -471,7 +472,11 @@ function TaskComposer({
               </div>
             ) : (
               <div className="px-3 py-3 text-sm text-muted-foreground">
-                No enabled skills match /{slashQuery}.
+                No enabled skills match{" "}
+                {slashQuery.mode === "generic"
+                  ? `/skill ${slashQuery.query}`
+                  : `/${slashQuery.query}`}
+                .
               </div>
             )}
           </div>
@@ -589,11 +594,18 @@ function TaskComposer({
   );
 }
 
-function slashSkillQuery(value: string, cursorPosition: number): string | undefined {
+type SlashSkillQuery = {
+  mode: "direct" | "generic";
+  query: string;
+};
+
+function slashSkillQuery(value: string, cursorPosition: number): SlashSkillQuery | undefined {
   if (cursorPosition < 0) return undefined;
   const beforeCursor = value.slice(0, cursorPosition);
-  const match = beforeCursor.match(/^\/([A-Za-z0-9:_-]*)$/);
-  return match?.[1];
+  const genericMatch = beforeCursor.match(/^\/skill(?:\s+([A-Za-z0-9:_-]*))?$/);
+  if (genericMatch) return { mode: "generic", query: genericMatch[1] ?? "" };
+  const directMatch = beforeCursor.match(/^\/([A-Za-z0-9:_-]*)$/);
+  return directMatch ? { mode: "direct", query: directMatch[1] ?? "" } : undefined;
 }
 
 function skillMatchesQuery(skill: SkillSummary, query: string): boolean {

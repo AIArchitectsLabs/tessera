@@ -12,10 +12,10 @@ import type {
 import {
   type PiTaskTurnResult,
   type WorkspaceCliExecutor,
-  createSkillRegistry,
   createSpawnShellExecutor,
   runPiTaskTurn,
 } from "@tessera/core";
+import { createTesseraSkillRegistry } from "./skill-registry.js";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
@@ -50,6 +50,7 @@ export interface RunTaskTurnOptions {
   }) => Promise<PiTaskTurnResult>;
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
+  promptOverride?: string;
   store: TaskStore;
   taskId: string;
   userTurnId: string;
@@ -103,6 +104,36 @@ function toolArtifactTitle(toolName: string, args: unknown): string {
 function completedTodoItems(todo: TaskTodo): TaskTodo["items"] | undefined {
   if (!todo.items.some((item) => item.status !== "completed")) return undefined;
   return todo.items.map((item) => ({ ...item, status: "completed" as const }));
+}
+
+function fallbackAgentResponse(options: {
+  task: NonNullable<ReturnType<TaskStore["getTask"]>>;
+  agentTurnId: string;
+  boundaryViolations: number;
+}): string {
+  const lines = [
+    options.boundaryViolations > 0
+      ? "I reached a workspace boundary before producing a final message."
+      : "Completed the task.",
+  ];
+  const artifacts = options.task.artifacts.filter(
+    (artifact) => artifact.turnId === options.agentTurnId
+  );
+  if (artifacts.length > 0) {
+    lines.push(
+      "",
+      "Tool activity:",
+      ...artifacts.map((artifact) => {
+        const detail = artifact.path ?? artifact.contentPreview;
+        return detail ? `- ${artifact.title}: ${detail}` : `- ${artifact.title}`;
+      })
+    );
+  }
+  const completedItems = options.task.todo?.items.filter((item) => item.status === "completed");
+  if (completedItems && completedItems.length > 0) {
+    lines.push("", "Completed checklist:", ...completedItems.map((item) => `- ${item.label}`));
+  }
+  return lines.join("\n");
 }
 
 export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
@@ -178,7 +209,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     const allowedSkillIds = Array.from(
       new Set([...(agent?.skills ?? []), ...activeSkills.map((skill) => skill.skillId)])
     );
-    const registry = createSkillRegistry({ workspaceRoot: task.workspaceRoot });
+    const registry = createTesseraSkillRegistry({ workspaceRoot: task.workspaceRoot });
 
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
@@ -210,7 +241,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
           artifact,
         });
       },
-      prompt: userTurn.content,
+      prompt: opts.promptOverride ?? userTurn.content,
       provider,
       ...(shell ? { shell } : {}),
       skillRuntime: {
@@ -237,7 +268,13 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       },
       workspaceRoot: task.workspaceRoot,
     });
-    const artifactContent = result.text.trim() || "No response was produced.";
+    const artifactContent =
+      result.text.trim() ||
+      fallbackAgentResponse({
+        task: store.getTask(taskId) ?? task,
+        agentTurnId,
+        boundaryViolations: result.boundaryViolations,
+      });
 
     const completedAgentTurn = store.updateTurn(agentTurnId, {
       status: "completed",

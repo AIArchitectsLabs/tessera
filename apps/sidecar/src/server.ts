@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   type AgentProfile,
   AgentTurnRequestSchema,
@@ -37,7 +37,6 @@ import {
 import {
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
-  createSkillRegistry,
   executeAgentTurn,
   resolveSlashSkillInvocation,
   resumeWorkflowRun,
@@ -46,6 +45,7 @@ import {
 import { createAgentProfileStore } from "./agent-profile-store.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
+import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
@@ -78,34 +78,23 @@ function allowedSkillIdsForAgent(agentId: string): string[] {
   return profileForAgentId(agentId).skills ?? [];
 }
 
-function packagedCuratedSkillsRoot(): string | undefined {
-  const envRoot = process.env.TESSERA_CURATED_SKILLS_DIR;
-  if (envRoot && existsSync(envRoot)) return envRoot;
-
-  const executableRoot = join(dirname(process.execPath), "skills");
-  return existsSync(executableRoot) ? executableRoot : undefined;
-}
-
-function createTesseraSkillRegistry(options: { workspaceRoot?: string } = {}) {
-  const curatedRoot = packagedCuratedSkillsRoot();
-  return createSkillRegistry({
-    ...options,
-    ...(curatedRoot ? { curatedRoot, includeDefaultRoots: true } : {}),
-  });
-}
-
 async function parseSkillInvocation(options: {
   text: string;
   workspaceRoot: string;
   agentId: string;
-}): Promise<{ content: string; skill?: Omit<TaskSkillActivation, "activatedAt"> }> {
+}): Promise<{
+  originalContent: string;
+  prompt: string;
+  skill?: Omit<TaskSkillActivation, "activatedAt">;
+}> {
   const registry = createTesseraSkillRegistry({ workspaceRoot: options.workspaceRoot });
   const allowedSkillIds = allowedSkillIdsForAgent(options.agentId);
   const invocation = await resolveSlashSkillInvocation(options.text, registry, { allowedSkillIds });
-  if (!invocation) return { content: options.text };
+  if (!invocation) return { originalContent: options.text, prompt: options.text };
   const detail = await registry.loadSkill(invocation.skillId, { allowedSkillIds });
   return {
-    content: invocation.instruction,
+    originalContent: options.text,
+    prompt: invocation.instruction,
     skill: {
       skillId: detail.id,
       name: detail.name,
@@ -618,7 +607,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
     });
     const taskInput = {
       ...parsed.data,
-      initialInstruction: invocation.content,
+      initialInstruction: invocation.originalContent,
     };
     let execution = parsed.data.execution;
     if (execution && taskInput.agentId !== "default") {
@@ -664,6 +653,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         agentTurnId,
         cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
+        promptOverride: invocation.prompt,
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -739,7 +729,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
     });
     const turnInput = {
       ...parsed.data,
-      content: invocation.content,
+      content: invocation.originalContent,
     };
     let execution = parsed.data.execution;
     if (execution && turnInput.agentId !== "default") {
@@ -798,6 +788,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         agentTurnId,
         cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
+        promptOverride: invocation.prompt,
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -1187,7 +1178,7 @@ async function handleTaskSkillCreate(req: Request, taskId: string): Promise<Resp
   const task = taskStore.getTask(taskId);
   if (!task) return Response.json({ error: "Unknown task" }, { status: 404 });
   try {
-    const registry = createSkillRegistry({ workspaceRoot: task.workspaceRoot });
+    const registry = createTesseraSkillRegistry({ workspaceRoot: task.workspaceRoot });
     const allowedSkillIds = allowedSkillIdsForAgent(task.agentId);
     const detail = await registry.loadSkill(skillId, { allowedSkillIds });
     const updated = taskStore.addActiveSkill(taskId, {

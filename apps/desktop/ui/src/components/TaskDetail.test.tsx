@@ -305,6 +305,21 @@ describe("TaskDetail composer", () => {
     expect(onCreateTurn).not.toHaveBeenCalled();
   });
 
+  test("supports generic /skill completions", async () => {
+    const { view, onCreateTurn } = renderTaskDetail();
+    const textarea = view.getByPlaceholderText("Write a message...") as HTMLTextAreaElement;
+
+    typeComposerValue(textarea, "/skill ");
+    await view.findByText("/skill word-docs");
+    expect(view.getByText("/skill pdf-workflows")).toBeTruthy();
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("/skill word-docs ");
+    });
+    expect(onCreateTurn).not.toHaveBeenCalled();
+  });
+
   test("does not send a bare slash while the slash menu has no selectable skill", async () => {
     skillListMode = "empty";
     const { view, onCreateTask, onCreateTurn } = renderTaskDetail({ task: null });

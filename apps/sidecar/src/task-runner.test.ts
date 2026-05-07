@@ -169,6 +169,35 @@ describe("task runner", () => {
     ]);
   });
 
+  test("uses prompt override while preserving displayed user turn content", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "/skill planning Draft a launch plan",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let seenPrompt = "";
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      promptOverride: "Draft a launch plan",
+      piRunner: async ({ prompt }) => {
+        seenPrompt = prompt;
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish: () => undefined,
+      delayMs: 0,
+    });
+
+    expect(seenPrompt).toBe("Draft a launch plan");
+    expect(store.getTurn(userTurn.id).content).toBe("/skill planning Draft a launch plan");
+  });
+
   test("failure path: no exception thrown, publishes failed events", async () => {
     const store = makeStore();
     const task = store.createTask({
@@ -345,6 +374,38 @@ describe("task runner", () => {
     const finalTask = store.getTask(task.id);
     expect(finalTask?.artifacts).toHaveLength(1);
     expect(finalTask?.artifacts[0]?.title).toBe("web-fetch fetch");
+  });
+
+  test("summarizes tool activity when the model returns empty text", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Save the analysis as a PDF",
+    });
+    const userTurn = store.createUserTurn(task.id, "/pdf-workflows save the analysis as pdf");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolStart }) => {
+        onToolStart?.({
+          name: "workspace_write",
+          args: { path: "OpenClaw-vs-Hermes-use-cases-analysis.pdf" },
+        });
+        return { text: "", boundaryViolations: 0 };
+      },
+      publish: () => undefined,
+      delayMs: 0,
+    });
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.content).toContain("Completed the task.");
+    expect(finalAgentTurn.content).toContain("workspace write");
+    expect(finalAgentTurn.content).toContain("OpenClaw-vs-Hermes-use-cases-analysis.pdf");
+    expect(finalAgentTurn.content).not.toContain("No response was produced");
   });
 
   test("forwards execution agent to piRunner", async () => {

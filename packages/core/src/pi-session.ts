@@ -238,6 +238,9 @@ function buildPrompt(
       .join("\n");
     sections.push(`Prior conversation:\n${lines}`);
   }
+  sections.push(
+    "Response requirement:\nAfter using tools, always end your turn with a concise user-visible response summarizing what you did, where any deliverable was saved, and any relevant caveat. Do not end with only tool calls."
+  );
   sections.push(`User task:\n${prompt}`);
   return sections.join("\n\n");
 }
