@@ -29,25 +29,43 @@ afterEach(() => {
 });
 
 describe("skill registry", () => {
-  test("ships the compact curated business-operator skill core", async () => {
+  test("ships the curated business and document skill core", async () => {
     const registry = createSkillRegistry();
     const skills = await registry.listSkills();
     const curatedSkills = skills.filter((skill) => skill.source === "curated");
 
     expect(curatedSkills.map((skill) => skill.id)).toEqual([
       "decision-briefs",
-      "document-drafting",
+      "pdf-workflows",
       "planning",
       "research-synthesis",
+      "slide-decks",
+      "spreadsheets",
+      "word-docs",
       "workspace-delivery",
     ]);
-    await expect(registry.loadSkill("workspace-delivery")).resolves.toMatchObject({
+    for (const skillId of ["word-docs", "pdf-workflows", "slide-decks", "spreadsheets"]) {
+      await expect(registry.loadSkill(skillId)).resolves.toMatchObject({
+        id: skillId,
+        source: "curated",
+        content: expect.stringContaining("## Workflow"),
+      });
+    }
+    await expect(registry.loadSkill("word-docs")).resolves.toMatchObject({
       source: "curated",
-      content: expect.stringContaining("create or update concrete files"),
+      content: expect.stringContaining("DOCX-style business writing"),
     });
-    await expect(registry.loadSkill("decision-briefs")).resolves.toMatchObject({
+    await expect(registry.loadSkill("pdf-workflows")).resolves.toMatchObject({
       source: "curated",
-      content: expect.stringContaining("state a recommendation"),
+      content: expect.stringContaining("Preserve page references"),
+    });
+    await expect(registry.loadSkill("slide-decks")).resolves.toMatchObject({
+      source: "curated",
+      content: expect.stringContaining("slide-by-slide outline"),
+    });
+    await expect(registry.loadSkill("spreadsheets")).resolves.toMatchObject({
+      source: "curated",
+      content: expect.stringContaining("formulas and source data"),
     });
   });
 
@@ -73,12 +91,39 @@ describe("skill registry", () => {
     });
   });
 
+  test("lets workspace and user skills override curated document defaults", async () => {
+    const userRoot = await tempRoot();
+    const workspaceRoot = await tempRoot();
+    const workspaceSkillsRoot = join(workspaceRoot, ".tessera", "skills");
+    writeSkill(userRoot, "word-docs", "User Word workflow.", "Use the user's house style.");
+    writeSkill(
+      workspaceSkillsRoot,
+      "word-docs",
+      "Workspace Word workflow.",
+      "Use the workspace template."
+    );
+
+    const registry = createSkillRegistry({ userRoot, workspaceRoot });
+    const skills = await registry.listSkills();
+    const wordDocs = skills.find((skill) => skill.id === "word-docs");
+
+    expect(wordDocs).toMatchObject({
+      source: "workspace",
+      description: "Workspace Word workflow.",
+      conflict: { shadowedSources: ["user", "curated"] },
+    });
+    await expect(registry.loadSkill("word-docs")).resolves.toMatchObject({
+      source: "workspace",
+      content: expect.stringContaining("Use the workspace template."),
+    });
+  });
+
   test("discovers Claude Code and Codex skills as external opt-in candidates", async () => {
     const curatedRoot = await tempRoot();
     const claudeUserRoot = await tempRoot();
     const codexUserRoot = await tempRoot();
     writeSkill(curatedRoot, "planning", "Curated planning.");
-    writeSkill(claudeUserRoot, "pdf-workflow", "Claude PDF workflow.");
+    writeSkill(claudeUserRoot, "pdf-workflows", "Claude PDF workflow.");
     writeSkill(codexUserRoot, "review", "Codex review workflow.");
 
     const registry = createSkillRegistry({ curatedRoot, claudeUserRoot, codexUserRoot });
@@ -86,7 +131,7 @@ describe("skill registry", () => {
 
     expect(skills.map((skill) => [skill.id, skill.source, skill.externalProvider])).toEqual([
       ["planning", "curated", undefined],
-      ["claude-code:pdf-workflow", "external", "claude-code"],
+      ["claude-code:pdf-workflows", "external", "claude-code"],
       ["codex:review", "external", "codex"],
     ]);
   });

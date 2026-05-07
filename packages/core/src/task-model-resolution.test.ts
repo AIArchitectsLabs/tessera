@@ -37,11 +37,14 @@ describe("resolveTaskExecutionConfig", () => {
     expect(result.agent.skills).toEqual([
       "planning",
       "research-synthesis",
-      "document-drafting",
+      "word-docs",
+      "pdf-workflows",
+      "slide-decks",
+      "spreadsheets",
       "workspace-delivery",
       "decision-briefs",
     ]);
-    expect(result.runtime.compiledSummary).toContain("5 profile skills enabled");
+    expect(result.runtime.compiledSummary).toContain("8 profile skills enabled");
     expect("credential" in result.agent).toBe(false);
   });
 

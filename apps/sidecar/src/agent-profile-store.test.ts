@@ -32,13 +32,13 @@ describe("agent profile store", () => {
         instructions: "Drive concrete outcomes.",
         soul: "Brief.",
         userContext: "Supports an operator.",
-        skills: ["planning", "claude-code:pdf-workflow"],
+        skills: ["planning", "claude-code:pdf-workflows"],
         toolPolicyPreset: "workspace_editor",
         memoryDefaults: "Reuse weekly formats.",
       });
 
       expect(profile.templateId).toBe("business-operator");
-      expect(profile.skills).toEqual(["planning", "claude-code:pdf-workflow"]);
+      expect(profile.skills).toEqual(["planning", "claude-code:pdf-workflows"]);
       expect(profile.toolPolicyPreset).toBe("workspace_editor");
       expect(profile.memoryDefaults).toBe("Reuse weekly formats.");
     } finally {

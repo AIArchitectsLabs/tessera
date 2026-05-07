@@ -58,11 +58,11 @@ describe("skill contracts", () => {
       id: "agent-1",
       name: "Researcher",
       model: { mode: "default" },
-      skills: ["research-synthesis", "claude-code:pdf-workflow"],
+      skills: ["research-synthesis", "claude-code:pdf-workflows"],
       createdAt: "2026-05-05T00:00:00.000Z",
       updatedAt: "2026-05-05T00:00:00.000Z",
     });
-    expect(profile.skills).toEqual(["research-synthesis", "claude-code:pdf-workflow"]);
+    expect(profile.skills).toEqual(["research-synthesis", "claude-code:pdf-workflows"]);
 
     const activeSkill = TaskSkillActivationSchema.parse({
       skillId: "research-synthesis",

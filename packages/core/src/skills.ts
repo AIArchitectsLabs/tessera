@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ExternalSkillProvider,
   SkillDetail,
@@ -10,54 +11,10 @@ import type {
 } from "@tessera/contracts";
 import { SkillDetailSchema, SkillSummarySchema } from "@tessera/contracts";
 
-const CURATED_SKILLS: SkillDetail[] = [
-  {
-    id: "planning",
-    name: "planning",
-    description: "Plan multi-step business work with clear checkpoints.",
-    source: "curated",
-    content:
-      "# Planning\n\nBreak work into explicit steps, identify dependencies, and keep verification criteria concrete.",
-  },
-  {
-    id: "research-synthesis",
-    name: "research-synthesis",
-    description: "Synthesize research into concise, evidence-grounded takeaways.",
-    source: "curated",
-    content:
-      "# Research Synthesis\n\nSeparate facts from inference, cite sources when available, and end with decision-ready takeaways.",
-  },
-  {
-    id: "document-drafting",
-    name: "document-drafting",
-    description: "Draft business documents with structure, audience, and next steps.",
-    source: "curated",
-    content:
-      "# Document Drafting\n\nStart from the audience and purpose, use clear headings, and make the requested artifact directly usable.",
-  },
-  {
-    id: "workspace-delivery",
-    name: "workspace-delivery",
-    description: "Inspect context, maintain a checklist, and deliver concrete workspace files.",
-    source: "curated",
-    content:
-      "# Workspace Delivery\n\nInspect the relevant workspace context before editing, keep a short checklist for multi-step work, create or update concrete files when delivery requires it, and summarize changed outputs with verification notes.",
-  },
-  {
-    id: "decision-briefs",
-    name: "decision-briefs",
-    description: "Compare options and produce recommendation-ready decision briefs.",
-    source: "curated",
-    content:
-      "# Decision Briefs\n\nFrame the decision, compare realistic options, state a recommendation, and make risks, assumptions, trade-offs, and next actions explicit.",
-  },
-];
-
 interface SkillCandidate {
   summary: SkillSummary;
   content?: string;
   contained: boolean;
-  sourceRoot?: string;
 }
 
 export interface SkillRegistryOptions {
@@ -78,6 +35,8 @@ export interface SkillRegistry {
   listSkills(eligibility?: SkillEligibility): Promise<SkillSummary[]>;
   loadSkill(skillId: string, eligibility?: SkillEligibility): Promise<SkillDetail>;
 }
+
+const DEFAULT_CURATED_SKILLS_ROOT = fileURLToPath(new URL("../skills", import.meta.url));
 
 function defaultRoot(...parts: string[]): string {
   return join(homedir(), ...parts);
@@ -142,7 +101,6 @@ async function scanRoot(options: {
       summary: parsed.data,
       content: body || text,
       contained: await isInside(skillPath, options.root).catch(() => false),
-      sourceRoot: options.root,
     });
   }
 
@@ -201,14 +159,10 @@ export function createSkillRegistry(options: SkillRegistryOptions = {}): SkillRe
   const useHomeDefaults = options.curatedRoot === undefined;
 
   async function candidates(): Promise<SkillCandidate[]> {
-    const curated: SkillCandidate[] =
-      options.curatedRoot !== undefined
-        ? await scanRoot({ root: options.curatedRoot, source: "curated" })
-        : CURATED_SKILLS.map((skill) => ({
-            summary: skill,
-            content: skill.content,
-            contained: true,
-          }));
+    const curated = await scanRoot({
+      root: options.curatedRoot ?? DEFAULT_CURATED_SKILLS_ROOT,
+      source: "curated",
+    });
 
     return applyOwnedPrecedence([
       ...curated,
