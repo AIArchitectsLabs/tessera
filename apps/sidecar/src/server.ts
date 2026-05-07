@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AgentProfile,
   AgentTurnRequestSchema,
@@ -44,6 +44,7 @@ import {
   runWorkflow,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
+import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
@@ -70,18 +71,27 @@ function profileForAgentId(agentId: string): AgentProfile {
 }
 
 function defaultAgentProfile(): AgentProfile {
-  const override = agentProfileStore.get("default");
-  if (!override) return DEFAULT_AGENT_PROFILE;
-  return {
-    ...override,
-    id: DEFAULT_AGENT_PROFILE.id,
-    name: DEFAULT_AGENT_PROFILE.name,
-    model: DEFAULT_AGENT_PROFILE.model,
-  };
+  return mergeDefaultAgentProfile(DEFAULT_AGENT_PROFILE, agentProfileStore.get("default"));
 }
 
 function allowedSkillIdsForAgent(agentId: string): string[] {
   return profileForAgentId(agentId).skills ?? [];
+}
+
+function packagedCuratedSkillsRoot(): string | undefined {
+  const envRoot = process.env.TESSERA_CURATED_SKILLS_DIR;
+  if (envRoot && existsSync(envRoot)) return envRoot;
+
+  const executableRoot = join(dirname(process.execPath), "skills");
+  return existsSync(executableRoot) ? executableRoot : undefined;
+}
+
+function createTesseraSkillRegistry(options: { workspaceRoot?: string } = {}) {
+  const curatedRoot = packagedCuratedSkillsRoot();
+  return createSkillRegistry({
+    ...options,
+    ...(curatedRoot ? { curatedRoot, includeDefaultRoots: true } : {}),
+  });
 }
 
 async function parseSkillInvocation(options: {
@@ -89,7 +99,7 @@ async function parseSkillInvocation(options: {
   workspaceRoot: string;
   agentId: string;
 }): Promise<{ content: string; skill?: Omit<TaskSkillActivation, "activatedAt"> }> {
-  const registry = createSkillRegistry({ workspaceRoot: options.workspaceRoot });
+  const registry = createTesseraSkillRegistry({ workspaceRoot: options.workspaceRoot });
   const allowedSkillIds = allowedSkillIdsForAgent(options.agentId);
   const invocation = await resolveSlashSkillInvocation(options.text, registry, { allowedSkillIds });
   if (!invocation) return { content: options.text };
@@ -1127,14 +1137,20 @@ function handleAgentProfileDelete(req: Request, id: string): Response {
 function skillRegistryForUrl(req: Request) {
   const url = new URL(req.url);
   const workspaceRoot = url.searchParams.get("workspaceRoot") ?? undefined;
-  return createSkillRegistry(workspaceRoot ? { workspaceRoot } : {});
+  return createTesseraSkillRegistry(workspaceRoot ? { workspaceRoot } : {});
 }
 
 async function handleSkillList(req: Request): Promise<Response> {
   if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
   try {
+    const url = new URL(req.url);
+    const agentId = url.searchParams.get("agentId") ?? undefined;
     const registry = skillRegistryForUrl(req);
-    return Response.json({ skills: await registry.listSkills() });
+    return Response.json({
+      skills: await registry.listSkills(
+        agentId ? { allowedSkillIds: allowedSkillIdsForAgent(agentId) } : undefined
+      ),
+    });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : String(error) },

@@ -25,6 +25,7 @@ export interface SkillRegistryOptions {
   claudeWorkspaceRoot?: string;
   codexUserRoot?: string;
   codexWorkspaceRoot?: string;
+  includeDefaultRoots?: boolean;
 }
 
 export interface SkillEligibility {
@@ -156,7 +157,7 @@ function isAllowed(summary: SkillSummary, allowed: Set<string> | undefined): boo
 }
 
 export function createSkillRegistry(options: SkillRegistryOptions = {}): SkillRegistry {
-  const useHomeDefaults = options.curatedRoot === undefined;
+  const useHomeDefaults = options.includeDefaultRoots ?? options.curatedRoot === undefined;
 
   async function candidates(): Promise<SkillCandidate[]> {
     const curated = await scanRoot({

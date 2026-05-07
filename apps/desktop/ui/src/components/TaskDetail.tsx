@@ -6,6 +6,8 @@ import type {
   AgentProfile,
   AgentProfileListResult,
   ClarifyResponse,
+  SkillListResult,
+  SkillSummary,
   TaskArtifact,
   TaskDetail as TaskDetailType,
   TaskSkillActivation,
@@ -156,6 +158,7 @@ export function TaskDetail({
               onChange={setContent}
               onSend={handleSend}
               showAgentSelector={true}
+              workspaceRoot={workspaceRoot}
               inline
             />
           </div>
@@ -290,6 +293,8 @@ export function TaskDetail({
             value={content}
             onChange={setContent}
             onSend={handleSend}
+            agentId={task.agentId}
+            workspaceRoot={task.workspaceRoot}
             showAgentSelector={false}
           />
         </div>
@@ -315,31 +320,68 @@ function TaskComposer({
   onSend,
   placeholder,
   value,
+  agentId,
+  workspaceRoot,
   showAgentSelector,
   inline,
 }: {
+  agentId?: string;
   busy: boolean;
   disabled: boolean;
   onChange: (value: string) => void;
   onSend: (agentId?: string, agentLabel?: string) => void;
   placeholder: string;
   value: string;
+  workspaceRoot?: string | null;
   showAgentSelector?: boolean;
   inline?: boolean;
 }) {
   const canSend = Boolean(value.trim() && !busy && !disabled);
   const [agents, setAgents] = useState<AgentProfile[]>([]);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("default");
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [skillMenuIndex, setSkillMenuIndex] = useState(0);
+  const [cursorPosition, setCursorPosition] = useState(0);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (showAgentSelector) {
-      invoke<AgentProfileListResult>("agent_profile_list")
-        .then((res) => setAgents(res.profiles))
-        .catch(console.error);
-    }
-  }, [showAgentSelector]);
+    invoke<AgentProfileListResult>("agent_profile_list")
+      .then((res) => setAgents(res.profiles))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSkillsLoading(true);
+    setSkillsError(null);
+    invoke<SkillListResult>("skill_list", {
+      agentId: selectedAgentId,
+      workspaceRoot: workspaceRoot ?? undefined,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setSkills(res.skills);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSkills([]);
+        setSkillsError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setSkillsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAgentId, workspaceRoot]);
+
+  useEffect(() => {
+    if (agentId) setSelectedAgentId(agentId);
+  }, [agentId]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -357,78 +399,209 @@ function TaskComposer({
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
   const selectedLabel = selectedAgent?.name || "Tessera";
+  const enabledSkills = skills;
+  const slashQuery = slashSkillQuery(value, cursorPosition);
+  const matchingSkills =
+    slashQuery === undefined
+      ? []
+      : enabledSkills.filter((skill) => skillMatchesQuery(skill, slashQuery)).slice(0, 8);
+  const skillMenuOpen = slashQuery !== undefined;
+  const highlightedSkill = matchingSkills[Math.min(skillMenuIndex, matchingSkills.length - 1)];
+
+  function applySkillCompletion(skill: SkillSummary) {
+    onChange(`/${skill.id} `);
+    setCursorPosition(skill.id.length + 2);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(skill.id.length + 2, skill.id.length + 2);
+    });
+  }
+
+  function handleSendFromComposer() {
+    if (!canSend) return;
+    onSend(selectedAgentId, selectedLabel);
+  }
 
   return (
     <div className={inline ? "w-full" : "shrink-0 border-t border-border bg-background px-4 py-4"}>
-      <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
-        <textarea
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={placeholder}
-          rows={2}
-          disabled={disabled || busy}
-          className="max-h-32 min-h-14 w-full resize-none bg-transparent p-4 text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <div className="flex items-center justify-between px-2 pb-2">
-          <div className="pl-2 flex items-center h-8 relative" ref={popoverRef}>
-            {showAgentSelector && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs px-2 py-0 text-muted-foreground hover:text-foreground hover:bg-secondary"
-                  onClick={() => setPopoverOpen(!popoverOpen)}
-                >
-                  <Bot size={14} className="mr-1.5" />
-                  {selectedLabel}
-                  <ChevronDown size={12} className="ml-1 opacity-50" />
-                </Button>
-
-                {popoverOpen && (
-                  <div className="absolute bottom-full left-0 mb-2 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none z-50 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95">
-                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Agents
-                    </div>
-                    {agents.map((agent) => (
-                      <button
-                        key={agent.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedAgentId(agent.id);
-                          setPopoverOpen(false);
-                        }}
-                        className={cn(
-                          "w-full text-left px-2 py-1.5 text-sm rounded-sm flex items-center justify-between",
-                          selectedAgentId === agent.id
-                            ? "bg-secondary text-foreground"
-                            : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        <span className="truncate">{agent.name}</span>
-                        {selectedAgentId === agent.id && (
-                          <span className="text-xs bg-background rounded px-1 border border-border shrink-0">
-                            {agent.id === "default" ? "Default" : "Selected"}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
+      <div className="relative">
+        {skillMenuOpen && (
+          <div className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-72 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
+            <div className="border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Skills for {selectedLabel}
+            </div>
+            {skillsLoading ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                Loading enabled skills...
+              </div>
+            ) : skillsError ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                Could not load enabled skills.
+              </div>
+            ) : enabledSkills.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                No skills enabled for {selectedLabel}.
+              </div>
+            ) : matchingSkills.length > 0 ? (
+              <div className="max-h-60 overflow-y-auto p-1">
+                {matchingSkills.map((skill, index) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applySkillCompletion(skill);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-3 rounded-md px-3 py-2 text-left",
+                      index === skillMenuIndex
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                    )}
+                  >
+                    <span className="mt-0.5 rounded bg-background px-1.5 py-0.5 font-mono text-xs text-foreground">
+                      /{skill.id}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{skill.name}</span>
+                      <span className="line-clamp-2 text-xs">{skill.description}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                No enabled skills match /{slashQuery}.
+              </div>
             )}
           </div>
-          <Button
-            type="button"
-            size="icon"
-            className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            disabled={!canSend}
-            onClick={() => onSend(selectedAgentId, selectedLabel)}
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={16} />}
-          </Button>
+        )}
+        <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(event) => {
+              onChange(event.target.value);
+              setCursorPosition(event.target.selectionStart);
+              setSkillMenuIndex(0);
+            }}
+            onSelect={(event) => setCursorPosition(event.currentTarget.selectionStart)}
+            onKeyDown={(event) => {
+              if (skillMenuOpen) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setSkillMenuIndex((current) =>
+                    matchingSkills.length === 0 ? 0 : (current + 1) % matchingSkills.length
+                  );
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSkillMenuIndex((current) =>
+                    matchingSkills.length === 0
+                      ? 0
+                      : (current - 1 + matchingSkills.length) % matchingSkills.length
+                  );
+                  return;
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault();
+                  if (highlightedSkill) applySkillCompletion(highlightedSkill);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setCursorPosition(-1);
+                  return;
+                }
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                handleSendFromComposer();
+              }
+            }}
+            placeholder={placeholder}
+            rows={2}
+            disabled={disabled || busy}
+            className="max-h-32 min-h-14 w-full resize-none bg-transparent p-4 text-sm outline-none placeholder:text-muted-foreground/60 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <div className="flex items-center justify-between px-2 pb-2">
+            <div className="pl-2 flex items-center h-8 relative" ref={popoverRef}>
+              {showAgentSelector && (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs px-2 py-0 text-muted-foreground hover:text-foreground hover:bg-secondary"
+                    onClick={() => setPopoverOpen(!popoverOpen)}
+                  >
+                    <Bot size={14} className="mr-1.5" />
+                    {selectedLabel}
+                    <ChevronDown size={12} className="ml-1 opacity-50" />
+                  </Button>
+
+                  {popoverOpen && (
+                    <div className="absolute bottom-full left-0 mb-2 w-56 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none z-50 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95">
+                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                        Agents
+                      </div>
+                      {agents.map((agent) => (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAgentId(agent.id);
+                            setPopoverOpen(false);
+                          }}
+                          className={cn(
+                            "w-full text-left px-2 py-1.5 text-sm rounded-sm flex items-center justify-between",
+                            selectedAgentId === agent.id
+                              ? "bg-secondary text-foreground"
+                              : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          <span className="truncate">{agent.name}</span>
+                          {selectedAgentId === agent.id && (
+                            <span className="text-xs bg-background rounded px-1 border border-border shrink-0">
+                              {agent.id === "default" ? "Default" : "Selected"}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              disabled={!canSend}
+              onClick={handleSendFromComposer}
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={16} />}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function slashSkillQuery(value: string, cursorPosition: number): string | undefined {
+  if (cursorPosition < 0) return undefined;
+  const beforeCursor = value.slice(0, cursorPosition);
+  const match = beforeCursor.match(/^\/([A-Za-z0-9:_-]*)$/);
+  return match?.[1];
+}
+
+function skillMatchesQuery(skill: SkillSummary, query: string): boolean {
+  const normalized = query.toLowerCase();
+  return (
+    skill.id.toLowerCase().includes(normalized) ||
+    skill.name.toLowerCase().includes(normalized) ||
+    skill.description.toLowerCase().includes(normalized)
   );
 }
 

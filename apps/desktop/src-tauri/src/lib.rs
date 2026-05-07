@@ -517,6 +517,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&app_config_dir).context("Could not create app config dir")?;
     let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
     let task_db_path = app_data_dir.join("tasks.sqlite");
+    let curated_skills_dir = bin_dir.join("skills");
 
     let (mut rx, child) = app
         .shell()
@@ -534,6 +535,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .env(
             "TESSERA_APP_CONFIG_DIR",
             app_config_dir.to_string_lossy().as_ref(),
+        )
+        .env(
+            "TESSERA_CURATED_SKILLS_DIR",
+            curated_skills_dir.to_string_lossy().as_ref(),
         )
         // pi-coding-agent resolves its package dir via dirname(process.execPath) when
         // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
