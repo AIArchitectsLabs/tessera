@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { readDir } from "@tauri-apps/plugin-fs";
 import type {
   AgentProfile,
   AgentProfileListResult,
@@ -341,9 +342,13 @@ function TaskComposer({
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("default");
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [skillMenuIndex, setSkillMenuIndex] = useState(0);
+  const [fileMenuIndex, setFileMenuIndex] = useState(0);
   const [cursorPosition, setCursorPosition] = useState(0);
   const popoverRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -384,6 +389,38 @@ function TaskComposer({
   }, [agentId]);
 
   useEffect(() => {
+    if (!workspaceRoot) {
+      setWorkspaceFiles([]);
+      setFilesLoading(false);
+      setFilesError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setFilesLoading(true);
+    setFilesError(null);
+
+    loadWorkspaceFilePaths(workspaceRoot)
+      .then((paths) => {
+        if (cancelled) return;
+        setWorkspaceFiles(paths);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        setWorkspaceFiles([]);
+        setFilesError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setFilesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceRoot]);
+
+  useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
         setPopoverOpen(false);
@@ -407,6 +444,13 @@ function TaskComposer({
       : enabledSkills.filter((skill) => skillMatchesQuery(skill, slashQuery.query)).slice(0, 8);
   const skillMenuOpen = slashQuery !== undefined;
   const highlightedSkill = matchingSkills[Math.min(skillMenuIndex, matchingSkills.length - 1)];
+  const fileQuery = skillMenuOpen ? undefined : mentionFileQuery(value, cursorPosition);
+  const matchingFiles =
+    fileQuery === undefined
+      ? []
+      : workspaceFiles.filter((path) => fileMatchesQuery(path, fileQuery.query)).slice(0, 8);
+  const fileMenuOpen = fileQuery !== undefined;
+  const highlightedFile = matchingFiles[Math.min(fileMenuIndex, matchingFiles.length - 1)];
 
   function applySkillCompletion(skill: SkillSummary) {
     const nextValue = slashQuery?.mode === "generic" ? `/skill ${skill.id} ` : `/${skill.id} `;
@@ -415,6 +459,18 @@ function TaskComposer({
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(nextValue.length, nextValue.length);
+    });
+  }
+
+  function applyFileCompletion(path: string) {
+    if (!fileQuery) return;
+    const nextCursorPosition = fileQuery.start + path.length + 2;
+    const nextValue = `${value.slice(0, fileQuery.start)}@${path} ${value.slice(cursorPosition)}`;
+    onChange(nextValue);
+    setCursorPosition(nextCursorPosition);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursorPosition, nextCursorPosition);
     });
   }
 
@@ -481,6 +537,50 @@ function TaskComposer({
             )}
           </div>
         )}
+        {fileMenuOpen && (
+          <div className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-72 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
+            <div className="border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Workspace files
+            </div>
+            {filesLoading ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">Loading files...</div>
+            ) : filesError ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                Could not load workspace files.
+              </div>
+            ) : workspaceFiles.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                No files found in this workspace.
+              </div>
+            ) : matchingFiles.length > 0 ? (
+              <div className="max-h-60 overflow-y-auto p-1">
+                {matchingFiles.map((path, index) => (
+                  <button
+                    key={path}
+                    type="button"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyFileCompletion(path);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-md px-3 py-2 text-left",
+                      index === fileMenuIndex
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                    )}
+                  >
+                    <FileText size={14} className="shrink-0 opacity-70" />
+                    <span className="min-w-0 truncate font-mono text-sm">@{path}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="px-3 py-3 text-sm text-muted-foreground">
+                No workspace files match @{fileQuery.query}.
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex flex-col rounded-2xl border border-border bg-background shadow-lg overflow-hidden transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
           <textarea
             ref={textareaRef}
@@ -489,6 +589,7 @@ function TaskComposer({
               onChange(event.target.value);
               setCursorPosition(event.target.selectionStart);
               setSkillMenuIndex(0);
+              setFileMenuIndex(0);
             }}
             onSelect={(event) => setCursorPosition(event.currentTarget.selectionStart)}
             onKeyDown={(event) => {
@@ -512,6 +613,34 @@ function TaskComposer({
                 if (event.key === "Tab" || event.key === "Enter") {
                   event.preventDefault();
                   if (highlightedSkill) applySkillCompletion(highlightedSkill);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setCursorPosition(-1);
+                  return;
+                }
+              }
+              if (fileMenuOpen) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setFileMenuIndex((current) =>
+                    matchingFiles.length === 0 ? 0 : (current + 1) % matchingFiles.length
+                  );
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setFileMenuIndex((current) =>
+                    matchingFiles.length === 0
+                      ? 0
+                      : (current - 1 + matchingFiles.length) % matchingFiles.length
+                  );
+                  return;
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault();
+                  if (highlightedFile) applyFileCompletion(highlightedFile);
                   return;
                 }
                 if (event.key === "Escape") {
@@ -599,6 +728,13 @@ type SlashSkillQuery = {
   query: string;
 };
 
+const MAX_WORKSPACE_FILE_MENTIONS = 500;
+
+type FileMentionQuery = {
+  query: string;
+  start: number;
+};
+
 function slashSkillQuery(value: string, cursorPosition: number): SlashSkillQuery | undefined {
   if (cursorPosition < 0) return undefined;
   const beforeCursor = value.slice(0, cursorPosition);
@@ -608,6 +744,17 @@ function slashSkillQuery(value: string, cursorPosition: number): SlashSkillQuery
   return directMatch ? { mode: "direct", query: directMatch[1] ?? "" } : undefined;
 }
 
+function mentionFileQuery(value: string, cursorPosition: number): FileMentionQuery | undefined {
+  if (cursorPosition < 0) return undefined;
+  const beforeCursor = value.slice(0, cursorPosition);
+  const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+  if (!match) return undefined;
+  return {
+    query: match[2] ?? "",
+    start: beforeCursor.length - (match[2]?.length ?? 0) - 1,
+  };
+}
+
 function skillMatchesQuery(skill: SkillSummary, query: string): boolean {
   const normalized = query.toLowerCase();
   return (
@@ -615,6 +762,36 @@ function skillMatchesQuery(skill: SkillSummary, query: string): boolean {
     skill.name.toLowerCase().includes(normalized) ||
     skill.description.toLowerCase().includes(normalized)
   );
+}
+
+function fileMatchesQuery(path: string, query: string): boolean {
+  return path.toLowerCase().includes(query.toLowerCase());
+}
+
+async function loadWorkspaceFilePaths(workspaceRoot: string): Promise<string[]> {
+  const paths: string[] = [];
+
+  async function visit(directoryPath: string, relativePrefix: string) {
+    if (paths.length >= MAX_WORKSPACE_FILE_MENTIONS) return;
+    const entries = await readDir(directoryPath);
+    const visibleEntries = entries
+      .filter((entry) => !entry.name.startsWith("."))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of visibleEntries) {
+      if (paths.length >= MAX_WORKSPACE_FILE_MENTIONS) break;
+      const relativePath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+      const absolutePath = `${directoryPath}/${entry.name}`;
+      if (entry.isDirectory) {
+        await visit(absolutePath, relativePath);
+      } else {
+        paths.push(relativePath);
+      }
+    }
+  }
+
+  await visit(workspaceRoot, "");
+  return paths;
 }
 
 function AgentInfoPopover({

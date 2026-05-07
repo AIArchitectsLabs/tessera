@@ -53,6 +53,7 @@ type InvokeCall = {
 
 const invokeCalls: InvokeCall[] = [];
 let skillListMode: "normal" | "empty" | "error" | "pending" = "normal";
+let fileTreeMode: "normal" | "empty" | "error" = "normal";
 
 const invoke = async (command: string, args?: Record<string, unknown>) => {
   invokeCalls.push({ command, args: args ? JSON.parse(JSON.stringify(args)) : undefined });
@@ -165,6 +166,36 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke,
 }));
 
+const readDir = mock(async (path: string) => {
+  if (fileTreeMode === "error") {
+    throw new Error("File load failed");
+  }
+  if (fileTreeMode === "empty") {
+    return [];
+  }
+  if (path === "/tmp/workspace") {
+    return [
+      { name: "README.md", isDirectory: false },
+      { name: "src", isDirectory: true },
+      { name: ".git", isDirectory: true },
+    ];
+  }
+  if (path === "/tmp/workspace/src") {
+    return [
+      { name: "app.ts", isDirectory: false },
+      { name: "nested", isDirectory: true },
+    ];
+  }
+  if (path === "/tmp/workspace/src/nested") {
+    return [{ name: "plan.md", isDirectory: false }];
+  }
+  return [];
+});
+
+mock.module("@tauri-apps/plugin-fs", () => ({
+  readDir,
+}));
+
 const { TaskDetail } = await import("./TaskDetail");
 
 function taskDetail(): TaskDetailType {
@@ -188,7 +219,9 @@ function taskDetail(): TaskDetailType {
 beforeEach(() => {
   document.body.innerHTML = "";
   invokeCalls.length = 0;
+  readDir.mockClear();
   skillListMode = "normal";
+  fileTreeMode = "normal";
 });
 
 afterEach(() => {
@@ -355,5 +388,36 @@ describe("TaskDetail composer", () => {
     await waitFor(() => {
       expect(onCreateTurn).toHaveBeenCalledWith("Please draft the memo");
     });
+  });
+
+  test("shows workspace file completions for @ mentions", async () => {
+    const { view } = renderTaskDetail();
+    const textarea = view.getByPlaceholderText("Write a message...") as HTMLTextAreaElement;
+
+    typeComposerValue(textarea, "Review @src/");
+
+    await waitFor(() => {
+      expect(view.getByText("@src/app.ts")).toBeTruthy();
+    });
+    expect(view.getByText("@src/nested/plan.md")).toBeTruthy();
+    expect(view.queryByText("@.git")).toBeNull();
+  });
+
+  test("inserts a workspace file mention without sending the message", async () => {
+    const { view, onCreateTurn } = renderTaskDetail();
+    const textarea = view.getByPlaceholderText("Write a message...") as HTMLTextAreaElement;
+
+    typeComposerValue(textarea, "Review @src/app");
+
+    await waitFor(() => {
+      expect(view.getByText("@src/app.ts")).toBeTruthy();
+    });
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Review @src/app.ts ");
+    });
+    expect(onCreateTurn).not.toHaveBeenCalled();
   });
 });
