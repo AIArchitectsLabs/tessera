@@ -60,9 +60,8 @@ The selected playbook owns one centered guided page with four states:
 ## Runtime Requirement
 
 Business playbooks may include agent-backed steps, not only deterministic tool
-steps. Starting a playbook from the desktop UI must therefore resolve the
-selected model provider and request-scoped credential before it calls the
-sidecar.
+steps. Starting a playbook from the desktop UI must therefore resolve per-node
+local assignments and request-scoped credentials before it calls the sidecar.
 
 ## Node Assignment
 
@@ -81,12 +80,36 @@ Instead, each Playbook node declares capability requirements:
 - Integration requirements: connector capabilities such as
   `calendar.events.read` or `crm.accounts.read`, not a specific vendor account.
 
+Capability names must come from a canonical Tessera capability registry. The
+registry owns stable ids, labels, descriptions, versions, aliases, and
+deprecation status for model, skill, tool, and integration capabilities. Unknown
+required capabilities are launch blockers. Unknown optional capabilities are
+reported as unavailable source coverage.
+
+Plugins and integrations may contribute capabilities, but contributed
+capabilities must be namespaced, registered through connector/skill metadata,
+and normalized into the local registry before a Playbook can depend on them.
+Unregistered plugin-provided strings are treated as unknown.
+
+Local resources must advertise canonical capabilities before they can satisfy a
+node. Skills need capability metadata, tool policies need canonical permission
+capabilities, integrations need connector capability metadata plus configured
+auth state, and model settings need provider/model capability metadata. Legacy
+resources without capability metadata are usable by Tasks but do not satisfy
+required Playbook node capabilities except through explicit compatibility
+mappings in the registry.
+
 At run time, Tessera resolves each node to local resources that satisfy those
 requirements. If exactly one valid assignment exists, Tessera assigns it
 automatically. If multiple valid assignments exist, Tessera chooses the best
-deterministic match by ranking fit, defaults, and least privilege. If no valid
-assignment exists, the guided flow stops before launch and explains the missing
-capability in business-readable language.
+deterministic match by ranking fit, defaults, and least privilege. If two or
+more business-distinct assignments remain tied after ranking, or if the choice
+materially changes business risk such as using a cloud model for workspace-local
+data, the guided flow asks for a short business-readable clarification. Stable
+id ordering is allowed only for indistinguishable duplicate candidates after all
+business-visible ranking fields match. If no valid assignment
+exists, the guided flow stops before launch and explains the missing capability
+in business-readable language.
 
 The default business UI should not show an assignment matrix. Assignment details
 can be available later in a Details/debug surface, but the normal path is
@@ -98,8 +121,48 @@ and integration connector ids. This metadata belongs to the local run record,
 not the Playbook package. Provider credentials remain request-scoped and must
 not be stored.
 
+Assignment plans are never trusted just because the desktop UI sent them. The
+sidecar/core boundary must validate that every assignment still satisfies the
+manifest requirements and the current sanitized local inventory before any node
+executes.
+
+Run-create and resume requests must carry the current sanitized inventory used
+for validation. The inventory is request-scoped and non-secret; it is not
+checkpointed.
+
+Missing optional capabilities should be persisted as `sourceGaps` on the run so
+the result can explain what Tessera could not use without treating the run as a
+failure.
+
+Resolved assignment metadata must include a fingerprint of the local resources
+used for the node. On resume, Tessera revalidates that the profile, provider,
+skills, tools, integrations, and policies still exist and still satisfy the
+fingerprint. If a resource changed or was removed, the run pauses with a
+business-readable "setup changed" message and re-resolves before continuing.
+
+Capability resolution does not grant permissions by itself. Write, mutation, and
+external integration actions still pass through the existing tool permission and
+Action Inbox approval path. Capability matching only proves that an eligible
+resource exists.
+
+Data-policy semantics are explicit:
+
+- `cloud-ok`: cloud or local models may be used.
+- `workspace-local-ok`: cloud models may be used only if the selected provider is
+  allowed by workspace/user model settings for workspace data.
+- `local-only`: only local providers and local-only integrations may satisfy the
+  node.
+
+Unknown model capability metadata must be treated conservatively. A model with
+unknown context size, data policy, or capability flags cannot satisfy a required
+constraint that depends on that unknown field.
+
+Exact model identifiers in a Playbook are allowed only for public, portable model
+ids or model classes. Local model aliases are local resource metadata and must
+not appear in Playbook packages.
+
 The Playbooks implementation must not rely on ambient environment variables for
-business playbooks. If the selected model provider is missing credentials, the
+business playbooks. If a resolved model provider is missing credentials, the
 guided flow should fail before launch with the same business-readable settings
 message used by Tasks, for example: "OpenAI is not configured. Add an API key in
 Settings > Model."
@@ -249,11 +312,11 @@ Add focused UI tests for:
 
 Add transport/runtime tests for:
 
-- Agent-backed playbook run requests accept execution config.
-- The desktop playbook start command attaches default model execution.
+- Agent-backed playbook nodes accept portable capability requirements.
+- The desktop playbook start command resolves node assignments before launch.
 - Missing cloud credentials fail before starting the playbook.
-- Approved resume of an agent-backed playbook preserves execution context when
-  needed for remaining agent steps.
+- Approved resume of an agent-backed playbook revalidates the checkpointed
+  assignment plan before continuing.
 
 Backend and contract tests should keep covering:
 
@@ -285,6 +348,17 @@ The review loop closed these implementation loopholes:
   ids.
 - Multi-agent setups resolve automatically per node. Runs persist resolved local
   node assignments only after resolution, so approval resumes are deterministic.
+- Capability names need a canonical registry; arbitrary strings are not enough.
+- Skills, tool policies, integrations, and model settings need capability
+  metadata before they can satisfy node requirements.
+- Assignment plans need fingerprints and resume revalidation to handle deleted or
+  edited local agents, skills, tools, integrations, and model settings.
+- Sidecar/core must validate assignment plans at execution time and must not
+  trust a client-provided plan blindly.
+- Capability resolution never bypasses permissions; mutating actions still use
+  the Action Inbox approval path.
+- Data-policy requirements and unknown model metadata are handled
+  conservatively.
 - Credentials must never be persisted in workflow checkpoints or run events.
 - The Preparing state is only local pending UI until async launch or
   subscriptions exist.

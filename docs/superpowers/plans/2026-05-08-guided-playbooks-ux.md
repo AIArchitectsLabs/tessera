@@ -12,6 +12,10 @@
 
 **Node Assignment Constraint:** Playbook manifests must not reference local agent ids, labels, skill ids, tool implementation names, or integration account ids. Each node declares capability requirements; Tessera resolves those requirements to local agents, models, skills, tools, and integrations at run time. Runs persist resolved non-secret node assignments; credentials stay request-scoped.
 
+**Capability Registry Constraint:** Requirement strings are not free-form. Add a canonical capability registry for model, skill, tool, and integration capabilities. Unknown required capabilities block launch; unknown optional capabilities become source gaps.
+
+**Validation Boundary Constraint:** Assignment plans are request inputs, not trusted facts. Run-create and resume requests must include the current sanitized inventory used to validate the assignment plan before any node executes.
+
 **Tech Stack:** React + TypeScript, Tauri `invoke`, `@tessera/contracts`, lucide-react, Tailwind, Bun tests, Biome.
 
 ---
@@ -19,7 +23,7 @@
 ## File Structure
 
 - Modify `packages/contracts/src/index.ts`
-  Keep rich manifest metadata and run detail contracts. Add only missing display fields if tests prove they are needed.
+  Keep rich manifest metadata and run detail contracts. Add capability registry, node requirement, assignment plan, and resolver request/result contracts.
 
 - Modify `packages/contracts/src/workflow.test.ts`
   Cover restored business playbook metadata and display-ready run shape.
@@ -37,7 +41,7 @@
   Replace run-console layout with guided same-flow shell. This file may stay as the container, but most logic should move into smaller helpers.
 
 - Modify `apps/desktop/src-tauri/src/lib.rs`
-  Attach default model execution context to playbook run and resume commands for agent-backed playbooks.
+  Build sanitized capability inventory and attach request-scoped credentials to playbook run and resume commands for agent-backed playbooks.
 
 - Create `apps/desktop/ui/src/lib/playbooks.ts`
   Business copy, formatting, hidden/system input filtering, default input normalization, output labels, and guided state helpers.
@@ -312,7 +316,7 @@ git commit -m "Restore business playbooks for guided launch"
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Test: `packages/contracts/src/workflow.test.ts`
 
-- [ ] **Step 1: Write contract tests for node requirements**
+- [ ] **Step 1: Write contract tests for capability registry and node requirements**
 
 Add tests proving a playbook can describe what a node needs without naming local resources:
 
@@ -375,16 +379,82 @@ test("rejects local ids in workflow node requirements", () => {
     })
   ).toThrow();
 });
+
+test("rejects unknown required capability ids", () => {
+  expect(() =>
+    WorkflowDefinitionSchema.parse({
+      id: "bad.unknown-capability",
+      version: 1,
+      name: "Bad Unknown Capability",
+      start: "draft",
+      inputs: { workspaceRoot: { type: "string", required: true } },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          label: "Draft",
+          prompt: "Draft",
+          workspaceRootInput: "workspaceRoot",
+          requires: {
+            skills: [{ capability: "not-a-real-capability" }],
+          },
+        },
+      ],
+    })
+  ).toThrow();
+});
 ```
 
-- [ ] **Step 2: Extend workflow requirement contracts**
+- [ ] **Step 2: Add canonical capability contracts**
+
+Add a small canonical registry in `packages/contracts/src/index.ts`. Keep it intentionally small for the MVP and expand it only when concrete playbooks need more:
+
+```ts
+export const CapabilityKindSchema = z.enum(["model", "skill", "tool", "integration"]);
+export type CapabilityKind = z.infer<typeof CapabilityKindSchema>;
+
+export const CanonicalCapabilitySchema = z.object({
+  id: z.string().min(1),
+  kind: CapabilityKindSchema,
+  label: z.string().min(1),
+  description: z.string().min(1),
+  version: z.number().int().positive().default(1),
+  aliases: z.array(z.string().min(1)).default([]),
+  deprecated: z.boolean().default(false),
+});
+
+export const CANONICAL_CAPABILITIES = [
+  { id: "model.reasoning", kind: "model", label: "Reasoning", description: "Can reason across multi-step business context." },
+  { id: "model.summarization", kind: "model", label: "Summarization", description: "Can summarize long source material." },
+  { id: "skill.meeting-prep", kind: "skill", label: "Meeting prep", description: "Can prepare customer or prospect meeting material." },
+  { id: "skill.account-research", kind: "skill", label: "Account research", description: "Can research account context." },
+  { id: "tool.workspace.read", kind: "tool", label: "Read workspace", description: "Can inspect workspace files." },
+  { id: "tool.workspace.write", kind: "tool", label: "Write workspace", description: "Can create or update workspace files." },
+  { id: "integration.calendar.events.read", kind: "integration", label: "Calendar events", description: "Can read calendar events." },
+  { id: "integration.crm.accounts.read", kind: "integration", label: "CRM accounts", description: "Can read account records." },
+] satisfies CanonicalCapability[];
+```
+
+Provide helpers:
+
+```ts
+export function canonicalCapability(idOrAlias: string): CanonicalCapability | undefined;
+export function assertKnownCapability(id: string, kind: CapabilityKind, optional: boolean): string;
+```
+
+`assertKnownCapability` normalizes aliases to canonical ids. It rejects unknown required capabilities and allows unknown optional capabilities only when callers explicitly want source-gap behavior.
+
+Plugin, skill, and integration contributed capabilities must be namespaced and registered through metadata before they can satisfy a Playbook requirement. Treat unregistered contributed strings as unknown.
+
+- [ ] **Step 3: Extend workflow requirement contracts**
 
 Add schemas near the workflow step schemas:
 
 ```ts
 export const WorkflowModelRequirementSchema = z.object({
   acceptableProviders: z.array(z.enum(["openai", "anthropic", "openrouter", "local"])).default([]),
-  acceptableModels: z.array(z.string().min(1)).default([]),
+  acceptableModelClasses: z.array(z.string().min(1)).default([]),
+  acceptablePortableModelIds: z.array(z.string().min(1)).default([]),
   capabilities: z.array(z.string().min(1)).default([]),
   minContextTokens: z.number().int().positive().optional(),
   dataPolicy: z.enum(["cloud-ok", "workspace-local-ok", "local-only"]).default("cloud-ok"),
@@ -407,7 +477,51 @@ export const WorkflowNodeRequirementsSchema = z
 
 Attach `requires: WorkflowNodeRequirementsSchema.optional()` to both agent and tool workflow step schemas. Do not add `agentId`, `agentLabel`, local skill ids, local tool ids, or integration account ids to manifest schemas.
 
-- [ ] **Step 3: Add resolved assignment contracts**
+Normalize every requirement capability through the canonical registry during `WorkflowDefinitionSchema` parsing. Model `capabilities` must be `model.*`, skill requirements must be `skill.*`, tool requirements must be `tool.*`, and integration requirements must be `integration.*`.
+
+Do not allow local model aliases in manifests. `acceptablePortableModelIds` is only for public provider ids such as a hosted model id; local model names belong in the local inventory.
+
+- [ ] **Step 4: Add capability metadata to local resource contracts**
+
+Extend local resource summaries so the resolver has real inputs:
+
+```ts
+export const SkillSummarySchema = z.object({
+  // existing fields...
+  capabilities: z.array(z.string().min(1)).default([]),
+});
+
+export const ToolPolicyRuntimeSchema = z.object({
+  // existing fields...
+  capabilityIds: z.array(z.string().min(1)).default([]),
+});
+
+export const IntegrationCapabilitySummarySchema = z.object({
+  provider: IntegrationProviderSchema,
+  configured: z.boolean(),
+  capabilities: z.array(z.string().min(1)).default([]),
+  dataPolicies: z.array(z.enum(["cloud-ok", "workspace-local-ok", "local-only"])).default([]),
+});
+
+export const ModelCapabilitySummarySchema = z.object({
+  provider: AgentProviderConfigSchema,
+  credentialAvailable: z.boolean(),
+  capabilities: z.array(z.string().min(1)).default([]),
+  contextTokens: z.number().int().positive().optional(),
+  dataPolicies: z.array(z.enum(["cloud-ok", "workspace-local-ok", "local-only"])).default([]),
+  portableModelId: z.string().min(1).optional(),
+  modelClass: z.string().min(1).optional(),
+});
+```
+
+For existing resources without capability metadata, add explicit compatibility mappings:
+
+- Tool policy presets map to `tool.workspace.read`, `tool.workspace.write`, and related canonical ids.
+- Existing curated skill ids map to skill capabilities only when the mapping is explicit in the registry.
+- Existing integration settings map to integration capabilities only when the provider is configured and authorized.
+- Unknown model metadata remains unknown and cannot satisfy required context/data/capability constraints.
+
+- [ ] **Step 5: Add resource inventory and resolved assignment contracts**
 
 Resolved assignments are local run metadata, not manifest metadata:
 
@@ -416,20 +530,59 @@ export const WorkflowNodeAssignmentSchema = z.object({
   stepId: z.string().min(1),
   agentId: z.string().min(1).optional(),
   agentLabel: z.string().min(1).optional(),
+  agentFingerprint: z.string().min(1).optional(),
   provider: AgentProviderConfigSchema.optional(),
+  providerFingerprint: z.string().min(1).optional(),
+  credentialRef: z.string().min(1).optional(),
   skillIds: z.array(z.string().min(1)).default([]),
+  skillFingerprints: z.record(z.string().min(1)).default({}),
   toolCapabilities: z.array(z.string().min(1)).default([]),
   integrationIds: z.array(z.string().min(1)).default([]),
+  integrationFingerprints: z.record(z.string().min(1)).default({}),
 });
 
 export const WorkflowRunAssignmentPlanSchema = z.object({
   assignments: z.record(WorkflowNodeAssignmentSchema),
+  resolverVersion: z.number().int().positive(),
+  createdAt: z.string().datetime(),
 });
 ```
 
 Add `assignmentPlan: WorkflowRunAssignmentPlanSchema.optional()` to `WorkflowRunRequestSchema`, `WorkflowResumeRequestSchema`, and `WorkflowRunResultSchema`. This is non-secret and may be checkpointed. Credentials are not part of the assignment plan.
 
-Add a request-scoped credential map keyed by provider or assignment key:
+Add `capabilityInventory: WorkflowCapabilityInventorySchema.optional()` to `WorkflowRunRequestSchema` and `WorkflowResumeRequestSchema`. This is request-scoped validation input and must not be checkpointed.
+
+Add resolver input/output schemas. The resolver must receive a sanitized local inventory, not raw keychain contents:
+
+```ts
+export const WorkflowCapabilityInventorySchema = z.object({
+  agents: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      fingerprint: z.string().min(1),
+      model: AgentProviderConfigSchema.optional(),
+      modelCapabilities: z.array(z.string().min(1)).default([]),
+      contextTokens: z.number().int().positive().optional(),
+      dataPolicies: z.array(z.enum(["cloud-ok", "workspace-local-ok", "local-only"])).default([]),
+      skillCapabilities: z.array(z.string().min(1)).default([]),
+      toolCapabilities: z.array(z.string().min(1)).default([]),
+    })
+  ),
+  integrations: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      fingerprint: z.string().min(1),
+      capabilities: z.array(z.string().min(1)),
+      dataPolicies: z.array(z.enum(["cloud-ok", "workspace-local-ok", "local-only"])).default([]),
+      configured: z.boolean(),
+    })
+  ),
+});
+```
+
+Add a request-scoped credential map keyed by `credentialRef` from the assignment plan:
 
 ```ts
 export const WorkflowExecutionConfigSchema = z.object({
@@ -437,63 +590,90 @@ export const WorkflowExecutionConfigSchema = z.object({
 });
 ```
 
-- [ ] **Step 4: Implement capability resolution before launch**
+- [ ] **Step 6: Implement capability resolution before launch**
 
 Add a resolver in `apps/sidecar/src/server.ts` or a focused helper module. It should:
 
 - Inspect each step's `requires`.
-- Build candidate local agent profiles from `agentProfileStore`.
-- Match model requirements against the profile model override or selected default provider.
-- Match skill requirements by capability tags, not raw skill ids.
+- Build candidate resources from the sanitized capability inventory.
+- Match model requirements against explicit model capability metadata, context limits, and data policy. Unknown model metadata cannot satisfy a required constraint.
+- Match skill requirements by canonical capability ids, not raw skill ids.
 - Match tool requirements against profile runtime/tool policy capability classes.
 - Match integration requirements against available connector capability metadata.
-- Choose the highest-ranked valid candidate automatically.
+- Choose the highest-ranked valid candidate automatically when there is a clear winner.
+- Return a short clarification prompt only when two candidates remain tied after ranking or when the choice changes material business risk.
 - Return a business-readable error when a required capability has no candidate.
+
+Expose the resolver through a sidecar endpoint used by Tauri before run creation/resume:
+
+- `POST /playbooks/:id/resolve`
+- Body: `{ input, capabilityInventory, existingAssignmentPlan? }`
+- Response success: `{ assignmentPlan, sourceGaps: [], warnings: [] }`
+- Response blocked: `{ error, missingCapabilities, sourceGaps, clarification? }`
+
+The sidecar must also validate `assignmentPlan` against `capabilityInventory` again inside `POST /playbooks/:id/runs` and `POST /playbook-runs/:runId/resume`. A missing inventory, stale plan, tampered plan, or incomplete plan must fail before any node executes.
 
 Ranking order for MVP:
 
 1. Exact model/provider fit.
 2. Agent profile already has all required skill capability tags.
 3. Least-privilege tool policy that still satisfies the node.
-4. User/default profile as tie-breaker.
-5. Stable id sort as final deterministic tie-breaker.
+4. Data policy fit: local-only > workspace-local-ok > cloud-ok when the node allows multiple.
+5. User/default profile as tie-breaker.
+6. If business-visible fields still differ, return a clarification instead of silently choosing.
+7. Stable id sort only for indistinguishable duplicate candidates after all business-visible ranking fields match.
 
 Do not show a default assignment selector in the intake form. Only surface a guided blocker if no valid assignment exists.
 
-- [ ] **Step 5: Attach credentials for resolved providers in Tauri**
+- [ ] **Step 7: Build sanitized inventory and attach credentials in Tauri**
 
 Update `apps/desktop/src-tauri/src/lib.rs` playbook run/resume commands:
 
+- Build a sanitized capability inventory from local agent profiles, model settings, skill metadata, tool policy metadata, integration settings, and credential availability booleans.
 - Call the sidecar resolver before run creation/resume if the request lacks an assignment plan.
-- Read provider credentials from the OS keychain for each provider in the resolved plan.
-- Send `assignmentPlan` and request-scoped `execution.credentials` to sidecar.
+- Read provider credentials from the OS keychain for each `credentialRef` in the resolved plan.
+- Send `assignmentPlan`, `capabilityInventory`, and request-scoped `execution.credentials` to sidecar.
 - Return the existing business-readable model settings error if a required cloud credential is missing.
 
 Do not store `execution.credentials` in checkpoints, events, or run result records.
+Do not include raw integration tokens, API keys, refresh tokens, or keychain
+aliases in the inventory. Only send capability ids, configured booleans,
+fingerprints, data-policy metadata, and display labels.
 
-- [ ] **Step 6: Pass per-node assignment into core agent steps**
+- [ ] **Step 8: Pass per-node assignment into core agent steps**
 
 In `packages/core/src/workflow.ts`, when executing an agent step:
 
 - Find `assignmentPlan.assignments[step.id]`.
+- Revalidate assignment fingerprints against the current sanitized inventory before running or resuming a node.
+- If the assignment is stale, pause with a setup-changed error and require re-resolution before continuing.
 - Resolve the assigned agent profile/runtime and provider from that assignment.
 - Pass agent profile, runtime, provider, and credential to `runPiTaskTurn`.
 - Preserve the assignment plan in checkpoints so approval resume is deterministic.
+- Preserve `sourceGaps` from optional missing requirements in the run result so the Result view can show coverage gaps without treating them as failures.
 
-Tool steps should use required tool capability classes for permission copy and validation, while still executing through the existing tool registry.
+Tool steps should use required tool capability classes for permission copy and validation, while still executing through the existing tool registry. Capability resolution is not a permission grant; write and integration mutations still use existing Action Inbox approval behavior.
 
-- [ ] **Step 7: Add resolver tests**
+- [ ] **Step 9: Add resolver tests**
 
 Add focused tests for:
 
 - A node resolves to different agents for different steps in the same playbook.
 - Manifest requirements cannot name local agent ids or labels.
+- Unknown required capability ids fail contract validation.
+- Unknown optional capability ids become source gaps.
 - Missing required model capability blocks launch before run creation.
 - Missing optional integration is reported as a source gap, not a launch blocker.
 - Resume reuses the checkpointed assignment plan.
+- Resume blocks and re-resolves when an assigned agent/profile/integration fingerprint changes.
+- Run creation rejects a client-provided assignment plan that does not satisfy manifest requirements.
+- Run creation and resume reject an assignment plan when the request omits the sanitized inventory.
+- `local-only` requirements reject cloud providers even when credentials exist.
+- Capability resolution does not bypass Action Inbox approval for write/mutation steps.
 - Credentials are accepted per request and never persisted in the run checkpoint.
+- Optional missing requirements are persisted as `sourceGaps` for the Result view.
 
-- [ ] **Step 8: Run focused checks**
+- [ ] **Step 10: Run focused checks**
 
 Run:
 
@@ -505,7 +685,7 @@ bun run --filter './apps/sidecar' typecheck
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add packages/contracts/src/index.ts packages/contracts/src/workflow.test.ts packages/core/src/workflow.ts packages/core/src/workflow.test.ts apps/sidecar/src/server.ts apps/desktop/src-tauri/src/lib.rs
