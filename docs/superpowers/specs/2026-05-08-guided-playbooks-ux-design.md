@@ -64,6 +64,24 @@ steps. Starting a playbook from the desktop UI must therefore resolve the
 selected model provider and request-scoped credential before it calls the
 sidecar.
 
+## Agent Assignment
+
+When more than one agent profile exists, Playbooks must make assignment explicit
+without turning the start flow into an engineering console.
+
+The default rule is:
+
+- Use the playbook's recommended agent when the manifest declares one later.
+- Otherwise use the user's selected/default agent profile.
+- If multiple profiles are available, show a compact "Run with" selector on the
+  intake page, using profile names and short descriptions.
+
+The selected agent affects agent-backed steps through the profile's model
+override, instructions, runtime/tool policy, and skills. The run should persist
+only non-secret assignment metadata such as `agentId` and `agentLabel` so later
+resume actions continue with the same agent. Provider credentials remain
+request-scoped and must not be stored.
+
 The Playbooks implementation must not rely on ambient environment variables for
 business playbooks. If the selected model provider is missing credentials, the
 guided flow should fail before launch with the same business-readable settings
@@ -247,7 +265,10 @@ The review loop closed these implementation loopholes:
   guided flow as the primary surface.
 - Agent-backed business playbooks need explicit provider and request-scoped
   credential transport. The sidecar contract should accept only provider plus
-  optional credential, not the full Task profile/runtime object.
+  optional credential plus non-secret agent assignment metadata, not the full
+  Task request object.
+- Multi-agent setups need a compact "Run with" selector and run-persisted
+  `agentId`/`agentLabel` so approval resumes use the same assignment.
 - Credentials must never be persisted in workflow checkpoints or run events.
 - The Preparing state is only local pending UI until async launch or
   subscriptions exist.
