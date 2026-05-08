@@ -16,6 +16,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { InboxView } from "@/components/InboxView";
+import { PlaybooksView } from "@/components/PlaybooksView";
 import { type AppView, RailNav } from "@/components/RailNav";
 import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
@@ -373,6 +374,8 @@ export default function App() {
           status={inboxStatus}
           workspaceRoot={workspaceRoot}
         />
+      ) : activeView === "playbooks" ? (
+        <PlaybooksView workspaceRoot={workspaceRoot} />
       ) : (
         <>
           <Sidebar

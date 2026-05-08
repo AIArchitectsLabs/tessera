@@ -60,6 +60,10 @@ export {
 } from "./skills.js";
 export {
   DEMO_WORKFLOW,
+  CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
+  SALES_MEETING_BRIEF_WORKFLOW,
+  WEEKLY_UPDATE_WORKFLOW,
+  WEEKLY_STATUS_DIGEST_WORKFLOW,
   loadWorkflowDefinition,
   resumeWorkflowRun,
   runDemoWorkflow,

@@ -16,6 +16,11 @@ import {
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
   NotifyRequestSchema,
+  PlaybookDetailSchema,
+  PlaybookListResultSchema,
+  PlaybookRunDetailSchema,
+  type PlaybookSummary,
+  PlaybookSummarySchema,
   SidecarReadySchema,
   SpawnRequestSchema,
   type SpawnResult,
@@ -25,9 +30,11 @@ import {
   type TaskSkillActivation,
   TaskUpdateRequestSchema,
   TodoOperationSchema,
+  type WorkflowDefinition,
   WorkflowResumeRequestSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
+  WorkflowRunStatusSchema,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
@@ -35,8 +42,12 @@ import {
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
 import {
+  CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
+  SALES_MEETING_BRIEF_WORKFLOW,
+  WEEKLY_STATUS_DIGEST_WORKFLOW,
+  WEEKLY_UPDATE_WORKFLOW,
   executeAgentTurn,
   resolveSlashSkillInvocation,
   resumeWorkflowRun,
@@ -45,6 +56,13 @@ import {
 import { createAgentProfileStore } from "./agent-profile-store.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
+import {
+  buildLocalPlaybookCapabilityInventory,
+  mergePlaybookRunMetadata,
+  parsePlaybookRunCreateRequest,
+  resolvePlaybookExecutionContext,
+  sameAssignmentPlan,
+} from "./playbook-routing.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
@@ -63,7 +81,13 @@ const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
 const taskEventBus = createTaskEventBus();
-const workflowRegistry = new Map([[DEMO_WORKFLOW.id, DEMO_WORKFLOW]]);
+const workflowRegistry = new Map([
+  [SALES_MEETING_BRIEF_WORKFLOW.id, SALES_MEETING_BRIEF_WORKFLOW],
+  [CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id, CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW],
+  [WEEKLY_STATUS_DIGEST_WORKFLOW.id, WEEKLY_STATUS_DIGEST_WORKFLOW],
+  [DEMO_WORKFLOW.id, DEMO_WORKFLOW],
+  [WEEKLY_UPDATE_WORKFLOW.id, WEEKLY_UPDATE_WORKFLOW],
+]);
 
 function profileForAgentId(agentId: string): AgentProfile {
   if (agentId === "default") return defaultAgentProfile();
@@ -147,6 +171,68 @@ function validateWebSocket(req: Request): Response | null {
 function capOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_BYTES) return text;
   return `${text.slice(0, MAX_OUTPUT_BYTES)}\n[output truncated at 1 MiB]`;
+}
+
+function playbookSummary(definition: WorkflowDefinition): PlaybookSummary {
+  const phases = definition.phaseOrder ?? [
+    ...new Set(definition.steps.map((step) => step.phase ?? "Run")),
+  ];
+  return PlaybookSummarySchema.parse({
+    id: definition.id,
+    version: definition.version,
+    name: definition.name,
+    description: definition.description,
+    category: definition.category,
+    businessUseCase: definition.businessUseCase,
+    requiredCapabilities: definition.requiredCapabilities,
+    optionalCapabilities: definition.optionalCapabilities,
+    outputs: definition.outputs,
+    stepCount: definition.steps.length,
+    phases,
+  });
+}
+
+function playbookRunDetail(run: unknown): unknown {
+  const parsed = PlaybookRunDetailSchema.parse(run);
+  const definition = workflowRegistry.get(parsed.workflowId);
+  return PlaybookRunDetailSchema.parse({
+    ...parsed,
+    ...(definition ? { playbook: playbookSummary(definition) } : {}),
+  });
+}
+
+function currentCapabilityInventory() {
+  return buildLocalPlaybookCapabilityInventory(agentProfileStore.list());
+}
+
+function resolvePlaybookExecutionState(options: {
+  definition: WorkflowDefinition;
+  capabilityInventory?: unknown;
+  assignmentPlan?: unknown;
+  existingAssignmentPlan?: unknown;
+}) {
+  if (
+    options.assignmentPlan &&
+    options.existingAssignmentPlan &&
+    !sameAssignmentPlan(
+      options.assignmentPlan as Parameters<typeof sameAssignmentPlan>[0],
+      options.existingAssignmentPlan as Parameters<typeof sameAssignmentPlan>[1]
+    )
+  ) {
+    throw new Error("Assignment plan does not match the checkpointed plan");
+  }
+
+  const assignmentPlan =
+    (options.assignmentPlan as Parameters<typeof sameAssignmentPlan>[0] | undefined) ??
+    (options.existingAssignmentPlan as Parameters<typeof sameAssignmentPlan>[1] | undefined);
+
+  return resolvePlaybookExecutionContext({
+    definition: options.definition,
+    capabilityInventory:
+      (options.capabilityInventory as ReturnType<typeof currentCapabilityInventory>) ??
+      currentCapabilityInventory(),
+    ...(assignmentPlan ? { assignmentPlan } : {}),
+  });
 }
 
 async function handleSpawn(req: Request): Promise<Response> {
@@ -283,16 +369,25 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
   }
 
   try {
+    const playbookState = resolvePlaybookExecutionState({
+      definition,
+      capabilityInventory: parsed.data.capabilityInventory,
+      assignmentPlan: parsed.data.assignmentPlan,
+    });
     const result = await runWorkflow({
       definition,
       input: parsed.data.input,
       cli: {
         runWorkspaceCli,
       },
+      onCheckpoint(run) {
+        workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
+      },
     });
-    workflowStore.save(result);
-    ensureWorkflowApprovalInbox(result);
-    return Response.json(result);
+    const merged = mergePlaybookRunMetadata(result, playbookState);
+    workflowStore.save(merged);
+    ensureWorkflowApprovalInbox(merged);
+    return Response.json(merged);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
@@ -306,14 +401,136 @@ function handleWorkflowRunList(req: Request): Response {
 
   const { searchParams } = new URL(req.url);
   const status = searchParams.get("status");
-  if (status && status !== "blocked") {
+  const workflowId = searchParams.get("workflowId") ?? undefined;
+  if (workflowId && !workflowRegistry.has(workflowId)) {
+    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+  }
+  const parsedStatus = status ? WorkflowRunStatusSchema.safeParse(status) : undefined;
+  if (parsedStatus && !parsedStatus.success) {
     return Response.json({ error: "Unsupported workflow status filter" }, { status: 400 });
   }
 
   const result = WorkflowRunListResultSchema.parse({
-    runs: workflowStore.list(status === "blocked" ? { status } : undefined),
+    runs: workflowStore.list({
+      ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
+      ...(workflowId ? { workflowId } : {}),
+    }),
   });
   return Response.json(result);
+}
+
+function handleWorkflowRunGet(req: Request, runId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const run = workflowStore.get(runId);
+  if (!run) return Response.json({ error: "Unknown workflow run" }, { status: 404 });
+  return Response.json(run);
+}
+
+function handlePlaybookList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  return Response.json(
+    PlaybookListResultSchema.parse({
+      playbooks: [...workflowRegistry.values()].map((definition) => playbookSummary(definition)),
+    })
+  );
+}
+
+function handlePlaybookGet(req: Request, playbookId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const definition = workflowRegistry.get(playbookId);
+  if (!definition) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  return Response.json(
+    PlaybookDetailSchema.parse({
+      ...playbookSummary(definition),
+      inputs: definition.inputs,
+      steps: definition.steps,
+    })
+  );
+}
+
+async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const definition = workflowRegistry.get(playbookId);
+  if (!definition) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = parsePlaybookRunCreateRequest(body, playbookId);
+
+  try {
+    const playbookState = resolvePlaybookExecutionState({
+      definition,
+      capabilityInventory: parsed.capabilityInventory,
+      assignmentPlan: parsed.assignmentPlan,
+    });
+    const result = await runWorkflow({
+      definition,
+      input: parsed.input,
+      cli: {
+        runWorkspaceCli,
+      },
+      onCheckpoint(run) {
+        workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
+      },
+    });
+    const merged = mergePlaybookRunMetadata(result, playbookState);
+    workflowStore.save(merged);
+    ensureWorkflowApprovalInbox(merged);
+    return Response.json(playbookRunDetail(merged));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
+
+function handlePlaybookRunList(req: Request): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get("status");
+  const playbookId = searchParams.get("playbookId") ?? undefined;
+  if (playbookId && !workflowRegistry.has(playbookId)) {
+    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  }
+  const parsedStatus = status ? WorkflowRunStatusSchema.safeParse(status) : undefined;
+  if (parsedStatus && !parsedStatus.success) {
+    return Response.json({ error: "Unsupported playbook run status filter" }, { status: 400 });
+  }
+
+  const runs = workflowStore.list({
+    ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
+    ...(playbookId ? { workflowId: playbookId } : {}),
+  });
+  return Response.json({ runs: runs.map((run) => playbookRunDetail(run)) });
+}
+
+function handlePlaybookRunGet(req: Request, runId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const run = workflowStore.get(runId);
+  if (!run) return Response.json({ error: "Unknown playbook run" }, { status: 404 });
+  return Response.json(playbookRunDetail(run));
 }
 
 function ensureWorkflowApprovalInbox(result: {
@@ -456,6 +673,9 @@ async function handleInboxResolve(req: Request, messageId: string): Promise<Resp
         cli: {
           runWorkspaceCli,
         },
+        onCheckpoint(checkpoint) {
+          workflowStore.save(checkpoint);
+        },
       });
       workflowStore.save(result);
       ensureWorkflowApprovalInbox(result);
@@ -546,6 +766,12 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   }
 
   try {
+    const playbookState = resolvePlaybookExecutionState({
+      definition,
+      capabilityInventory: parsed.data.capabilityInventory,
+      assignmentPlan: parsed.data.assignmentPlan,
+      existingAssignmentPlan: existing.assignmentPlan,
+    });
     const result = await resumeWorkflowRun({
       run: existing,
       decision: parsed.data.decision,
@@ -553,9 +779,14 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
       cli: {
         runWorkspaceCli,
       },
+      onCheckpoint(checkpoint) {
+        workflowStore.save(mergePlaybookRunMetadata(checkpoint, playbookState));
+      },
     });
-    workflowStore.save(result);
-    return Response.json(result);
+    const merged = mergePlaybookRunMetadata(result, playbookState);
+    workflowStore.save(merged);
+    ensureWorkflowApprovalInbox(merged);
+    return Response.json(merged);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
@@ -1241,6 +1472,14 @@ const server = Bun.serve({
       return handleWorkflowRunList(req);
     }
 
+    if (pathname === "/playbooks") {
+      return handlePlaybookList(req);
+    }
+
+    if (pathname === "/playbook-runs") {
+      return handlePlaybookRunList(req);
+    }
+
     if (pathname === "/inbox") {
       if (req.method === "GET") return handleInboxList(req);
       return handleInboxCreate(req);
@@ -1297,6 +1536,30 @@ const server = Bun.serve({
     const inboxId = inboxMatch?.[1];
     if (inboxId) {
       return handleInboxGet(req, decodeURIComponent(inboxId));
+    }
+
+    const playbookRunResumeMatch = pathname.match(/^\/playbook-runs\/([^/]+)\/resume$/);
+    const playbookRunResumeId = playbookRunResumeMatch?.[1];
+    if (playbookRunResumeId) {
+      return handleWorkflowResume(req, decodeURIComponent(playbookRunResumeId));
+    }
+
+    const playbookRunMatch = pathname.match(/^\/playbook-runs\/([^/]+)$/);
+    const playbookRunId = playbookRunMatch?.[1];
+    if (playbookRunId) {
+      return handlePlaybookRunGet(req, decodeURIComponent(playbookRunId));
+    }
+
+    const playbookRunCreateMatch = pathname.match(/^\/playbooks\/([^/]+)\/runs$/);
+    const playbookRunCreateId = playbookRunCreateMatch?.[1];
+    if (playbookRunCreateId) {
+      return handlePlaybookRunCreate(req, decodeURIComponent(playbookRunCreateId));
+    }
+
+    const playbookMatch = pathname.match(/^\/playbooks\/([^/]+)$/);
+    const playbookId = playbookMatch?.[1];
+    if (playbookId) {
+      return handlePlaybookGet(req, decodeURIComponent(playbookId));
     }
 
     const taskEventsMatch = pathname.match(/^\/tasks\/([^/]+)\/events$/);
@@ -1370,6 +1633,12 @@ const server = Bun.serve({
     const workflowRunId = workflowResumeMatch?.[1];
     if (workflowRunId) {
       return handleWorkflowResume(req, workflowRunId);
+    }
+
+    const workflowRunMatch = pathname.match(/^\/workflows\/runs\/([^/]+)$/);
+    const workflowRunGetId = workflowRunMatch?.[1];
+    if (workflowRunGetId) {
+      return handleWorkflowRunGet(req, decodeURIComponent(workflowRunGetId));
     }
 
     return new Response("Not Found", { status: 404 });

@@ -2,17 +2,47 @@ import type {
   AgentProviderConfig,
   PermissionDecision,
   PermissionGrant,
-  WorkflowDefinition,
+  WorkflowInputDefinition,
+  WorkflowRunEvent,
   WorkflowRunResult,
-  WorkflowStep,
+  WorkflowRunStepRecord,
 } from "@tessera/contracts";
-import { WorkflowDefinitionSchema } from "@tessera/contracts";
 import { createActor, createMachine } from "xstate";
 import { type PiTaskTurnResult, runPiTaskTurn } from "./pi-session.js";
+import { DEFAULT_AGENT_PROFILE } from "./task-model-resolution.js";
 import { type WorkspaceCliExecutor, createTesseraTools } from "./tools.js";
+import {
+  type WorkflowCapabilityInventory,
+  type WorkflowDefinition,
+  WorkflowDefinitionSchema,
+  type WorkflowExecutionStepRecord,
+  type WorkflowNodeRequirements,
+  type WorkflowRunAssignmentPlan,
+  type WorkflowSourceGap,
+  type WorkflowStep,
+  createWorkflowCapabilityInventory,
+  extractWorkflowAssignmentPlan,
+  resolveWorkflowAssignmentPlan,
+  validateWorkflowAssignmentPlan,
+  workflowCapabilityRefs,
+} from "./workflow-capabilities.js";
+export {
+  WorkflowCapabilityInventorySchema,
+  WorkflowRunAssignmentPlanSchema,
+} from "./workflow-capabilities.js";
+import customerRenewalRiskReviewManifest from "./workflows/customer.renewal-risk-review.json";
 import demoWorkflowManifest from "./workflows/demo.write-approval.json";
+import operationsWeeklyStatusDigestManifest from "./workflows/operations.weekly-status-digest.json";
+import salesMeetingBriefManifest from "./workflows/sales.meeting-brief.json";
+import weeklyUpdateManifest from "./workflows/weekly-update.json";
 
 const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
+
+type WorkflowExecutionRunResult = WorkflowRunResult & {
+  assignmentPlan?: WorkflowRunAssignmentPlan | undefined;
+  sourceGaps?: WorkflowSourceGap[] | undefined;
+  steps?: WorkflowExecutionStepRecord[] | undefined;
+};
 
 export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
   const definition = WorkflowDefinitionSchema.parse(value);
@@ -34,6 +64,22 @@ export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
 }
 
 export const DEMO_WORKFLOW = loadWorkflowDefinition(demoWorkflowManifest);
+export const WEEKLY_UPDATE_WORKFLOW = loadWorkflowDefinition(weeklyUpdateManifest);
+export const SALES_MEETING_BRIEF_WORKFLOW = loadWorkflowDefinition(salesMeetingBriefManifest);
+export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadWorkflowDefinition(
+  customerRenewalRiskReviewManifest
+);
+export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadWorkflowDefinition(
+  operationsWeeklyStatusDigestManifest
+);
+
+const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
+  [DEMO_WORKFLOW.id, DEMO_WORKFLOW],
+  [WEEKLY_UPDATE_WORKFLOW.id, WEEKLY_UPDATE_WORKFLOW],
+  [SALES_MEETING_BRIEF_WORKFLOW.id, SALES_MEETING_BRIEF_WORKFLOW],
+  [CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id, CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW],
+  [WEEKLY_STATUS_DIGEST_WORKFLOW.id, WEEKLY_STATUS_DIGEST_WORKFLOW],
+]);
 
 export interface RunDemoWorkflowOptions {
   agentCredential?: string;
@@ -45,7 +91,10 @@ export interface RunDemoWorkflowOptions {
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
   cli: WorkspaceCliExecutor;
+  capabilityInventory?: WorkflowCapabilityInventory;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
   input?: Record<string, unknown>;
+  onCheckpoint?: (run: WorkflowExecutionRunResult) => void | Promise<void>;
 }
 
 export interface RunWorkflowOptions extends RunDemoWorkflowOptions {
@@ -63,18 +112,29 @@ export interface ResumeWorkflowRunOptions {
   }) => Promise<PiTaskTurnResult>;
   cli: WorkspaceCliExecutor;
   decision: "approve" | "deny";
-  run: WorkflowRunResult;
+  run: WorkflowExecutionRunResult;
   definition?: WorkflowDefinition;
+  capabilityInventory?: WorkflowCapabilityInventory;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
+  onCheckpoint?: (run: WorkflowExecutionRunResult) => void | Promise<void>;
 }
 
 function createRunId(): string {
   return crypto.randomUUID();
 }
 
-function matchesInputType(value: unknown, type: "string" | "number" | "boolean"): boolean {
+function createEventId(): string {
+  return crypto.randomUUID();
+}
+
+function matchesInputType(value: unknown, type: WorkflowInputDefinition["type"]): boolean {
   if (type === "string") return typeof value === "string";
   if (type === "number") return typeof value === "number";
-  return typeof value === "boolean";
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "string[]") {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
+  }
+  return typeof value === "string";
 }
 
 function normalizeInput(
@@ -92,6 +152,16 @@ function normalizeInput(
 
     if (!matchesInputType(value, spec.type)) {
       throw new Error(`Invalid workflow input type for ${key}: expected ${spec.type}`);
+    }
+
+    if (spec.options) {
+      const allowed = new Set(spec.options.map((option) => option.value));
+      const values = Array.isArray(value) ? value : [value];
+      for (const item of values) {
+        if (typeof item === "string" && !allowed.has(item)) {
+          throw new Error(`Invalid workflow input option for ${key}: ${item}`);
+        }
+      }
     }
 
     normalized[key] = value;
@@ -126,6 +196,97 @@ function resolveTemplate(text: string, input: Record<string, unknown>): string {
   });
 }
 
+function defaultAgentProvider(): AgentProviderConfig {
+  return {
+    provider: "openai",
+    model: "gpt-5.4",
+    apiKeyEnv: "OPENAI_API_KEY",
+  };
+}
+
+function defaultCapabilityInventory(): WorkflowCapabilityInventory {
+  return createWorkflowCapabilityInventory([DEFAULT_AGENT_PROFILE]);
+}
+
+function resolveCapabilityInventory(
+  inventory: WorkflowCapabilityInventory | undefined
+): WorkflowCapabilityInventory {
+  return inventory ?? defaultCapabilityInventory();
+}
+
+function resolveAssignmentPlan(
+  definition: WorkflowDefinition,
+  inventory: WorkflowCapabilityInventory | undefined,
+  assignmentPlan: WorkflowRunAssignmentPlan | undefined
+): WorkflowRunAssignmentPlan {
+  const resolvedInventory = resolveCapabilityInventory(inventory);
+  if (assignmentPlan) {
+    return validateWorkflowAssignmentPlan(definition, resolvedInventory, assignmentPlan);
+  }
+  return resolveWorkflowAssignmentPlan(definition, resolvedInventory);
+}
+
+function collectSourceGaps(
+  stepId: string,
+  requires: WorkflowNodeRequirements | undefined,
+  inventory: WorkflowCapabilityInventory | undefined
+): WorkflowSourceGap[] {
+  const gaps: WorkflowSourceGap[] = [];
+  if (!requires) return gaps;
+
+  const availableSkillCapabilities = new Set(
+    inventory?.agents.flatMap((agent) => agent.skillCapabilities) ?? []
+  );
+  const availableToolCapabilities = new Set(
+    inventory?.agents.flatMap((agent) => agent.toolCapabilities) ?? []
+  );
+  const availableIntegrationCapabilities = new Set(
+    inventory?.integrations.flatMap((integration) => integration.capabilities) ?? []
+  );
+
+  for (const capability of workflowCapabilityRefs(requires.skills)) {
+    if (availableSkillCapabilities.has(capability)) continue;
+    gaps.push({
+      stepId,
+      kind: "skill",
+      capability,
+      optional: false,
+      reason: "No available agent advertises this skill capability",
+    });
+  }
+  for (const capability of workflowCapabilityRefs(requires.tools)) {
+    if (availableToolCapabilities.has(capability)) continue;
+    gaps.push({
+      stepId,
+      kind: "tool",
+      capability,
+      optional: false,
+      reason: "No available agent advertises this tool capability",
+    });
+  }
+  for (const capability of workflowCapabilityRefs(requires.integrations)) {
+    if (availableIntegrationCapabilities.has(capability)) continue;
+    gaps.push({
+      stepId,
+      kind: "integration",
+      capability,
+      optional: false,
+      reason: "No configured integration advertises this capability",
+    });
+  }
+
+  return gaps;
+}
+
+function validateAssignmentPlan(
+  definition: WorkflowDefinition,
+  inventory: WorkflowCapabilityInventory | undefined,
+  assignmentPlan: WorkflowRunAssignmentPlan | undefined
+): void {
+  if (!assignmentPlan || !inventory) return;
+  validateWorkflowAssignmentPlan(definition, inventory, assignmentPlan);
+}
+
 function agentToolName(toolId: Extract<WorkflowStep, { kind: "tool" }>["toolId"]): string {
   if (toolId === "workspace.ping") return "workspace_ping";
   return "workspace_write_probe";
@@ -156,8 +317,66 @@ function compileWorkflowMachine(definition: WorkflowDefinition, initial: string)
   });
 }
 
+function stepPhase(step: WorkflowStep): string {
+  return step.phase ?? "Run";
+}
+
+function stepLabel(step: WorkflowStep): string {
+  return step.label ?? step.id;
+}
+
+function createStepRecords(definition: WorkflowDefinition): WorkflowRunStepRecord[] {
+  return definition.steps.map((step) => ({
+    id: step.id,
+    label: stepLabel(step),
+    kind: step.kind,
+    phase: stepPhase(step),
+    status: "queued",
+  }));
+}
+
+function previewOutput(value: unknown): string {
+  if (value === undefined) return "";
+  if (typeof value === "string") return value.slice(0, 240);
+  try {
+    return JSON.stringify(value).slice(0, 240);
+  } catch {
+    return String(value).slice(0, 240);
+  }
+}
+
+function markStep(
+  steps: WorkflowRunStepRecord[],
+  stepId: string,
+  patch: Partial<WorkflowRunStepRecord>
+): WorkflowRunStepRecord[] {
+  return steps.map((step) => (step.id === stepId ? { ...step, ...patch } : step));
+}
+
+function eventFor(options: {
+  runId: string;
+  workflowId: string;
+  status: WorkflowRunEvent["status"];
+  message: string;
+  stepId?: string;
+  metadata?: Record<string, unknown>;
+}): WorkflowRunEvent {
+  return {
+    id: createEventId(),
+    runId: options.runId,
+    workflowId: options.workflowId,
+    status: options.status,
+    message: options.message,
+    createdAt: new Date().toISOString(),
+    ...(options.stepId ? { stepId: options.stepId } : {}),
+    ...(options.metadata ? { metadata: options.metadata } : {}),
+  };
+}
+
 async function executeFromStep(options: {
   cli: WorkspaceCliExecutor;
+  capabilityInventory?: WorkflowCapabilityInventory;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
   definition: WorkflowDefinition;
   agentCredential?: string;
   agentProvider?: AgentProviderConfig;
@@ -172,45 +391,232 @@ async function executeFromStep(options: {
   outputs: Record<string, unknown>;
   runId: string;
   startStepId: string;
-}): Promise<WorkflowRunResult> {
+  startedAt?: string;
+  steps?: WorkflowRunStepRecord[];
+  events?: WorkflowRunEvent[];
+  onCheckpoint?: (run: WorkflowExecutionRunResult) => void | Promise<void>;
+}): Promise<WorkflowExecutionRunResult> {
   const { cli, definition, grants, input, outputs, runId } = options;
   const machine = compileWorkflowMachine(definition, options.startStepId);
   const actor = createActor(machine).start();
   let currentStepId = options.startStepId;
+  const startedAt = options.startedAt ?? new Date().toISOString();
+  let updatedAt = startedAt;
+  let steps = options.steps ?? createStepRecords(definition);
+  const events = options.events ? [...options.events] : [];
+  const sourceGaps: WorkflowSourceGap[] = [];
+  const assignmentPlan: WorkflowRunAssignmentPlan = options.assignmentPlan ?? {
+    resolverVersion: 1,
+    createdAt: startedAt,
+    assignments: {},
+  };
+
+  const checkpoint = async (patch: Partial<WorkflowExecutionRunResult>) => {
+    updatedAt = new Date().toISOString();
+    const run: WorkflowExecutionRunResult = {
+      runId,
+      workflowId: definition.id,
+      status: patch.status ?? "running",
+      currentStepId,
+      input,
+      outputs,
+      startedAt,
+      updatedAt,
+      steps,
+      events,
+      assignmentPlan,
+      sourceGaps,
+      ...patch,
+    };
+    await options.onCheckpoint?.(run);
+  };
+
+  if (events.length === 0) {
+    events.push(
+      eventFor({
+        runId,
+        workflowId: definition.id,
+        status: "queued",
+        message: `${definition.name} queued`,
+        metadata: { assignmentPlan },
+      })
+    );
+    await checkpoint({ status: "running" });
+  }
 
   while (!TERMINAL_STEPS.has(currentStepId)) {
     const step = definition.steps.find((item) => item.id === currentStepId);
     if (!step) {
-      return {
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          message: `Unknown workflow step: ${currentStepId}`,
+          stepId: currentStepId,
+        })
+      );
+      const failed: WorkflowExecutionRunResult = {
         runId,
         workflowId: definition.id,
         status: "failed",
         currentStepId,
         input,
         outputs,
+        startedAt,
+        updatedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
         error: `Unknown workflow step: ${currentStepId}`,
       };
+      await options.onCheckpoint?.(failed);
+      return failed;
     }
+
+    const stepStartedAt = new Date().toISOString();
+    steps = markStep(steps, step.id, { status: "running", startedAt: stepStartedAt });
+    events.push(
+      eventFor({
+        runId,
+        workflowId: definition.id,
+        status: "running",
+        message: `${stepLabel(step)} started`,
+        stepId: step.id,
+      })
+    );
+    await checkpoint({ status: "running", currentStepId: step.id });
 
     if (step.kind === "agent") {
       const workspaceRoot = input[step.workspaceRootInput];
       if (typeof workspaceRoot !== "string" || !workspaceRoot.trim()) {
-        return {
+        const completedAt = new Date().toISOString();
+        steps = markStep(steps, step.id, {
+          status: "failed",
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+          error: `Missing workflow agent workspace root input: ${step.workspaceRootInput}`,
+        });
+        events.push(
+          eventFor({
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            message: `${stepLabel(step)} failed`,
+            stepId: step.id,
+          })
+        );
+        const failed: WorkflowExecutionRunResult = {
           runId,
           workflowId: definition.id,
           status: "failed",
           currentStepId: step.id,
           input,
           outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
           error: `Missing workflow agent workspace root input: ${step.workspaceRootInput}`,
         };
+        await options.onCheckpoint?.(failed);
+        return failed;
       }
 
-      const provider = options.agentProvider ?? {
-        provider: "openai",
-        model: "gpt-5.4",
-        apiKeyEnv: "OPENAI_API_KEY",
-      };
+      const stepGaps = collectSourceGaps(step.id, step.requires, options.capabilityInventory);
+      sourceGaps.push(...stepGaps);
+      const blockingGap = stepGaps.find((gap) => !gap.optional);
+      if (blockingGap) {
+        const completedAt = new Date().toISOString();
+        steps = markStep(steps, step.id, {
+          status: "failed",
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+          error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+        });
+        events.push(
+          eventFor({
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            message: `${stepLabel(step)} failed`,
+            stepId: step.id,
+            metadata: { sourceGaps: stepGaps },
+          })
+        );
+        const failed: WorkflowExecutionRunResult = {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId: step.id,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+        };
+        await options.onCheckpoint?.(failed);
+        return failed;
+      }
+
+      const selected = assignmentPlan.assignments[step.id];
+      if (!selected) {
+        const completedAt = new Date().toISOString();
+        const error = `Missing assignment for step: ${step.id}`;
+        steps = markStep(steps, step.id, {
+          status: "failed",
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+          error,
+        });
+        events.push(
+          eventFor({
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            message: `${stepLabel(step)} failed`,
+            stepId: step.id,
+          })
+        );
+        const failed: WorkflowExecutionRunResult = {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId: step.id,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error,
+        };
+        await options.onCheckpoint?.(failed);
+        return failed;
+      }
+
+      steps = markStep(steps, step.id, {
+        status: "running",
+        startedAt: stepStartedAt,
+        assignment: selected,
+      });
+      const provider = selected.provider ?? options.agentProvider ?? defaultAgentProvider();
       const credential =
         options.agentCredential ??
         (provider.provider === "local" || !("apiKeyEnv" in provider)
@@ -224,8 +630,26 @@ async function executeFromStep(options: {
       });
 
       outputs[step.id] = result;
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "succeeded",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+        outputPreview: previewOutput(result),
+        assignment: selected,
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "succeeded",
+          message: `${stepLabel(step)} completed`,
+          stepId: step.id,
+        })
+      );
       actor.send({ type: "STEP_SUCCESS" });
       currentStepId = String(actor.getSnapshot().value);
+      await checkpoint({ status: "running", currentStepId });
       continue;
     }
 
@@ -240,16 +664,129 @@ async function executeFromStep(options: {
     const tools = createTesseraTools(registryOptions);
     const tool = tools.find((item) => item.name === agentToolName(step.toolId));
     if (!tool) {
-      return {
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "failed",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+        error: `Unknown workflow tool: ${step.toolId}`,
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          message: `${stepLabel(step)} failed`,
+          stepId: step.id,
+        })
+      );
+      const failed: WorkflowExecutionRunResult = {
         runId,
         workflowId: definition.id,
         status: "failed",
         currentStepId,
         input,
         outputs,
+        startedAt,
+        updatedAt: completedAt,
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
         error: `Unknown workflow tool: ${step.toolId}`,
       };
+      await options.onCheckpoint?.(failed);
+      return failed;
     }
+
+    const stepGaps = collectSourceGaps(step.id, step.requires, options.capabilityInventory);
+    sourceGaps.push(...stepGaps);
+    const blockingGap = stepGaps.find((gap) => !gap.optional);
+    if (blockingGap) {
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "failed",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+        error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          message: `${stepLabel(step)} failed`,
+          stepId: step.id,
+          metadata: { sourceGaps: stepGaps },
+        })
+      );
+      const failed: WorkflowExecutionRunResult = {
+        runId,
+        workflowId: definition.id,
+        status: "failed",
+        currentStepId,
+        input,
+        outputs,
+        startedAt,
+        updatedAt: completedAt,
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
+        error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+      };
+      await options.onCheckpoint?.(failed);
+      return failed;
+    }
+
+    const selected = assignmentPlan.assignments[step.id];
+    if (!selected) {
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "failed",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+        error: `Missing assignment for step: ${step.id}`,
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          message: `${stepLabel(step)} failed`,
+          stepId: step.id,
+        })
+      );
+      const failed: WorkflowExecutionRunResult = {
+        runId,
+        workflowId: definition.id,
+        status: "failed",
+        currentStepId,
+        input,
+        outputs,
+        startedAt,
+        updatedAt: completedAt,
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
+        error: `Missing assignment for step: ${step.id}`,
+      };
+      await options.onCheckpoint?.(failed);
+      return failed;
+    }
+
+    steps = markStep(steps, step.id, {
+      status: "running",
+      startedAt: stepStartedAt,
+      assignment: selected,
+    });
 
     const result = await tool.execute(`${runId}:${step.id}`, resolveArgs(step.args, input));
     const decision = decisions.at(-1);
@@ -262,15 +799,39 @@ async function executeFromStep(options: {
       "approval" in decision
     ) {
       actor.send({ type: "STEP_BLOCKED" });
-      return {
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "blocked",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "blocked",
+          message: `${stepLabel(step)} needs approval`,
+          stepId: step.id,
+          metadata: { approval: decision.approval },
+        })
+      );
+      const blocked: WorkflowExecutionRunResult = {
         runId,
         workflowId: definition.id,
         status: "blocked",
         currentStepId: step.id,
         input,
         outputs,
+        startedAt,
+        updatedAt: completedAt,
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
         approval: decision.approval,
       };
+      await options.onCheckpoint?.(blocked);
+      return blocked;
     }
 
     if (
@@ -279,34 +840,105 @@ async function executeFromStep(options: {
       "decision" in decision &&
       decision.decision === "deny"
     ) {
-      return {
+      const completedAt = new Date().toISOString();
+      steps = markStep(steps, step.id, {
+        status: "denied",
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+      });
+      events.push(
+        eventFor({
+          runId,
+          workflowId: definition.id,
+          status: "denied",
+          message: `${stepLabel(step)} denied`,
+          stepId: step.id,
+        })
+      );
+      const denied: WorkflowExecutionRunResult = {
         runId,
         workflowId: definition.id,
         status: "denied",
         currentStepId: step.id,
         input,
         outputs,
+        startedAt,
+        updatedAt: completedAt,
+        completedAt,
+        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+        assignmentPlan,
+        sourceGaps,
+        steps,
+        events,
       };
+      await options.onCheckpoint?.(denied);
+      return denied;
     }
 
     outputs[step.id] = result.details;
+    const completedAt = new Date().toISOString();
+    steps = markStep(steps, step.id, {
+      status: "succeeded",
+      completedAt,
+      durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
+      outputPreview: previewOutput(result.details),
+    });
+    events.push(
+      eventFor({
+        runId,
+        workflowId: definition.id,
+        status: "succeeded",
+        message: `${stepLabel(step)} completed`,
+        stepId: step.id,
+      })
+    );
     actor.send({ type: "STEP_SUCCESS" });
     currentStepId = String(actor.getSnapshot().value);
+    await checkpoint({ status: "running", currentStepId });
   }
 
-  return {
+  const completedAt = new Date().toISOString();
+  events.push(
+    eventFor({
+      runId,
+      workflowId: definition.id,
+      status: currentStepId === "completed" ? "completed" : "failed",
+      message: `${definition.name} ${currentStepId === "completed" ? "completed" : "failed"}`,
+    })
+  );
+  const finalRun: WorkflowExecutionRunResult = {
     runId,
     workflowId: definition.id,
     status: currentStepId === "completed" ? "completed" : "failed",
     input,
     outputs,
+    startedAt,
+    updatedAt: completedAt,
+    completedAt,
+    durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+    assignmentPlan,
+    sourceGaps,
+    steps,
+    events,
   };
+  await options.onCheckpoint?.(finalRun);
+  return finalRun;
 }
 
-export async function runWorkflow(options: RunWorkflowOptions): Promise<WorkflowRunResult> {
+export async function runWorkflow(
+  options: RunWorkflowOptions
+): Promise<WorkflowExecutionRunResult> {
   const input = normalizeInput(options.definition, options.input);
+  const capabilityInventory = resolveCapabilityInventory(options.capabilityInventory);
+  const assignmentPlan = resolveAssignmentPlan(
+    options.definition,
+    capabilityInventory,
+    options.assignmentPlan
+  );
   return executeFromStep({
     cli: options.cli,
+    capabilityInventory,
+    assignmentPlan,
     definition: options.definition,
     ...(options.agentCredential ? { agentCredential: options.agentCredential } : {}),
     ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
@@ -315,31 +947,73 @@ export async function runWorkflow(options: RunWorkflowOptions): Promise<Workflow
     outputs: {},
     runId: createRunId(),
     startStepId: options.definition.start,
+    ...(options.onCheckpoint ? { onCheckpoint: options.onCheckpoint } : {}),
   });
 }
 
-export async function runDemoWorkflow(options: RunDemoWorkflowOptions): Promise<WorkflowRunResult> {
+export async function runDemoWorkflow(
+  options: RunDemoWorkflowOptions
+): Promise<WorkflowExecutionRunResult> {
   return runWorkflow({ ...options, definition: DEMO_WORKFLOW });
 }
 
 export async function resumeWorkflowRun(
   options: ResumeWorkflowRunOptions
-): Promise<WorkflowRunResult> {
+): Promise<WorkflowExecutionRunResult> {
   const { run, decision, cli } = options;
   if (run.status !== "blocked" || !run.currentStepId || !run.approval) {
     return run;
   }
 
+  const capabilityInventory = resolveCapabilityInventory(options.capabilityInventory);
+  const definition = options.definition ?? DEMO_WORKFLOW;
+  const assignmentPlan = resolveAssignmentPlan(
+    definition,
+    capabilityInventory,
+    options.assignmentPlan ?? extractWorkflowAssignmentPlan(run)
+  );
+
   if (decision === "deny") {
-    return {
+    const completedAt = new Date().toISOString();
+    const events = [
+      ...(run.events ?? []),
+      eventFor({
+        runId: run.runId,
+        workflowId: run.workflowId,
+        status: "denied",
+        message: "Approval denied",
+        stepId: run.currentStepId,
+      }),
+    ];
+    const steps =
+      run.steps && run.currentStepId
+        ? markStep(run.steps, run.currentStepId, { status: "denied", completedAt })
+        : run.steps;
+    const denied: WorkflowExecutionRunResult = {
       ...run,
       status: "denied",
+      approval: undefined,
+      updatedAt: completedAt,
+      completedAt,
+      ...(run.startedAt ? { durationMs: Date.parse(completedAt) - Date.parse(run.startedAt) } : {}),
+      ...(steps ? { steps } : {}),
+      events,
     };
+    await options.onCheckpoint?.(denied);
+    return denied;
   }
+
+  validateAssignmentPlan(
+    options.definition ?? DEMO_WORKFLOW,
+    options.capabilityInventory,
+    options.assignmentPlan ?? run.assignmentPlan
+  );
 
   return executeFromStep({
     cli,
-    definition: options.definition ?? DEMO_WORKFLOW,
+    capabilityInventory,
+    assignmentPlan,
+    definition,
     ...(options.agentCredential ? { agentCredential: options.agentCredential } : {}),
     ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
     ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
@@ -348,5 +1022,9 @@ export async function resumeWorkflowRun(
     outputs: run.outputs ?? {},
     runId: run.runId,
     startStepId: run.currentStepId,
+    ...(run.startedAt ? { startedAt: run.startedAt } : {}),
+    ...(run.steps ? { steps: run.steps } : {}),
+    ...(run.events ? { events: run.events } : {}),
+    ...(options.onCheckpoint ? { onCheckpoint: options.onCheckpoint } : {}),
   });
 }

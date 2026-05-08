@@ -31,6 +31,7 @@ function blockedRun(): WorkflowRunResult {
         message: "pong",
       },
     },
+    sourceGaps: [],
     approval: {
       toolId: "workspace.writeProbe",
       args: { target: "lead", value: "qualified" },
@@ -97,6 +98,27 @@ describe("workflow checkpoint store", () => {
     });
 
     expect(store.list({ status: "blocked" }).map((item) => item.runId)).toEqual(["run-1"]);
+    store.close();
+  });
+
+  test("filters workflow runs by playbook id and status", () => {
+    const store = createWorkflowCheckpointStore(tempDbPath());
+    const run = blockedRun();
+
+    store.save(run);
+    store.save({
+      ...run,
+      runId: "run-2",
+      workflowId: "ops.weekly-update",
+      status: "blocked",
+    });
+
+    expect(store.list({ workflowId: "ops.weekly-update" }).map((item) => item.runId)).toEqual([
+      "run-2",
+    ]);
+    expect(
+      store.list({ workflowId: "demo.write-approval", status: "blocked" }).map((item) => item.runId)
+    ).toEqual(["run-1"]);
     store.close();
   });
 });

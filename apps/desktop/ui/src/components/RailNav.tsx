@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
-import { Blocks, CheckCircle2, Inbox, LogOut, Settings, User } from "lucide-react";
+import { Blocks, CheckCircle2, Inbox, ListChecks, LogOut, Settings, User } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-export type AppView = "tasks" | "inbox";
+export type AppView = "tasks" | "playbooks" | "inbox";
 
 interface RailNavProps {
   activeView: AppView;
@@ -69,6 +69,17 @@ export function RailNav({ activeView, onLogout, onOpenSettings, onViewChange }: 
           onClick={() => onViewChange("tasks")}
         >
           <CheckCircle2 size={20} />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className={navItemClass("playbooks")}
+          title="Playbooks"
+          aria-current={activeView === "playbooks" ? "page" : undefined}
+          onClick={() => onViewChange("playbooks")}
+        >
+          <ListChecks size={20} />
         </Button>
         <Button
           type="button"

@@ -648,20 +648,409 @@ export const AuditRecordSchema = z.object({
 });
 export type AuditRecord = z.infer<typeof AuditRecordSchema>;
 
-export const WorkflowInputDefinitionSchema = z.object({
-  type: z.enum(["string", "number", "boolean"]),
-  required: z.boolean().default(false),
-  default: z.unknown().optional(),
+export const WorkflowCapabilitySchema = z.enum(["web", "calendar", "mail", "drive", "contacts"]);
+export type WorkflowCapability = z.infer<typeof WorkflowCapabilitySchema>;
+
+export const CapabilityKindSchema = z.enum(["model", "skill", "tool", "integration"]);
+export type CapabilityKind = z.infer<typeof CapabilityKindSchema>;
+
+export const WorkflowDataPolicySchema = z.enum(["cloud-ok", "workspace-local-ok", "local-only"]);
+export type WorkflowDataPolicy = z.infer<typeof WorkflowDataPolicySchema>;
+
+export const CanonicalCapabilitySchema = z
+  .object({
+    id: z.string().min(1),
+    kind: CapabilityKindSchema,
+    label: z.string().min(1),
+    description: z.string().min(1),
+    version: z.number().int().positive().default(1),
+    aliases: z.array(z.string().min(1)).default([]),
+    deprecated: z.boolean().default(false),
+  })
+  .strict();
+export type CanonicalCapability = z.infer<typeof CanonicalCapabilitySchema>;
+
+export const CANONICAL_CAPABILITIES = [
+  {
+    id: "model.reasoning",
+    kind: "model",
+    label: "Reasoning",
+    description: "Can reason across multi-step business context.",
+    version: 1,
+    aliases: ["reasoning"],
+    deprecated: false,
+  },
+  {
+    id: "model.summarization",
+    kind: "model",
+    label: "Summarization",
+    description: "Can summarize long source material.",
+    version: 1,
+    aliases: ["summarization"],
+    deprecated: false,
+  },
+  {
+    id: "skill.meeting-prep",
+    kind: "skill",
+    label: "Meeting prep",
+    description: "Can prepare customer or prospect meeting material.",
+    version: 1,
+    aliases: ["meeting-prep"],
+    deprecated: false,
+  },
+  {
+    id: "skill.account-research",
+    kind: "skill",
+    label: "Account research",
+    description: "Can research account context.",
+    version: 1,
+    aliases: ["account-research"],
+    deprecated: false,
+  },
+  {
+    id: "tool.workspace.read",
+    kind: "tool",
+    label: "Read workspace",
+    description: "Can inspect workspace files.",
+    version: 1,
+    aliases: ["workspace.read"],
+    deprecated: false,
+  },
+  {
+    id: "tool.workspace.write",
+    kind: "tool",
+    label: "Write workspace",
+    description: "Can create or update workspace files.",
+    version: 1,
+    aliases: ["workspace.write"],
+    deprecated: false,
+  },
+  {
+    id: "integration.calendar.events.read",
+    kind: "integration",
+    label: "Calendar events",
+    description: "Can read calendar events.",
+    version: 1,
+    aliases: ["calendar.events.read"],
+    deprecated: false,
+  },
+  {
+    id: "integration.crm.accounts.read",
+    kind: "integration",
+    label: "CRM accounts",
+    description: "Can read account records.",
+    version: 1,
+    aliases: ["crm.accounts.read"],
+    deprecated: false,
+  },
+] as const satisfies readonly CanonicalCapability[];
+
+export function canonicalCapability(idOrAlias: string): CanonicalCapability | undefined {
+  return CANONICAL_CAPABILITIES.find(
+    (capability) =>
+      capability.id === idOrAlias || (capability.aliases as readonly string[]).includes(idOrAlias)
+  );
+}
+
+export function assertKnownCapability(id: string, kind: CapabilityKind, optional: boolean): string {
+  const capability = canonicalCapability(id);
+  if (!capability) {
+    if (optional) return id;
+    throw new Error(`Unknown ${kind} capability: ${id}`);
+  }
+
+  if (capability.kind !== kind) {
+    throw new Error(`Capability ${id} must be registered as a ${kind} capability`);
+  }
+
+  return capability.id;
+}
+
+export const WorkflowCapabilityRequirementSchema = z
+  .object({
+    capability: z.string().min(1),
+    optional: z.boolean().default(false),
+  })
+  .strict();
+export type WorkflowCapabilityRequirement = z.infer<typeof WorkflowCapabilityRequirementSchema>;
+
+export const WorkflowModelRequirementSchema = z
+  .object({
+    acceptableProviders: z.array(ModelProviderSchema).default([]),
+    acceptableModels: z.array(z.string().min(1)).default([]),
+    acceptableModelClasses: z.array(z.string().min(1)).default([]),
+    acceptablePortableModelIds: z.array(z.string().min(1)).default([]),
+    acceptableCapabilities: z.array(z.string().min(1)).default([]),
+    capabilities: z.array(z.string().min(1)).default([]),
+    minContextTokens: z.number().int().positive().optional(),
+    dataPolicy: WorkflowDataPolicySchema.default("cloud-ok"),
+  })
+  .strict();
+export type WorkflowModelRequirement = z.infer<typeof WorkflowModelRequirementSchema>;
+
+export const WorkflowNodeRequirementsSchema = z
+  .object({
+    model: WorkflowModelRequirementSchema.optional(),
+    skills: z.array(WorkflowCapabilityRequirementSchema).default([]),
+    tools: z.array(WorkflowCapabilityRequirementSchema).default([]),
+    integrations: z.array(WorkflowCapabilityRequirementSchema).default([]),
+  })
+  .strict()
+  .superRefine((requires, ctx) => {
+    for (const [index, capability] of requires.model?.capabilities.entries() ?? []) {
+      const known = canonicalCapability(capability);
+      if (!known) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Unknown model capability: ${capability}`,
+          path: ["model", "capabilities", index],
+        });
+        continue;
+      }
+
+      if (known.kind !== "model") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability ${capability} must be a model capability`,
+          path: ["model", "capabilities", index],
+        });
+      }
+    }
+
+    for (const [index, capability] of requires.skills.entries()) {
+      const known = canonicalCapability(capability.capability);
+      if (!known) {
+        if (!capability.optional) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unknown skill capability: ${capability.capability}`,
+            path: ["skills", index, "capability"],
+          });
+        }
+        continue;
+      }
+
+      if (known.kind !== "skill") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability ${capability.capability} must be a skill capability`,
+          path: ["skills", index, "capability"],
+        });
+      }
+    }
+
+    for (const [index, capability] of requires.tools.entries()) {
+      const known = canonicalCapability(capability.capability);
+      if (!known) {
+        if (!capability.optional) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unknown tool capability: ${capability.capability}`,
+            path: ["tools", index, "capability"],
+          });
+        }
+        continue;
+      }
+
+      if (known.kind !== "tool") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability ${capability.capability} must be a tool capability`,
+          path: ["tools", index, "capability"],
+        });
+      }
+    }
+
+    for (const [index, capability] of requires.integrations.entries()) {
+      const known = canonicalCapability(capability.capability);
+      if (!known) {
+        if (!capability.optional) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unknown integration capability: ${capability.capability}`,
+            path: ["integrations", index, "capability"],
+          });
+        }
+        continue;
+      }
+
+      if (known.kind !== "integration") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability ${capability.capability} must be an integration capability`,
+          path: ["integrations", index, "capability"],
+        });
+      }
+    }
+  });
+export type WorkflowNodeRequirements = z.infer<typeof WorkflowNodeRequirementsSchema>;
+
+export const WorkflowSourceGapSchema = z
+  .object({
+    stepId: z.string().min(1),
+    kind: CapabilityKindSchema,
+    capability: z.string().min(1),
+    optional: z.boolean().default(true),
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
+export type WorkflowSourceGap = z.infer<typeof WorkflowSourceGapSchema>;
+
+export const WorkflowNodeAssignmentSchema = z
+  .object({
+    stepId: z.string().min(1),
+    agentId: z.string().min(1).optional(),
+    agentLabel: z.string().min(1).optional(),
+    agentFingerprint: z.string().min(1).optional(),
+    provider: AgentProviderConfigSchema.optional(),
+    providerFingerprint: z.string().min(1).optional(),
+    credentialRef: z.string().min(1).optional(),
+    skillCapabilities: z.array(z.string().min(1)).default([]),
+    toolCapabilities: z.array(z.string().min(1)).default([]),
+    integrationCapabilities: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type WorkflowNodeAssignment = z.infer<typeof WorkflowNodeAssignmentSchema>;
+
+export const WorkflowRunAssignmentPlanSchema = z
+  .object({
+    resolverVersion: z.number().int().positive().default(1),
+    createdAt: z.string().datetime(),
+    assignments: z.record(WorkflowNodeAssignmentSchema).default({}),
+  })
+  .strict();
+export type WorkflowRunAssignmentPlan = z.infer<typeof WorkflowRunAssignmentPlanSchema>;
+
+export const WorkflowCapabilityInventorySchema = z
+  .object({
+    fingerprint: z.string().min(1).optional(),
+    agents: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            label: z.string().min(1),
+            fingerprint: z.string().min(1),
+            model: ModelProviderSettingsSchema.optional(),
+            modelCapabilities: z.array(z.string().min(1)).default([]),
+            contextTokens: z.number().int().positive().optional(),
+            dataPolicies: z.array(WorkflowDataPolicySchema).default([]),
+            skillCapabilities: z.array(z.string().min(1)).default([]),
+            toolCapabilities: z.array(z.string().min(1)).default([]),
+          })
+          .strict()
+      )
+      .default([]),
+    models: z
+      .array(
+        z
+          .object({
+            provider: ModelProviderSchema,
+            model: z.string().min(1),
+            label: z.string().min(1).optional(),
+            hasCredential: z.boolean().default(false),
+            capabilities: z.array(z.string().min(1)).default([]),
+            dataPolicy: WorkflowDataPolicySchema.optional(),
+          })
+          .strict()
+      )
+      .default([]),
+    skills: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            label: z.string().min(1).optional(),
+          })
+          .strict()
+      )
+      .default([]),
+    tools: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            label: z.string().min(1).optional(),
+          })
+          .strict()
+      )
+      .default([]),
+    integrations: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            label: z.string().min(1),
+            fingerprint: z.string().min(1),
+            capabilities: z.array(z.string().min(1)).default([]),
+            dataPolicies: z.array(WorkflowDataPolicySchema).default([]),
+            configured: z.boolean(),
+          })
+          .strict()
+      )
+      .default([]),
+  })
+  .strict();
+export type WorkflowCapabilityInventory = z.infer<typeof WorkflowCapabilityInventorySchema>;
+
+const WorkflowInputControlSchema = z.enum(["text", "textarea", "date", "checkbox", "multiselect"]);
+const WorkflowInputTypeSchema = z.enum(["string", "number", "boolean", "string[]", "enum"]);
+
+export const WorkflowInputOptionSchema = z.object({
+  value: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
 });
+export type WorkflowInputOption = z.infer<typeof WorkflowInputOptionSchema>;
+
+export const WorkflowInputDefinitionSchema = z
+  .object({
+    type: WorkflowInputTypeSchema,
+    required: z.boolean().default(false),
+    default: z.unknown().optional(),
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    placeholder: z.string().min(1).optional(),
+    order: z.number().int().nonnegative().optional(),
+    group: z.string().min(1).optional(),
+    options: z.array(WorkflowInputOptionSchema).optional(),
+    ui: z
+      .object({
+        control: WorkflowInputControlSchema,
+      })
+      .optional(),
+  })
+  .superRefine((input, ctx) => {
+    const control = input.ui?.control;
+    if (!control) return;
+
+    const validControlsByType: Record<z.infer<typeof WorkflowInputTypeSchema>, Set<string>> = {
+      boolean: new Set(["checkbox"]),
+      enum: new Set(["text", "multiselect"]),
+      number: new Set(["text"]),
+      string: new Set(["text", "textarea", "date"]),
+      "string[]": new Set(["multiselect"]),
+    };
+
+    if (!validControlsByType[input.type].has(control)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Control ${control} is not valid for workflow input type ${input.type}`,
+        path: ["ui", "control"],
+      });
+    }
+  });
 
 export type WorkflowInputDefinition = z.infer<typeof WorkflowInputDefinitionSchema>;
 
 export const WorkflowToolStepSchema = z.object({
   id: z.string().min(1),
   label: z.string().optional(),
+  phase: z.string().min(1).optional(),
   kind: z.literal("tool"),
   toolId: z.enum(["workspace.ping", "workspace.writeProbe"]),
   args: z.record(z.unknown()).default({}),
+  requires: WorkflowNodeRequirementsSchema.optional(),
   onSuccess: z.string().min(1).optional(),
   onFailure: z.string().min(1).optional(),
 });
@@ -671,9 +1060,11 @@ export type WorkflowToolStep = z.infer<typeof WorkflowToolStepSchema>;
 export const WorkflowAgentStepSchema = z.object({
   id: z.string().min(1),
   label: z.string().optional(),
+  phase: z.string().min(1).optional(),
   kind: z.literal("agent"),
   prompt: z.string().min(1),
   workspaceRootInput: z.string().min(1).default("workspaceRoot"),
+  requires: WorkflowNodeRequirementsSchema.optional(),
   onSuccess: z.string().min(1).optional(),
   onFailure: z.string().min(1).optional(),
 });
@@ -681,23 +1072,139 @@ export const WorkflowAgentStepSchema = z.object({
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 export type WorkflowStep = WorkflowToolStep | WorkflowAgentStep;
 
-export const WorkflowDefinitionSchema = z.object({
+export const WorkflowOutputDeclarationSchema = z.object({
+  kind: z.enum([
+    "meetingBrief",
+    "businessBrief",
+    "statusDigest",
+    "sourceSummary",
+    "approvalRequest",
+  ]),
+  label: z.string().min(1),
+  description: z.string().min(1).optional(),
+});
+export type WorkflowOutputDeclaration = z.infer<typeof WorkflowOutputDeclarationSchema>;
+
+export const WorkflowDefinitionSchema = z
+  .object({
+    id: z.string().min(1),
+    version: z.number().int().positive(),
+    name: z.string().min(1),
+    description: z.string().optional(),
+    category: z.string().min(1).optional(),
+    businessUseCase: z.string().min(1).optional(),
+    requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
+    optionalCapabilities: z.array(WorkflowCapabilitySchema).default([]),
+    outputs: z.array(WorkflowOutputDeclarationSchema).optional(),
+    phaseOrder: z.array(z.string().min(1)).optional(),
+    inputs: z.record(WorkflowInputDefinitionSchema).default({}),
+    start: z.string().min(1),
+    steps: z
+      .array(z.discriminatedUnion("kind", [WorkflowToolStepSchema, WorkflowAgentStepSchema]))
+      .min(1),
+  })
+  .superRefine((definition, ctx) => {
+    const sources = definition.inputs.sources;
+    if (!sources?.options) return;
+
+    for (const [index, option] of sources.options.entries()) {
+      if (!WorkflowCapabilitySchema.safeParse(option.value).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Unsupported workflow source option: ${option.value}`,
+          path: ["inputs", "sources", "options", index, "value"],
+        });
+      }
+    }
+  });
+
+export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
+
+export const PlaybookSummarySchema = z.object({
   id: z.string().min(1),
   version: z.number().int().positive(),
   name: z.string().min(1),
   description: z.string().optional(),
-  inputs: z.record(WorkflowInputDefinitionSchema).default({}),
-  start: z.string().min(1),
-  steps: z
-    .array(z.discriminatedUnion("kind", [WorkflowToolStepSchema, WorkflowAgentStepSchema]))
-    .min(1),
+  category: z.string().min(1).optional(),
+  businessUseCase: z.string().min(1).optional(),
+  requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
+  optionalCapabilities: z.array(WorkflowCapabilitySchema).default([]),
+  outputs: z.array(WorkflowOutputDeclarationSchema).optional(),
+  stepCount: z.number().int().nonnegative(),
+  phases: z.array(z.string().min(1)).default([]),
 });
 
-export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
+export type PlaybookSummary = z.infer<typeof PlaybookSummarySchema>;
+
+export const PlaybookDetailSchema = PlaybookSummarySchema.extend({
+  inputs: z.record(WorkflowInputDefinitionSchema).default({}),
+  steps: z.array(z.discriminatedUnion("kind", [WorkflowToolStepSchema, WorkflowAgentStepSchema])),
+});
+
+export type PlaybookDetail = z.infer<typeof PlaybookDetailSchema>;
+
+export const PlaybookListResultSchema = z.object({
+  playbooks: z.array(PlaybookSummarySchema),
+});
+
+export type PlaybookListResult = z.infer<typeof PlaybookListResultSchema>;
+
+export const WorkflowRunStatusSchema = z.enum([
+  "running",
+  "blocked",
+  "completed",
+  "denied",
+  "failed",
+]);
+
+export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
+
+export const WorkflowRunEventStatusSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "blocked",
+  "failed",
+  "denied",
+  "completed",
+]);
+
+export type WorkflowRunEventStatus = z.infer<typeof WorkflowRunEventStatusSchema>;
+
+export const WorkflowRunEventSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  workflowId: z.string().min(1),
+  stepId: z.string().min(1).optional(),
+  status: WorkflowRunEventStatusSchema,
+  message: z.string().min(1),
+  createdAt: z.string().datetime(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type WorkflowRunEvent = z.infer<typeof WorkflowRunEventSchema>;
+
+export const WorkflowRunStepRecordSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.enum(["tool", "agent"]),
+  phase: z.string().min(1),
+  status: z.enum(["queued", "running", "succeeded", "blocked", "failed", "denied", "skipped"]),
+  startedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  outputPreview: z.string().optional(),
+  error: z.string().optional(),
+  assignment: WorkflowNodeAssignmentSchema.optional(),
+});
+
+export type WorkflowRunStepRecord = z.infer<typeof WorkflowRunStepRecordSchema>;
 
 export const WorkflowRunRequestSchema = z.object({
   workflowId: z.string().min(1).default("demo.write-approval"),
   input: z.record(z.unknown()).default({}),
+  capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
+  assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
 });
 
 export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
@@ -705,15 +1212,29 @@ export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
 export const WorkflowRunResultSchema = z.object({
   runId: z.string().min(1),
   workflowId: z.string().min(1),
-  status: z.enum(["running", "blocked", "completed", "denied", "failed"]),
+  status: WorkflowRunStatusSchema,
   currentStepId: z.string().optional(),
   input: z.record(z.unknown()).default({}),
+  assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
+  sourceGaps: z.array(WorkflowSourceGapSchema).default([]),
   outputs: z.record(z.unknown()).optional(),
   approval: PermissionDecisionSchema.options[1].shape.approval.optional(),
   error: z.string().optional(),
+  startedAt: z.string().datetime().optional(),
+  updatedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  steps: z.array(WorkflowRunStepRecordSchema).optional(),
+  events: z.array(WorkflowRunEventSchema).optional(),
 });
 
 export type WorkflowRunResult = z.infer<typeof WorkflowRunResultSchema>;
+
+export const PlaybookRunDetailSchema = WorkflowRunResultSchema.extend({
+  playbook: PlaybookSummarySchema.optional(),
+});
+
+export type PlaybookRunDetail = z.infer<typeof PlaybookRunDetailSchema>;
 
 export const WorkflowRunListResultSchema = z.object({
   runs: z.array(WorkflowRunResultSchema),
@@ -724,6 +1245,8 @@ export type WorkflowRunListResult = z.infer<typeof WorkflowRunListResultSchema>;
 export const WorkflowResumeRequestSchema = z.object({
   runId: z.string().min(1),
   decision: z.enum(["approve", "deny"]),
+  capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
+  assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
 });
 
 export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;

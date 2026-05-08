@@ -682,6 +682,78 @@ async fn workflow_resume(
 }
 
 #[tauri::command]
+async fn playbook_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
+    let json = state.get("/playbooks").await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_get(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/playbooks/{}", percent_encode(&playbook_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_create(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = request.to_string();
+    let path = format!("/playbooks/{}/runs", percent_encode(&playbook_id));
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_list(
+    state: State<'_, SidecarHandle>,
+    playbook_id: Option<String>,
+    status: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    if let Some(playbook_id) = playbook_id {
+        params.push(format!("playbookId={}", percent_encode(&playbook_id)));
+    }
+    if let Some(status) = status {
+        params.push(format!("status={}", percent_encode(&status)));
+    }
+    let path = if params.is_empty() {
+        "/playbook-runs".to_string()
+    } else {
+        format!("/playbook-runs?{}", params.join("&"))
+    };
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_get(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/playbook-runs/{}", percent_encode(&run_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_resume(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = request.to_string();
+    let path = format!("/playbook-runs/{}/resume", percent_encode(&run_id));
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn inbox_list(
     state: State<'_, SidecarHandle>,
     status: Option<String>,
@@ -1350,6 +1422,12 @@ pub fn run() {
             model_credential_delete,
             model_settings_get,
             model_settings_save,
+            playbook_get,
+            playbook_list,
+            playbook_run_create,
+            playbook_run_get,
+            playbook_run_list,
+            playbook_run_resume,
             sidecar_ping,
             skill_get,
             skill_list,
