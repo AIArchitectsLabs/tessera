@@ -64,23 +64,39 @@ steps. Starting a playbook from the desktop UI must therefore resolve the
 selected model provider and request-scoped credential before it calls the
 sidecar.
 
-## Agent Assignment
+## Node Assignment
 
-When more than one agent profile exists, Playbooks must make assignment explicit
-without turning the start flow into an engineering console.
+Playbooks must not dictate a specific local agent by id or label. Agent profiles
+can be created, renamed, removed, or imported dynamically, so manifest identity
+references are brittle and non-portable.
 
-The default rule is:
+Instead, each Playbook node declares capability requirements:
 
-- Use the playbook's recommended agent when the manifest declares one later.
-- Otherwise use the user's selected/default agent profile.
-- If multiple profiles are available, show a compact "Run with" selector on the
-  intake page, using profile names and short descriptions.
+- Model requirements: acceptable providers or model classes, required model
+  capabilities, minimum context, and data-policy constraints.
+- Skill requirements: capability tags such as `meeting-prep` or
+  `account-research`, not installed skill ids.
+- Tool requirements: permission classes such as `workspace.read` or
+  `workspace.write`, not implementation tool names.
+- Integration requirements: connector capabilities such as
+  `calendar.events.read` or `crm.accounts.read`, not a specific vendor account.
 
-The selected agent affects agent-backed steps through the profile's model
-override, instructions, runtime/tool policy, and skills. The run should persist
-only non-secret assignment metadata such as `agentId` and `agentLabel` so later
-resume actions continue with the same agent. Provider credentials remain
-request-scoped and must not be stored.
+At run time, Tessera resolves each node to local resources that satisfy those
+requirements. If exactly one valid assignment exists, Tessera assigns it
+automatically. If multiple valid assignments exist, Tessera chooses the best
+deterministic match by ranking fit, defaults, and least privilege. If no valid
+assignment exists, the guided flow stops before launch and explains the missing
+capability in business-readable language.
+
+The default business UI should not show an assignment matrix. Assignment details
+can be available later in a Details/debug surface, but the normal path is
+automatic except when Tessera cannot proceed.
+
+Runs may persist resolved, non-secret assignment metadata per node, such as the
+local profile id, display label, model provider, selected skill ids, tool grants,
+and integration connector ids. This metadata belongs to the local run record,
+not the Playbook package. Provider credentials remain request-scoped and must
+not be stored.
 
 The Playbooks implementation must not rely on ambient environment variables for
 business playbooks. If the selected model provider is missing credentials, the
@@ -263,12 +279,12 @@ The review loop closed these implementation loopholes:
 
 - The UI must not reuse the old console with softer copy; it uses a centered
   guided flow as the primary surface.
-- Agent-backed business playbooks need explicit provider and request-scoped
-  credential transport. The sidecar contract should accept only provider plus
-  optional credential plus non-secret agent assignment metadata, not the full
-  Task request object.
-- Multi-agent setups need a compact "Run with" selector and run-persisted
-  `agentId`/`agentLabel` so approval resumes use the same assignment.
+- Agent-backed business playbooks need per-node capability resolution and
+  request-scoped credential transport. The Playbook package must not reference
+  local agent ids, skill ids, tool implementation names, or integration account
+  ids.
+- Multi-agent setups resolve automatically per node. Runs persist resolved local
+  node assignments only after resolution, so approval resumes are deterministic.
 - Credentials must never be persisted in workflow checkpoints or run events.
 - The Preparing state is only local pending UI until async launch or
   subscriptions exist.

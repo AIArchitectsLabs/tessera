@@ -10,7 +10,7 @@
 
 **Default Catalog Constraint:** Sidecar may keep demo/internal workflows registered for compatibility, but the desktop Playbooks catalog must promote manifest-backed business playbooks by default. Hide workflows without business metadata from the primary catalog unless a later developer/debug toggle is added.
 
-**Agent Assignment Constraint:** If more than one agent profile exists, the intake page must show a compact `Run with` selector. The selected run stores only non-secret `agentId` and `agentLabel`; credentials stay request-scoped. Agent-backed workflow steps must receive the selected profile/runtime in core execution, not just the selected model provider.
+**Node Assignment Constraint:** Playbook manifests must not reference local agent ids, labels, skill ids, tool implementation names, or integration account ids. Each node declares capability requirements; Tessera resolves those requirements to local agents, models, skills, tools, and integrations at run time. Runs persist resolved non-secret node assignments; credentials stay request-scoped.
 
 **Tech Stack:** React + TypeScript, Tauri `invoke`, `@tessera/contracts`, lucide-react, Tailwind, Bun tests, Biome.
 
@@ -46,7 +46,7 @@
   Unit tests for copy/format/input helpers.
 
 - Create `apps/desktop/ui/src/components/PlaybookIntakeForm.tsx`
-  Renders manifest-driven user inputs, compact agent assignment, and emits normalized input plus selected agent id/label.
+  Renders manifest-driven user inputs and emits normalized input. It does not ask the user to pick an agent by default.
 
 - Create `apps/desktop/ui/src/components/PlaybookGuidedFlow.tsx`
   Owns Start, Preparing, Review, Result state rendering for the selected playbook/run.
@@ -301,343 +301,197 @@ git commit -m "Restore business playbooks for guided launch"
 
 ---
 
-### Task 2: Make Agent-Backed Playbooks Runnable
+### Task 2: Add Node Capability Requirements And Runtime Assignment
 
 **Files:**
 - Modify: `packages/contracts/src/index.ts`
 - Modify: `packages/contracts/src/workflow.test.ts`
+- Modify: `packages/core/src/workflow.ts`
+- Modify: `packages/core/src/workflow.test.ts`
 - Modify: `apps/sidecar/src/server.ts`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Test: `packages/contracts/src/workflow.test.ts`
 
-- [ ] **Step 1: Write contract test for playbook execution config**
+- [ ] **Step 1: Write contract tests for node requirements**
 
-Add this test to `packages/contracts/src/workflow.test.ts`:
-
-```ts
-test("accepts workflow run requests with workflow execution config", () => {
-  const parsed = WorkflowRunRequestSchema.parse({
-    workflowId: "sales.meeting-brief",
-    agentId: "agent-1",
-    agentLabel: "Sales Partner",
-    input: { company: "Acme Corp", workspaceRoot: "/workspace/acme" },
-    execution: {
-      provider: { provider: "local", model: "llama3.2", baseUrl: "http://127.0.0.1:11434/v1" },
-    },
-  });
-
-  expect(parsed.execution?.provider.provider).toBe("local");
-  expect(parsed.agentId).toBe("agent-1");
-});
-```
-
-Also add this resume-request assertion:
+Add tests proving a playbook can describe what a node needs without naming local resources:
 
 ```ts
-test("accepts workflow resume requests with workflow execution config", () => {
-  const parsed = WorkflowResumeRequestSchema.parse({
-    runId: "run-1",
-    decision: "approve",
-    agentId: "agent-1",
-    execution: {
-      provider: { provider: "local", model: "llama3.2", baseUrl: "http://127.0.0.1:11434/v1" },
-      credential: { apiKey: "test-key" },
-    },
-  });
-
-  expect(parsed.execution?.provider.provider).toBe("local");
-  expect(parsed.execution?.credential?.apiKey).toBe("test-key");
-  expect(parsed.agentId).toBe("agent-1");
-});
-```
-
-- [ ] **Step 2: Run contract test and verify failure if execution is missing**
-
-Run:
-
-```bash
-bun test packages/contracts/src/workflow.test.ts
-```
-
-Expected before implementation if needed: FAIL because `WorkflowRunRequestSchema` strips or rejects `execution`.
-
-- [ ] **Step 3: Extend workflow run request schema**
-
-In `packages/contracts/src/index.ts`, define a small workflow execution schema near `AgentProviderConfigSchema`. Do not reuse the full `TaskExecutionConfigSchema`; playbook run requests only need provider and request-scoped credential, and they must not couple workflow APIs to task profile internals.
-
-```ts
-export const WorkflowExecutionConfigSchema = z.object({
-  provider: AgentProviderConfigSchema,
-  credential: z.object({ apiKey: z.string().min(1) }).optional(),
-});
-
-export type WorkflowExecutionConfig = z.infer<typeof WorkflowExecutionConfigSchema>;
-```
-
-Then update the workflow run request schema:
-
-```ts
-export const WorkflowRunRequestSchema = z.object({
-  workflowId: z.string().min(1).default("demo.write-approval"),
-  agentId: z.string().min(1).default("default"),
-  agentLabel: z.string().min(1).default("Tessera"),
-  input: z.record(z.unknown()).default({}),
-  execution: WorkflowExecutionConfigSchema.optional(),
-});
-```
-
-Update `WorkflowResumeRequestSchema` in the same location:
-
-```ts
-export const WorkflowResumeRequestSchema = z.object({
-  runId: z.string().min(1),
-  decision: z.enum(["approve", "deny"]),
-  agentId: z.string().min(1).optional(),
-  execution: WorkflowExecutionConfigSchema.optional(),
-});
-```
-
-Add the same non-secret assignment fields to `WorkflowRunResultSchema` so resume can reuse the selected assignment:
-
-```ts
-agentId: z.string().min(1).default("default"),
-agentLabel: z.string().min(1).default("Tessera"),
-```
-
-- [ ] **Step 4: Pass execution provider and credential into workflow runs**
-
-In `apps/sidecar/src/server.ts`, update both `handleWorkflowRun` and `handlePlaybookRunCreate` `runWorkflow` calls to pass execution details:
-
-```ts
-const execution = parsed.data.execution;
-const result = await runWorkflow({
-  definition,
-  agent: profileForAgentId(parsed.data.agentId),
-  input: parsed.data.input,
-  cli: { runWorkspaceCli },
-  ...(execution?.provider ? { agentProvider: execution.provider } : {}),
-  ...(execution?.credential ? { agentCredential: execution.credential.apiKey } : {}),
-  onCheckpoint(run) {
-    workflowStore.save(run);
-  },
-});
-```
-
-For `handlePlaybookRunCreate`, parse the body with `WorkflowRunRequestSchema` after forcing `workflowId` from the URL:
-
-```ts
-const parsed = WorkflowRunRequestSchema.safeParse({
-  workflowId: playbookId,
-  input,
-  execution: body && typeof body === "object" ? (body as { execution?: unknown }).execution : undefined,
-});
-if (!parsed.success) {
-  return Response.json({ error: parsed.error.message }, { status: 400 });
-}
-```
-
-Then use `parsed.data.input` and `parsed.data.execution`.
-
-Update `handleWorkflowResume` to pass execution into `resumeWorkflowRun` without storing credentials:
-
-```ts
-const execution = parsed.data.execution;
-const result = await resumeWorkflowRun({
-  run: existing,
-  decision: parsed.data.decision,
-  definition,
-  agent: profileForAgentId(parsed.data.agentId ?? existing.agentId ?? "default"),
-  cli: { runWorkspaceCli },
-  ...(execution?.provider ? { agentProvider: execution.provider } : {}),
-  ...(execution?.credential ? { agentCredential: execution.credential.apiKey } : {}),
-  onCheckpoint(checkpoint) {
-    workflowStore.save(checkpoint);
-  },
-});
-```
-
-- [ ] **Step 5: Attach default model execution in Tauri playbook commands**
-
-In `apps/desktop/src-tauri/src/lib.rs`, add:
-
-```rust
-async fn attach_default_workflow_execution(
-    app: &AppHandle,
-    mut request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    if request.get("execution").is_some() {
-        return Ok(request);
-    }
-
-    let mut task_like = serde_json::json!({
-        "workspaceRoot": request
-            .get("input")
-            .and_then(|input| input.get("workspaceRoot"))
-            .and_then(|value| value.as_str())
-            .unwrap_or(""),
-        "initialInstruction": "Run playbook",
-        "agentId": request
-            .get("agentId")
-            .and_then(|value| value.as_str())
-            .unwrap_or("default"),
-        "agentLabel": request
-            .get("agentLabel")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Tessera")
-    });
-    task_like = attach_default_task_execution(app, task_like).await?;
-    if let Some(execution) = task_like.get("execution") {
-        let Some(provider) = execution.get("provider").cloned() else {
-            return Ok(request);
-        };
-        let mut workflow_execution = serde_json::json!({
-            "provider": provider
-        });
-        if let Some(credential) = execution.get("credential").cloned() {
-            workflow_execution["credential"] = credential;
-        }
-        request["execution"] = workflow_execution;
-    }
-    Ok(request)
-}
-```
-
-Update `playbook_run_create`:
-
-```rust
-async fn playbook_run_create(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    playbook_id: String,
-    agent_id: String,
-    agent_label: String,
-    input: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(
-        &app,
-        serde_json::json!({
-            "workflowId": &playbook_id,
-            "agentId": agent_id,
-            "agentLabel": agent_label,
-            "input": input
-        }),
-    )
-    .await?;
-    let body = request.to_string();
-    let path = format!("/playbooks/{}/runs", percent_encode(&playbook_id));
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-```
-
-Update `playbook_run_resume` to attach execution too:
-
-```rust
-async fn playbook_run_resume(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    run_id: String,
-    decision: String,
-    agent_id: Option<String>,
-    agent_label: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(
-        &app,
-        serde_json::json!({
-            "runId": &run_id,
-            "decision": decision,
-            "agentId": agent_id.unwrap_or_else(|| "default".to_string()),
-            "agentLabel": agent_label.unwrap_or_else(|| "Tessera".to_string()),
-            "input": {}
-        }),
-    )
-    .await?;
-    let mut body_value = request;
-    body_value
-        .as_object_mut()
-        .map(|object| object.remove("input"));
-    let path = format!("/playbook-runs/{}/resume", percent_encode(&run_id));
-    let json = state
-        .post(&path, &body_value.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-```
-
-Do not write `execution` into workflow checkpoints. It contains credential
-material and must remain request-scoped.
-
-- [ ] **Step 6: Pass selected profile into core agent steps**
-
-In `packages/core/src/workflow.ts`, extend workflow run/resume options to accept the selected agent profile and runtime:
-
-```ts
-agent?: AgentProfile;
-runtime?: AgentRuntimeContext;
-```
-
-When executing an agent step, pass those fields to `runPiTaskTurn`:
-
-```ts
-const result = await (options.agentRunner ?? runPiTaskTurn)({
-  ...(options.agent ? { agent: options.agent } : {}),
-  ...(credential ? { credential } : {}),
-  prompt: resolveTemplate(step.prompt, input),
-  provider,
-  ...(options.runtime ? { runtime: options.runtime } : {}),
-  workspaceRoot,
-});
-```
-
-Also include `agentId` and `agentLabel` in each returned checkpoint/result. These are non-secret run assignment fields and are required so approval resumes continue with the original assignment.
-
-- [ ] **Step 7: Add a sidecar or core test for agent execution routing**
-
-Add this focused assertion to `packages/core/src/workflow.test.ts` if not already covered by existing tests:
-
-```ts
-test("agent playbook uses supplied provider and credential", async () => {
-  const definition = loadWorkflowDefinition({
-    id: "custom.agent-playbook",
+test("accepts capability requirements on workflow nodes", () => {
+  const parsed = WorkflowDefinitionSchema.parse({
+    id: "sales.meeting-brief",
     version: 1,
-    name: "Custom Agent Playbook",
-    start: "draft",
+    name: "Sales Meeting Brief",
+    start: "draftBrief",
     inputs: {
       workspaceRoot: { type: "string", required: true },
-      prompt: { type: "string", required: true },
+      company: { type: "string", required: true },
     },
     steps: [
       {
-        id: "draft",
+        id: "draftBrief",
         kind: "agent",
-        label: "Draft",
-        prompt: "{{inputs.prompt}}",
+        label: "Draft meeting brief",
+        prompt: "Prepare a brief for {{inputs.company}}",
         workspaceRootInput: "workspaceRoot",
+        requires: {
+          model: {
+            acceptableProviders: ["openai", "anthropic", "local"],
+            capabilities: ["reasoning", "summarization"],
+            minContextTokens: 32000,
+            dataPolicy: "workspace-local-ok",
+          },
+          skills: [{ capability: "meeting-prep" }, { capability: "account-research" }],
+          tools: [{ capability: "workspace.read" }],
+          integrations: [{ capability: "calendar.events.read", optional: true }],
+        },
       },
     ],
   });
-  const seen: Array<{ credential?: string; provider: string }> = [];
 
-  await runWorkflow({
-    definition,
-    input: { workspaceRoot: "/workspace/acme", prompt: "hello" },
-    cli: {
-      async runWorkspaceCli() {
-        throw new Error("agent workflow should not call tool CLI");
-      },
-    },
-    agentProvider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
-    agentCredential: "test-key",
-    async agentRunner(options) {
-      seen.push({ credential: options.credential, provider: options.provider.provider });
-      return { text: "drafted", boundaryViolations: 0 };
-    },
-  });
+  expect(parsed.steps[0].requires?.skills?.[0]?.capability).toBe("meeting-prep");
+});
 
-  expect(seen).toEqual([{ credential: "test-key", provider: "openai" }]);
+test("rejects local ids in workflow node requirements", () => {
+  expect(() =>
+    WorkflowDefinitionSchema.parse({
+      id: "bad.local-id",
+      version: 1,
+      name: "Bad Local Id",
+      start: "draft",
+      inputs: { workspaceRoot: { type: "string", required: true } },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          label: "Draft",
+          prompt: "Draft",
+          workspaceRootInput: "workspaceRoot",
+          requires: {
+            agentId: "agent-1",
+          },
+        },
+      ],
+    })
+  ).toThrow();
 });
 ```
+
+- [ ] **Step 2: Extend workflow requirement contracts**
+
+Add schemas near the workflow step schemas:
+
+```ts
+export const WorkflowModelRequirementSchema = z.object({
+  acceptableProviders: z.array(z.enum(["openai", "anthropic", "openrouter", "local"])).default([]),
+  acceptableModels: z.array(z.string().min(1)).default([]),
+  capabilities: z.array(z.string().min(1)).default([]),
+  minContextTokens: z.number().int().positive().optional(),
+  dataPolicy: z.enum(["cloud-ok", "workspace-local-ok", "local-only"]).default("cloud-ok"),
+});
+
+export const WorkflowCapabilityRequirementSchema = z.object({
+  capability: z.string().min(1),
+  optional: z.boolean().default(false),
+});
+
+export const WorkflowNodeRequirementsSchema = z
+  .object({
+    model: WorkflowModelRequirementSchema.optional(),
+    skills: z.array(WorkflowCapabilityRequirementSchema).default([]),
+    tools: z.array(WorkflowCapabilityRequirementSchema).default([]),
+    integrations: z.array(WorkflowCapabilityRequirementSchema).default([]),
+  })
+  .strict();
+```
+
+Attach `requires: WorkflowNodeRequirementsSchema.optional()` to both agent and tool workflow step schemas. Do not add `agentId`, `agentLabel`, local skill ids, local tool ids, or integration account ids to manifest schemas.
+
+- [ ] **Step 3: Add resolved assignment contracts**
+
+Resolved assignments are local run metadata, not manifest metadata:
+
+```ts
+export const WorkflowNodeAssignmentSchema = z.object({
+  stepId: z.string().min(1),
+  agentId: z.string().min(1).optional(),
+  agentLabel: z.string().min(1).optional(),
+  provider: AgentProviderConfigSchema.optional(),
+  skillIds: z.array(z.string().min(1)).default([]),
+  toolCapabilities: z.array(z.string().min(1)).default([]),
+  integrationIds: z.array(z.string().min(1)).default([]),
+});
+
+export const WorkflowRunAssignmentPlanSchema = z.object({
+  assignments: z.record(WorkflowNodeAssignmentSchema),
+});
+```
+
+Add `assignmentPlan: WorkflowRunAssignmentPlanSchema.optional()` to `WorkflowRunRequestSchema`, `WorkflowResumeRequestSchema`, and `WorkflowRunResultSchema`. This is non-secret and may be checkpointed. Credentials are not part of the assignment plan.
+
+Add a request-scoped credential map keyed by provider or assignment key:
+
+```ts
+export const WorkflowExecutionConfigSchema = z.object({
+  credentials: z.record(z.object({ apiKey: z.string().min(1) })).default({}),
+});
+```
+
+- [ ] **Step 4: Implement capability resolution before launch**
+
+Add a resolver in `apps/sidecar/src/server.ts` or a focused helper module. It should:
+
+- Inspect each step's `requires`.
+- Build candidate local agent profiles from `agentProfileStore`.
+- Match model requirements against the profile model override or selected default provider.
+- Match skill requirements by capability tags, not raw skill ids.
+- Match tool requirements against profile runtime/tool policy capability classes.
+- Match integration requirements against available connector capability metadata.
+- Choose the highest-ranked valid candidate automatically.
+- Return a business-readable error when a required capability has no candidate.
+
+Ranking order for MVP:
+
+1. Exact model/provider fit.
+2. Agent profile already has all required skill capability tags.
+3. Least-privilege tool policy that still satisfies the node.
+4. User/default profile as tie-breaker.
+5. Stable id sort as final deterministic tie-breaker.
+
+Do not show a default assignment selector in the intake form. Only surface a guided blocker if no valid assignment exists.
+
+- [ ] **Step 5: Attach credentials for resolved providers in Tauri**
+
+Update `apps/desktop/src-tauri/src/lib.rs` playbook run/resume commands:
+
+- Call the sidecar resolver before run creation/resume if the request lacks an assignment plan.
+- Read provider credentials from the OS keychain for each provider in the resolved plan.
+- Send `assignmentPlan` and request-scoped `execution.credentials` to sidecar.
+- Return the existing business-readable model settings error if a required cloud credential is missing.
+
+Do not store `execution.credentials` in checkpoints, events, or run result records.
+
+- [ ] **Step 6: Pass per-node assignment into core agent steps**
+
+In `packages/core/src/workflow.ts`, when executing an agent step:
+
+- Find `assignmentPlan.assignments[step.id]`.
+- Resolve the assigned agent profile/runtime and provider from that assignment.
+- Pass agent profile, runtime, provider, and credential to `runPiTaskTurn`.
+- Preserve the assignment plan in checkpoints so approval resume is deterministic.
+
+Tool steps should use required tool capability classes for permission copy and validation, while still executing through the existing tool registry.
+
+- [ ] **Step 7: Add resolver tests**
+
+Add focused tests for:
+
+- A node resolves to different agents for different steps in the same playbook.
+- Manifest requirements cannot name local agent ids or labels.
+- Missing required model capability blocks launch before run creation.
+- Missing optional integration is reported as a source gap, not a launch blocker.
+- Resume reuses the checkpointed assignment plan.
+- Credentials are accepted per request and never persisted in the run checkpoint.
 
 - [ ] **Step 8: Run focused checks**
 
@@ -654,8 +508,8 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/contracts/src/index.ts packages/contracts/src/workflow.test.ts packages/core/src/workflow.test.ts apps/sidecar/src/server.ts apps/desktop/src-tauri/src/lib.rs
-git commit -m "Wire model execution into playbook runs"
+git add packages/contracts/src/index.ts packages/contracts/src/workflow.test.ts packages/core/src/workflow.ts packages/core/src/workflow.test.ts apps/sidecar/src/server.ts apps/desktop/src-tauri/src/lib.rs
+git commit -m "Resolve playbook nodes by capability requirements"
 ```
 
 ---
@@ -994,7 +848,7 @@ Create `apps/desktop/ui/src/components/PlaybooksView.test.tsx` with this initial
 /// <reference types="bun" />
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { AgentProfile, PlaybookDetail, PlaybookSummary } from "@tessera/contracts";
+import type { PlaybookDetail, PlaybookSummary } from "@tessera/contracts";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { JSDOM } from "jsdom";
 import React from "react";
@@ -1086,11 +940,6 @@ const detail: PlaybookDetail = {
   steps: [],
 };
 
-const agents = [
-  { id: "default", name: "Tessera" },
-  { id: "agent-1", name: "Sales Partner" },
-] as unknown as AgentProfile[];
-
 const { PlaybookIntakeForm } = await import("./PlaybookIntakeForm");
 
 beforeEach(() => {
@@ -1105,7 +954,6 @@ describe("PlaybookIntakeForm", () => {
   test("renders business inputs and hides system inputs", () => {
     render(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={detail}
@@ -1118,7 +966,7 @@ describe("PlaybookIntakeForm", () => {
     expect(screen.getByLabelText("Company")).toBeTruthy();
     expect(screen.getByLabelText("Objective")).toBeTruthy();
     expect(screen.queryByLabelText("Workspace")).toBeNull();
-    expect(screen.getByLabelText("Run with")).toBeTruthy();
+    expect(screen.queryByLabelText("Run with")).toBeNull();
     expect(screen.getByRole("button", { name: "Prepare brief" })).toBeTruthy();
   });
 
@@ -1126,7 +974,6 @@ describe("PlaybookIntakeForm", () => {
     const onStart = mock(() => {});
     render(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={detail}
@@ -1139,21 +986,17 @@ describe("PlaybookIntakeForm", () => {
     fireEvent.input(screen.getByLabelText("Objective"), { target: { value: "Agree next steps" } });
     fireEvent.click(screen.getByRole("button", { name: "Prepare brief" }));
 
-    expect(onStart).toHaveBeenCalledWith(
-      {
-        company: "Globex",
-        objective: "Agree next steps",
-        sources: ["web"],
-        workspaceRoot: "/workspace/acme",
-      },
-      { agentId: "default", agentLabel: "Tessera" }
-    );
+    expect(onStart).toHaveBeenCalledWith({
+      company: "Globex",
+      objective: "Agree next steps",
+      sources: ["web"],
+      workspaceRoot: "/workspace/acme",
+    });
   });
 
   test("disables start when workspace is missing", () => {
     render(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={detail}
@@ -1169,7 +1012,6 @@ describe("PlaybookIntakeForm", () => {
   test("keeps start disabled until required business inputs are filled", () => {
     render(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={detail}
@@ -1187,7 +1029,6 @@ describe("PlaybookIntakeForm", () => {
   test("refreshes defaults when playbook detail arrives after first render", () => {
     const { rerender } = render(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={null}
@@ -1198,7 +1039,6 @@ describe("PlaybookIntakeForm", () => {
 
     rerender(
       <PlaybookIntakeForm
-        agents={agents}
         disabled={false}
         playbook={playbook}
         playbookDetail={detail}
@@ -1227,7 +1067,7 @@ Expected: FAIL because `PlaybookIntakeForm` does not exist.
 Create `apps/desktop/ui/src/components/PlaybookIntakeForm.tsx`:
 
 ```tsx
-import type { AgentProfile, PlaybookDetail, PlaybookSummary, WorkflowInputDefinition } from "@tessera/contracts";
+import type { PlaybookDetail, PlaybookSummary, WorkflowInputDefinition } from "@tessera/contracts";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -1238,12 +1078,11 @@ import {
 } from "@/lib/playbooks";
 
 interface PlaybookIntakeFormProps {
-  agents: AgentProfile[];
   disabled: boolean;
   playbook: PlaybookSummary;
   playbookDetail: PlaybookDetail | null;
   workspaceRoot: string | null;
-  onStart: (input: Record<string, unknown>, agent: { agentId: string; agentLabel: string }) => void;
+  onStart: (input: Record<string, unknown>) => void;
 }
 
 function valueForInput(value: unknown): string {
@@ -1268,7 +1107,6 @@ function promptTitle(playbook: PlaybookSummary): string {
 }
 
 export function PlaybookIntakeForm({
-  agents,
   disabled,
   playbook,
   playbookDetail,
@@ -1282,8 +1120,6 @@ export function PlaybookIntakeForm({
   const [input, setInput] = useState<Record<string, unknown>>(initialInput);
   const fields = userInputDefinitions(playbookDetail?.inputs ?? {});
   const actionLabel = playbookActionLabel(playbook);
-  const [selectedAgentId, setSelectedAgentId] = useState("default");
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? agents[0] ?? null;
   const canStart =
     Boolean(workspaceRoot) && Boolean(playbookDetail) && hasRequiredPlaybookInput(input, playbookDetail?.inputs ?? {});
 
@@ -1308,22 +1144,6 @@ export function PlaybookIntakeForm({
       ) : null}
 
       <div className="mt-6 grid gap-4">
-        {agents.length > 1 ? (
-          <label className="grid gap-1 text-sm font-medium text-foreground">
-            Run with
-            <select
-              className="rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
-              value={selectedAgent?.id ?? "default"}
-              onChange={(event) => setSelectedAgentId(event.target.value)}
-            >
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
         {fields.map(({ key, definition }) => (
           <label key={key} className="grid gap-1 text-sm font-medium text-foreground">
             {definition.label ?? key}
@@ -1385,12 +1205,7 @@ export function PlaybookIntakeForm({
           type="button"
           className="h-9 rounded-md"
           disabled={disabled || !canStart}
-          onClick={() =>
-            onStart(
-              { ...input, workspaceRoot: workspaceRoot ?? "" },
-              { agentId: selectedAgent?.id ?? "default", agentLabel: selectedAgent?.name ?? "Tessera" }
-            )
-          }
+          onClick={() => onStart({ ...input, workspaceRoot: workspaceRoot ?? "" })}
         >
           {actionLabel}
         </Button>
@@ -1497,7 +1312,6 @@ describe("PlaybookGuidedFlow", () => {
   test("renders local preparing state while start request is pending", () => {
     render(
       <PlaybookGuidedFlow
-        agents={agents}
         playbook={playbook}
         playbookDetail={detail}
         run={null}
@@ -1516,7 +1330,6 @@ describe("PlaybookGuidedFlow", () => {
   test("renders result state around artifacts, not raw JSON", () => {
     render(
       <PlaybookGuidedFlow
-        agents={agents}
         playbook={playbook}
         playbookDetail={detail}
         run={completedRun}
@@ -1537,7 +1350,6 @@ describe("PlaybookGuidedFlow", () => {
     const onResume = mock(() => {});
     render(
       <PlaybookGuidedFlow
-        agents={agents}
         playbook={playbook}
         playbookDetail={detail}
         run={blockedRun}
@@ -1571,7 +1383,7 @@ Expected: FAIL because `PlaybookGuidedFlow` does not exist.
 Create `apps/desktop/ui/src/components/PlaybookGuidedFlow.tsx`:
 
 ```tsx
-import type { AgentProfile, PlaybookDetail, PlaybookRunDetail, PlaybookSummary } from "@tessera/contracts";
+import type { PlaybookDetail, PlaybookRunDetail, PlaybookSummary } from "@tessera/contracts";
 import { AlertTriangle, CheckCircle2, Clock3, FileText, Loader2, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -1585,13 +1397,12 @@ import {
 import { PlaybookIntakeForm } from "./PlaybookIntakeForm";
 
 interface PlaybookGuidedFlowProps {
-  agents: AgentProfile[];
   playbook: PlaybookSummary;
   playbookDetail: PlaybookDetail | null;
   run: PlaybookRunDetail | null;
   running: boolean;
   workspaceRoot: string | null;
-  onStart: (input: Record<string, unknown>, agent: { agentId: string; agentLabel: string }) => void;
+  onStart: (input: Record<string, unknown>) => void;
   onResume: (decision: "approve" | "deny") => void;
 }
 
@@ -1608,7 +1419,6 @@ function artifactTitle(playbook: PlaybookSummary): string {
 }
 
 export function PlaybookGuidedFlow({
-  agents,
   playbook,
   playbookDetail,
   run,
@@ -1650,7 +1460,6 @@ export function PlaybookGuidedFlow({
 
     return (
       <PlaybookIntakeForm
-        agents={agents}
         disabled={running}
         playbook={playbook}
         playbookDetail={playbookDetail}
@@ -1778,7 +1587,6 @@ Append to `apps/desktop/ui/src/components/PlaybooksView.test.tsx`. Do not use a 
 ```tsx
 mock.module("@tauri-apps/api/core", () => ({
   invoke: mock(async (command: string) => {
-    if (command === "agent_profile_list") return { profiles: agents };
     if (command === "playbook_list") {
       return {
         playbooks: [
@@ -1845,7 +1653,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatPlaybookTime, runStatusLabel } from "@/lib/playbooks";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentProfile, AgentProfileListResult, PlaybookDetail, PlaybookListResult, PlaybookRunDetail, PlaybookSummary } from "@tessera/contracts";
+import type { PlaybookDetail, PlaybookListResult, PlaybookRunDetail, PlaybookSummary } from "@tessera/contracts";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PlaybookGuidedFlow } from "./PlaybookGuidedFlow";
@@ -1860,7 +1668,6 @@ interface PlaybooksViewProps {
 
 export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
-  const [agents, setAgents] = useState<AgentProfile[]>([]);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
   const [runs, setRuns] = useState<PlaybookRunDetail[]>([]);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
@@ -1884,15 +1691,6 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
-    }
-  }, []);
-
-  const loadAgents = useCallback(async () => {
-    try {
-      const result = await invoke<AgentProfileListResult>("agent_profile_list");
-      setAgents(result.profiles);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
     }
   }, []);
 
@@ -1923,23 +1721,20 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
 
   useEffect(() => {
     void loadPlaybooks();
-    void loadAgents();
-  }, [loadAgents, loadPlaybooks]);
+  }, [loadPlaybooks]);
 
   useEffect(() => {
     void loadRuns(selectedPlaybookId);
     if (selectedPlaybookId) void loadPlaybookDetail(selectedPlaybookId);
   }, [loadPlaybookDetail, loadRuns, selectedPlaybookId]);
 
-  async function startRun(input: Record<string, unknown>, agent: { agentId: string; agentLabel: string }) {
+  async function startRun(input: Record<string, unknown>) {
     if (!selectedPlaybook) return;
     setRunning(true);
     setError(null);
     try {
       const run = await invoke<PlaybookRunDetail>("playbook_run_create", {
         playbookId: selectedPlaybook.id,
-        agentId: agent.agentId,
-        agentLabel: agent.agentLabel,
         input,
       });
       setRuns((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
@@ -1959,8 +1754,6 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
       const run = await invoke<PlaybookRunDetail>("playbook_run_resume", {
         runId: selectedRun.runId,
         decision,
-        agentId: selectedRun.agentId ?? "default",
-        agentLabel: selectedRun.agentLabel ?? "Tessera",
       });
       setRuns((current) => current.map((item) => (item.runId === run.runId ? run : item)));
     } catch (runError) {
@@ -2024,7 +1817,6 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
           <PlaybookGuidedFlow
             playbook={selectedPlaybook}
             playbookDetail={selectedPlaybookDetail}
-            agents={agents}
             run={selectedRun}
             running={running}
             workspaceRoot={workspaceRoot}
