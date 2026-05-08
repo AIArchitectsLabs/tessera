@@ -42,6 +42,11 @@ The selected playbook owns one centered guided page with four states:
    phrasing such as "Draft meeting brief" and "Check source coverage." The page
    should say the user can leave and return later.
 
+   MVP constraint: the current run-create API is synchronous. Until async launch
+   or run subscriptions are implemented, the Preparing state may be a local
+   pending state shown while the desktop command is in flight. It must not imply
+   durable live checkpoint streaming unless that backend behavior is added.
+
 3. **Review**
    If the workflow blocks on approval, the same page explains the business
    consequence: for example, "Approve the workspace prep?" The user approves or
@@ -51,6 +56,23 @@ The selected playbook owns one centered guided page with four states:
    The page ends on the prepared artifact and next action: open brief, copy
    summary, start another, or view source coverage. Run history remains
    accessible but secondary.
+
+## Runtime Requirement
+
+Business playbooks may include agent-backed steps, not only deterministic tool
+steps. Starting a playbook from the desktop UI must therefore resolve the
+selected model provider and request-scoped credential before it calls the
+sidecar.
+
+The Playbooks implementation must not rely on ambient environment variables for
+business playbooks. If the selected model provider is missing credentials, the
+guided flow should fail before launch with the same business-readable settings
+message used by Tasks, for example: "OpenAI is not configured. Add an API key in
+Settings > Model."
+
+Resume calls must also receive provider and credential context when a blocked playbook can
+continue into later agent steps. Credentials must be supplied per request from
+the desktop shell and must not be persisted into workflow checkpoints.
 
 ## Layout
 
@@ -84,6 +106,11 @@ The previous finalized test playbook set must remain available:
 Demo or compatibility workflows may remain registered internally but should not
 be promoted over business examples in the default Playbooks experience.
 
+The default catalog should require business metadata such as `businessUseCase`.
+This prevents internal/demo workflow manifests from reappearing in the primary
+business-user path just because they are still registered for tests or
+compatibility.
+
 ## Intake Forms
 
 Inputs come from manifest metadata:
@@ -98,6 +125,11 @@ Inputs come from manifest metadata:
 
 The form should render only user-meaningful fields. System fields such as
 `workspaceRoot` should be injected, not displayed.
+
+Placeholders and inferred dates are examples, not values. The UI must not submit
+placeholder text or invented dates as default business input. Start should remain
+disabled until required user-facing fields are filled, except for fields that
+provide explicit manifest defaults.
 
 Controls:
 
@@ -181,6 +213,14 @@ Add focused UI tests for:
 - Result state renders declared outputs without raw JSON.
 - Empty, failed, and missing-workspace states use business copy.
 
+Add transport/runtime tests for:
+
+- Agent-backed playbook run requests accept execution config.
+- The desktop playbook start command attaches default model execution.
+- Missing cloud credentials fail before starting the playbook.
+- Approved resume of an agent-backed playbook preserves execution context when
+  needed for remaining agent steps.
+
 Backend and contract tests should keep covering:
 
 - Rich manifest input metadata.
@@ -198,3 +238,22 @@ Avoid broad renaming of workflow internals. Keep the split:
 
 - Internal: workflow definition, workflow runner, workflow checkpoints.
 - External: playbook launcher, playbook intake, playbook result.
+
+## Strategy Audit Fixes
+
+The review loop closed these implementation loopholes:
+
+- The UI must not reuse the old console with softer copy; it uses a centered
+  guided flow as the primary surface.
+- Agent-backed business playbooks need explicit provider and request-scoped
+  credential transport. The sidecar contract should accept only provider plus
+  optional credential, not the full Task profile/runtime object.
+- Credentials must never be persisted in workflow checkpoints or run events.
+- The Preparing state is only local pending UI until async launch or
+  subscriptions exist.
+- Business test playbooks remain registered and are the default catalog; demo
+  workflows stay internal by default.
+- Placeholder text and inferred dates are never treated as submitted data;
+  required business fields gate the start action.
+- UI tests must match the repo's Bun/JSDOM harness and avoid unavailable
+  testing-library helpers.
