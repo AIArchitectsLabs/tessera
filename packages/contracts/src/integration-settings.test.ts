@@ -177,6 +177,19 @@ describe("integration settings contracts", () => {
     expect(parsed.messages[0]?.subject).toBe("Meeting prep");
   });
 
+  test("defaults normalized mail list payload fields", () => {
+    const parsed = MailListResultSchema.parse({
+      messages: [
+        {
+          id: "msg-1",
+        },
+      ],
+    });
+
+    expect(parsed.messages[0]?.subject).toBe("(no subject)");
+    expect(parsed.messages[0]?.labels).toEqual([]);
+  });
+
   test("parses normalized mail read payloads", () => {
     const parsed = MailReadResultSchema.parse({
       message: {
@@ -192,6 +205,18 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.message.text).toContain("pricing");
+  });
+
+  test("defaults normalized mail read payload fields", () => {
+    const parsed = MailReadResultSchema.parse({
+      message: {
+        id: "msg-1",
+      },
+    });
+
+    expect(parsed.message.to).toEqual([]);
+    expect(parsed.message.cc).toEqual([]);
+    expect(parsed.message.text).toBe("");
   });
 
   test("parses normalized drive search payloads", () => {
@@ -223,6 +248,18 @@ describe("integration settings contracts", () => {
     expect(parsed.file.text).toBe("Customer notes");
   });
 
+  test("rejects metadata-only drive read payloads", () => {
+    expect(() =>
+      DriveReadResultSchema.parse({
+        file: {
+          id: "file-1",
+          name: "Discovery Notes",
+          mimeType: "application/vnd.google-apps.document",
+        },
+      })
+    ).toThrow(/readable content/i);
+  });
+
   test("parses normalized contacts lookup payloads", () => {
     const parsed = ContactsLookupResultSchema.parse({
       contacts: [
@@ -237,6 +274,21 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.contacts[0]?.emailAddresses[0]).toBe("alex@example.com");
+  });
+
+  test("defaults normalized contacts lookup payload fields", () => {
+    const parsed = ContactsLookupResultSchema.parse({
+      contacts: [
+        {
+          resourceName: "people/c1",
+          displayName: "Alex Rivera",
+        },
+      ],
+    });
+
+    expect(parsed.contacts[0]?.emailAddresses).toEqual([]);
+    expect(parsed.contacts[0]?.phoneNumbers).toEqual([]);
+    expect(parsed.contacts[0]?.organizations).toEqual([]);
   });
 });
 

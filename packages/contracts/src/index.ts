@@ -405,6 +405,14 @@ export const DriveReadResultSchema = z.object({
       .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
       .optional(),
   }),
+}).superRefine((value, ctx) => {
+  if (value.file.text === undefined && value.file.rows === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Drive read result must include readable content in file.text or file.rows",
+      path: ["file"],
+    });
+  }
 });
 export type DriveReadResult = z.infer<typeof DriveReadResultSchema>;
 
