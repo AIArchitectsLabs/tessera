@@ -77,6 +77,36 @@ export async function executeCliCommand(
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
     }
 
+    if (command === "mail" && subcommand === "list") {
+      const payload = await runMailList(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "mail" && subcommand === "search") {
+      const payload = await runMailSearch(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "mail" && subcommand === "read") {
+      const payload = await runMailRead(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "drive" && subcommand === "search") {
+      const payload = await runDriveSearch(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "drive" && subcommand === "read") {
+      const payload = await runDriveRead(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "contacts" && subcommand === "lookup") {
+      const payload = await runContactsLookup(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
     throw new CliCommandError(
       `Unknown command: ${[command, subcommand].filter(Boolean).join(" ")}`
     );
@@ -537,6 +567,36 @@ async function runGcalRead(args: string[], options: ExecuteCliCommandOptions) {
   return createGoogleWorkspaceConnector(options).readCalendarEvent({ calendarId, eventId });
 }
 
+async function runMailList(args: string[], options: ExecuteCliCommandOptions) {
+  const { limit, query } = parseMailListArgs(args);
+  return createGoogleWorkspaceConnector(options).listMail({ limit, ...(query ? { query } : {}) });
+}
+
+async function runMailSearch(args: string[], options: ExecuteCliCommandOptions) {
+  const { query, limit } = parseMailSearchArgs(args);
+  return createGoogleWorkspaceConnector(options).searchMail({ query, limit });
+}
+
+async function runMailRead(args: string[], options: ExecuteCliCommandOptions) {
+  const { messageId } = parseMailReadArgs(args);
+  return createGoogleWorkspaceConnector(options).readMail({ messageId });
+}
+
+async function runDriveSearch(args: string[], options: ExecuteCliCommandOptions) {
+  const { query, limit } = parseDriveSearchArgs(args);
+  return createGoogleWorkspaceConnector(options).searchDrive({ query, limit });
+}
+
+async function runDriveRead(args: string[], options: ExecuteCliCommandOptions) {
+  const { fileId, format } = parseDriveReadArgs(args);
+  return createGoogleWorkspaceConnector(options).readDriveFile({ fileId, format });
+}
+
+async function runContactsLookup(args: string[], options: ExecuteCliCommandOptions) {
+  const { query, limit } = parseContactsLookupArgs(args);
+  return createGoogleWorkspaceConnector(options).lookupContacts({ query, limit });
+}
+
 function createGoogleWorkspaceConnector(
   options: ExecuteCliCommandOptions
 ): GoogleWorkspaceConnector {
@@ -710,6 +770,186 @@ function parseGcalReadArgs(args: string[]): { calendarId: string; eventId: strin
   }
 
   return { calendarId, eventId };
+}
+
+function parseMailListArgs(args: string[]): { limit: number; query?: string } {
+  let limit = 10;
+  let query = "";
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) {
+      throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
+    }
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg === "--query") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
+      }
+      query = value;
+      index += 1;
+      continue;
+    }
+    throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
+  }
+
+  return query ? { limit, query } : { limit };
+}
+
+function parseMailSearchArgs(args: string[]): { query: string; limit: number } {
+  let limit = 10;
+  const queryParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) {
+      throw new CliCommandError("Usage: mail search <query> [--limit <n>]");
+    }
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new CliCommandError("Usage: mail search <query> [--limit <n>]");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError("Usage: mail search <query> [--limit <n>]");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new CliCommandError("Usage: mail search <query> [--limit <n>]");
+    }
+    queryParts.push(arg);
+  }
+
+  const query = queryParts.join(" ").trim();
+  if (!query) {
+    throw new CliCommandError("Usage: mail search <query> [--limit <n>]");
+  }
+
+  return { query, limit };
+}
+
+function parseMailReadArgs(args: string[]): { messageId: string } {
+  const messageId = args[0]?.trim();
+  if (!messageId || args.length !== 1) {
+    throw new CliCommandError("Usage: mail read <messageId>");
+  }
+  return { messageId };
+}
+
+function parseDriveSearchArgs(args: string[]): { query: string; limit: number } {
+  let limit = 10;
+  const queryParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) {
+      throw new CliCommandError("Usage: drive search <query> [--limit <n>]");
+    }
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new CliCommandError("Usage: drive search <query> [--limit <n>]");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError("Usage: drive search <query> [--limit <n>]");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new CliCommandError("Usage: drive search <query> [--limit <n>]");
+    }
+    queryParts.push(arg);
+  }
+
+  const query = queryParts.join(" ").trim();
+  if (!query) {
+    throw new CliCommandError("Usage: drive search <query> [--limit <n>]");
+  }
+
+  return { query, limit };
+}
+
+function parseDriveReadArgs(args: string[]): {
+  fileId: string;
+  format: "text" | "markdown" | "csv" | "json";
+} {
+  const fileId = args[0]?.trim();
+  if (!fileId) {
+    throw new CliCommandError("Usage: drive read <fileId> [--format text|markdown|csv|json]");
+  }
+
+  let format: "text" | "markdown" | "csv" | "json" = "text";
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--format") {
+      const value = args[index + 1];
+      if (value === "text" || value === "markdown" || value === "csv" || value === "json") {
+        format = value;
+        index += 1;
+        continue;
+      }
+      throw new CliCommandError("Usage: drive read <fileId> [--format text|markdown|csv|json]");
+    }
+    throw new CliCommandError("Usage: drive read <fileId> [--format text|markdown|csv|json]");
+  }
+
+  return { fileId, format };
+}
+
+function parseContactsLookupArgs(args: string[]): { query: string; limit: number } {
+  let limit = 10;
+  const queryParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) {
+      throw new CliCommandError("Usage: contacts lookup <query> [--limit <n>]");
+    }
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      if (!value) {
+        throw new CliCommandError("Usage: contacts lookup <query> [--limit <n>]");
+      }
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError("Usage: contacts lookup <query> [--limit <n>]");
+      }
+      limit = parsed;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new CliCommandError("Usage: contacts lookup <query> [--limit <n>]");
+    }
+    queryParts.push(arg);
+  }
+
+  const query = queryParts.join(" ").trim();
+  if (!query) {
+    throw new CliCommandError("Usage: contacts lookup <query> [--limit <n>]");
+  }
+
+  return { query, limit };
 }
 
 function normalizeCredentialValue(value: string | null | undefined): string | undefined {

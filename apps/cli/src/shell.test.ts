@@ -293,6 +293,388 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("returns normalized mail list results with query filters", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["mail", "list", "--limit", "3", "--query", "project"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            messages: [
+              {
+                id: "msg-1",
+                threadId: "thread-1",
+                subject: "Project update",
+                from: "Alex <alex@example.com>",
+                date: "2026-05-09T09:00:00Z",
+                snippet: "Status is green.",
+                labelIds: ["INBOX"],
+              },
+            ],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      userId: "me",
+      maxResults: 3,
+      q: "project",
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      messages: [
+        {
+          id: "msg-1",
+          threadId: "thread-1",
+          subject: "Project update",
+          from: "Alex <alex@example.com>",
+          date: "2026-05-09T09:00:00Z",
+          snippet: "Status is green.",
+          labels: ["INBOX"],
+        },
+      ],
+    });
+  });
+
+  test("returns normalized mail search results", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["mail", "search", "project update", "--limit", "5"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            messages: [
+              {
+                id: "msg-2",
+                threadId: "thread-2",
+                subject: "Project update",
+                from: "Alex <alex@example.com>",
+                date: "2026-05-09T09:00:00Z",
+                snippet: "Status is green.",
+                labelIds: ["INBOX", "UNREAD"],
+              },
+            ],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      userId: "me",
+      maxResults: 5,
+      q: "project update",
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      messages: [
+        {
+          id: "msg-2",
+          threadId: "thread-2",
+          subject: "Project update",
+          from: "Alex <alex@example.com>",
+          date: "2026-05-09T09:00:00Z",
+          snippet: "Status is green.",
+          labels: ["INBOX", "UNREAD"],
+        },
+      ],
+    });
+  });
+
+  test("returns normalized mail read results without splitting quoted recipients", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["mail", "read", "msg-1"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            id: "msg-1",
+            threadId: "thread-1",
+            payload: {
+              headers: [
+                { name: "Subject", value: "Project update" },
+                { name: "From", value: "Alex <alex@example.com>" },
+                {
+                  name: "To",
+                  value: '"Doe, Jane" <jane@example.com>, ops@example.com',
+                },
+              ],
+              body: {
+                data: "SGVsbG8gdGVhbQ",
+              },
+            },
+            labelIds: ["INBOX"],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "get"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      userId: "me",
+      id: "msg-1",
+      format: "full",
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        subject: "Project update",
+        from: "Alex <alex@example.com>",
+        date: "",
+        to: ['"Doe, Jane" <jane@example.com>', "ops@example.com"],
+        cc: [],
+        snippet: "",
+        text: "Hello team",
+        labels: ["INBOX"],
+      },
+    });
+  });
+
+  test("returns normalized drive search results", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["drive", "search", "roadmap", "--limit", "4"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            files: [
+              {
+                id: "file-1",
+                name: "Roadmap",
+                mimeType: "application/vnd.google-apps.document",
+                modifiedTime: "2026-05-08T12:00:00Z",
+                webViewLink: "https://docs.google.com/document/d/file-1/edit",
+              },
+            ],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["drive", "files", "list", "--params"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      pageSize: 4,
+      q: "name contains 'roadmap' or fullText contains 'roadmap'",
+      fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      files: [
+        {
+          id: "file-1",
+          name: "Roadmap",
+          mimeType: "application/vnd.google-apps.document",
+          modifiedTime: "2026-05-08T12:00:00Z",
+          webViewLink: "https://docs.google.com/document/d/file-1/edit",
+        },
+      ],
+    });
+  });
+
+  test("returns Google Doc content through drive read routing", async () => {
+    let capturedArgs: string[][] = [];
+    const result = await executeCliCommand(["drive", "read", "doc-1", "--format", "markdown"], {
+      runGwsCli: async (args) => {
+        capturedArgs.push(args);
+        if (args[0] === "drive") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              id: "doc-1",
+              name: "Notes",
+              mimeType: "application/vnd.google-apps.document",
+              modifiedTime: "2026-05-08T12:00:00Z",
+              webViewLink: "https://docs.google.com/document/d/doc-1/edit",
+            }),
+            stderr: "",
+          };
+        }
+
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            body: {
+              content: [
+                {
+                  paragraph: {
+                    elements: [
+                      {
+                        textRun: {
+                          content: "Discovery notes",
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs[0]?.slice(0, 4)).toEqual(["drive", "files", "get", "--params"]);
+    expect(capturedArgs[1]?.slice(0, 4)).toEqual(["docs", "documents", "get", "--params"]);
+    expect(JSON.parse(result.stdout)).toEqual({
+      file: {
+        id: "doc-1",
+        name: "Notes",
+        mimeType: "application/vnd.google-apps.document",
+        modifiedTime: "2026-05-08T12:00:00Z",
+        webViewLink: "https://docs.google.com/document/d/doc-1/edit",
+        text: "Discovery notes",
+      },
+    });
+  });
+
+  test("returns Google Sheet rows as json through drive read routing", async () => {
+    let capturedArgs: string[][] = [];
+    const result = await executeCliCommand(["drive", "read", "sheet-1", "--format", "json"], {
+      runGwsCli: async (args) => {
+        capturedArgs.push(args);
+        if (capturedArgs.length === 1) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              id: "sheet-1",
+              name: "Planning",
+              mimeType: "application/vnd.google-apps.spreadsheet",
+              modifiedTime: "2026-05-08T12:00:00Z",
+              webViewLink: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+            }),
+            stderr: "",
+          };
+        }
+
+        if (capturedArgs.length === 2) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              sheets: [
+                {
+                  properties: {
+                    title: "Sheet1",
+                    gridProperties: {
+                      rowCount: 2,
+                      columnCount: 2,
+                    },
+                  },
+                },
+              ],
+            }),
+            stderr: "",
+          };
+        }
+
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            values: [
+              ["Name", "Status"],
+              ["Tessera", "Ready"],
+            ],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs[0]?.slice(0, 4)).toEqual(["drive", "files", "get", "--params"]);
+    expect(capturedArgs[1]?.slice(0, 4)).toEqual(["sheets", "spreadsheets", "get", "--params"]);
+    expect(capturedArgs[2]?.slice(0, 4)).toEqual(["sheets", "spreadsheets", "values", "get"]);
+    expect(JSON.parse(result.stdout)).toEqual({
+      file: {
+        id: "sheet-1",
+        name: "Planning",
+        mimeType: "application/vnd.google-apps.spreadsheet",
+        modifiedTime: "2026-05-08T12:00:00Z",
+        webViewLink: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+        rows: [
+          ["Name", "Status"],
+          ["Tessera", "Ready"],
+        ],
+      },
+    });
+  });
+
+  test("returns normalized contacts lookup results", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["contacts", "lookup", "Alex", "--limit", "2"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            results: [
+              {
+                person: {
+                  resourceName: "people/c1",
+                  names: [{ displayName: "Alex Rivera" }],
+                  emailAddresses: [{ value: "alex@example.com" }],
+                  phoneNumbers: [{ value: "+1 555 0100" }],
+                  organizations: [{ name: "Fomora" }],
+                },
+              },
+            ],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["people", "people", "searchContacts", "--params"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      query: "Alex",
+      pageSize: 2,
+      readMask: "names,emailAddresses,phoneNumbers,organizations",
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      contacts: [
+        {
+          resourceName: "people/c1",
+          displayName: "Alex Rivera",
+          emailAddresses: ["alex@example.com"],
+          phoneNumbers: ["+1 555 0100"],
+          organizations: ["Fomora"],
+        },
+      ],
+    });
+  });
+
+  test("returns usage errors for missing mail search query", async () => {
+    const result = await executeCliCommand(["mail", "search"], {
+      runGwsCli: async () => ({
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      }),
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Usage: mail search <query> [--limit <n>]");
+  });
+
   test("returns a stable missing-connection error for gcal", async () => {
     const result = await executeCliCommand(["gcal", "list"], {
       runGwsCli: async () => ({
