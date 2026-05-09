@@ -358,6 +358,70 @@ export const GcalReadResultSchema = z.object({
 });
 export type GcalReadResult = z.infer<typeof GcalReadResultSchema>;
 
+export const MailMessageSummarySchema = z.object({
+  id: z.string().min(1),
+  threadId: z.string().optional(),
+  subject: z.string().default("(no subject)"),
+  from: z.string().optional(),
+  date: z.string().optional(),
+  snippet: z.string().optional(),
+  labels: z.array(z.string()).default([]),
+});
+export type MailMessageSummary = z.infer<typeof MailMessageSummarySchema>;
+
+export const MailListResultSchema = z.object({
+  messages: z.array(MailMessageSummarySchema),
+});
+export type MailListResult = z.infer<typeof MailListResultSchema>;
+
+export const MailReadResultSchema = z.object({
+  message: MailMessageSummarySchema.extend({
+    to: z.array(z.string()).default([]),
+    cc: z.array(z.string()).default([]),
+    text: z.string().default(""),
+    html: z.string().optional(),
+  }),
+});
+export type MailReadResult = z.infer<typeof MailReadResultSchema>;
+
+export const DriveFileSummarySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  mimeType: z.string().min(1),
+  modifiedTime: z.string().optional(),
+  webViewLink: z.string().url().optional(),
+});
+export type DriveFileSummary = z.infer<typeof DriveFileSummarySchema>;
+
+export const DriveSearchResultSchema = z.object({
+  files: z.array(DriveFileSummarySchema),
+});
+export type DriveSearchResult = z.infer<typeof DriveSearchResultSchema>;
+
+export const DriveReadResultSchema = z.object({
+  file: DriveFileSummarySchema.extend({
+    text: z.string().optional(),
+    rows: z
+      .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
+      .optional(),
+  }),
+});
+export type DriveReadResult = z.infer<typeof DriveReadResultSchema>;
+
+export const ContactSummarySchema = z.object({
+  resourceName: z.string().min(1),
+  displayName: z.string().min(1),
+  emailAddresses: z.array(z.string()).default([]),
+  phoneNumbers: z.array(z.string()).default([]),
+  organizations: z.array(z.string()).default([]),
+});
+export type ContactSummary = z.infer<typeof ContactSummarySchema>;
+
+export const ContactsLookupResultSchema = z.object({
+  contacts: z.array(ContactSummarySchema),
+});
+export type ContactsLookupResult = z.infer<typeof ContactsLookupResultSchema>;
+
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;
 

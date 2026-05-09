@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   BraveSearchResultSchema,
+  ContactsLookupResultSchema,
+  DriveReadResultSchema,
+  DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
   IntegrationConnectionTestRequestSchema,
@@ -8,6 +11,8 @@ import {
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
+  MailListResultSchema,
+  MailReadResultSchema,
   WebFetchResultSchema,
   WebSearchResultSchema,
 } from "./index.js";
@@ -152,6 +157,86 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.event.isAllDay).toBe(true);
+  });
+
+  test("parses normalized mail list payloads", () => {
+    const parsed = MailListResultSchema.parse({
+      messages: [
+        {
+          id: "msg-1",
+          threadId: "thread-1",
+          subject: "Meeting prep",
+          from: "Alex <alex@example.com>",
+          date: "2026-05-09T09:00:00Z",
+          snippet: "Can we review pricing before the call?",
+          labels: ["INBOX", "UNREAD"],
+        },
+      ],
+    });
+
+    expect(parsed.messages[0]?.subject).toBe("Meeting prep");
+  });
+
+  test("parses normalized mail read payloads", () => {
+    const parsed = MailReadResultSchema.parse({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        subject: "Meeting prep",
+        from: "Alex <alex@example.com>",
+        to: ["sales@example.com"],
+        date: "2026-05-09T09:00:00Z",
+        text: "Can we review pricing before the call?",
+        labels: ["INBOX"],
+      },
+    });
+
+    expect(parsed.message.text).toContain("pricing");
+  });
+
+  test("parses normalized drive search payloads", () => {
+    const parsed = DriveSearchResultSchema.parse({
+      files: [
+        {
+          id: "file-1",
+          name: "Discovery Notes",
+          mimeType: "application/vnd.google-apps.document",
+          modifiedTime: "2026-05-08T12:00:00Z",
+          webViewLink: "https://docs.google.com/document/d/file-1/edit",
+        },
+      ],
+    });
+
+    expect(parsed.files[0]?.name).toBe("Discovery Notes");
+  });
+
+  test("parses normalized drive read payloads", () => {
+    const parsed = DriveReadResultSchema.parse({
+      file: {
+        id: "file-1",
+        name: "Discovery Notes",
+        mimeType: "application/vnd.google-apps.document",
+        text: "Customer notes",
+      },
+    });
+
+    expect(parsed.file.text).toBe("Customer notes");
+  });
+
+  test("parses normalized contacts lookup payloads", () => {
+    const parsed = ContactsLookupResultSchema.parse({
+      contacts: [
+        {
+          resourceName: "people/c1",
+          displayName: "Alex Rivera",
+          emailAddresses: ["alex@example.com"],
+          phoneNumbers: ["+1 555 0100"],
+          organizations: ["Fomora"],
+        },
+      ],
+    });
+
+    expect(parsed.contacts[0]?.emailAddresses[0]).toBe("alex@example.com");
   });
 });
 
