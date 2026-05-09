@@ -497,7 +497,7 @@ async function readDriveContent(
       "--params",
       JSON.stringify({
         spreadsheetId: fileId,
-        fields: "sheets(properties(title,gridProperties(rowCount,columnCount)))",
+        fields: "sheets(sheetType,properties(title,gridProperties(rowCount,columnCount)))",
       }),
     ]);
     const { sheetTitle, rowCount, columnCount } = extractSpreadsheetRange(
@@ -633,29 +633,14 @@ function extractSpreadsheetRange(
     );
   }
 
-  const sheetRecords = payload.sheets.filter(isRecord);
-  const sheets = sheetRecords
-    .map((sheet) => {
-      const properties = isRecord(sheet.properties) ? sheet.properties : null;
-      const gridProperties = isRecord(properties?.gridProperties) ? properties.gridProperties : null;
-      const title = typeof properties?.title === "string" ? properties.title : "";
-      const rowCount = typeof gridProperties?.rowCount === "number" ? gridProperties.rowCount : 0;
-      const columnCount =
-        typeof gridProperties?.columnCount === "number" ? gridProperties.columnCount : 0;
-      return { title, rowCount, columnCount };
-    })
-    .filter((sheet) => sheet.title.length > 0 && sheet.rowCount > 0 && sheet.columnCount > 0);
+  const firstSheet = requireSingleSpreadsheetSheet(payload.sheets, fileId, fileName);
 
-  if (sheets.length > 1) {
-    throw new GoogleWorkspaceConnectorError(
-      `Google Sheets file "${fileName || fileId}" has multiple sheets; multi-sheet reads are not supported yet.`
-    );
-  }
-
-  const firstSheet = sheets[0];
-  const sheetTitle = firstSheet?.title ?? "";
-  const rowCount = firstSheet?.rowCount ?? 0;
-  const columnCount = firstSheet?.columnCount ?? 0;
+  const properties = isRecord(firstSheet.properties) ? firstSheet.properties : null;
+  const gridProperties = isRecord(properties?.gridProperties) ? properties.gridProperties : null;
+  const sheetTitle = typeof properties?.title === "string" ? properties.title : "";
+  const rowCount = typeof gridProperties?.rowCount === "number" ? gridProperties.rowCount : 0;
+  const columnCount =
+    typeof gridProperties?.columnCount === "number" ? gridProperties.columnCount : 0;
 
   if (!sheetTitle || rowCount <= 0 || columnCount <= 0) {
     throw new GoogleWorkspaceConnectorError(
@@ -664,6 +649,28 @@ function extractSpreadsheetRange(
   }
 
   return { sheetTitle, rowCount, columnCount };
+}
+
+function requireSingleSpreadsheetSheet(
+  sheets: unknown[],
+  fileId: string,
+  fileName: string
+): Record<string, unknown> {
+  if (sheets.length !== 1) {
+    const reason = sheets.length === 0 ? "has no sheets" : "has multiple sheets";
+    throw new GoogleWorkspaceConnectorError(
+      `Google Sheets file "${fileName || fileId}" ${reason}; multi-sheet reads are not supported yet.`
+    );
+  }
+
+  const firstSheet = sheets[0];
+  if (!isRecord(firstSheet)) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Sheets metadata is missing a usable first sheet record."
+    );
+  }
+
+  return firstSheet;
 }
 
 function quoteSheetTitle(title: string): string {
