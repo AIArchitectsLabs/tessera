@@ -1,6 +1,11 @@
 import {
+  ContactsLookupResultSchema,
+  DriveReadResultSchema,
+  DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  MailListResultSchema,
+  MailReadResultSchema,
   type ShellToolCall,
   type ShellToolResult,
   ShellToolResultSchema,
@@ -43,6 +48,21 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   }
   if (call.command === "gcal" && call.subcommand === "read") {
     return GcalReadResultSchema.parse(json);
+  }
+  if (call.command === "mail" && (call.subcommand === "list" || call.subcommand === "search")) {
+    return MailListResultSchema.parse(json);
+  }
+  if (call.command === "mail" && call.subcommand === "read") {
+    return MailReadResultSchema.parse(json);
+  }
+  if (call.command === "drive" && call.subcommand === "search") {
+    return DriveSearchResultSchema.parse(json);
+  }
+  if (call.command === "drive" && call.subcommand === "read") {
+    return DriveReadResultSchema.parse(json);
+  }
+  if (call.command === "contacts" && call.subcommand === "lookup") {
+    return ContactsLookupResultSchema.parse(json);
   }
   return json;
 }

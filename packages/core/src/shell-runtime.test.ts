@@ -159,4 +159,227 @@ describe("shell runtime", () => {
       ],
     });
   });
+
+  test("parses successful mail list payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            messages: [
+              {
+                id: "msg-1",
+                subject: "Meeting prep",
+                labels: ["INBOX"],
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 9,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "mail",
+      subcommand: "list",
+      args: [],
+    });
+
+    expect(result.parsed).toEqual({
+      messages: [
+        {
+          id: "msg-1",
+          subject: "Meeting prep",
+          labels: ["INBOX"],
+        },
+      ],
+    });
+  });
+
+  test("parses successful mail read payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            message: {
+              id: "msg-1",
+              subject: "Meeting prep",
+              labels: ["INBOX"],
+              to: ["sales@example.com"],
+              text: "Can we review pricing before the call?",
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 9,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "mail",
+      subcommand: "read",
+      args: ["msg-1"],
+    });
+
+    expect(result.parsed).toEqual({
+      message: {
+        id: "msg-1",
+        subject: "Meeting prep",
+        labels: ["INBOX"],
+        to: ["sales@example.com"],
+        cc: [],
+        text: "Can we review pricing before the call?",
+      },
+    });
+  });
+
+  test("parses successful drive search payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            files: [
+              {
+                id: "file-1",
+                name: "Discovery Notes",
+                mimeType: "application/vnd.google-apps.document",
+                webViewLink: "https://docs.google.com/document/d/file-1/edit",
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 11,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "drive",
+      subcommand: "search",
+      args: ["notes"],
+    });
+
+    expect(result.parsed).toEqual({
+      files: [
+        {
+          id: "file-1",
+          name: "Discovery Notes",
+          mimeType: "application/vnd.google-apps.document",
+          webViewLink: "https://docs.google.com/document/d/file-1/edit",
+        },
+      ],
+    });
+  });
+
+  test("parses successful drive read payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            file: {
+              id: "file-1",
+              name: "Discovery Notes",
+              mimeType: "application/vnd.google-apps.document",
+              text: "Customer notes",
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 11,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "drive",
+      subcommand: "read",
+      args: ["file-1"],
+    });
+
+    expect(result.parsed).toEqual({
+      file: {
+        id: "file-1",
+        name: "Discovery Notes",
+        mimeType: "application/vnd.google-apps.document",
+        text: "Customer notes",
+      },
+    });
+  });
+
+  test("parses successful contacts lookup payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            contacts: [
+              {
+                resourceName: "people/c1",
+                displayName: "Alex Rivera",
+                emailAddresses: ["alex@example.com"],
+                phoneNumbers: ["+1 555 0100"],
+                organizations: ["Fomora"],
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 10,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "contacts",
+      subcommand: "lookup",
+      args: ["Alex Rivera"],
+    });
+
+    expect(result.parsed).toEqual({
+      contacts: [
+        {
+          resourceName: "people/c1",
+          displayName: "Alex Rivera",
+          emailAddresses: ["alex@example.com"],
+          phoneNumbers: ["+1 555 0100"],
+          organizations: ["Fomora"],
+        },
+      ],
+    });
+  });
+
+  test("wraps schema failures from workspace cli stdout in ShellExecutionError", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            contacts: [
+              {
+                resourceName: "people/c1",
+              },
+            ],
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 10,
+        };
+      },
+    });
+
+    await expect(
+      executor.executeShell({
+        command: "contacts",
+        subcommand: "lookup",
+        args: ["Alex Rivera"],
+      })
+    ).rejects.toThrow(ShellExecutionError);
+  });
 });
