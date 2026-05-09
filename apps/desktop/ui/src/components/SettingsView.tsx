@@ -980,8 +980,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </div>
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  Google Workspace uses the bundled CLI. Calendar is enabled for `gcal list` and
-                  `gcal read`.
+                  Google Workspace uses the bundled CLI for Calendar, Gmail, Drive, Contacts,
+                  Docs, and Sheets.
                 </div>
 
                 {integrationAllowsCredentials ? (

@@ -29,6 +29,9 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("  web-search    Run a configured web search");
   console.log("  web-fetch     Fetch and extract a public web page");
   console.log("  gcal          Read Google Calendar events");
+  console.log("  mail          Read Gmail messages");
+  console.log("  drive         Read Drive files and folders");
+  console.log("  contacts      Read Google Contacts");
   console.log("  run <agent>   Run an agent headlessly");
   console.log("");
   console.log("Options:");
