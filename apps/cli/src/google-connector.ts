@@ -158,6 +158,7 @@ export function createGwsGoogleWorkspaceConnector(options: {
         options,
         request.fileId,
         stringField(metadata, "mimeType"),
+        stringField(metadata, "name"),
         request.format
       );
 
@@ -362,10 +363,44 @@ function headerValue(item: Record<string, unknown>, name: string): string {
 }
 
 function splitHeaderValues(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let angleDepth = 0;
+  let escaped = false;
+
+  for (const char of value) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      current += char;
+      continue;
+    }
+    if (!inQuotes) {
+      if (char === "<") angleDepth += 1;
+      if (char === ">" && angleDepth > 0) angleDepth -= 1;
+      if (char === "," && angleDepth === 0) {
+        const trimmed = current.trim();
+        if (trimmed) values.push(trimmed);
+        current = "";
+        continue;
+      }
+    }
+    current += char;
+  }
+
+  const trimmed = current.trim();
+  if (trimmed) values.push(trimmed);
+  return values;
 }
 
 function decodeMailText(item: Record<string, unknown>): string {
@@ -451,10 +486,23 @@ async function readDriveContent(
   },
   fileId: string,
   mimeType: string,
+  fileName: string,
   format: "text" | "markdown" | "csv" | "json"
 ): Promise<Record<string, unknown>> {
   if (mimeType === "application/vnd.google-apps.spreadsheet") {
     const payload = await runGwsJson(options, [
+      "sheets",
+      "spreadsheets",
+      "get",
+      "--params",
+      JSON.stringify({
+        spreadsheetId: fileId,
+        fields: "sheets(properties(title,gridProperties(rowCount,columnCount)))",
+      }),
+    ]);
+    const { sheetTitle, rowCount, columnCount } = extractSpreadsheetRange(payload);
+    const range = `${quoteSheetTitle(sheetTitle)}!A1:${columnLabel(columnCount)}${rowCount}`;
+    const valuesPayload = await runGwsJson(options, [
       "sheets",
       "spreadsheets",
       "values",
@@ -462,22 +510,23 @@ async function readDriveContent(
       "--params",
       JSON.stringify({
         spreadsheetId: fileId,
-        range: "A1:Z100",
+        range,
       }),
     ]);
-    const values = isRecord(payload) && Array.isArray(payload.values) ? payload.values : [];
-    return {
-      rows: values
-        .filter(Array.isArray)
-        .map((row) =>
-          row.filter((cell): cell is string | number | boolean | null =>
-            cell === null || ["string", "number", "boolean"].includes(typeof cell)
-          )
-        ),
-    };
+    const rows = normalizeSpreadsheetRows(
+      isRecord(valuesPayload) && Array.isArray(valuesPayload.values) ? valuesPayload.values : []
+    );
+    if (format === "json") return { rows };
+    const delimiter = format === "csv" ? "," : "\t";
+    return { text: renderDelimitedRows(rows, delimiter) };
   }
 
   if (mimeType === "application/vnd.google-apps.document") {
+    if (format === "csv" || format === "json") {
+      throw new GoogleWorkspaceConnectorError(
+        `Google Docs file "${fileName || fileId}" does not support ${format} output. Use text or markdown.`
+      );
+    }
     const payload = await runGwsJson(options, [
       "docs",
       "documents",
@@ -495,13 +544,14 @@ async function readDriveContent(
     "--params",
     JSON.stringify({ fileId, alt: "media" }),
   ]);
-  return { text: decodeGwsMediaOutput(output, format) };
+  return decodeGwsMediaOutput(output, fileName, format);
 }
 
 function decodeGwsMediaOutput(
   output: CommandResult,
+  fileName: string,
   format: "text" | "markdown" | "csv" | "json"
-): string {
+): Record<string, unknown> {
   if (output.exitCode !== 0) {
     throw new GoogleWorkspaceConnectorError(
       normalizeGwsError(output.stderr) ||
@@ -511,15 +561,32 @@ function decodeGwsMediaOutput(
   }
 
   const stdout = output.stdout.trim();
-  if (!stdout) return "";
+  if (!stdout) {
+    if (format === "json") {
+      throw new GoogleWorkspaceConnectorError(
+        `Google Drive file "${fileName || "unknown"}" did not return JSON content.`
+      );
+    }
+    return { text: "" };
+  }
+
+  if (format === "json") {
+    try {
+      const parsed = JSON.parse(stdout);
+      return { text: JSON.stringify(parsed, null, 2) };
+    } catch {
+      throw new GoogleWorkspaceConnectorError(
+        `Google Drive file "${fileName || "unknown"}" did not return valid JSON content.`
+      );
+    }
+  }
 
   try {
-    const parsed = JSON.parse(stdout);
-    return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
+    JSON.parse(stdout);
   } catch {
-    void format;
-    return stdout;
+    // Keep raw media as text for text/markdown/csv when the file is not JSON.
   }
+  return { text: stdout };
 }
 
 async function runGwsCliRaw(
@@ -545,6 +612,86 @@ function extractDocText(payload: unknown): string {
     }
   }
   return parts.join("").trim();
+}
+
+function extractSpreadsheetRange(payload: unknown): {
+  sheetTitle: string;
+  rowCount: number;
+  columnCount: number;
+} {
+  if (!isRecord(payload) || !Array.isArray(payload.sheets)) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Sheets metadata is missing sheet definitions for range discovery."
+    );
+  }
+
+  const firstSheet = payload.sheets.filter(isRecord)[0];
+  const properties = isRecord(firstSheet?.properties) ? firstSheet.properties : null;
+  const gridProperties = isRecord(properties?.gridProperties) ? properties.gridProperties : null;
+  const sheetTitle = typeof properties?.title === "string" ? properties.title : "";
+  const rowCount = typeof gridProperties?.rowCount === "number" ? gridProperties.rowCount : 0;
+  const columnCount =
+    typeof gridProperties?.columnCount === "number" ? gridProperties.columnCount : 0;
+
+  if (!sheetTitle || rowCount <= 0 || columnCount <= 0) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Sheets metadata is missing a usable first sheet title or grid size."
+    );
+  }
+
+  return { sheetTitle, rowCount, columnCount };
+}
+
+function quoteSheetTitle(title: string): string {
+  const escaped = title.replace(/'/g, "''");
+  return `'${escaped}'`;
+}
+
+function columnLabel(columnCount: number): string {
+  if (!Number.isInteger(columnCount) || columnCount <= 0) {
+    throw new GoogleWorkspaceConnectorError("Google Sheets column count is invalid.");
+  }
+
+  let value = columnCount;
+  let label = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+}
+
+function normalizeSpreadsheetRows(rows: unknown[]): unknown[][] {
+  return rows
+    .filter(Array.isArray)
+    .map((row) =>
+      row.filter((cell): cell is string | number | boolean | null => {
+        return cell === null || ["string", "number", "boolean"].includes(typeof cell);
+      })
+    );
+}
+
+function renderDelimitedRows(rows: unknown[][], delimiter: "," | "\t"): string {
+  return rows.map((row) => row.map((cell) => renderDelimitedCell(cell, delimiter)).join(delimiter)).join("\n");
+}
+
+function renderDelimitedCell(value: unknown, delimiter: "," | "\t"): string {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+  if (delimiter === "\t") {
+    return text.replace(/\t/g, " ").replace(/\r?\n/g, " ");
+  }
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
 }
 
 function readGcalDate(value: unknown): string {
