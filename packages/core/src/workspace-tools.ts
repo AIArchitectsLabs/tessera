@@ -3,6 +3,11 @@ import { join, relative } from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
 import { type ToolDefinition, defineTool } from "@mariozechner/pi-coding-agent";
+import {
+  type DocumentExtractionOptions,
+  extractWorkspaceDocument,
+  isExtractableDocumentPath,
+} from "./document-extraction.js";
 import { WorkspaceBoundaryError, type WorkspaceGuard } from "./workspace-guard.js";
 
 type WorkspaceToolDefinition<TParams extends TSchema, TDetails = unknown> = ToolDefinition<
@@ -12,6 +17,19 @@ type WorkspaceToolDefinition<TParams extends TSchema, TDetails = unknown> = Tool
 
 const pathSchema = Type.Object({
   path: Type.String(),
+});
+
+const extractSchema = Type.Object({
+  path: Type.String(),
+  sheet: Type.Optional(Type.String()),
+  maxChars: Type.Optional(Type.Number()),
+  maxRows: Type.Optional(Type.Number()),
+  pages: Type.Optional(
+    Type.Object({
+      start: Type.Optional(Type.Number()),
+      end: Type.Optional(Type.Number()),
+    })
+  ),
 });
 
 const searchSchema = Type.Object({
@@ -62,8 +80,10 @@ export function createWorkspaceToolDefinitions(
   const readTool = defineTool({
     name: "workspace_read",
     label: "Read",
-    description: "Read a text file inside the selected workspace.",
-    promptSnippet: "workspace_read: read text files inside the selected workspace.",
+    description:
+      "Read a text file inside the selected workspace, or extract readable content from supported documents.",
+    promptSnippet:
+      "workspace_read: read text files and supported PDF, Word, and Excel documents inside the selected workspace.",
     parameters: pathSchema,
     async execute(_toolCallId, params: Static<typeof pathSchema>) {
       let absolute: string;
@@ -75,10 +95,55 @@ export function createWorkspaceToolDefinitions(
       }
       const metadata = await stat(absolute);
       if (!metadata.isFile()) throw new Error(`Path is not a file: ${params.path}`);
+      if (isExtractableDocumentPath(absolute)) {
+        const extracted = await extractWorkspaceDocument(absolute);
+        return textResult(extracted.text, {
+          ...extracted.details,
+          path: relative(guard.root, absolute),
+        });
+      }
       const text = await readFile(absolute, "utf8");
       return textResult(text, { path: relative(guard.root, absolute) });
     },
   }) satisfies WorkspaceToolDefinition<typeof pathSchema, { path: string }>;
+
+  const extractTool = defineTool({
+    name: "workspace_extract",
+    label: "Extract",
+    description:
+      "Extract readable content from PDF, Word, and Excel files inside the selected workspace.",
+    promptSnippet:
+      "workspace_extract: extract readable text from PDF, Word (.docx), and Excel (.xlsx/.xls) files inside the selected workspace.",
+    parameters: extractSchema,
+    async execute(_toolCallId, params: Static<typeof extractSchema>) {
+      let absolute: string;
+      try {
+        absolute = await guard.resolveInsideWorkspace(params.path);
+      } catch (error) {
+        if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_extract");
+        throw error;
+      }
+      const extractionOptions: DocumentExtractionOptions = {};
+      if (params.sheet !== undefined) extractionOptions.sheet = params.sheet;
+      if (params.maxChars !== undefined) extractionOptions.maxChars = params.maxChars;
+      if (params.maxRows !== undefined) extractionOptions.maxRows = params.maxRows;
+      if (params.pages !== undefined) extractionOptions.pages = params.pages;
+      const extracted = await extractWorkspaceDocument(absolute, extractionOptions);
+      return textResult(extracted.text, {
+        ...extracted.details,
+        path: relative(guard.root, absolute),
+      });
+    },
+  }) satisfies WorkspaceToolDefinition<
+    typeof extractSchema,
+    {
+      path: string;
+      fileType: string;
+      bytes: number;
+      truncated: boolean;
+      warnings: string[];
+    }
+  >;
 
   const listTool = defineTool({
     name: "workspace_list",
@@ -175,5 +240,5 @@ export function createWorkspaceToolDefinitions(
     },
   }) satisfies WorkspaceToolDefinition<typeof editSchema, { path: string }>;
 
-  return [readTool, listTool, searchTool, writeTool, editTool];
+  return [readTool, extractTool, listTool, searchTool, writeTool, editTool];
 }

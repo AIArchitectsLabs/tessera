@@ -1205,6 +1205,8 @@ export const WorkflowRunRequestSchema = z.object({
   input: z.record(z.unknown()).default({}),
   capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
+  agentProvider: AgentProviderConfigSchema.optional(),
+  credential: z.object({ apiKey: z.string().min(1) }).optional(),
 });
 
 export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
@@ -1247,6 +1249,8 @@ export const WorkflowResumeRequestSchema = z.object({
   decision: z.enum(["approve", "deny"]),
   capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
+  agentProvider: AgentProviderConfigSchema.optional(),
+  credential: z.object({ apiKey: z.string().min(1) }).optional(),
 });
 
 export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;
@@ -1777,6 +1781,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can inspect and search the workspace, research the public web, and maintain the task checklist, but cannot make file changes.",
     capabilities: [
       "Read files",
+      "Extract PDF, Word, and Excel content",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -1784,6 +1789,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     ],
     allowedTools: [
       "workspace_read",
+      "workspace_extract",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -1799,6 +1805,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
     capabilities: [
       "Read files",
+      "Extract PDF, Word, and Excel content",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -1808,6 +1815,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     ],
     allowedTools: [
       "workspace_read",
+      "workspace_extract",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -1825,6 +1833,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
     capabilities: [
       "Read files",
+      "Extract PDF, Word, and Excel content",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -1834,6 +1843,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     ],
     allowedTools: [
       "workspace_read",
+      "workspace_extract",
       "workspace_list",
       "workspace_search",
       "shell",

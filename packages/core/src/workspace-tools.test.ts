@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as XLSX from "xlsx";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -8,8 +10,39 @@ async function makeTools() {
   const root = await realpath(await mkdtemp("/tmp/tessera-workspace-tools-"));
   await mkdir(join(root, "src"), { recursive: true });
   await writeFile(join(root, "src", "index.ts"), "export const value = 1;\n");
+  await writeFile(join(root, "sample.pdf"), samplePdf("Hello PDF"));
+  await copyFile(
+    fileURLToPath(
+      new URL("../node_modules/mammoth/test/test-data/single-paragraph.docx", import.meta.url)
+    ),
+    join(root, "brief.docx")
+  );
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ["Company", "ARR"],
+      ["Acme", 1000],
+      ["Globex", 2500],
+    ]),
+    "Accounts"
+  );
+  XLSX.writeFile(workbook, join(root, "accounts.xlsx"));
   const guard = await createWorkspaceGuard(root);
   return { root, tools: createWorkspaceToolDefinitions(guard) };
+}
+
+function samplePdf(text: string): string {
+  return `%PDF-1.1
+1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj
+2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj
+3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj
+4 0 obj<< /Length ${text.length + 35} >>stream
+BT /F1 24 Tf 100 100 Td (${text}) Tj ET
+endstream endobj
+5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
+trailer<< /Root 1 0 R >>
+%%EOF`;
 }
 
 function tool(tools: ReturnType<typeof createWorkspaceToolDefinitions>, name: string) {
@@ -18,12 +51,21 @@ function tool(tools: ReturnType<typeof createWorkspaceToolDefinitions>, name: st
   return found;
 }
 
+function resultText(result: { content: Array<{ type: string; text?: string }> }): string {
+  const item = result.content[0];
+  if (item?.type !== "text" || typeof item.text !== "string") {
+    throw new Error("Expected a text tool result");
+  }
+  return item.text;
+}
+
 describe("createWorkspaceToolDefinitions", () => {
   test("registers workspace tools without bash", async () => {
     const { tools } = await makeTools();
 
     expect(tools.map((item) => item.name).sort()).toEqual([
       "workspace_edit",
+      "workspace_extract",
       "workspace_list",
       "workspace_read",
       "workspace_search",
@@ -51,6 +93,53 @@ describe("createWorkspaceToolDefinitions", () => {
 
     expect(read.content[0]).toEqual({ type: "text", text: "export const value = 1;\n" });
     expect(list.content[0]).toEqual({ type: "text", text: "index.ts" });
+  });
+
+  test("extracts readable content from PDF, DOCX, and XLSX files", async () => {
+    const { tools } = await makeTools();
+
+    const pdf = await tool(tools, "workspace_extract").execute(
+      "call-pdf",
+      { path: "sample.pdf" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+    const docx = await tool(tools, "workspace_extract").execute(
+      "call-docx",
+      { path: "brief.docx" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+    const xlsx = await tool(tools, "workspace_extract").execute(
+      "call-xlsx",
+      { path: "accounts.xlsx" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(pdf)).toContain("[Page 1]");
+    expect(resultText(pdf)).toContain("Hello PDF");
+    expect(resultText(docx)).toContain("Walking on imported air");
+    expect(resultText(xlsx)).toContain("[Sheet: Accounts]");
+    expect(resultText(xlsx)).toContain("Acme");
+  });
+
+  test("workspace_read routes supported document formats through extraction", async () => {
+    const { tools } = await makeTools();
+
+    const result = await tool(tools, "workspace_read").execute(
+      "call-1",
+      { path: "brief.docx" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(result)).toContain("Extracted from: brief.docx");
+    expect(resultText(result)).toContain("Walking on imported air");
   });
 
   test("searches inside the workspace", async () => {
