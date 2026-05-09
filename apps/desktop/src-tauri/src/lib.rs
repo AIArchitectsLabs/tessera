@@ -1221,28 +1221,30 @@ async fn integration_connection_test(
     let target = request.target().map_err(|error| error.to_string())?;
     let (command_args, credential_env, provider, search_provider) = match target {
         integration_settings::IntegrationRequestTarget::Integration(provider) => {
-            let credential = match request.credential {
-                Some(input) => {
-                    let api_key = input.api_key.trim();
-                    (!api_key.is_empty()).then(|| api_key.to_string())
-                }
-                None => integration_settings::get_credential(provider)
-                    .map_err(|error| error.to_string())?,
-            };
-
-            if credential.is_none() {
-                return Ok(integration_settings::missing_credential_result(provider));
-            }
-
             let (command_args, credential_env_name) = match provider {
                 integration_settings::IntegrationProvider::BraveSearch => {
                     search_connection_command(integration_settings::SearchProvider::BraveSearch)
                 }
-                integration_settings::IntegrationProvider::GoogleCalendar => (
-                    vec!["gcal", "list"],
-                    Some("TESSERA_GOOGLE_CALENDAR_API_KEY"),
-                ),
+                integration_settings::IntegrationProvider::GoogleCalendar => {
+                    (vec!["gcal", "list"], None)
+                }
             };
+            let credential = if credential_env_name.is_some() {
+                match request.credential {
+                    Some(input) => {
+                        let api_key = input.api_key.trim();
+                        (!api_key.is_empty()).then(|| api_key.to_string())
+                    }
+                    None => integration_settings::get_credential(provider)
+                        .map_err(|error| error.to_string())?,
+                }
+            } else {
+                None
+            };
+
+            if credential_env_name.is_some() && credential.is_none() {
+                return Ok(integration_settings::missing_credential_result(provider));
+            }
 
             let credential_env = credential.as_deref().and_then(|value| {
                 credential_env_name.map(|name| (name.to_string(), value.to_string()))

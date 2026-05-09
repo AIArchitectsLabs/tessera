@@ -340,6 +340,7 @@ export const GcalListResultSchema = z.object({
   calendarId: z.string().min(1),
   events: z.array(GcalEventSchema),
 });
+export type GcalListResult = z.infer<typeof GcalListResultSchema>;
 
 export const GcalReadResultSchema = z.object({
   calendarId: z.string().min(1),
@@ -355,6 +356,7 @@ export const GcalReadResultSchema = z.object({
       .optional(),
   }),
 });
+export type GcalReadResult = z.infer<typeof GcalReadResultSchema>;
 
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;

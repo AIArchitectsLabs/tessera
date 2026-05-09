@@ -592,7 +592,7 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
             },
             google_calendar: ProviderSettings {
                 provider: IntegrationProvider::GoogleCalendar,
-                has_credential: get_credential(IntegrationProvider::GoogleCalendar)?.is_some(),
+                has_credential: false,
             },
         },
         search: SearchSettingsRead {
@@ -630,6 +630,9 @@ fn save_at_path(
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
             if let Some(credential) = request.credential.as_ref() {
+                if provider == IntegrationProvider::GoogleCalendar {
+                    bail!("Google Calendar uses Google Workspace CLI auth and does not store an API key");
+                }
                 let api_key = credential.api_key.trim();
                 if api_key.is_empty() {
                     bail!("API key cannot be empty");
@@ -675,7 +678,9 @@ fn delete_at_path(
     let settings = load_settings_file(&path)?;
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
-            delete_credential(provider)?;
+            if provider != IntegrationProvider::GoogleCalendar {
+                delete_credential(provider)?;
+            }
         }
         IntegrationRequestTarget::Search(search_provider) => {
             if search_provider != SearchProvider::DuckDuckGo {

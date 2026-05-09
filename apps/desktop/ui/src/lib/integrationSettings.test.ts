@@ -4,10 +4,12 @@ import { describe, expect, test } from "bun:test";
 import type { IntegrationProvider } from "@tessera/contracts";
 import {
   INTEGRATION_PROVIDERS,
+  KEYLESS_INTEGRATION_PROVIDERS,
   KEYLESS_SEARCH_PROVIDERS,
   SEARCH_MODE_OPTIONS,
   SEARCH_PROVIDERS,
   integrationLabel,
+  integrationProviderSupportsCredential,
   searchModeLabel,
   searchProviderLabel,
   searchProviderSupportsCredential,
@@ -47,5 +49,10 @@ describe("integration settings UI helpers", () => {
     expect(KEYLESS_SEARCH_PROVIDERS).toEqual(["duckduckgo"]);
     expect(searchProviderSupportsCredential("brave-search")).toBe(true);
     expect(searchProviderSupportsCredential("duckduckgo")).toBe(false);
+  });
+
+  test("marks Google Calendar as workspace-cli connected", () => {
+    expect(KEYLESS_INTEGRATION_PROVIDERS).toEqual(["google-calendar"]);
+    expect(integrationProviderSupportsCredential("google-calendar")).toBe(false);
   });
 });

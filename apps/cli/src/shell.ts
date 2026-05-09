@@ -9,11 +9,17 @@ import {
 } from "@tessera/contracts";
 import { type WebSearchRuntime, executeWebSearch } from "@tessera/core";
 import { NodeHtmlMarkdown } from "node-html-markdown";
+import {
+  type CommandResult,
+  type GoogleWorkspaceConnector,
+  GoogleWorkspaceConnectorError,
+  createGwsGoogleWorkspaceConnector,
+  runGwsCli,
+} from "./google-connector.js";
 
 const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
 const TAVILY_SEARCH_ACCOUNT = "integration.tavily";
-const GOOGLE_CALENDAR_ACCOUNT = "integration.google-calendar";
 const INTEGRATION_SETTINGS_FILE = "integration-settings.json";
 const MAX_FETCH_BYTES = 1_000_000;
 const BROWSER_HEADERS = {
@@ -41,7 +47,8 @@ export interface ExecuteCliCommandOptions {
   getBraveApiKey?: () => Promise<string | null>;
   getTavilyApiKey?: () => Promise<string | null>;
   getSearchSettings?: () => Promise<IntegrationSettingsRead["search"]>;
-  getGoogleCalendarApiKey?: () => Promise<string | null>;
+  googleWorkspaceConnector?: GoogleWorkspaceConnector;
+  runGwsCli?: (args: string[]) => Promise<CommandResult>;
 }
 
 export async function executeCliCommand(
@@ -75,7 +82,12 @@ export async function executeCliCommand(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const exitCode = error instanceof CliCommandError ? error.exitCode : 1;
+    const exitCode =
+      error instanceof CliCommandError
+        ? error.exitCode
+        : error instanceof GoogleWorkspaceConnectorError
+          ? error.exitCode
+          : 1;
     return { exitCode, stdout: "", stderr: `${message}\n` };
   }
 }
@@ -517,78 +529,23 @@ async function runWebFetch(args: string[], options: ExecuteCliCommandOptions) {
 
 async function runGcalList(args: string[], options: ExecuteCliCommandOptions) {
   const { calendarId, limit } = parseGcalListArgs(args);
-  const apiKey =
-    (await options.getGoogleCalendarApiKey?.()) ??
-    (await getGoogleCalendarApiKeyFromSystem().catch(() => null));
-  if (!apiKey) {
-    throw new CliCommandError(
-      "Google Calendar is not configured. Add an API key in Settings > Integrations."
-    );
-  }
-
-  const endpoint = new URL(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
-  );
-  endpoint.searchParams.set("maxResults", String(limit));
-  endpoint.searchParams.set("singleEvents", "true");
-  endpoint.searchParams.set("orderBy", "startTime");
-  endpoint.searchParams.set("timeMin", new Date().toISOString());
-
-  const response = await (options.fetchImpl ?? fetch)(endpoint, {
-    headers: {
-      ...BROWSER_HEADERS,
-      accept: "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new CliCommandError(
-      `Google Calendar request failed with ${response.status}${await describeResponse(response)}`
-    );
-  }
-
-  const payload = (await response.json()) as { items?: Array<Record<string, unknown>> };
-  return {
-    calendarId,
-    events: (payload.items ?? []).map((item) => normalizeGcalEvent(item)),
-  };
+  return createGoogleWorkspaceConnector(options).listCalendarEvents({ calendarId, limit });
 }
 
 async function runGcalRead(args: string[], options: ExecuteCliCommandOptions) {
   const { calendarId, eventId } = parseGcalReadArgs(args);
-  const apiKey =
-    (await options.getGoogleCalendarApiKey?.()) ??
-    (await getGoogleCalendarApiKeyFromSystem().catch(() => null));
-  if (!apiKey) {
-    throw new CliCommandError(
-      "Google Calendar is not configured. Add an API key in Settings > Integrations."
-    );
-  }
+  return createGoogleWorkspaceConnector(options).readCalendarEvent({ calendarId, eventId });
+}
 
-  const endpoint = new URL(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
+function createGoogleWorkspaceConnector(
+  options: ExecuteCliCommandOptions
+): GoogleWorkspaceConnector {
+  return (
+    options.googleWorkspaceConnector ??
+    createGwsGoogleWorkspaceConnector({
+      runGwsCli: options.runGwsCli ?? runGwsCli,
+    })
   );
-
-  const response = await (options.fetchImpl ?? fetch)(endpoint, {
-    headers: {
-      ...BROWSER_HEADERS,
-      accept: "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new CliCommandError(
-      `Google Calendar request failed with ${response.status}${await describeResponse(response)}`
-    );
-  }
-
-  const payload = (await response.json()) as Record<string, unknown>;
-  return {
-    calendarId,
-    event: normalizeGcalEvent(payload, true),
-  };
 }
 
 async function describeResponse(response: Response): Promise<string> {
@@ -755,69 +712,6 @@ function parseGcalReadArgs(args: string[]): { calendarId: string; eventId: strin
   return { calendarId, eventId };
 }
 
-function normalizeGcalEvent(
-  item: Record<string, unknown>,
-  includeAttendees = false
-): Record<string, unknown> {
-  const startValue = readGcalDate(item.start);
-  const endValue = readGcalDate(item.end);
-  const allDay = isGcalAllDay(item.start);
-  const normalized: Record<string, unknown> = {
-    id: typeof item.id === "string" ? item.id : "",
-    title: typeof item.summary === "string" ? item.summary : "Untitled event",
-    start: startValue,
-    isAllDay: allDay,
-  };
-
-  if (typeof item.status === "string") normalized.status = item.status;
-  if (typeof item.description === "string") normalized.description = item.description;
-  if (typeof item.location === "string") normalized.location = item.location;
-  if (typeof endValue === "string" && endValue.length > 0) normalized.end = endValue;
-  if (typeof item.htmlLink === "string") normalized.htmlLink = item.htmlLink;
-
-  const organizer = item.organizer;
-  if (organizer && typeof organizer === "object") {
-    const organizerRecord = organizer as Record<string, unknown>;
-    if (typeof organizerRecord.email === "string") {
-      normalized.organizerEmail = organizerRecord.email;
-    }
-  }
-
-  if (includeAttendees && Array.isArray(item.attendees)) {
-    normalized.attendees = item.attendees
-      .filter(
-        (attendee): attendee is Record<string, unknown> =>
-          !!attendee && typeof attendee === "object"
-      )
-      .map((attendee) => ({
-        email: typeof attendee.email === "string" ? attendee.email : "",
-        ...(typeof attendee.displayName === "string" ? { displayName: attendee.displayName } : {}),
-        ...(typeof attendee.responseStatus === "string"
-          ? { responseStatus: attendee.responseStatus }
-          : {}),
-      }))
-      .filter((attendee) => attendee.email.length > 0);
-  }
-
-  return normalized;
-}
-
-function readGcalDate(value: unknown): string {
-  if (!value || typeof value !== "object") return "";
-  const dateValue = value as Record<string, unknown>;
-  if (typeof dateValue.dateTime === "string") return dateValue.dateTime;
-  if (typeof dateValue.date === "string") return dateValue.date;
-  return "";
-}
-
-function isGcalAllDay(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const dateValue = value as Record<string, unknown>;
-  return typeof dateValue.date === "string";
-}
-
 function normalizeCredentialValue(value: string | null | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
@@ -881,38 +775,6 @@ async function getTavilyApiKeyFromSystem(): Promise<string | null> {
       KEYCHAIN_SERVICE,
       "account",
       TAVILY_SEARCH_ACCOUNT,
-    ]);
-  }
-
-  return null;
-}
-
-async function getGoogleCalendarApiKeyFromSystem(): Promise<string | null> {
-  const envValue = process.env.TESSERA_GOOGLE_CALENDAR_API_KEY?.trim();
-  if (envValue) {
-    return envValue;
-  }
-
-  if (process.platform === "darwin") {
-    return readSecret([
-      "security",
-      "find-generic-password",
-      "-a",
-      GOOGLE_CALENDAR_ACCOUNT,
-      "-s",
-      KEYCHAIN_SERVICE,
-      "-w",
-    ]);
-  }
-
-  if (process.platform === "linux") {
-    return readSecret([
-      "secret-tool",
-      "lookup",
-      "service",
-      KEYCHAIN_SERVICE,
-      "account",
-      GOOGLE_CALENDAR_ACCOUNT,
     ]);
   }
 

@@ -4,6 +4,7 @@ export const INTEGRATION_PROVIDERS: IntegrationProvider[] = ["google-calendar"];
 export const SEARCH_PROVIDERS: SearchProvider[] = ["brave-search", "tavily", "duckduckgo"];
 export const SEARCH_MODE_OPTIONS: SearchMode[] = ["auto", ...SEARCH_PROVIDERS];
 export const KEYLESS_SEARCH_PROVIDERS: SearchProvider[] = ["duckduckgo"];
+export const KEYLESS_INTEGRATION_PROVIDERS: IntegrationProvider[] = ["google-calendar"];
 
 export function integrationLabel(provider: IntegrationProvider): string {
   switch (provider) {
@@ -31,6 +32,10 @@ export function searchModeLabel(mode: SearchMode): string {
 
 export function searchProviderSupportsCredential(provider: SearchProvider): boolean {
   return !KEYLESS_SEARCH_PROVIDERS.includes(provider);
+}
+
+export function integrationProviderSupportsCredential(provider: IntegrationProvider): boolean {
+  return !KEYLESS_INTEGRATION_PROVIDERS.includes(provider);
 }
 
 export function shouldSendIntegrationCredential(value: string): boolean {

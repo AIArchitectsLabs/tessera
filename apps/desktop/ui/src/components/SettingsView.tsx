@@ -4,6 +4,7 @@ import {
   SEARCH_MODE_OPTIONS,
   SEARCH_PROVIDERS,
   integrationLabel,
+  integrationProviderSupportsCredential,
   searchModeLabel,
   searchProviderLabel,
   searchProviderSupportsCredential,
@@ -153,6 +154,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const hasIntegrationCredential = integrations?.providers.googleCalendar.hasCredential ?? false;
   const hasSearchCredential =
     searchProviderSettings(integrations, selectedSearchProvider)?.hasCredential ?? false;
+  const integrationAllowsCredentials = integrationProviderSupportsCredential(selectedIntegration);
   const searchProviderAllowsCredentials = searchProviderSupportsCredential(selectedSearchProvider);
   const modelBusy = loading || activeModelAction !== null;
   const integrationBusy = loading || activeIntegrationAction !== null;
@@ -332,8 +334,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_save", {
         request: {
           provider: selectedIntegration,
-          hasExistingCredential: hasIntegrationCredential,
-          ...(shouldSendIntegrationCredential(integrationApiKey)
+          hasExistingCredential: integrationAllowsCredentials && hasIntegrationCredential,
+          ...(integrationAllowsCredentials && shouldSendIntegrationCredential(integrationApiKey)
             ? { credential: { apiKey: integrationApiKey.trim() } }
             : {}),
         },
@@ -399,7 +401,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         {
           request: {
             provider: selectedIntegration,
-            ...(shouldSendIntegrationCredential(integrationApiKey)
+            ...(integrationAllowsCredentials && shouldSendIntegrationCredential(integrationApiKey)
               ? { credential: { apiKey: integrationApiKey.trim() } }
               : {}),
           },
@@ -965,7 +967,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                             )}
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            {hasIntegrationCredential ? "Saved key present" : "No saved key"}
+                            {integrationProviderSupportsCredential(provider)
+                              ? hasIntegrationCredential
+                                ? "Saved key present"
+                                : "No saved key"
+                              : "Uses Google Workspace CLI"}
                           </div>
                         </button>
                       );
@@ -974,25 +980,32 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </div>
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  Google Calendar powers the `gcal list` and `gcal read` shell commands for calendar
-                  context.
+                  Google Calendar uses the bundled Google Workspace CLI for `gcal list` and `gcal
+                  read`.
                 </div>
 
-                <label className="block">
-                  <span className="text-sm font-medium text-foreground">API key</span>
-                  <input
-                    className="input mt-2"
-                    type="password"
-                    value={integrationApiKey}
-                    disabled={integrationBusy}
-                    placeholder={
-                      hasIntegrationCredential
-                        ? "Saved key present"
-                        : "Paste Google Calendar API key"
-                    }
-                    onChange={(event) => setIntegrationApiKey(event.target.value)}
-                  />
-                </label>
+                {integrationAllowsCredentials ? (
+                  <label className="block">
+                    <span className="text-sm font-medium text-foreground">API key</span>
+                    <input
+                      className="input mt-2"
+                      type="password"
+                      value={integrationApiKey}
+                      disabled={integrationBusy}
+                      placeholder={
+                        hasIntegrationCredential
+                          ? "Saved key present"
+                          : "Paste Google Calendar API key"
+                      }
+                      onChange={(event) => setIntegrationApiKey(event.target.value)}
+                    />
+                  </label>
+                ) : (
+                  <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
+                    Connect Google Workspace with the CLI auth flow, then test the connection here.
+                    Tessera no longer stores a Calendar API key.
+                  </div>
+                )}
 
                 {integrationStatus && (
                   <div
@@ -1036,7 +1049,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     type="button"
                     variant="outline"
                     onClick={handleRemoveIntegrationKey}
-                    disabled={integrationBusy || !hasIntegrationCredential}
+                    disabled={
+                      integrationBusy || !integrationAllowsCredentials || !hasIntegrationCredential
+                    }
                   >
                     {activeIntegrationAction === "remove" ? (
                       <Loader2 size={16} className="animate-spin" />

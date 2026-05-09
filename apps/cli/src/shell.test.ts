@@ -209,10 +209,13 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns normalized gcal list results", async () => {
+    let capturedArgs: string[] = [];
     const result = await executeCliCommand(["gcal", "list", "--limit", "1"], {
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify({
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
             items: [
               {
                 id: "evt-1",
@@ -222,12 +225,21 @@ describe("workspace cli shell commands", () => {
               },
             ],
           }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        ),
-      getGoogleCalendarApiKey: async () => "google-test",
+          stderr: "",
+        };
+      },
     });
 
     expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 3)).toEqual(["calendar", "events", "list"]);
+    expect(capturedArgs).toContain("--params");
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toMatchObject({
+      calendarId: "primary",
+      maxResults: 1,
+      orderBy: "startTime",
+      singleEvents: true,
+    });
     expect(JSON.parse(result.stdout)).toEqual({
       calendarId: "primary",
       events: [
@@ -243,22 +255,31 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns normalized gcal read results", async () => {
+    let capturedArgs: string[] = [];
     const result = await executeCliCommand(["gcal", "read", "evt-1"], {
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify({
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
             id: "evt-1",
             summary: "Weekly review",
             start: { date: "2026-05-04" },
             end: { date: "2026-05-05" },
             attendees: [{ email: "owner@example.com", responseStatus: "accepted" }],
           }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        ),
-      getGoogleCalendarApiKey: async () => "google-test",
+          stderr: "",
+        };
+      },
     });
 
     expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 3)).toEqual(["calendar", "events", "get"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      calendarId: "primary",
+      eventId: "evt-1",
+    });
     expect(JSON.parse(result.stdout)).toEqual({
       calendarId: "primary",
       event: {
@@ -272,10 +293,13 @@ describe("workspace cli shell commands", () => {
     });
   });
 
-  test("returns a stable missing-credential error for gcal", async () => {
+  test("returns a stable missing-connection error for gcal", async () => {
     const result = await executeCliCommand(["gcal", "list"], {
-      fetchImpl: async () => new Response("", { status: 500 }),
-      getGoogleCalendarApiKey: async () => null,
+      runGwsCli: async () => ({
+        exitCode: 2,
+        stdout: "",
+        stderr: "auth token expired",
+      }),
     });
 
     expect(result.exitCode).toBe(2);
