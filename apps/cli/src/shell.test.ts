@@ -592,6 +592,56 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("falls back to legacy Google Doc body content when tabs are absent", async () => {
+    const result = await executeCliCommand(["drive", "read", "doc-legacy"], {
+      runGwsCli: async (args) => {
+        if (args[0] === "drive") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              id: "doc-legacy",
+              name: "Legacy Notes",
+              mimeType: "application/vnd.google-apps.document",
+            }),
+            stderr: "",
+          };
+        }
+
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            body: {
+              content: [
+                {
+                  paragraph: {
+                    elements: [
+                      {
+                        textRun: {
+                          content: "Legacy body notes",
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      file: {
+        id: "doc-legacy",
+        name: "Legacy Notes",
+        mimeType: "application/vnd.google-apps.document",
+        text: "Legacy body notes",
+      },
+    });
+  });
+
   test("returns Google Sheet rows as json through drive read routing", async () => {
     const capturedArgs: string[][] = [];
     const result = await executeCliCommand(["drive", "read", "sheet-1", "--format", "json"], {
