@@ -1024,14 +1024,20 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" onClick={handleSaveIntegration} disabled={integrationBusy}>
-                    {activeIntegrationAction === "save" ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <KeyRound size={16} />
-                    )}
-                    Save
-                  </Button>
+                  {integrationAllowsCredentials && (
+                    <Button
+                      type="button"
+                      onClick={handleSaveIntegration}
+                      disabled={integrationBusy}
+                    >
+                      {activeIntegrationAction === "save" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <KeyRound size={16} />
+                      )}
+                      Save
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     variant="outline"
@@ -1045,21 +1051,21 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     )}
                     Test connection
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleRemoveIntegrationKey}
-                    disabled={
-                      integrationBusy || !integrationAllowsCredentials || !hasIntegrationCredential
-                    }
-                  >
-                    {activeIntegrationAction === "remove" ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Trash2 size={16} />
-                    )}
-                    Remove key
-                  </Button>
+                  {integrationAllowsCredentials && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleRemoveIntegrationKey}
+                      disabled={integrationBusy || !hasIntegrationCredential}
+                    >
+                      {activeIntegrationAction === "remove" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={16} />
+                      )}
+                      Remove key
+                    </Button>
+                  )}
                 </div>
               </section>
             </div>

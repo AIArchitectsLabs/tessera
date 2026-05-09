@@ -226,6 +226,11 @@ function searchProvidersSection(view: ReturnType<typeof render>) {
   return heading.closest("section");
 }
 
+function calendarIntegrationSection(view: ReturnType<typeof render>) {
+  const heading = view.getByText("Calendar integration");
+  return heading.closest("section");
+}
+
 describe("SettingsView search flow", () => {
   test("switching search mode to Tavily updates selected search provider state", async () => {
     const view = await renderIntegrationsView();
@@ -285,6 +290,41 @@ describe("SettingsView search flow", () => {
           mode: "tavily",
           allowKeylessFallback: true,
         },
+      });
+    });
+  });
+});
+
+describe("SettingsView calendar integration flow", () => {
+  test("Google Calendar renders as CLI-authenticated without key controls", async () => {
+    const view = await renderIntegrationsView();
+
+    const section = calendarIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing calendar integration section");
+
+    expect(within(section).getByText("Uses Google Workspace CLI")).toBeTruthy();
+    expect(within(section).getByText(/Tessera no longer stores a Calendar API key/)).toBeTruthy();
+    expect(within(section).queryByText("API key")).toBeNull();
+    expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
+    expect(within(section).queryByRole("button", { name: "Remove key" })).toBeNull();
+    expect(within(section).getByRole("button", { name: "Test connection" })).toBeTruthy();
+  });
+
+  test("testing Google Calendar sends no credential payload", async () => {
+    const view = await renderIntegrationsView();
+
+    const section = calendarIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing calendar integration section");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Test connection" }));
+
+    await waitFor(() => {
+      const testCall = invokeCalls.find((call) => call.command === "integration_connection_test");
+      expect(testCall).toBeTruthy();
+      expect(testCall?.args?.request).toEqual({
+        provider: "google-calendar",
       });
     });
   });
