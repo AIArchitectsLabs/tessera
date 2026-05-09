@@ -310,7 +310,11 @@ describe("SettingsView workspace integration flow", () => {
         "Google Workspace uses the bundled CLI for Calendar, Gmail, Drive, Contacts, Docs, and Sheets."
       )
     ).toBeTruthy();
-    expect(within(section).getByText(/Tessera does not store a Calendar API key/)).toBeTruthy();
+    expect(
+      within(section).getByText(
+        /Tessera does not store separate API keys for individual Workspace services/
+      )
+    ).toBeTruthy();
     expect(within(section).queryByText("API key")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
     expect(within(section).queryByRole("button", { name: "Remove key" })).toBeNull();

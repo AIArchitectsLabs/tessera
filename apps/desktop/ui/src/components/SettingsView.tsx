@@ -1003,7 +1003,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 ) : (
                   <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
                     Connect with the Google Workspace CLI auth flow, then test the connection here.
-                    Tessera does not store a Calendar API key.
+                    Tessera does not store separate API keys for individual Workspace services.
                   </div>
                 )}
 
