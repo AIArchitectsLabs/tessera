@@ -1,9 +1,34 @@
-import type { GcalListResult, GcalReadResult } from "@tessera/contracts";
-import { GcalListResultSchema, GcalReadResultSchema } from "@tessera/contracts";
+import type {
+  ContactsLookupResult,
+  DriveReadResult,
+  DriveSearchResult,
+  GcalListResult,
+  GcalReadResult,
+  MailListResult,
+  MailReadResult,
+} from "@tessera/contracts";
+import {
+  ContactsLookupResultSchema,
+  DriveReadResultSchema,
+  DriveSearchResultSchema,
+  GcalListResultSchema,
+  GcalReadResultSchema,
+  MailListResultSchema,
+  MailReadResultSchema,
+} from "@tessera/contracts";
 
 export interface GoogleWorkspaceConnector {
   listCalendarEvents(request: { calendarId: string; limit: number }): Promise<GcalListResult>;
   readCalendarEvent(request: { calendarId: string; eventId: string }): Promise<GcalReadResult>;
+  listMail(request: { limit: number; query?: string }): Promise<MailListResult>;
+  searchMail(request: { query: string; limit: number }): Promise<MailListResult>;
+  readMail(request: { messageId: string }): Promise<MailReadResult>;
+  searchDrive(request: { query: string; limit: number }): Promise<DriveSearchResult>;
+  readDriveFile(request: {
+    fileId: string;
+    format: "text" | "markdown" | "csv" | "json";
+  }): Promise<DriveReadResult>;
+  lookupContacts(request: { query: string; limit: number }): Promise<ContactsLookupResult>;
 }
 
 export interface CommandResult {
@@ -62,6 +87,105 @@ export function createGwsGoogleWorkspaceConnector(options: {
       return GcalReadResultSchema.parse({
         calendarId: request.calendarId,
         event: normalizeGcalEvent(extractEvent(payload), true),
+      });
+    },
+
+    async listMail(request) {
+      return listMailMessages(options, request);
+    },
+
+    async searchMail(request) {
+      return listMailMessages(options, request);
+    },
+
+    async readMail(request) {
+      const payload = await runGwsJson(options, [
+        "gmail",
+        "users",
+        "messages",
+        "get",
+        "--params",
+        JSON.stringify({
+          userId: "me",
+          id: request.messageId,
+          format: "full",
+        }),
+      ]);
+      const message = isRecord(payload) ? payload : {};
+
+      return MailReadResultSchema.parse({
+        message: {
+          ...normalizeMailSummary(message),
+          to: splitHeaderValues(headerValue(message, "To")),
+          cc: splitHeaderValues(headerValue(message, "Cc")),
+          text: decodeMailText(message),
+        },
+      });
+    },
+
+    async searchDrive(request) {
+      const query = escapeDriveQuery(request.query);
+      const payload = await runGwsJson(options, [
+        "drive",
+        "files",
+        "list",
+        "--params",
+        JSON.stringify({
+          pageSize: request.limit,
+          q: `name contains '${query}' or fullText contains '${query}'`,
+          fields: "files(id,name,mimeType,modifiedTime,webViewLink)",
+        }),
+      ]);
+
+      return DriveSearchResultSchema.parse({
+        files: extractArray(payload, ["files"]).map((file) => normalizeDriveFile(file)),
+      });
+    },
+
+    async readDriveFile(request) {
+      const metadataPayload = await runGwsJson(options, [
+        "drive",
+        "files",
+        "get",
+        "--params",
+        JSON.stringify({
+          fileId: request.fileId,
+          fields: "id,name,mimeType,modifiedTime,webViewLink",
+        }),
+      ]);
+      const metadata = normalizeDriveFile(isRecord(metadataPayload) ? metadataPayload : {});
+      const content = await readDriveContent(
+        options,
+        request.fileId,
+        stringField(metadata, "mimeType"),
+        request.format
+      );
+
+      return DriveReadResultSchema.parse({
+        file: {
+          ...metadata,
+          ...content,
+        },
+      });
+    },
+
+    async lookupContacts(request) {
+      const payload = await runGwsJson(options, [
+        "people",
+        "people",
+        "searchContacts",
+        "--params",
+        JSON.stringify({
+          query: request.query,
+          pageSize: request.limit,
+          readMask: "names,emailAddresses,phoneNumbers,organizations",
+        }),
+      ]);
+
+      return ContactsLookupResultSchema.parse({
+        contacts: extractArray(payload, ["results"])
+          .map((result) => (isRecord(result.person) ? result.person : result))
+          .map((person) => normalizeContact(person)),
       });
     },
   };
@@ -124,6 +248,16 @@ function extractEvents(payload: unknown): Record<string, unknown>[] {
   return [];
 }
 
+function extractArray(payload: unknown, keys: string[]): Record<string, unknown>[] {
+  if (Array.isArray(payload)) return payload.filter(isRecord);
+  if (!isRecord(payload)) return [];
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value.filter(isRecord);
+  }
+  return [];
+}
+
 function extractEvent(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) return {};
   const event = payload.event;
@@ -180,6 +314,237 @@ function normalizeGcalEvent(
   }
 
   return normalized;
+}
+
+function listMailMessages(
+  options: {
+    runGwsCli: (args: string[]) => Promise<CommandResult>;
+  },
+  request: { limit: number; query?: string }
+): Promise<MailListResult> {
+  return runGwsJson(options, [
+    "gmail",
+    "users",
+    "messages",
+    "list",
+    "--params",
+    JSON.stringify({
+      userId: "me",
+      maxResults: request.limit,
+      ...(request.query ? { q: request.query } : {}),
+    }),
+  ]).then((payload) =>
+    MailListResultSchema.parse({
+      messages: extractArray(payload, ["messages"]).map((message) => normalizeMailSummary(message)),
+    })
+  );
+}
+
+function normalizeMailSummary(item: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: stringField(item, "id"),
+    threadId: stringField(item, "threadId"),
+    subject: stringField(item, "subject") || headerValue(item, "Subject") || "(no subject)",
+    from: stringField(item, "from") || headerValue(item, "From"),
+    date: stringField(item, "date") || headerValue(item, "Date"),
+    snippet: stringField(item, "snippet"),
+    labels: Array.isArray(item.labelIds)
+      ? item.labelIds.filter((value): value is string => typeof value === "string")
+      : [],
+  };
+}
+
+function headerValue(item: Record<string, unknown>, name: string): string {
+  const payload = item.payload;
+  if (!isRecord(payload) || !Array.isArray(payload.headers)) return "";
+  const header = payload.headers.filter(isRecord).find((value) => value.name === name);
+  return typeof header?.value === "string" ? header.value : "";
+}
+
+function splitHeaderValues(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function decodeMailText(item: Record<string, unknown>): string {
+  const payload = item.payload;
+  if (!isRecord(payload)) return stringField(item, "text");
+
+  const body = payload.body;
+  if (isRecord(body)) {
+    const direct = decodeBase64Url(stringField(body, "data"));
+    if (direct) return direct;
+  }
+
+  const nested = findTextPlainPart(payload.parts);
+  if (nested) return nested;
+
+  return "";
+}
+
+function findTextPlainPart(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  for (const part of parts.filter(isRecord)) {
+    if (stringField(part, "mimeType") === "text/plain") {
+      const body = part.body;
+      if (isRecord(body)) {
+        const text = decodeBase64Url(stringField(body, "data"));
+        if (text) return text;
+      }
+    }
+    const nested = findTextPlainPart(part.parts);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function decodeBase64Url(value: string): string {
+  if (!value) return "";
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64").toString("utf8").trim();
+}
+
+function normalizeDriveFile(item: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {
+    id: stringField(item, "id"),
+    name: stringField(item, "name") || "Untitled",
+    mimeType: stringField(item, "mimeType"),
+  };
+  copyStringField(item, normalized, "modifiedTime");
+  copyStringField(item, normalized, "webViewLink");
+  return normalized;
+}
+
+function normalizeContact(item: Record<string, unknown>): Record<string, unknown> {
+  return {
+    resourceName: stringField(item, "resourceName"),
+    displayName: firstString(item.names, "displayName") || "Unnamed contact",
+    emailAddresses: stringArray(item.emailAddresses, "value"),
+    phoneNumbers: stringArray(item.phoneNumbers, "value"),
+    organizations: stringArray(item.organizations, "name"),
+  };
+}
+
+function firstString(value: unknown, key: string): string {
+  if (!Array.isArray(value)) return "";
+  const record = value.filter(isRecord).find((item) => typeof item[key] === "string");
+  return record && typeof record[key] === "string" ? record[key] : "";
+}
+
+function stringArray(value: unknown, key: string): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((item) => item[key])
+    .filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function escapeDriveQuery(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function readDriveContent(
+  options: {
+    runGwsCli: (args: string[]) => Promise<CommandResult>;
+  },
+  fileId: string,
+  mimeType: string,
+  format: "text" | "markdown" | "csv" | "json"
+): Promise<Record<string, unknown>> {
+  if (mimeType === "application/vnd.google-apps.spreadsheet") {
+    const payload = await runGwsJson(options, [
+      "sheets",
+      "spreadsheets",
+      "values",
+      "get",
+      "--params",
+      JSON.stringify({
+        spreadsheetId: fileId,
+        range: "A1:Z100",
+      }),
+    ]);
+    const values = isRecord(payload) && Array.isArray(payload.values) ? payload.values : [];
+    return {
+      rows: values
+        .filter(Array.isArray)
+        .map((row) =>
+          row.filter((cell): cell is string | number | boolean | null =>
+            cell === null || ["string", "number", "boolean"].includes(typeof cell)
+          )
+        ),
+    };
+  }
+
+  if (mimeType === "application/vnd.google-apps.document") {
+    const payload = await runGwsJson(options, [
+      "docs",
+      "documents",
+      "get",
+      "--params",
+      JSON.stringify({ documentId: fileId }),
+    ]);
+    return { text: extractDocText(payload) };
+  }
+
+  const output = await runGwsCliRaw(options, [
+    "drive",
+    "files",
+    "get",
+    "--params",
+    JSON.stringify({ fileId, alt: "media" }),
+  ]);
+  return { text: decodeGwsMediaOutput(output, format) };
+}
+
+function decodeGwsMediaOutput(
+  output: CommandResult,
+  format: "text" | "markdown" | "csv" | "json"
+): string {
+  if (output.exitCode !== 0) {
+    throw new GoogleWorkspaceConnectorError(
+      normalizeGwsError(output.stderr) ||
+        `Google Workspace CLI exited with status ${output.exitCode}`,
+      output.exitCode
+    );
+  }
+
+  const stdout = output.stdout.trim();
+  if (!stdout) return "";
+
+  try {
+    const parsed = JSON.parse(stdout);
+    return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
+  } catch {
+    void format;
+    return stdout;
+  }
+}
+
+async function runGwsCliRaw(
+  options: {
+    runGwsCli: (args: string[]) => Promise<CommandResult>;
+  },
+  command: string[]
+): Promise<CommandResult> {
+  return options.runGwsCli(command);
+}
+
+function extractDocText(payload: unknown): string {
+  if (!isRecord(payload)) return "";
+  const body = payload.body;
+  if (!isRecord(body) || !Array.isArray(body.content)) return "";
+  const parts: string[] = [];
+  for (const block of body.content.filter(isRecord)) {
+    const paragraph = block.paragraph;
+    if (!isRecord(paragraph) || !Array.isArray(paragraph.elements)) continue;
+    for (const element of paragraph.elements.filter(isRecord)) {
+      const textRun = element.textRun;
+      if (isRecord(textRun) && typeof textRun.content === "string") parts.push(textRun.content);
+    }
+  }
+  return parts.join("").trim();
 }
 
 function readGcalDate(value: unknown): string {
