@@ -294,10 +294,18 @@ describe("workflow contracts", () => {
       input: { message: "hello" },
       assignmentPlan,
       capabilityInventory,
+      agentProvider: {
+        provider: "openai",
+        model: "gpt-5.4",
+        apiKeyEnv: "OPENAI_API_KEY",
+      },
+      credential: { apiKey: "test-key" },
     });
 
     expect(parsed.workflowId).toBe("operations.lead-sync");
     expect(parsed.assignmentPlan?.resolverVersion).toBe(1);
+    expect(parsed.agentProvider?.provider).toBe("openai");
+    expect(parsed.credential?.apiKey).toBe("test-key");
   });
 
   test("accepts workflow run list results", () => {

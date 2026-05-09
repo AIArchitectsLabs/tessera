@@ -18,6 +18,7 @@ import {
   type WorkflowExecutionStepRecord,
   type WorkflowNodeRequirements,
   type WorkflowRunAssignmentPlan,
+  WorkflowRunAssignmentPlanSchema,
   type WorkflowSourceGap,
   type WorkflowStep,
   createWorkflowCapabilityInventory,
@@ -30,6 +31,7 @@ export {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
 } from "./workflow-capabilities.js";
+import { createSpawnShellExecutor } from "./shell-runtime.js";
 import customerRenewalRiskReviewManifest from "./workflows/customer.renewal-risk-review.json";
 import demoWorkflowManifest from "./workflows/demo.write-approval.json";
 import operationsWeeklyStatusDigestManifest from "./workflows/operations.weekly-status-digest.json";
@@ -276,15 +278,6 @@ function collectSourceGaps(
   }
 
   return gaps;
-}
-
-function validateAssignmentPlan(
-  definition: WorkflowDefinition,
-  inventory: WorkflowCapabilityInventory | undefined,
-  assignmentPlan: WorkflowRunAssignmentPlan | undefined
-): void {
-  if (!assignmentPlan || !inventory) return;
-  validateWorkflowAssignmentPlan(definition, inventory, assignmentPlan);
 }
 
 function agentToolName(toolId: Extract<WorkflowStep, { kind: "tool" }>["toolId"]): string {
@@ -622,12 +615,21 @@ async function executeFromStep(options: {
         (provider.provider === "local" || !("apiKeyEnv" in provider)
           ? undefined
           : process.env[provider.apiKeyEnv]);
-      const result = await (options.agentRunner ?? runPiTaskTurn)({
-        ...(credential ? { credential } : {}),
-        prompt: resolveTemplate(step.prompt, input),
-        provider,
-        workspaceRoot,
-      });
+      const agentPrompt = resolveTemplate(step.prompt, input);
+      const result = options.agentRunner
+        ? await options.agentRunner({
+            ...(credential ? { credential } : {}),
+            prompt: agentPrompt,
+            provider,
+            workspaceRoot,
+          })
+        : await runPiTaskTurn({
+            ...(credential ? { credential } : {}),
+            prompt: agentPrompt,
+            provider,
+            shell: createSpawnShellExecutor(cli),
+            workspaceRoot,
+          });
 
       outputs[step.id] = result;
       const completedAt = new Date().toISOString();
@@ -967,11 +969,10 @@ export async function resumeWorkflowRun(
 
   const capabilityInventory = resolveCapabilityInventory(options.capabilityInventory);
   const definition = options.definition ?? DEMO_WORKFLOW;
-  const assignmentPlan = resolveAssignmentPlan(
-    definition,
-    capabilityInventory,
-    options.assignmentPlan ?? extractWorkflowAssignmentPlan(run)
-  );
+  const checkpointedAssignmentPlan = options.assignmentPlan ?? extractWorkflowAssignmentPlan(run);
+  const assignmentPlan = checkpointedAssignmentPlan
+    ? WorkflowRunAssignmentPlanSchema.parse(checkpointedAssignmentPlan)
+    : resolveWorkflowAssignmentPlan(definition, capabilityInventory);
 
   if (decision === "deny") {
     const completedAt = new Date().toISOString();
@@ -1002,12 +1003,6 @@ export async function resumeWorkflowRun(
     await options.onCheckpoint?.(denied);
     return denied;
   }
-
-  validateAssignmentPlan(
-    options.definition ?? DEMO_WORKFLOW,
-    options.capabilityInventory,
-    options.assignmentPlan ?? run.assignmentPlan
-  );
 
   return executeFromStep({
     cli,

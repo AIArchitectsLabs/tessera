@@ -11,8 +11,8 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-mod model_settings;
 mod integration_settings;
+mod model_settings;
 
 // Compile-time target triple injected by build.rs via `cargo:rustc-env`.
 const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
@@ -143,7 +143,18 @@ impl SidecarHandle {
 
         if !response.starts_with("HTTP/1.1 200") {
             let first_line = response.lines().next().unwrap_or("(empty)");
-            bail!("Sidecar returned error: {first_line}");
+            let body = response[body_start..].trim();
+            let detail = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(|error| error.as_str())
+                        .map(|error| error.to_string())
+                })
+                .filter(|error| !error.trim().is_empty())
+                .unwrap_or_else(|| first_line.to_string());
+            bail!("Sidecar returned error: {detail}");
         }
 
         Ok(response[body_start..].to_string())
@@ -329,7 +340,11 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
 }
 
 fn summarize_section(text: Option<&str>, empty: &str) -> String {
-    let normalized = text.unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = text
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if normalized.is_empty() {
         return empty.to_string();
     }
@@ -461,13 +476,14 @@ async fn attach_default_task_execution(
         .and_then(|mode| mode.as_str())
         == Some("override")
     {
-        agent.get("model")
+        agent
+            .get("model")
             .and_then(|model| model.get("provider"))
             .cloned()
             .ok_or_else(|| "Agent model override is missing provider details".to_string())?
     } else {
-        let selected =
-            model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
+        let selected = model_settings::selected_provider_config(&settings)
+            .map_err(|error| error.to_string())?;
         provider_config_json(&selected)
     };
     let credential_provider = parse_model_provider(
@@ -497,6 +513,42 @@ async fn attach_default_task_execution(
     }
 
     request["execution"] = execution;
+    Ok(request)
+}
+
+async fn attach_default_workflow_execution(
+    app: &AppHandle,
+    mut request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if request.get("agentProvider").is_some() || request.get("credential").is_some() {
+        return Ok(request);
+    }
+
+    let settings_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join(model_settings::SETTINGS_FILE);
+    let settings =
+        model_settings::load_settings_file(&settings_path).map_err(|error| error.to_string())?;
+    let selected =
+        model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
+    let provider = provider_config_json(&selected);
+    let credential =
+        model_settings::get_credential(selected.provider).map_err(|error| error.to_string())?;
+
+    if credential.is_none() && selected.provider != model_settings::ModelProvider::Local {
+        return Err(format!(
+            "{} is not configured. Add an API key in Settings > Model.",
+            selected.provider.label()
+        ));
+    }
+
+    request["agentProvider"] = provider;
+    if let Some(api_key) = credential {
+        request["credential"] = serde_json::json!({ "apiKey": api_key });
+    }
+
     Ok(request)
 }
 
@@ -639,14 +691,19 @@ async fn run_workspace_cli_command(
 
 #[tauri::command]
 async fn workflow_run(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let body = serde_json::json!({
-        "workflowId": "demo.write-approval",
-        "input": input,
-    })
-    .to_string();
+    let request = attach_default_workflow_execution(
+        &app,
+        serde_json::json!({
+            "workflowId": "demo.write-approval",
+            "input": input,
+        }),
+    )
+    .await?;
+    let body = request.to_string();
     let json = state
         .post("/workflows/run", &body)
         .await
@@ -667,15 +724,20 @@ async fn workflow_list_pending(
 
 #[tauri::command]
 async fn workflow_resume(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     run_id: String,
     decision: String,
 ) -> Result<serde_json::Value, String> {
-    let body = serde_json::json!({
-        "runId": &run_id,
-        "decision": decision,
-    })
-    .to_string();
+    let request = attach_default_workflow_execution(
+        &app,
+        serde_json::json!({
+            "runId": &run_id,
+            "decision": decision,
+        }),
+    )
+    .await?;
+    let body = request.to_string();
     let path = format!("/workflows/{run_id}/resume");
     let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -699,10 +761,12 @@ async fn playbook_get(
 
 #[tauri::command]
 async fn playbook_run_create(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     playbook_id: String,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let request = attach_default_workflow_execution(&app, request).await?;
     let body = request.to_string();
     let path = format!("/playbooks/{}/runs", percent_encode(&playbook_id));
     let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
@@ -743,10 +807,12 @@ async fn playbook_run_get(
 
 #[tauri::command]
 async fn playbook_run_resume(
+    app: AppHandle,
     state: State<'_, SidecarHandle>,
     run_id: String,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let request = attach_default_workflow_execution(&app, request).await?;
     let body = request.to_string();
     let path = format!("/playbook-runs/{}/resume", percent_encode(&run_id));
     let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
@@ -776,7 +842,10 @@ async fn inbox_list(
         params.push(format!("taskId={}", percent_encode(&task_id)));
     }
     if let Some(workflow_run_id) = workflow_run_id {
-        params.push(format!("workflowRunId={}", percent_encode(&workflow_run_id)));
+        params.push(format!(
+            "workflowRunId={}",
+            percent_encode(&workflow_run_id)
+        ));
     }
 
     let path = if params.is_empty() {
@@ -1157,7 +1226,8 @@ async fn integration_connection_test(
                     let api_key = input.api_key.trim();
                     (!api_key.is_empty()).then(|| api_key.to_string())
                 }
-                None => integration_settings::get_credential(provider).map_err(|error| error.to_string())?,
+                None => integration_settings::get_credential(provider)
+                    .map_err(|error| error.to_string())?,
             };
 
             if credential.is_none() {
@@ -1168,16 +1238,15 @@ async fn integration_connection_test(
                 integration_settings::IntegrationProvider::BraveSearch => {
                     search_connection_command(integration_settings::SearchProvider::BraveSearch)
                 }
-                integration_settings::IntegrationProvider::GoogleCalendar => {
-                    (vec!["gcal", "list"], Some("TESSERA_GOOGLE_CALENDAR_API_KEY"))
-                }
+                integration_settings::IntegrationProvider::GoogleCalendar => (
+                    vec!["gcal", "list"],
+                    Some("TESSERA_GOOGLE_CALENDAR_API_KEY"),
+                ),
             };
 
-            let credential_env = credential
-                .as_deref()
-                .and_then(|value| {
-                    credential_env_name.map(|name| (name.to_string(), value.to_string()))
-                });
+            let credential_env = credential.as_deref().and_then(|value| {
+                credential_env_name.map(|name| (name.to_string(), value.to_string()))
+            });
             (command_args, credential_env, Some(provider), None)
         }
         integration_settings::IntegrationRequestTarget::Search(search_provider) => {
@@ -1190,18 +1259,18 @@ async fn integration_connection_test(
                     .map_err(|error| error.to_string())?,
             };
 
-            if credential.is_none() && search_provider != integration_settings::SearchProvider::DuckDuckGo {
+            if credential.is_none()
+                && search_provider != integration_settings::SearchProvider::DuckDuckGo
+            {
                 return Ok(integration_settings::missing_search_credential_result(
                     search_provider,
                 ));
             }
 
             let (command_args, credential_env_name) = search_connection_command(search_provider);
-            let credential_env = credential
-                .as_deref()
-                .and_then(|value| {
-                    credential_env_name.map(|name| (name.to_string(), value.to_string()))
-                });
+            let credential_env = credential.as_deref().and_then(|value| {
+                credential_env_name.map(|name| (name.to_string(), value.to_string()))
+            });
             (command_args, credential_env, None, Some(search_provider))
         }
     };
@@ -1220,7 +1289,12 @@ async fn integration_connection_test(
             .to_string()
     };
 
-    Ok(connection_test_result(ok, message, provider, search_provider))
+    Ok(connection_test_result(
+        ok,
+        message,
+        provider,
+        search_provider,
+    ))
 }
 
 fn search_connection_command(
@@ -1292,8 +1366,7 @@ async fn task_subscribe(
             loop {
                 match stream.next_event().await {
                     Ok(Some(payload)) => {
-                        let _ = app_for_task
-                            .emit(&format!("task:event:{}", id_for_task), payload);
+                        let _ = app_for_task.emit(&format!("task:event:{}", id_for_task), payload);
                     }
                     _ => break,
                 }
@@ -1301,8 +1374,7 @@ async fn task_subscribe(
             if let Some(s) = app_for_task.try_state::<TaskSubscriptions>() {
                 s.handles.lock().unwrap().remove(&id_for_task);
             }
-            let _ = app_for_task
-                .emit(&format!("task:event:{}:closed", id_for_task), ());
+            let _ = app_for_task.emit(&format!("task:event:{}:closed", id_for_task), ());
         })
     };
 
@@ -1321,13 +1393,46 @@ async fn task_unsubscribe(
     Ok(())
 }
 
+#[tauri::command]
+async fn workspace_file_open(
+    app: AppHandle,
+    workspace_root: String,
+    path: String,
+) -> Result<(), String> {
+    let workspace = fs::canonicalize(&workspace_root)
+        .with_context(|| format!("Could not access workspace: {workspace_root}"))
+        .map_err(|error| error.to_string())?;
+    let requested = PathBuf::from(path.trim());
+    let target = if requested.is_absolute() {
+        requested
+    } else {
+        workspace.join(requested)
+    };
+    let target = fs::canonicalize(&target)
+        .with_context(|| format!("Could not access file: {}", target.display()))
+        .map_err(|error| error.to_string())?;
+
+    if !target.starts_with(&workspace) {
+        return Err("Cannot open files outside the selected workspace".to_string());
+    }
+    if !target.is_file() {
+        return Err(format!("Not a file: {}", target.display()));
+    }
+
+    #[allow(deprecated)]
+    app.shell()
+        .open(target.to_string_lossy().to_string(), None)
+        .map_err(|error| error.to_string())
+}
+
 // ── Agent Profiles ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn agent_profile_list(
-    state: State<'_, SidecarHandle>,
-) -> Result<serde_json::Value, String> {
-    let json = state.get("/agent-profiles").await.map_err(|e| e.to_string())?;
+async fn agent_profile_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
+    let json = state
+        .get("/agent-profiles")
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1386,10 +1491,7 @@ async fn agent_profile_reset(
     id: String,
 ) -> Result<serde_json::Value, String> {
     let path = format!("/agent-profiles/{}/reset", percent_encode(&id));
-    let json = state
-        .post(&path, "{}")
-        .await
-        .map_err(|e| e.to_string())?;
+    let json = state.post(&path, "{}").await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1444,6 +1546,7 @@ pub fn run() {
             task_todo_apply,
             task_unsubscribe,
             task_update,
+            workspace_file_open,
             workflow_list_pending,
             workflow_run,
             workflow_resume
@@ -1483,7 +1586,9 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .expect("allowedTools should be an array");
             assert!(
-                allowed_tools.iter().any(|value| value.as_str() == Some("shell")),
+                allowed_tools
+                    .iter()
+                    .any(|value| value.as_str() == Some("shell")),
                 "preset {preset} should include shell access"
             );
 
@@ -1492,9 +1597,9 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .expect("capabilities should be an array");
             assert!(
-                capabilities.iter().any(
-                    |value| value.as_str() == Some("Search and fetch public web pages")
-                ),
+                capabilities
+                    .iter()
+                    .any(|value| value.as_str() == Some("Search and fetch public web pages")),
                 "preset {preset} should advertise web access"
             );
         }
@@ -1508,7 +1613,10 @@ mod tests {
             Some(IntegrationProvider::GoogleCalendar),
             None,
         );
-        assert_eq!(provider_result.provider, Some(IntegrationProvider::GoogleCalendar));
+        assert_eq!(
+            provider_result.provider,
+            Some(IntegrationProvider::GoogleCalendar)
+        );
         assert_eq!(provider_result.search_provider, None);
 
         let search_result = connection_test_result(

@@ -32,6 +32,7 @@ import {
   TodoOperationSchema,
   type WorkflowDefinition,
   WorkflowResumeRequestSchema,
+  WorkflowRunAssignmentPlanSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
   WorkflowRunStatusSchema,
@@ -60,8 +61,8 @@ import {
   buildLocalPlaybookCapabilityInventory,
   mergePlaybookRunMetadata,
   parsePlaybookRunCreateRequest,
+  resolveCheckpointedPlaybookExecutionContext,
   resolvePlaybookExecutionContext,
-  sameAssignmentPlan,
 } from "./playbook-routing.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
@@ -211,27 +212,30 @@ function resolvePlaybookExecutionState(options: {
   assignmentPlan?: unknown;
   existingAssignmentPlan?: unknown;
 }) {
-  if (
-    options.assignmentPlan &&
-    options.existingAssignmentPlan &&
-    !sameAssignmentPlan(
-      options.assignmentPlan as Parameters<typeof sameAssignmentPlan>[0],
-      options.existingAssignmentPlan as Parameters<typeof sameAssignmentPlan>[1]
-    )
-  ) {
-    throw new Error("Assignment plan does not match the checkpointed plan");
-  }
+  const capabilityInventory =
+    (options.capabilityInventory as ReturnType<typeof currentCapabilityInventory>) ??
+    currentCapabilityInventory();
 
-  const assignmentPlan =
-    (options.assignmentPlan as Parameters<typeof sameAssignmentPlan>[0] | undefined) ??
-    (options.existingAssignmentPlan as Parameters<typeof sameAssignmentPlan>[1] | undefined);
+  if (options.existingAssignmentPlan) {
+    const checkpointOptions: Parameters<typeof resolveCheckpointedPlaybookExecutionContext>[0] = {
+      definition: options.definition,
+      capabilityInventory,
+      existingAssignmentPlan: WorkflowRunAssignmentPlanSchema.parse(options.existingAssignmentPlan),
+    };
+    if (options.assignmentPlan) {
+      checkpointOptions.requestedAssignmentPlan = WorkflowRunAssignmentPlanSchema.parse(
+        options.assignmentPlan
+      );
+    }
+    return resolveCheckpointedPlaybookExecutionContext(checkpointOptions);
+  }
 
   return resolvePlaybookExecutionContext({
     definition: options.definition,
-    capabilityInventory:
-      (options.capabilityInventory as ReturnType<typeof currentCapabilityInventory>) ??
-      currentCapabilityInventory(),
-    ...(assignmentPlan ? { assignmentPlan } : {}),
+    capabilityInventory,
+    ...(options.assignmentPlan
+      ? { assignmentPlan: WorkflowRunAssignmentPlanSchema.parse(options.assignmentPlan) }
+      : {}),
   });
 }
 
@@ -380,6 +384,8 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
       cli: {
         runWorkspaceCli,
       },
+      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+      ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
       onCheckpoint(run) {
         workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
       },
@@ -486,6 +492,8 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
       cli: {
         runWorkspaceCli,
       },
+      ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
+      ...(parsed.credential?.apiKey ? { agentCredential: parsed.credential.apiKey } : {}),
       onCheckpoint(run) {
         workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
       },
@@ -776,9 +784,12 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
       run: existing,
       decision: parsed.data.decision,
       definition,
+      assignmentPlan: playbookState.assignmentPlan,
       cli: {
         runWorkspaceCli,
       },
+      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+      ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
       onCheckpoint(checkpoint) {
         workflowStore.save(mergePlaybookRunMetadata(checkpoint, playbookState));
       },

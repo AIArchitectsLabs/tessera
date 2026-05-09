@@ -26,7 +26,7 @@ const capabilityInventory = WorkflowCapabilityInventorySchema.parse({
       },
       modelCapabilities: ["model.reasoning"],
       contextTokens: 64000,
-      dataPolicies: ["workspace-local-ok"],
+      dataPolicies: ["workspace-local-ok", "cloud-ok"],
       skillCapabilities: ["skill.meeting-prep"],
       toolCapabilities: ["tool.workspace.read"],
     },
@@ -312,11 +312,20 @@ describe("workflow runner", () => {
       "agent-summarizer"
     );
 
+    const driftedCapabilityInventory = WorkflowCapabilityInventorySchema.parse({
+      ...capabilityInventory,
+      agents: capabilityInventory.agents.map((agent) =>
+        agent.id === "agent-reasoner"
+          ? { ...agent, fingerprint: "agent:reasoner-new-fingerprint" }
+          : agent
+      ),
+    });
+
     const resumed = await resumeWorkflowRun({
       run: blocked,
       decision: "approve",
       definition,
-      capabilityInventory,
+      capabilityInventory: driftedCapabilityInventory,
       cli: {
         async runWorkspaceCli() {
           return spawnResult;

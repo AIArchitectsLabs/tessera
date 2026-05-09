@@ -7,6 +7,7 @@ import {
 import {
   buildLocalPlaybookCapabilityInventory,
   parsePlaybookRunCreateRequest,
+  resolveCheckpointedPlaybookExecutionContext,
   resolvePlaybookExecutionContext,
   sameAssignmentPlan,
 } from "./playbook-routing.js";
@@ -216,6 +217,74 @@ describe("playbook routing helpers", () => {
     ).toThrow("stale or does not match the current inventory");
   });
 
+  test("resumes checkpointed assignment plans when inventory fingerprints drift", () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.checkpoint-resume",
+      version: 1,
+      name: "Checkpoint Resume",
+      start: "draft",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "Draft the brief",
+          workspaceRootInput: "workspaceRoot",
+          requires: {
+            skills: [{ capability: "skill.meeting-prep" }],
+          },
+        },
+      ],
+    });
+
+    const inventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "sales-agent",
+          label: "Sales Agent",
+          fingerprint: "sales-agent:fingerprint",
+          model: {
+            provider: "openai",
+            model: "gpt-5.4",
+            hasCredential: true,
+          },
+          modelCapabilities: [],
+          contextTokens: 64000,
+          dataPolicies: [],
+          skillCapabilities: ["skill.meeting-prep"],
+          toolCapabilities: [],
+        },
+      ],
+      integrations: [],
+    });
+    const resolved = resolvePlaybookExecutionContext({
+      definition,
+      capabilityInventory: inventory,
+    });
+    const driftedInventory = WorkflowCapabilityInventorySchema.parse({
+      ...inventory,
+      agents: [
+        {
+          ...inventory.agents[0],
+          fingerprint: "sales-agent:new-fingerprint",
+        },
+      ],
+    });
+
+    const checkpointed = resolveCheckpointedPlaybookExecutionContext({
+      definition,
+      capabilityInventory: driftedInventory,
+      existingAssignmentPlan: resolved.assignmentPlan,
+      requestedAssignmentPlan: resolved.assignmentPlan,
+    });
+
+    expect(checkpointed.assignmentPlan.assignments.draft?.agentFingerprint).toBe(
+      "sales-agent:fingerprint"
+    );
+  });
+
   test("parses raw playbook create bodies without losing capability metadata", () => {
     const inventory = WorkflowCapabilityInventorySchema.parse({
       agents: [],
@@ -225,6 +294,12 @@ describe("playbook routing helpers", () => {
       {
         input: { message: "weekly", target: "lead" },
         capabilityInventory: inventory,
+        agentProvider: {
+          provider: "openai",
+          model: "gpt-5.4",
+          apiKeyEnv: "OPENAI_API_KEY",
+        },
+        credential: { apiKey: "test-key" },
       },
       "ops.weekly-update"
     );
@@ -232,6 +307,8 @@ describe("playbook routing helpers", () => {
     expect(request.workflowId).toBe("ops.weekly-update");
     expect(request.input).toEqual({ message: "weekly", target: "lead" });
     expect(request.capabilityInventory).toEqual(inventory);
+    expect(request.agentProvider?.provider).toBe("openai");
+    expect(request.credential?.apiKey).toBe("test-key");
   });
 
   test("normalizes assignment plan equality for checkpoint validation", () => {

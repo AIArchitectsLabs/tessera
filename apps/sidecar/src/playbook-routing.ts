@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   type AgentProfile,
+  type AgentProviderConfig,
+  AgentProviderConfigSchema,
   type WorkflowCapabilityInventory,
   WorkflowCapabilityInventorySchema,
   type WorkflowDefinition,
@@ -563,6 +565,57 @@ export function resolvePlaybookExecutionContext(options: {
   };
 }
 
+function validateAssignmentPlanShape(
+  definition: WorkflowDefinition,
+  plan: WorkflowRunAssignmentPlan
+): WorkflowRunAssignmentPlan {
+  const normalizedPlan = normalizeAssignmentPlan(plan);
+  const expectedStepIds = new Set(definition.steps.map((step) => step.id));
+
+  for (const stepId of Object.keys(normalizedPlan.assignments)) {
+    if (!expectedStepIds.has(stepId)) {
+      throw new Error(`Assignment plan includes unknown step: ${stepId}`);
+    }
+  }
+
+  for (const step of definition.steps) {
+    if (!normalizedPlan.assignments[step.id]) {
+      throw new Error(`Assignment plan is missing a resolved assignment for step: ${step.id}`);
+    }
+  }
+
+  return normalizedPlan;
+}
+
+export function resolveCheckpointedPlaybookExecutionContext(options: {
+  capabilityInventory: WorkflowCapabilityInventory;
+  definition: WorkflowDefinition;
+  existingAssignmentPlan: WorkflowRunAssignmentPlan;
+  requestedAssignmentPlan?: WorkflowRunAssignmentPlan;
+}): PlaybookExecutionContext {
+  if (
+    options.requestedAssignmentPlan &&
+    !sameAssignmentPlan(options.requestedAssignmentPlan, options.existingAssignmentPlan)
+  ) {
+    throw new Error("Assignment plan does not match the checkpointed plan");
+  }
+
+  const capabilityInventory = WorkflowCapabilityInventorySchema.parse(options.capabilityInventory);
+  const assignmentPlan = validateAssignmentPlanShape(
+    options.definition,
+    options.existingAssignmentPlan
+  );
+  const sourceGaps = options.definition.steps.flatMap((step) =>
+    stepOptionalGaps(step, capabilityInventory)
+  );
+
+  return {
+    capabilityInventory,
+    assignmentPlan,
+    sourceGaps,
+  };
+}
+
 export function mergePlaybookRunMetadata(run: unknown, context: PlaybookExecutionContext) {
   return WorkflowRunResultSchema.parse({
     ...(run && typeof run === "object" ? run : {}),
@@ -581,7 +634,9 @@ export function parsePlaybookRunCreateRequest(
   body: unknown,
   playbookId: string
 ): {
+  agentProvider?: AgentProviderConfig;
   capabilityInventory?: WorkflowCapabilityInventory;
+  credential?: { apiKey: string };
   assignmentPlan?: WorkflowRunAssignmentPlan;
   input: Record<string, unknown>;
   workflowId: string;
@@ -595,6 +650,8 @@ export function parsePlaybookRunCreateRequest(
             key !== "input" &&
             key !== "capabilityInventory" &&
             key !== "assignmentPlan" &&
+            key !== "agentProvider" &&
+            key !== "credential" &&
             key !== "workflowId"
         )
       );
@@ -602,6 +659,12 @@ export function parsePlaybookRunCreateRequest(
   return {
     workflowId: playbookId,
     input,
+    ...(payload.agentProvider !== undefined
+      ? { agentProvider: AgentProviderConfigSchema.parse(payload.agentProvider) }
+      : {}),
+    ...(isRecord(payload.credential) && typeof payload.credential.apiKey === "string"
+      ? { credential: { apiKey: payload.credential.apiKey } }
+      : {}),
     ...(payload.capabilityInventory !== undefined
       ? {
           capabilityInventory: WorkflowCapabilityInventorySchema.parse(payload.capabilityInventory),
