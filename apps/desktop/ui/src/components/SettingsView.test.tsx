@@ -226,8 +226,8 @@ function searchProvidersSection(view: ReturnType<typeof render>) {
   return heading.closest("section");
 }
 
-function calendarIntegrationSection(view: ReturnType<typeof render>) {
-  const heading = view.getByText("Calendar integration");
+function workspaceIntegrationSection(view: ReturnType<typeof render>) {
+  const heading = view.getByText("Workspace integration");
   return heading.closest("section");
 }
 
@@ -295,28 +295,30 @@ describe("SettingsView search flow", () => {
   });
 });
 
-describe("SettingsView calendar integration flow", () => {
-  test("Google Calendar renders as CLI-authenticated without key controls", async () => {
+describe("SettingsView workspace integration flow", () => {
+  test("Google Workspace renders as CLI-authenticated without key controls", async () => {
     const view = await renderIntegrationsView();
 
-    const section = calendarIntegrationSection(view);
+    const section = workspaceIntegrationSection(view);
     expect(section).toBeTruthy();
-    if (!section) throw new Error("Missing calendar integration section");
+    if (!section) throw new Error("Missing workspace integration section");
 
+    expect(within(section).getByText("Google Workspace")).toBeTruthy();
     expect(within(section).getByText("Uses Google Workspace CLI")).toBeTruthy();
-    expect(within(section).getByText(/Tessera no longer stores a Calendar API key/)).toBeTruthy();
+    expect(within(section).getByText(/Calendar is enabled/)).toBeTruthy();
+    expect(within(section).getByText(/Tessera does not store a Calendar API key/)).toBeTruthy();
     expect(within(section).queryByText("API key")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
     expect(within(section).queryByRole("button", { name: "Remove key" })).toBeNull();
     expect(within(section).getByRole("button", { name: "Test connection" })).toBeTruthy();
   });
 
-  test("testing Google Calendar sends no credential payload", async () => {
+  test("testing Google Workspace sends no credential payload", async () => {
     const view = await renderIntegrationsView();
 
-    const section = calendarIntegrationSection(view);
+    const section = workspaceIntegrationSection(view);
     expect(section).toBeTruthy();
-    if (!section) throw new Error("Missing calendar integration section");
+    if (!section) throw new Error("Missing workspace integration section");
 
     fireEvent.click(within(section).getByRole("button", { name: "Test connection" }));
 

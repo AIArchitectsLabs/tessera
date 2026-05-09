@@ -937,7 +937,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               <section className="space-y-4">
                 <div className="space-y-3">
                   <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                    Calendar integration
+                    Workspace integration
                   </div>
                   <div className="grid gap-3 md:grid-cols-2">
                     {INTEGRATION_PROVIDERS.map((provider) => {
@@ -980,8 +980,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </div>
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  Google Calendar uses the bundled Google Workspace CLI for `gcal list` and `gcal
-                  read`.
+                  Google Workspace uses the bundled CLI. Calendar is enabled for `gcal list` and
+                  `gcal read`.
                 </div>
 
                 {integrationAllowsCredentials ? (
@@ -995,15 +995,15 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       placeholder={
                         hasIntegrationCredential
                           ? "Saved key present"
-                          : "Paste Google Calendar API key"
+                          : `Paste ${integrationLabel(selectedIntegration)} API key`
                       }
                       onChange={(event) => setIntegrationApiKey(event.target.value)}
                     />
                   </label>
                 ) : (
                   <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
-                    Connect Google Workspace with the CLI auth flow, then test the connection here.
-                    Tessera no longer stores a Calendar API key.
+                    Connect with the Google Workspace CLI auth flow, then test the connection here.
+                    Tessera does not store a Calendar API key.
                   </div>
                 )}
 

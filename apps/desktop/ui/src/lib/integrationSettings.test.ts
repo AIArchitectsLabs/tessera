@@ -18,7 +18,7 @@ import {
 
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
-    expect(integrationLabel("google-calendar")).toBe("Google Calendar");
+    expect(integrationLabel("google-calendar")).toBe("Google Workspace");
   });
 
   test("labels supported search providers and modes", () => {
@@ -51,7 +51,7 @@ describe("integration settings UI helpers", () => {
     expect(searchProviderSupportsCredential("duckduckgo")).toBe(false);
   });
 
-  test("marks Google Calendar as workspace-cli connected", () => {
+  test("marks Google Workspace as CLI-connected", () => {
     expect(KEYLESS_INTEGRATION_PROVIDERS).toEqual(["google-calendar"]);
     expect(integrationProviderSupportsCredential("google-calendar")).toBe(false);
   });

@@ -35,7 +35,7 @@ impl IntegrationProvider {
     pub fn label(self) -> &'static str {
         match self {
             Self::BraveSearch => "Brave Search",
-            Self::GoogleCalendar => "Google Calendar",
+            Self::GoogleCalendar => "Google Workspace",
         }
     }
 }
@@ -631,7 +631,7 @@ fn save_at_path(
         IntegrationRequestTarget::Integration(provider) => {
             if let Some(credential) = request.credential.as_ref() {
                 if provider == IntegrationProvider::GoogleCalendar {
-                    bail!("Google Calendar uses Google Workspace CLI auth and does not store an API key");
+                    bail!("Google Workspace uses CLI auth and does not store a Calendar API key");
                 }
                 let api_key = credential.api_key.trim();
                 if api_key.is_empty() {
