@@ -398,22 +398,22 @@ export const DriveSearchResultSchema = z.object({
 });
 export type DriveSearchResult = z.infer<typeof DriveSearchResultSchema>;
 
-export const DriveReadResultSchema = z.object({
-  file: DriveFileSummarySchema.extend({
-    text: z.string().optional(),
-    rows: z
-      .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
-      .optional(),
-  }),
-}).superRefine((value, ctx) => {
-  if (value.file.text === undefined && value.file.rows === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Drive read result must include readable content in file.text or file.rows",
-      path: ["file"],
-    });
-  }
-});
+export const DriveReadResultSchema = z
+  .object({
+    file: DriveFileSummarySchema.extend({
+      text: z.string().optional(),
+      rows: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).optional(),
+    }),
+  })
+  .superRefine((value, ctx) => {
+    if (value.file.text === undefined && value.file.rows === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Drive read result must include readable content in file.text or file.rows",
+        path: ["file"],
+      });
+    }
+  });
 export type DriveReadResult = z.infer<typeof DriveReadResultSchema>;
 
 export const ContactSummarySchema = z.object({

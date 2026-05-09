@@ -694,17 +694,17 @@ function columnLabel(columnCount: number): string {
 }
 
 function normalizeSpreadsheetRows(rows: unknown[]): unknown[][] {
-  return rows
-    .filter(Array.isArray)
-    .map((row) =>
-      row.filter((cell): cell is string | number | boolean | null => {
-        return cell === null || ["string", "number", "boolean"].includes(typeof cell);
-      })
-    );
+  return rows.filter(Array.isArray).map((row) =>
+    row.filter((cell): cell is string | number | boolean | null => {
+      return cell === null || ["string", "number", "boolean"].includes(typeof cell);
+    })
+  );
 }
 
 function renderDelimitedRows(rows: unknown[][], delimiter: "," | "\t"): string {
-  return rows.map((row) => row.map((cell) => renderDelimitedCell(cell, delimiter)).join(delimiter)).join("\n");
+  return rows
+    .map((row) => row.map((cell) => renderDelimitedCell(cell, delimiter)).join(delimiter))
+    .join("\n");
 }
 
 function renderDelimitedCell(value: unknown, delimiter: "," | "\t"): string {

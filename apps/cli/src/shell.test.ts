@@ -488,7 +488,7 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns Google Doc content through drive read routing", async () => {
-    let capturedArgs: string[][] = [];
+    const capturedArgs: string[][] = [];
     const result = await executeCliCommand(["drive", "read", "doc-1", "--format", "markdown"], {
       runGwsCli: async (args) => {
         capturedArgs.push(args);
@@ -546,7 +546,7 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns Google Sheet rows as json through drive read routing", async () => {
-    let capturedArgs: string[][] = [];
+    const capturedArgs: string[][] = [];
     const result = await executeCliCommand(["drive", "read", "sheet-1", "--format", "json"], {
       runGwsCli: async (args) => {
         capturedArgs.push(args);
