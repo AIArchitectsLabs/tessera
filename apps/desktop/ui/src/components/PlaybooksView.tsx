@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { integrationLabel, searchProviderLabel } from "@/lib/integrationSettings";
 import { providerLabel } from "@/lib/modelSettings";
+import { playbookApprovalCopy } from "@/lib/playbooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -22,7 +23,7 @@ import type {
   WorkflowRunStepRecord,
 } from "@tessera/contracts";
 import { AlertTriangle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, X } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface PlaybooksViewProps {
   workspaceRoot: string | null;
@@ -149,6 +150,130 @@ function summarizeValue(value: unknown): string {
       .join(" • ");
   }
   return String(value);
+}
+
+function valueString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function filePathFromValue(value: unknown): string | null {
+  const direct = valueString(value);
+  if (direct) {
+    const savedPath =
+      direct.match(/(?:saved|written|created)(?:\s+\w+){0,4}\s+(?:to|at):?\s+`([^`]+)`/i)?.[1] ??
+      direct.match(/(?:file|path):\s+`([^`]+)`/i)?.[1];
+    if (savedPath) return savedPath.trim();
+
+    const codePath = [...direct.matchAll(/`([^`]+\.[A-Za-z0-9]{1,8})`/g)][0]?.[1];
+    return codePath?.trim() ?? null;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["path", "filePath", "filepath", "outputPath", "artifactPath"]) {
+    const candidate = valueString(record[key]);
+    if (candidate) return candidate;
+  }
+
+  return filePathFromValue(record.text);
+}
+
+function displayPath(path: string | null): string | null {
+  if (!path) return null;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function isAgentDraftOutput(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.text === "string" && typeof record.boundaryViolations === "number";
+}
+
+function isApprovalOutput(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.target === "string" && typeof record.mutated === "boolean";
+}
+
+function playbookOutputValue(kind: string, runOutputs: Record<string, unknown>): unknown {
+  const values = Object.values(runOutputs);
+
+  if (kind === "approvalRequest") {
+    return values.find(isApprovalOutput);
+  }
+
+  if (
+    kind === "meetingBrief" ||
+    kind === "businessBrief" ||
+    kind === "statusDigest" ||
+    kind === "sourceSummary"
+  ) {
+    return values.find(isAgentDraftOutput) ?? values.find((value) => filePathFromValue(value));
+  }
+
+  return undefined;
+}
+
+function playbookOutputSummary(
+  kind: string,
+  value: unknown,
+  sourceGapCount: number,
+  artifactPath: string | null
+): string | null {
+  if (kind === "meetingBrief" || kind === "businessBrief") {
+    const fileName = displayPath(artifactPath);
+    return fileName
+      ? `Brief created and saved as ${fileName}.`
+      : "Brief created and ready to review.";
+  }
+
+  if (kind === "statusDigest") {
+    const fileName = displayPath(artifactPath);
+    return fileName
+      ? `Digest created and saved as ${fileName}.`
+      : "Digest created and ready to review.";
+  }
+
+  if (kind === "sourceSummary") {
+    if (sourceGapCount === 0) {
+      return "Tessera used the available selected sources and noted its assumptions in the brief.";
+    }
+    return `${sourceGapCount} selected source${sourceGapCount === 1 ? "" : "s"} could not be used. The brief includes the gap${sourceGapCount === 1 ? "" : "s"}.`;
+  }
+
+  if (kind === "approvalRequest") {
+    if (!isApprovalOutput(value)) return "Workspace preparation review is complete.";
+    const record = value as Record<string, unknown>;
+    return record.mutated === true
+      ? "Workspace preparation was approved and applied."
+      : "Workspace preparation was reviewed. No workspace files were changed.";
+  }
+
+  return value !== undefined ? summarizeValue(value) : null;
+}
+
+function sourceLabels(input: Record<string, unknown>): string[] {
+  const sources = input.sources;
+  if (!Array.isArray(sources)) return [];
+  return sources.filter((source): source is string => typeof source === "string").map(titleFromId);
+}
+
+function playbookSourceSummary(input: Record<string, unknown>, sourceGapCount: number): string {
+  const labels = sourceLabels(input);
+  const selected = labels.length > 0 ? joinLabels(labels) : "selected research sources";
+
+  if (sourceGapCount === 0) {
+    return `Research requested: ${selected}. Source notes and assumptions are included in the brief.`;
+  }
+
+  return `Research requested: ${selected}. ${sourceGapCount} selected source${sourceGapCount === 1 ? "" : "s"} unavailable; gaps are included in the brief.`;
+}
+
+function shouldShowResultOutput(kind: string, value: unknown): boolean {
+  if (kind === "sourceSummary") return false;
+  if (kind !== "approvalRequest") return true;
+  return isApprovalOutput(value) && (value as Record<string, unknown>).mutated === true;
 }
 
 function inputDisplayValue(value: unknown): string {
@@ -722,7 +847,7 @@ function GuidedReview({
   onStop: () => void;
   running: boolean;
 }) {
-  const preview = run.approval?.preview ?? "Tessera has prepared the next step.";
+  const approvalCopy = playbookApprovalCopy(run, playbook);
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -744,11 +869,11 @@ function GuidedReview({
         <div className="space-y-4 text-sm text-amber-800">
           <div>
             <div className="font-medium">What Tessera prepared</div>
-            <p className="mt-1">{preview}</p>
+            <p className="mt-1">{approvalCopy.prepared}</p>
           </div>
           <div>
             <div className="font-medium">What happens if you approve</div>
-            <p className="mt-1">Tessera will apply these changes to your workspace.</p>
+            <p className="mt-1">{approvalCopy.approve}</p>
           </div>
           <div>
             <div className="font-medium">What happens if you stop</div>
@@ -787,12 +912,14 @@ function GuidedResult({
   run,
   playbook,
   playbookDetail,
+  workspaceRoot,
   onStartAnother,
   onViewDetails,
 }: {
   run: PlaybookRunDetail;
   playbook: PlaybookSummary | PlaybookDetail | null;
   playbookDetail: PlaybookDetail | null;
+  workspaceRoot: string | null;
   onStartAnother: () => void;
   onViewDetails: () => void;
 }) {
@@ -803,6 +930,26 @@ function GuidedResult({
   const outputs = playbookDetail?.outputs ?? playbook?.outputs ?? [];
   const runOutputs = run.outputs ?? {};
   const latestEvent = run.events?.[run.events.length - 1];
+  const sourceGaps = run.sourceGaps ?? [];
+  const runInput = run.input ?? {};
+  const [openingPath, setOpeningPath] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const visibleOutputs = outputs.filter((output) =>
+    shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
+  );
+
+  async function openArtifact(path: string) {
+    if (!workspaceRoot) return;
+    setOpenError(null);
+    setOpeningPath(path);
+    try {
+      await invoke("workspace_file_open", { workspaceRoot, path });
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningPath(null);
+    }
+  }
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -821,13 +968,41 @@ function GuidedResult({
         ) : null}
       </div>
 
-      {outputs.length > 0 ? (
+      {visibleOutputs.length > 0 ? (
         <div className="mb-6 space-y-3">
-          {outputs.map((output, index) => {
-            const [, value] = Object.entries(runOutputs)[index] ?? [];
-            const summary = value !== undefined ? summarizeValue(value) : null;
+          {visibleOutputs.map((output) => {
+            const value = playbookOutputValue(output.kind, runOutputs);
+            const artifactPath =
+              output.kind === "meetingBrief" ||
+              output.kind === "businessBrief" ||
+              output.kind === "statusDigest"
+                ? filePathFromValue(value)
+                : null;
+            const summary = playbookOutputSummary(
+              output.kind,
+              value,
+              sourceGaps.length,
+              artifactPath
+            );
+            const canOpen = !!artifactPath && !!workspaceRoot;
+            const Container = canOpen ? "button" : "div";
+            const includeSourceNote =
+              output.kind === "meetingBrief" ||
+              output.kind === "businessBrief" ||
+              output.kind === "statusDigest";
             return (
-              <div key={output.kind} className="rounded-lg border border-border bg-background p-4">
+              <Container
+                key={output.kind}
+                type={canOpen ? "button" : undefined}
+                disabled={canOpen ? openingPath === artifactPath : undefined}
+                title={canOpen ? "Open artifact" : undefined}
+                onClick={canOpen ? () => void openArtifact(artifactPath) : undefined}
+                className={cn(
+                  "w-full rounded-lg border border-border bg-background p-4 text-left",
+                  canOpen &&
+                    "cursor-pointer transition-colors hover:border-foreground/30 hover:bg-secondary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                )}
+              >
                 <div className="flex items-start gap-3">
                   <FileText size={18} className="mt-0.5 flex-shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
@@ -837,21 +1012,27 @@ function GuidedResult({
                         {summary}
                       </p>
                     ) : null}
+                    {includeSourceNote ? (
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                        {playbookSourceSummary(runInput, sourceGaps.length)}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
-              </div>
+              </Container>
             );
           })}
+          {openError ? <p className="text-xs text-red-700">{openError}</p> : null}
         </div>
       ) : null}
 
-      {run.sourceGaps.length > 0 ? (
+      {sourceGaps.length > 0 ? (
         <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 p-4">
           <div className="mb-2 text-xs font-semibold text-amber-800">
             Sources unavailable this run
           </div>
           <div className="space-y-1">
-            {run.sourceGaps.map((gap) => (
+            {sourceGaps.map((gap) => (
               <div key={`${gap.stepId}:${gap.capability}`} className="text-sm text-amber-700">
                 {gap.reason ??
                   `Tessera could not use ${formatCapabilityLabel(gap.capability)} this time.`}
@@ -906,6 +1087,7 @@ function DetailsPanel({
       steps: (run.steps ?? []).filter((step) => step.phase === phase),
     }));
   }, [run, playbookDetail]);
+  const sourceGaps = run?.sourceGaps ?? [];
 
   return (
     <aside className="flex w-80 flex-shrink-0 flex-col border-l border-border bg-secondary">
@@ -940,10 +1122,10 @@ function DetailsPanel({
               </Section>
             ) : null}
 
-            {run.sourceGaps.length > 0 ? (
+            {sourceGaps.length > 0 ? (
               <Section title="Source gaps" subtitle="What Tessera could not reach">
                 <div className="space-y-2">
-                  {run.sourceGaps.map((gap) => (
+                  {sourceGaps.map((gap) => (
                     <div
                       key={`${gap.stepId}:${gap.capability}`}
                       className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
@@ -1030,6 +1212,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
+  const runListRequestRef = useRef(0);
 
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase),
@@ -1051,7 +1234,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
 
   const formReady = useMemo(() => {
     if (!selectedPlaybookDetail) return false;
-    return Object.entries(selectedPlaybookDetail.inputs).every(([key, spec]) => {
+    return Object.entries(selectedPlaybookDetail.inputs ?? {}).every(([key, spec]) => {
       if (key === "workspaceRoot" || spec.group === "System") return true;
       if (!spec.required) return true;
       const val = formValues[key];
@@ -1117,17 +1300,30 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   }, []);
 
   const loadRuns = useCallback(async (playbookId?: string | null) => {
+    const requestId = ++runListRequestRef.current;
     setError(null);
+    if (!playbookId) {
+      setRuns([]);
+      setSelectedRunId(null);
+      setSelectedRunDetail(null);
+      return;
+    }
+
     try {
       const result = await invoke<WorkflowRunListResult>("playbook_run_list", {
-        playbookId: playbookId ?? undefined,
+        playbookId,
       });
-      setRuns(result.runs);
+      if (requestId !== runListRequestRef.current) return;
+
+      const playbookRuns = result.runs.filter((run) => run.workflowId === playbookId);
+      setRuns(playbookRuns);
       setSelectedRunId((current) => {
-        if (current && result.runs.some((run) => run.runId === current)) return current;
+        if (current && playbookRuns.some((run) => run.runId === current)) return current;
+        setSelectedRunDetail(null);
         return null;
       });
     } catch (loadError) {
+      if (requestId !== runListRequestRef.current) return;
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     }
   }, []);
@@ -1173,7 +1369,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
       setFormValues({});
       return;
     }
-    setFormValues(initFormValues(selectedPlaybookDetail.inputs));
+    setFormValues(initFormValues(selectedPlaybookDetail.inputs ?? {}));
   }, [selectedPlaybookDetail]);
 
   const refreshAll = useCallback(() => {
@@ -1278,10 +1474,14 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
                   selectedPlaybook?.id === playbook.id ? "bg-background shadow-sm" : ""
                 )}
                 onClick={() => {
+                  const isSamePlaybook = selectedPlaybookId === playbook.id;
                   setSelectedPlaybookId(playbook.id);
                   setShowStartForm(true);
                   setSelectedRunId(null);
                   setSelectedRunDetail(null);
+                  if (!isSamePlaybook) {
+                    setRuns([]);
+                  }
                 }}
               >
                 <div className="text-sm font-medium text-foreground">{playbook.name}</div>
@@ -1369,6 +1569,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
             run={selectedRun}
             playbook={selectedPlaybookForUi}
             playbookDetail={selectedPlaybookDetail}
+            workspaceRoot={workspaceRoot}
             onStartAnother={() => {
               setShowStartForm(true);
               setSelectedRunId(null);
