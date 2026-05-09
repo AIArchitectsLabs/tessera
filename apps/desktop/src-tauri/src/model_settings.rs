@@ -243,7 +243,12 @@ fn run_security(args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new("security")
         .args(args)
         .output()
-        .with_context(|| format!("Could not run security command: security {}", args.join(" ")))
+        .with_context(|| {
+            format!(
+                "Could not run security command: security {}",
+                args.join(" ")
+            )
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -276,7 +281,10 @@ fn get_macos_credential(provider: ModelProvider) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    bail!("Could not read model credential: {}", security_stderr(&output));
+    bail!(
+        "Could not read model credential: {}",
+        security_stderr(&output)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -296,7 +304,10 @@ fn set_macos_credential(provider: ModelProvider, api_key: &str) -> Result<()> {
         return Ok(());
     }
 
-    bail!("Could not store model credential: {}", security_stderr(&output));
+    bail!(
+        "Could not store model credential: {}",
+        security_stderr(&output)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -313,7 +324,10 @@ fn delete_macos_credential(provider: ModelProvider) -> Result<()> {
         return Ok(());
     }
 
-    bail!("Could not delete model credential: {}", security_stderr(&output));
+    bail!(
+        "Could not delete model credential: {}",
+        security_stderr(&output)
+    );
 }
 
 fn redact(settings: SettingsFile) -> Result<ModelSettingsRead> {

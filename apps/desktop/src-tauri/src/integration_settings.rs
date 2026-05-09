@@ -247,13 +247,13 @@ pub fn missing_credential_result(provider: IntegrationProvider) -> IntegrationCo
     }
 }
 
-pub fn missing_search_credential_result(provider: SearchProvider) -> IntegrationConnectionTestResult {
+pub fn missing_search_credential_result(
+    provider: SearchProvider,
+) -> IntegrationConnectionTestResult {
     IntegrationConnectionTestResult {
         ok: false,
         message: match provider {
-            SearchProvider::DuckDuckGo => {
-                "DuckDuckGo does not require an API key.".to_string()
-            }
+            SearchProvider::DuckDuckGo => "DuckDuckGo does not require an API key.".to_string(),
             _ => format!(
                 "Add an API key in Settings > Integrations before using {}.",
                 provider.label()
@@ -319,8 +319,8 @@ fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
         fs::create_dir_all(parent).context("Could not create integration settings directory")?;
     }
 
-    let text =
-        serde_json::to_string_pretty(settings).context("Could not serialize integration settings")?;
+    let text = serde_json::to_string_pretty(settings)
+        .context("Could not serialize integration settings")?;
     fs::write(path, text).context("Could not write integration settings")
 }
 
@@ -438,7 +438,10 @@ fn get_macos_search_credential(provider: SearchProvider) -> Result<Option<String
         return Ok(None);
     }
 
-    bail!("Could not read search credential: {}", security_stderr(&output));
+    bail!(
+        "Could not read search credential: {}",
+        security_stderr(&output)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -446,7 +449,12 @@ fn run_security(args: &[&str]) -> Result<std::process::Output> {
     std::process::Command::new("security")
         .args(args)
         .output()
-        .with_context(|| format!("Could not run security command: security {}", args.join(" ")))
+        .with_context(|| {
+            format!(
+                "Could not run security command: security {}",
+                args.join(" ")
+            )
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -614,7 +622,10 @@ pub fn read(app: &AppHandle) -> Result<IntegrationSettingsRead> {
     redact(settings)
 }
 
-fn save_at_path(path: &Path, request: IntegrationSettingsSaveRequest) -> Result<IntegrationSettingsRead> {
+fn save_at_path(
+    path: &Path,
+    request: IntegrationSettingsSaveRequest,
+) -> Result<IntegrationSettingsRead> {
     let mut settings = load_settings_file(&path)?;
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
@@ -649,7 +660,10 @@ fn save_at_path(path: &Path, request: IntegrationSettingsSaveRequest) -> Result<
     redact_with_settings(settings)
 }
 
-pub fn save(app: &AppHandle, request: IntegrationSettingsSaveRequest) -> Result<IntegrationSettingsRead> {
+pub fn save(
+    app: &AppHandle,
+    request: IntegrationSettingsSaveRequest,
+) -> Result<IntegrationSettingsRead> {
     let path = settings_path(app)?;
     save_at_path(&path, request)
 }
@@ -691,7 +705,10 @@ mod tests {
 
         assert_eq!(settings.search.mode, SearchMode::Auto);
         assert!(!settings.search.allow_keyless_fallback);
-        assert_eq!(SearchProvider::BraveSearch.account(), "integration.brave-search");
+        assert_eq!(
+            SearchProvider::BraveSearch.account(),
+            "integration.brave-search"
+        );
         assert_eq!(SearchProvider::Tavily.account(), "integration.tavily");
         assert_eq!(SearchProvider::DuckDuckGo.label(), "DuckDuckGo");
     }
@@ -778,7 +795,10 @@ mod tests {
 
         assert_eq!(result.search.mode, SearchMode::Tavily);
         assert!(result.search.allow_keyless_fallback);
-        assert_eq!(result.search.providers.tavily.provider, SearchProvider::Tavily);
+        assert_eq!(
+            result.search.providers.tavily.provider,
+            SearchProvider::Tavily
+        );
     }
 
     #[test]
@@ -794,7 +814,10 @@ mod tests {
         )
         .expect("delete search credential");
 
-        assert_eq!(result.search.providers.tavily.provider, SearchProvider::Tavily);
+        assert_eq!(
+            result.search.providers.tavily.provider,
+            SearchProvider::Tavily
+        );
     }
 
     #[test]
