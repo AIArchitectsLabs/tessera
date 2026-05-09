@@ -509,6 +509,46 @@ describe("workspace cli shell commands", () => {
         return {
           exitCode: 0,
           stdout: JSON.stringify({
+            tabs: [
+              {
+                documentTab: {
+                  body: {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              textRun: {
+                                content: "Discovery notes",
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                documentTab: {
+                  body: {
+                    content: [
+                      {
+                        paragraph: {
+                          elements: [
+                            {
+                              textRun: {
+                                content: "Follow-up actions",
+                              },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
             body: {
               content: [
                 {
@@ -533,6 +573,13 @@ describe("workspace cli shell commands", () => {
     expect(result.exitCode).toBe(0);
     expect(capturedArgs[0]?.slice(0, 4)).toEqual(["drive", "files", "get", "--params"]);
     expect(capturedArgs[1]?.slice(0, 4)).toEqual(["docs", "documents", "get", "--params"]);
+    const docParams = JSON.parse(
+      capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--params") ?? -1) + 1] ?? "{}"
+    );
+    expect(docParams).toEqual({
+      documentId: "doc-1",
+      includeTabsContent: true,
+    });
     expect(JSON.parse(result.stdout)).toEqual({
       file: {
         id: "doc-1",
@@ -540,7 +587,7 @@ describe("workspace cli shell commands", () => {
         mimeType: "application/vnd.google-apps.document",
         modifiedTime: "2026-05-08T12:00:00Z",
         webViewLink: "https://docs.google.com/document/d/doc-1/edit",
-        text: "Discovery notes",
+        text: "Discovery notes\n\nFollow-up actions",
       },
     });
   });
@@ -617,10 +664,17 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns normalized contacts lookup results", async () => {
-    let capturedArgs: string[] = [];
+    const capturedArgs: string[][] = [];
     const result = await executeCliCommand(["contacts", "lookup", "Alex", "--limit", "2"], {
       runGwsCli: async (args) => {
-        capturedArgs = args;
+        capturedArgs.push(args);
+        if (capturedArgs.length === 1) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ results: [] }),
+            stderr: "",
+          };
+        }
         return {
           exitCode: 0,
           stdout: JSON.stringify({
@@ -642,8 +696,30 @@ describe("workspace cli shell commands", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(capturedArgs.slice(0, 4)).toEqual(["people", "people", "searchContacts", "--params"]);
-    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(capturedArgs).toHaveLength(2);
+    expect(capturedArgs[0]?.slice(0, 4)).toEqual([
+      "people",
+      "people",
+      "searchContacts",
+      "--params",
+    ]);
+    const warmupParams = JSON.parse(
+      capturedArgs[0]?.[(capturedArgs[0]?.indexOf("--params") ?? -1) + 1] ?? "{}"
+    );
+    expect(warmupParams).toMatchObject({
+      query: "",
+      pageSize: 1,
+      readMask: "names,emailAddresses,phoneNumbers,organizations",
+    });
+    expect(capturedArgs[1]?.slice(0, 4)).toEqual([
+      "people",
+      "people",
+      "searchContacts",
+      "--params",
+    ]);
+    const params = JSON.parse(
+      capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--params") ?? -1) + 1] ?? "{}"
+    );
     expect(params).toEqual({
       query: "Alex",
       pageSize: 2,

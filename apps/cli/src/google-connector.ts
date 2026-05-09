@@ -171,6 +171,18 @@ export function createGwsGoogleWorkspaceConnector(options: {
     },
 
     async lookupContacts(request) {
+      await runGwsJson(options, [
+        "people",
+        "people",
+        "searchContacts",
+        "--params",
+        JSON.stringify({
+          query: "",
+          pageSize: 1,
+          readMask: "names,emailAddresses,phoneNumbers,organizations",
+        }),
+      ]);
+
       const payload = await runGwsJson(options, [
         "people",
         "people",
@@ -536,7 +548,7 @@ async function readDriveContent(
       "documents",
       "get",
       "--params",
-      JSON.stringify({ documentId: fileId }),
+      JSON.stringify({ documentId: fileId, includeTabsContent: true }),
     ]);
     return { text: extractDocText(payload) };
   }
@@ -604,7 +616,26 @@ async function runGwsCliRaw(
 
 function extractDocText(payload: unknown): string {
   if (!isRecord(payload)) return "";
-  const body = payload.body;
+  const tabText = extractDocTabText(payload.tabs);
+  if (tabText) return tabText;
+  return extractDocBodyText(payload.body);
+}
+
+function extractDocTabText(tabs: unknown): string {
+  if (!Array.isArray(tabs)) return "";
+  const parts: string[] = [];
+  for (const tab of tabs.filter(isRecord)) {
+    const documentTab = tab.documentTab;
+    if (isRecord(documentTab)) {
+      parts.push(extractDocBodyText(documentTab.body));
+    }
+    const childText = extractDocTabText(tab.childTabs);
+    if (childText) parts.push(childText);
+  }
+  return parts.filter(Boolean).join("\n\n").trim();
+}
+
+function extractDocBodyText(body: unknown): string {
   if (!isRecord(body) || !Array.isArray(body.content)) return "";
   const parts: string[] = [];
   for (const block of body.content.filter(isRecord)) {
