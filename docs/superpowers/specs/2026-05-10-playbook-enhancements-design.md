@@ -257,6 +257,9 @@ Dashboard playbooks reuse the existing four-state guided flow
 - On failure the old snapshot is preserved with a "Refresh failed" notice
 - Each refresh is a new run record in SQLite — full history is retained
 - The dashboard always displays the most recent successfully completed run
+- **Concurrent refresh:** if Refresh is clicked while a refresh is already in
+  flight, the second click is dropped and a "Refresh already in progress" toast
+  is shown. No queueing, no parallel runs.
 
 ---
 
@@ -325,6 +328,15 @@ workspace-scoped regardless of install scope.
 - On confirm: delete `~/.tessera/playbooks/<id>/`, remove the id from every
   workspace's `activatedPlaybooks` list
 - Built-in playbooks cannot be uninstalled (Remove option hidden)
+
+### Built-in playbook upgrades
+
+When the app version bumps and a bundled built-in playbook's manifest changes,
+Tessera silently picks up the new version on next launch. The package loader
+diffs the bundled `<appResourcesDir>/builtin-playbooks/<id>/manifest.json`
+against any cached copy and refreshes its in-memory registry without prompting
+the user. Imported playbooks are never touched by app upgrades — they remain at
+the version the user explicitly imported.
 
 ### Asset serving
 
@@ -396,15 +408,3 @@ tessera-playbooks/
 - `meta.signature` population (awaits Phase 7 Workflow Compiler)
 - Multi-workspace sync or cloud backup of installed playbooks
 - First-class CRM integration (Sheets-as-CRM is the documented pattern)
-
----
-
-## Open Questions
-
-- **Built-in playbook upgrades.** When the app version bumps and a built-in
-  playbook's manifest changes, do user-activated copies pick up the new version
-  silently? Proposed: yes for built-ins (they're treated as part of the app),
-  no for imported playbooks (they require an explicit re-import).
-- **Concurrent runs of the same dashboard playbook.** If a user hits Refresh
-  while a refresh is already running, do we queue, drop, or run in parallel?
-  Proposed: drop with a "Refresh already in progress" toast.
