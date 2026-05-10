@@ -29,13 +29,50 @@ describe("integration settings contracts", () => {
           provider: "google-calendar",
           hasCredential: false,
         },
+        googleWorkspace: {
+          provider: "google-workspace",
+          hasCredential: false,
+        },
       },
     });
 
     expect(parsed.providers.braveSearch.hasCredential).toBe(true);
     expect(parsed.providers.googleCalendar.provider).toBe("google-calendar");
     expect(parsed.providers.googleCalendar.hasCredential).toBe(false);
+    expect(parsed.providers.googleWorkspace.provider).toBe("google-workspace");
+    expect(parsed.providers.googleWorkspace.hasCredential).toBe(false);
     expect("apiKey" in parsed.providers.braveSearch).toBe(false);
+  });
+
+  test("integration settings exposes google workspace provider with legacy calendar alias", () => {
+    const parsed = IntegrationSettingsReadSchema.parse({
+      providers: {
+        braveSearch: {
+          provider: "brave-search",
+          hasCredential: false,
+        },
+        googleWorkspace: {
+          provider: "google-workspace",
+          hasCredential: true,
+        },
+        googleCalendar: {
+          provider: "google-calendar",
+          hasCredential: true,
+        },
+      },
+      search: {
+        mode: "auto",
+        allowKeylessFallback: true,
+        providers: {
+          braveSearch: { provider: "brave-search", hasCredential: false },
+          tavily: { provider: "tavily", hasCredential: false },
+          duckduckgo: { provider: "duckduckgo", hasCredential: false },
+        },
+      },
+    });
+
+    expect(parsed.providers.googleWorkspace.hasCredential).toBe(true);
+    expect(parsed.providers.googleCalendar.hasCredential).toBe(true);
   });
 
   test("accepts save requests with an optional replacement key", () => {

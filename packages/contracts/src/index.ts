@@ -162,7 +162,13 @@ export const ModelConnectionTestResultSchema = z.object({
 });
 export type ModelConnectionTestResult = z.infer<typeof ModelConnectionTestResultSchema>;
 
-export const IntegrationProviderSchema = z.enum(["brave-search", "google-calendar"]);
+export const GoogleWorkspaceProviderSchema = z.literal("google-workspace");
+
+export const IntegrationProviderSchema = z.enum([
+  "brave-search",
+  "google-calendar",
+  "google-workspace",
+]);
 export type IntegrationProvider = z.infer<typeof IntegrationProviderSchema>;
 
 const BraveSearchIntegrationSettingsSchema = z.object({
@@ -172,6 +178,11 @@ const BraveSearchIntegrationSettingsSchema = z.object({
 
 const GoogleCalendarIntegrationSettingsSchema = z.object({
   provider: z.literal("google-calendar"),
+  hasCredential: z.boolean().default(false),
+});
+
+const GoogleWorkspaceIntegrationSettingsSchema = z.object({
+  provider: GoogleWorkspaceProviderSchema,
   hasCredential: z.boolean().default(false),
 });
 
@@ -209,6 +220,10 @@ export const IntegrationSettingsReadSchema = z.object({
   providers: z.object({
     braveSearch: BraveSearchIntegrationSettingsSchema,
     googleCalendar: GoogleCalendarIntegrationSettingsSchema,
+    googleWorkspace: GoogleWorkspaceIntegrationSettingsSchema.default({
+      provider: "google-workspace",
+      hasCredential: false,
+    }),
   }),
   search: z
     .object({

@@ -1324,7 +1324,8 @@ async fn integration_connection_test(
                 integration_settings::IntegrationProvider::BraveSearch => {
                     search_connection_command(integration_settings::SearchProvider::BraveSearch)
                 }
-                integration_settings::IntegrationProvider::GoogleCalendar => {
+                integration_settings::IntegrationProvider::GoogleCalendar
+                | integration_settings::IntegrationProvider::GoogleWorkspace => {
                     let status = google_workspace_auth_status(&app).await?;
                     if status.exit_code != 0 {
                         return Ok(integration_settings::IntegrationConnectionTestResult {

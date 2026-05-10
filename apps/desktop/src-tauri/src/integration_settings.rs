@@ -22,6 +22,7 @@ fn keychain_lock() -> &'static Mutex<()> {
 pub enum IntegrationProvider {
     BraveSearch,
     GoogleCalendar,
+    GoogleWorkspace,
 }
 
 impl IntegrationProvider {
@@ -29,13 +30,14 @@ impl IntegrationProvider {
         match self {
             Self::BraveSearch => "integration.brave-search",
             Self::GoogleCalendar => "integration.google-calendar",
+            Self::GoogleWorkspace => "integration.google-workspace",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Self::BraveSearch => "Brave Search",
-            Self::GoogleCalendar => "Google Workspace",
+            Self::GoogleCalendar | Self::GoogleWorkspace => "Google Workspace",
         }
     }
 }
@@ -128,6 +130,7 @@ pub struct SettingsFile {
 pub struct ReadProviders {
     pub brave_search: ProviderSettings,
     pub google_calendar: ProviderSettings,
+    pub google_workspace: ProviderSettings,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -274,6 +277,13 @@ pub fn default_settings_file() -> SettingsFile {
         },
         search: default_search_settings(),
     }
+}
+
+fn is_google_workspace_provider(provider: IntegrationProvider) -> bool {
+    matches!(
+        provider,
+        IntegrationProvider::GoogleCalendar | IntegrationProvider::GoogleWorkspace
+    )
 }
 
 fn default_brave_search_provider_config() -> ProviderConfig {
@@ -598,6 +608,10 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
                 provider: IntegrationProvider::GoogleCalendar,
                 has_credential: settings.providers.google_calendar.connected,
             },
+            google_workspace: ProviderSettings {
+                provider: IntegrationProvider::GoogleWorkspace,
+                has_credential: settings.providers.google_calendar.connected,
+            },
         },
         search: SearchSettingsRead {
             mode: settings.search.mode,
@@ -634,8 +648,8 @@ fn save_at_path(
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
             if let Some(credential) = request.credential.as_ref() {
-                if provider == IntegrationProvider::GoogleCalendar {
-                    bail!("Google Workspace uses CLI auth and does not store a Calendar API key");
+                if is_google_workspace_provider(provider) {
+                    bail!("Google Workspace uses CLI auth and does not store an API key");
                 }
                 let api_key = credential.api_key.trim();
                 if api_key.is_empty() {
@@ -682,7 +696,7 @@ fn delete_at_path(
     let settings = load_settings_file(&path)?;
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
-            if provider != IntegrationProvider::GoogleCalendar {
+            if !is_google_workspace_provider(provider) {
                 delete_credential(provider)?;
             }
         }
@@ -770,12 +784,18 @@ mod tests {
 
         let first = set_google_workspace_connected_at_path(&path, true).expect("connect");
         assert!(first.providers.google_calendar.has_credential);
+        assert!(first.providers.google_workspace.has_credential);
+        assert_eq!(
+            first.providers.google_workspace.provider,
+            IntegrationProvider::GoogleWorkspace
+        );
 
         let settings = load_settings_file(&path).expect("load settings");
         assert!(settings.providers.google_calendar.connected);
 
         let second = set_google_workspace_connected_at_path(&path, false).expect("disconnect");
         assert!(!second.providers.google_calendar.has_credential);
+        assert!(!second.providers.google_workspace.has_credential);
     }
 
     #[test]
@@ -795,6 +815,7 @@ mod tests {
 
         let redacted = redact(load_settings_file(&path).expect("load")).expect("redact");
         assert!(!redacted.providers.google_calendar.has_credential);
+        assert!(!redacted.providers.google_workspace.has_credential);
     }
 
     #[test]
