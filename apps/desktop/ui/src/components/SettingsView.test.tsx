@@ -405,9 +405,7 @@ describe("SettingsView workspace integration flow", () => {
     fireEvent.click(within(section).getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() => {
-      expect(invokeCalls.some((call) => call.command === "google_workspace_disconnect")).toBe(
-        true
-      );
+      expect(invokeCalls.some((call) => call.command === "google_workspace_disconnect")).toBe(true);
     });
     await waitFor(() => {
       expect(within(section).getByText("Google Workspace disconnected.")).toBeTruthy();
