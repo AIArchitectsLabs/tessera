@@ -480,7 +480,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
       }
-      setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "error" });
+      setIntegrationStatus({
+        message: result.message,
+        tone: result.ok
+          ? "success"
+          : result.message.includes("Complete it in your browser")
+            ? "info"
+            : "error",
+      });
       if (result.ok) {
         const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
         if (mountedRef.current && integrationRequestIdRef.current === requestId) {

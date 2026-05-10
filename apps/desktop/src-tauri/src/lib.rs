@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -273,6 +274,10 @@ fn google_workspace_config_dir(app_config_dir: &Path) -> PathBuf {
 
 fn google_workspace_gws_client_secret_path(config_dir: &Path) -> PathBuf {
     config_dir.join(GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE)
+}
+
+fn google_workspace_auth_log_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("auth-login.log")
 }
 
 fn google_workspace_oauth_client_id() -> Option<String> {
@@ -962,6 +967,63 @@ async fn run_google_workspace_cli_command(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code: output.status.code().unwrap_or(-1),
+        signal: None,
+        duration_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+async fn start_google_workspace_login_command(
+    app: &AppHandle,
+    args: &[&str],
+) -> Result<SpawnResult, String> {
+    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    install_google_workspace_oauth_client_file(app, &google_workspace_config_dir)
+        .map_err(|error| error.to_string())?;
+
+    let log_path = google_workspace_auth_log_path(&google_workspace_config_dir);
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&log_path)
+        .map_err(|error| error.to_string())?;
+    let stderr = log.try_clone().map_err(|error| error.to_string())?;
+
+    let start = std::time::Instant::now();
+    let mut command = std::process::Command::new(gws_path.clone());
+    command.args(args);
+    apply_google_workspace_env(&mut command, &gws_path, &google_workspace_config_dir);
+    command.stdout(Stdio::from(log));
+    command.stderr(Stdio::from(stderr));
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+
+    for _ in 0..20 {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            let output = fs::read_to_string(&log_path).unwrap_or_default();
+            let _ = fs::remove_file(&log_path);
+            return Ok(SpawnResult {
+                stdout: output,
+                stderr: String::new(),
+                exit_code: status.code().unwrap_or(-1),
+                signal: None,
+                duration_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let _ = fs::remove_file(&log_path);
+    Ok(SpawnResult {
+        stdout: "Google sign-in is open. Complete it in your browser, then click Test connection."
+            .to_string(),
+        stderr: String::new(),
+        exit_code: 124,
         signal: None,
         duration_ms: start.elapsed().as_millis() as u64,
     })
@@ -1749,7 +1811,15 @@ async fn google_workspace_connect(
     }
 
     let login =
-        run_google_workspace_cli_command(&app, &google_workspace_readonly_auth_args()).await?;
+        start_google_workspace_login_command(&app, &google_workspace_readonly_auth_args()).await?;
+    if login.exit_code == 124 {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: first_useful_process_line(&login),
+            provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
+            search_provider: None,
+        });
+    }
     if login.exit_code != 0 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
