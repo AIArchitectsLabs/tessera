@@ -198,14 +198,6 @@ function resolveTemplate(text: string, input: Record<string, unknown>): string {
   });
 }
 
-function defaultAgentProvider(): AgentProviderConfig {
-  return {
-    provider: "openai",
-    model: "gpt-5.4",
-    apiKeyEnv: "OPENAI_API_KEY",
-  };
-}
-
 function defaultCapabilityInventory(): WorkflowCapabilityInventory {
   return createWorkflowCapabilityInventory([DEFAULT_AGENT_PROFILE]);
 }
@@ -609,7 +601,10 @@ async function executeFromStep(options: {
         startedAt: stepStartedAt,
         assignment: selected,
       });
-      const provider = selected.provider ?? options.agentProvider ?? defaultAgentProvider();
+      const provider = selected.provider ?? options.agentProvider;
+      if (!provider) {
+        throw new Error(`No agent provider configured for step: ${step.id}`);
+      }
       const credential =
         options.agentCredential ??
         (provider.provider === "local" || !("apiKeyEnv" in provider)
