@@ -92,7 +92,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     null
   );
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
-    "remove" | "save" | "test" | null
+    "connect" | "disconnect" | "remove" | "save" | "test" | null
   >(null);
   const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
     null
@@ -411,6 +411,69 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "info" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleConnectGoogleWorkspace() {
+    if (integrationBusy) return;
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("connect");
+    setIntegrationStatus({ message: "Opening Google sign-in...", tone: "info" });
+    try {
+      const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
+        "google_workspace_connect",
+        undefined,
+        120_000
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "error" });
+      if (result.ok) {
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+          hydrateFromIntegrations(next);
+        }
+      }
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleDisconnectGoogleWorkspace() {
+    if (integrationBusy) return;
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("disconnect");
+    setIntegrationStatus(null);
+    try {
+      const next = await invokeWithTimeout<IntegrationSettingsRead>("google_workspace_disconnect");
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      hydrateFromIntegrations(next);
+      setIntegrationStatus({ message: "Google Workspace disconnected.", tone: "success" });
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
@@ -1024,6 +1087,35 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 )}
 
                 <div className="flex flex-wrap gap-2">
+                  {!integrationAllowsCredentials && !hasIntegrationCredential && (
+                    <Button
+                      type="button"
+                      onClick={handleConnectGoogleWorkspace}
+                      disabled={integrationBusy}
+                    >
+                      {activeIntegrationAction === "connect" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <KeyRound size={16} />
+                      )}
+                      Connect Google Workspace
+                    </Button>
+                  )}
+                  {!integrationAllowsCredentials && hasIntegrationCredential && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleDisconnectGoogleWorkspace}
+                      disabled={integrationBusy}
+                    >
+                      {activeIntegrationAction === "disconnect" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={16} />
+                      )}
+                      Disconnect
+                    </Button>
+                  )}
                   {integrationAllowsCredentials && (
                     <Button
                       type="button"

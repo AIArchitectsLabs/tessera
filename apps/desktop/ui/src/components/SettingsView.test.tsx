@@ -183,6 +183,34 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         message: "Connection test succeeded",
         searchProvider: args?.request?.searchProvider as SearchProvider | undefined,
       } satisfies IntegrationConnectionTestResult;
+    case "google_workspace_connect":
+      integrationSettings = {
+        ...integrationSettings,
+        providers: {
+          ...integrationSettings.providers,
+          googleCalendar: {
+            ...integrationSettings.providers.googleCalendar,
+            hasCredential: true,
+          },
+        },
+      };
+      return {
+        ok: true,
+        message: "Google Workspace connected.",
+        provider: "google-calendar",
+      } satisfies IntegrationConnectionTestResult;
+    case "google_workspace_disconnect":
+      integrationSettings = {
+        ...integrationSettings,
+        providers: {
+          ...integrationSettings.providers,
+          googleCalendar: {
+            ...integrationSettings.providers.googleCalendar,
+            hasCredential: false,
+          },
+        },
+      };
+      return integrationSettings;
     default:
       throw new Error(`Unexpected invoke command: ${command}`);
   }
@@ -318,6 +346,7 @@ describe("SettingsView workspace integration flow", () => {
     expect(within(section).queryByText("API key")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();
     expect(within(section).queryByRole("button", { name: "Remove key" })).toBeNull();
+    expect(within(section).getByRole("button", { name: "Connect Google Workspace" })).toBeTruthy();
     expect(within(section).getByRole("button", { name: "Test connection" })).toBeTruthy();
   });
 
@@ -336,6 +365,52 @@ describe("SettingsView workspace integration flow", () => {
       expect(testCall?.args?.request).toEqual({
         provider: "google-calendar",
       });
+    });
+  });
+
+  test("connecting Google Workspace uses the dedicated auth command", async () => {
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Connect Google Workspace" }));
+
+    await waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "google_workspace_connect")).toBe(true);
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("Google Workspace connected.")).toBeTruthy();
+    });
+  });
+
+  test("disconnecting Google Workspace uses the dedicated logout command", async () => {
+    integrationSettings = {
+      ...integrationSettings,
+      providers: {
+        ...integrationSettings.providers,
+        googleCalendar: {
+          ...integrationSettings.providers.googleCalendar,
+          hasCredential: true,
+        },
+      },
+    };
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "google_workspace_disconnect")).toBe(
+        true
+      );
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("Google Workspace disconnected.")).toBeTruthy();
     });
   });
 });
