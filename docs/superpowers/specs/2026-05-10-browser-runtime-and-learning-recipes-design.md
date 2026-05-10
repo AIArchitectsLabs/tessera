@@ -10,10 +10,11 @@ access to the user's normal browser session.
 The first shipped slice is intentionally narrow:
 
 - hybrid execution model, with headless background browsing first and supervised
-  visible browsing later
+  system-browser browsing later
 - isolated Tessera-managed browser profile by default
 - production browser executor backed by Playwright
 - read-only research and inspection actions first
+- a future local Chrome extension connector for supervised authenticated work
 - reviewable browser recipe proposals generated from successful sessions
 - no authenticated SaaS automation or form submission in the first slice
 
@@ -41,8 +42,8 @@ recipes as reviewable business artifacts, not as hidden agent-written code.
 - Submitting forms, uploading files, purchasing, sending messages, or changing
   external systems.
 - Building a full browser recipe management UI in the first implementation.
-- Adding Browserbase cloud browsers, captcha solving, proxies, or remote browser
-  infrastructure in the first implementation.
+- Requiring Browserbase cloud browsers, captcha solving, proxies, or remote
+  browser infrastructure.
 - Allowing agents to write executable helper code during browser runs.
 
 ## Product Decisions
@@ -52,12 +53,12 @@ recipes as reviewable business artifacts, not as hidden agent-written code.
 Tessera should use a hybrid execution model:
 
 - headless background browsing for low-risk read-only inspection
-- visible supervised browsing for future login, form fill, and business-system
-  actions
+- local system-browser browsing for future login, form fill, and
+  business-system actions
 
 The first implementation should only ship the headless read-only side. The
 interfaces should still carry enough session and page identity to support a
-visible supervised runtime later.
+system-browser connector later.
 
 ### Isolated Browser Identity
 
@@ -66,8 +67,10 @@ data. It must not attach to the user's normal browser profile by default. This
 avoids silently exposing the user's personal cookies, history, extensions, and
 business sessions to agents.
 
-Future authenticated workflows should use explicit per-domain connect flows
-inside Tessera's isolated browser identity.
+Future authenticated workflows can use either explicit per-domain connect flows
+inside Tessera's isolated browser identity or a user-installed system browser
+extension. The system-browser path must be opt-in because it uses the user's
+real logged-in work context.
 
 ### Runtime Substrate
 
@@ -82,6 +85,13 @@ Browser Harness is useful inspiration for progressive learning, especially its
 domain-skill model, but it should not be adopted directly because it is Python
 and CDP oriented, favors attaching to a real user browser, and encourages the
 agent to edit helpers during execution.
+
+Claude in Chrome is a useful product reference for the supervised path. It uses
+a Chrome extension side panel that can read, click, navigate, manage tabs, take
+screenshots, and connect to desktop or CLI workflows. It also exposes explicit
+permissions, workflow recording, scheduled tasks, and admin controls. Tessera
+should borrow the local extension connector pattern, not the dependency on a
+remote browser service.
 
 ### Progressive Learning
 
@@ -185,6 +195,28 @@ recipe proposal. A recipe proposal should include:
 Recipes should be data-first. The first implementation should avoid executable
 JavaScript or arbitrary code inside recipes.
 
+### 6. System Browser Connector
+
+The supervised lane should be a local browser extension connector, similar in
+shape to Claude in Chrome:
+
+- user installs a Tessera browser extension
+- extension runs in the user's system Chrome profile
+- extension shows an obvious active state while Tessera can see or act
+- extension communicates with the Tessera sidecar over an authenticated local
+  channel, such as native messaging or a localhost loopback connection
+- user grants per-session or per-domain access before Tessera can inspect pages
+- high-risk actions require a plan preview or per-action approval
+- Tessera records browser actions as recipe candidates after successful runs
+
+This connector is not part of the first browser runtime slice. It is the right
+long-term mechanism for business workflows that need the user's real SaaS login
+state, browser extensions, SSO, device trust, or CAPTCHA/manual-login handoff.
+
+The system-browser connector must never become the default silent browser
+runtime. Background read-only browsing should continue to use the isolated
+Playwright runtime.
+
 ## Recipe Lifecycle
 
 ### Draft
@@ -233,6 +265,18 @@ The runtime must also enforce:
 - no arbitrary filesystem writes from browser actions
 - no use of the user's default browser profile
 
+The system-browser connector must add stronger controls:
+
+- explicit installation and pairing with Tessera
+- visible active indicator while a page is exposed to Tessera
+- domain allowlist or per-session grant
+- tab grouping or other visible separation for Tessera-controlled tabs
+- plan approval before multi-step action
+- mandatory pause on login, CAPTCHA, payment, password, or sensitive account
+  changes
+- admin allowlist and blocklist support for team deployments
+- local audit trail of inspected domains, actions, and recipe proposals
+
 ## Data Flow
 
 For `browser.open`:
@@ -262,6 +306,17 @@ For recipe proposal:
 4. The draft is stored for future review.
 5. The task can show a "recipe proposed" artifact or inbox item later.
 
+For future system browser connector use:
+
+1. User installs and pairs the Tessera browser extension with the local sidecar.
+2. User grants Tessera access to the current tab, tab group, or domain.
+3. Extension streams page observations, screenshots, console diagnostics, and
+   approved actions to the sidecar.
+4. Sidecar routes the observations through the same `BrowserExecutor` and
+   recipe proposal boundaries.
+5. Tessera pauses for user action on login, CAPTCHA, payment, or high-risk
+   account changes.
+
 ## Component Responsibilities
 
 ### `packages/contracts`
@@ -269,6 +324,8 @@ For recipe proposal:
 - Keep browser action/result contracts stable.
 - Add recipe proposal schemas when implementation begins.
 - Add status enums for recipe lifecycle.
+- Add connector capability fields later without changing the basic browser tool
+  action names.
 
 ### `packages/core`
 
@@ -287,12 +344,23 @@ data paths stay close to the desktop process boundary.
 - Inject the executor into task runs.
 - Shut down browser resources when the sidecar exits.
 - Own the Playwright dependency and browser installation assumptions.
+- Later, expose a local authenticated connector endpoint for the system browser
+  extension.
 
 ### `apps/desktop/ui`
 
 - No full browser recipe management UI in the first slice.
 - Display browser artifacts already returned through task artifacts.
 - Later, add review surfaces for draft recipes.
+- Later, add pairing and permission surfaces for the system browser connector.
+
+### Browser Extension
+
+- Not part of the first slice.
+- Pair with the sidecar through a local authenticated channel.
+- Run only after explicit user install and browser permission grants.
+- Provide visible status, tab separation, and user controls.
+- Support recording supervised workflows into draft browser recipes.
 
 ## Error Handling
 
@@ -300,6 +368,8 @@ Errors should be short and actionable:
 
 - invalid URL
 - browser runtime unavailable
+- browser connector not paired
+- connector permission denied
 - page not found
 - navigation timed out
 - unsupported browser action
@@ -337,6 +407,8 @@ users.
 - task receives screenshot artifact
 - no user browser cookies are visible
 - browser resources shut down after sidecar exit
+- later: extension connector can be paired, visibly activated, denied, and
+  disconnected without affecting the isolated runtime
 
 ## Implementation Planning Decisions
 
@@ -348,3 +420,9 @@ users.
   `browser-recipes`.
 - Recipe proposals should create task artifacts in the first implementation.
   Inbox review can be added when the recipe review UI exists.
+- Do not plan remote browser infrastructure for desktop workflows. If a user
+  needs authenticated SaaS access, prefer the future local system browser
+  connector over Browserbase-style hosted browser sessions.
+- Do not implement the system browser connector in the first slice. Treat it as
+  a second milestone after the isolated runtime and recipe proposal model are
+  working.
