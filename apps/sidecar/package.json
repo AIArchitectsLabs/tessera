@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/server.ts",
-    "build": "bun build --compile --target=bun src/server.ts --outfile dist/sidecar",
+    "build": "bun build --compile --target=bun -e chromium-bidi -e electron src/server.ts --outfile dist/sidecar",
     "typecheck": "tsc --noEmit",
     "test": "bun test --pass-with-no-tests"
   },

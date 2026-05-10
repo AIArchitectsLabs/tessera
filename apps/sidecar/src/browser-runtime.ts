@@ -2,11 +2,10 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { BrowserActionInput, BrowserToolResult } from "@tessera/contracts";
 import { type BrowserRecipeActionInput, buildBrowserRecipeProposal } from "@tessera/core";
-import type { BrowserContext, Page } from "playwright";
+import { type BrowserContext, type Page, chromium } from "playwright";
 
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
-const PLAYWRIGHT_MODULE = "playwright";
 const READ_ONLY_ACTIONS = new Set<BrowserActionInput["action"]>([
   "open",
   "snap",
@@ -105,11 +104,6 @@ async function visibleText(page: Page): Promise<string> {
     : text;
 }
 
-async function loadChromium() {
-  const playwright = (await import(PLAYWRIGHT_MODULE)) as typeof import("playwright");
-  return playwright.chromium;
-}
-
 async function pageMetadata(page: Page): Promise<Record<string, unknown>> {
   const title = await page.title().catch(() => "");
   const pageUrl = page.url();
@@ -160,7 +154,6 @@ export function createPlaywrightBrowserExecutor(
     }
 
     try {
-      const chromium = await loadChromium();
       context = await chromium.launchPersistentContext(options.profileDir, {
         headless: options.headless ?? true,
         ...(options.executablePath ? { executablePath: options.executablePath } : {}),
