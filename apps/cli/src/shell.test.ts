@@ -562,7 +562,7 @@ describe("workspace cli shell commands", () => {
     const result = await executeCliCommand(["drive", "read", "doc-1", "--format", "markdown"], {
       runGwsCli: async (args) => {
         capturedArgs.push(args);
-        if (args[0] === "drive") {
+        if (args[0] === "drive" && args.includes("get")) {
           return {
             exitCode: 0,
             stdout: JSON.stringify({
@@ -578,63 +578,7 @@ describe("workspace cli shell commands", () => {
 
         return {
           exitCode: 0,
-          stdout: JSON.stringify({
-            tabs: [
-              {
-                documentTab: {
-                  body: {
-                    content: [
-                      {
-                        paragraph: {
-                          elements: [
-                            {
-                              textRun: {
-                                content: "Discovery notes",
-                              },
-                            },
-                          ],
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-              {
-                documentTab: {
-                  body: {
-                    content: [
-                      {
-                        paragraph: {
-                          elements: [
-                            {
-                              textRun: {
-                                content: "Follow-up actions",
-                              },
-                            },
-                          ],
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-            ],
-            body: {
-              content: [
-                {
-                  paragraph: {
-                    elements: [
-                      {
-                        textRun: {
-                          content: "Discovery notes",
-                        },
-                      },
-                    ],
-                  },
-                },
-              ],
-            },
-          }),
+          stdout: "Discovery notes\n\nFollow-up actions",
           stderr: "",
         };
       },
@@ -642,13 +586,13 @@ describe("workspace cli shell commands", () => {
 
     expect(result.exitCode).toBe(0);
     expect(capturedArgs[0]?.slice(0, 4)).toEqual(["drive", "files", "get", "--params"]);
-    expect(capturedArgs[1]?.slice(0, 4)).toEqual(["docs", "documents", "get", "--params"]);
+    expect(capturedArgs[1]?.slice(0, 4)).toEqual(["drive", "files", "export", "--params"]);
     const docParams = JSON.parse(
       capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--params") ?? -1) + 1] ?? "{}"
     );
     expect(docParams).toEqual({
-      documentId: "doc-1",
-      includeTabsContent: true,
+      fileId: "doc-1",
+      mimeType: "text/plain",
     });
     expect(JSON.parse(result.stdout)).toEqual({
       file: {
@@ -665,7 +609,7 @@ describe("workspace cli shell commands", () => {
   test("falls back to legacy Google Doc body content when tabs are absent", async () => {
     const result = await executeCliCommand(["drive", "read", "doc-legacy"], {
       runGwsCli: async (args) => {
-        if (args[0] === "drive") {
+        if (args[0] === "drive" && args.includes("get")) {
           return {
             exitCode: 0,
             stdout: JSON.stringify({
@@ -674,6 +618,13 @@ describe("workspace cli shell commands", () => {
               mimeType: "application/vnd.google-apps.document",
             }),
             stderr: "",
+          };
+        }
+        if (args[0] === "drive" && args.includes("export")) {
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: "export unavailable",
           };
         }
 

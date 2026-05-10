@@ -584,6 +584,17 @@ async function readDriveContent(
         `Google Docs file "${fileName || fileId}" does not support ${format} output. Use text or markdown.`
       );
     }
+    const exported = await runGwsCliRaw(options, [
+      "drive",
+      "files",
+      "export",
+      "--params",
+      JSON.stringify({ fileId, mimeType: "text/plain" }),
+    ]);
+    if (exported.exitCode === 0) {
+      return { text: exported.stdout.trim() };
+    }
+
     const payload = await runGwsJson(options, [
       "docs",
       "documents",
@@ -638,12 +649,22 @@ function decodeGwsMediaOutput(
     }
   }
 
+  if (looksBinary(stdout)) {
+    throw new GoogleWorkspaceConnectorError(
+      `Drive file "${fileName || "unknown"}" is binary or unsupported for text extraction. Download/open it from Drive instead.`
+    );
+  }
+
   try {
     JSON.parse(stdout);
   } catch {
     // Keep raw media as text for text/markdown/csv when the file is not JSON.
   }
   return { text: stdout };
+}
+
+function looksBinary(value: string): boolean {
+  return value.includes("\0") || value.includes("\uFFFD");
 }
 
 async function runGwsCliRaw(
