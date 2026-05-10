@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -17,6 +17,10 @@ mod model_settings;
 // Compile-time target triple injected by build.rs via `cargo:rustc-env`.
 const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
 const EXE_EXT: &str = if cfg!(windows) { ".exe" } else { "" };
+const GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: Option<&str> =
+    option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_ID");
+const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET: Option<&str> =
+    option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET");
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -251,6 +255,57 @@ fn binaries_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
             .resource_dir()
             .context("Could not resolve resource dir")
     }
+}
+
+fn bundled_gws_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
+    Ok(binaries_dir(app)?.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}")))
+}
+
+fn google_workspace_config_dir(app_config_dir: &Path) -> PathBuf {
+    app_config_dir.join("google-workspace")
+}
+
+fn google_workspace_oauth_configured() -> bool {
+    GOOGLE_WORKSPACE_OAUTH_CLIENT_ID
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn apply_google_workspace_env(
+    command: &mut std::process::Command,
+    gws_path: &Path,
+    config_dir: &Path,
+) {
+    command.env("TESSERA_GWS_CLI_PATH", gws_path.to_string_lossy().as_ref());
+    command.env(
+        "TESSERA_GWS_CONFIG_DIR",
+        config_dir.to_string_lossy().as_ref(),
+    );
+    command.env(
+        "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
+        config_dir.to_string_lossy().as_ref(),
+    );
+    if let Some(client_id) = GOOGLE_WORKSPACE_OAUTH_CLIENT_ID.map(str::trim) {
+        if !client_id.is_empty() {
+            command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
+        }
+    }
+    if let Some(client_secret) = GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET.map(str::trim) {
+        if !client_secret.is_empty() {
+            command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
+        }
+    }
+}
+
+fn first_useful_process_line(result: &SpawnResult) -> String {
+    result
+        .stderr
+        .lines()
+        .chain(result.stdout.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("Command failed")
+        .to_string()
 }
 
 fn percent_encode(value: &str) -> String {
@@ -557,6 +612,7 @@ async fn attach_default_workflow_execution(
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let bin_dir = binaries_dir(app.handle()).context("Could not resolve binaries dir")?;
     let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
+    let gws_path = bin_dir.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}"));
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -567,6 +623,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .context("Could not resolve app config dir")?;
     fs::create_dir_all(&app_data_dir).context("Could not create app data dir")?;
     fs::create_dir_all(&app_config_dir).context("Could not create app config dir")?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir)
+        .context("Could not create Google Workspace config dir")?;
     let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
     let task_db_path = app_data_dir.join("tasks.sqlite");
     let curated_skills_dir = bin_dir.join("skills");
@@ -587,6 +646,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .env(
             "TESSERA_APP_CONFIG_DIR",
             app_config_dir.to_string_lossy().as_ref(),
+        )
+        .env("TESSERA_GWS_CLI_PATH", gws_path.to_string_lossy().as_ref())
+        .env(
+            "TESSERA_GWS_CONFIG_DIR",
+            google_workspace_config_dir.to_string_lossy().as_ref(),
         )
         .env(
             "TESSERA_CURATED_SKILLS_DIR",
@@ -668,6 +732,9 @@ async fn run_workspace_cli_command(
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
+    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(cli_path);
     command.args(args);
@@ -675,6 +742,7 @@ async fn run_workspace_cli_command(
         "TESSERA_APP_CONFIG_DIR",
         app_config_dir.to_string_lossy().as_ref(),
     );
+    apply_google_workspace_env(&mut command, &gws_path, &google_workspace_config_dir);
     if let Some((env_name, credential)) = credential_env {
         command.env(env_name, credential);
     }
@@ -687,6 +755,37 @@ async fn run_workspace_cli_command(
         signal: None,
         duration_ms: start.elapsed().as_millis() as u64,
     })
+}
+
+async fn run_google_workspace_cli_command(
+    app: &AppHandle,
+    args: &[&str],
+) -> Result<SpawnResult, String> {
+    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+
+    let start = std::time::Instant::now();
+    let mut command = std::process::Command::new(gws_path.clone());
+    command.args(args);
+    apply_google_workspace_env(&mut command, &gws_path, &google_workspace_config_dir);
+    let output = command.output().map_err(|error| error.to_string())?;
+
+    Ok(SpawnResult {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+        signal: None,
+        duration_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+async fn google_workspace_auth_status(app: &AppHandle) -> Result<SpawnResult, String> {
+    run_google_workspace_cli_command(app, &["auth", "status"]).await
 }
 
 #[tauri::command]
@@ -1226,7 +1325,16 @@ async fn integration_connection_test(
                     search_connection_command(integration_settings::SearchProvider::BraveSearch)
                 }
                 integration_settings::IntegrationProvider::GoogleCalendar => {
-                    (vec!["gcal", "list"], None)
+                    let status = google_workspace_auth_status(&app).await?;
+                    if status.exit_code != 0 {
+                        return Ok(integration_settings::IntegrationConnectionTestResult {
+                            ok: false,
+                            message: first_useful_process_line(&status),
+                            provider: Some(provider),
+                            search_provider: None,
+                        });
+                    }
+                    (vec!["gcal", "list", "--limit", "1"], None)
                 }
             };
             let credential = if credential_env_name.is_some() {
@@ -1297,6 +1405,60 @@ async fn integration_connection_test(
         provider,
         search_provider,
     ))
+}
+
+#[tauri::command]
+async fn google_workspace_connect(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    if !google_workspace_oauth_configured() {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: "Google Workspace OAuth client is not configured for this build.".to_string(),
+            provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+            search_provider: None,
+        });
+    }
+
+    let login = run_google_workspace_cli_command(&app, &["auth", "login"]).await?;
+    if login.exit_code != 0 {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: first_useful_process_line(&login),
+            provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+            search_provider: None,
+        });
+    }
+
+    let status = google_workspace_auth_status(&app).await?;
+    let ok = status.exit_code == 0;
+    if ok {
+        integration_settings::set_google_workspace_connected(&app, true)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(integration_settings::IntegrationConnectionTestResult {
+        ok,
+        message: if ok {
+            "Google Workspace connected.".to_string()
+        } else {
+            first_useful_process_line(&status)
+        },
+        provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+        search_provider: None,
+    })
+}
+
+#[tauri::command]
+async fn google_workspace_disconnect(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationSettingsRead, String> {
+    let logout = run_google_workspace_cli_command(&app, &["auth", "logout"]).await?;
+    if logout.exit_code != 0 {
+        return Err(first_useful_process_line(&logout));
+    }
+    integration_settings::set_google_workspace_connected(&app, false)
+        .map_err(|error| error.to_string())
 }
 
 fn search_connection_command(
@@ -1518,6 +1680,8 @@ pub fn run() {
             inbox_list,
             inbox_resolve,
             inbox_snooze,
+            google_workspace_connect,
+            google_workspace_disconnect,
             integration_connection_test,
             integration_credential_delete,
             integration_settings_get,
@@ -1576,7 +1740,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{connection_test_result, search_connection_command, tool_policy_runtime_json};
+    use super::{
+        connection_test_result, first_useful_process_line, google_workspace_config_dir,
+        search_connection_command, tool_policy_runtime_json, SpawnResult,
+    };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
     #[test]
@@ -1644,5 +1811,50 @@ mod tests {
         let (args, env_name) = search_connection_command(SearchProvider::DuckDuckGo);
         assert_eq!(args, vec!["web-search", "search", "tessera"]);
         assert_eq!(env_name, None);
+    }
+
+    #[test]
+    fn google_workspace_config_dir_is_app_scoped() {
+        let app_config = std::path::PathBuf::from("/tmp/tessera-config");
+        assert_eq!(
+            google_workspace_config_dir(&app_config),
+            std::path::PathBuf::from("/tmp/tessera-config/google-workspace")
+        );
+    }
+
+    #[test]
+    fn first_useful_line_prefers_stderr_then_stdout() {
+        let result = SpawnResult {
+            stdout: "\nstdout detail\n".to_string(),
+            stderr: "\nstderr detail\n".to_string(),
+            exit_code: 2,
+            signal: None,
+            duration_ms: 1,
+        };
+        assert_eq!(first_useful_process_line(&result), "stderr detail");
+
+        let result = SpawnResult {
+            stdout: "\nstdout detail\n".to_string(),
+            stderr: "\n".to_string(),
+            exit_code: 2,
+            signal: None,
+            duration_ms: 1,
+        };
+        assert_eq!(first_useful_process_line(&result), "stdout detail");
+    }
+
+    #[test]
+    fn google_workspace_auth_message_uses_useful_process_line() {
+        let result = SpawnResult {
+            stdout: "Open browser to continue\n".to_string(),
+            stderr: "".to_string(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 10,
+        };
+        assert_eq!(
+            first_useful_process_line(&result),
+            "Open browser to continue"
+        );
     }
 }
