@@ -34,6 +34,8 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
       { subcommand: "delete", approval: "ask", help: "Delete an event." },
     ],
   },
+  // Additional Google Workspace writes require a separate write-scope auth profile,
+  // dry-run previews, and Action Inbox approval before they are exposed here.
   {
     command: "mail",
     help: "Read and draft email.",

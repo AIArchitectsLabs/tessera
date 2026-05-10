@@ -18,6 +18,24 @@ describe("shell runtime", () => {
     ).toThrow(ShellValidationError);
   });
 
+  test("keeps unimplemented Workspace writes unsupported", () => {
+    expect(() =>
+      validateShellCall({
+        command: "mail",
+        subcommand: "send",
+        args: [],
+      })
+    ).toThrow("Unsupported shell command");
+
+    expect(() =>
+      validateShellCall({
+        command: "drive",
+        subcommand: "delete",
+        args: [],
+      })
+    ).toThrow("Unsupported shell command");
+  });
+
   test("parses successful web-search payloads from workspace cli stdout", async () => {
     const calls: string[][] = [];
     const executor = createSpawnShellExecutor({
