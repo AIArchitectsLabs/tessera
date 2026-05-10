@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@tessera/contracts": "workspace:*",
-    "@tessera/core": "workspace:*"
+    "@tessera/core": "workspace:*",
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
     "@types/bun": "latest",

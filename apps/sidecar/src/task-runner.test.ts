@@ -376,6 +376,67 @@ describe("task runner", () => {
     expect(finalTask?.artifacts[0]?.title).toBe("web-fetch fetch");
   });
 
+  test("records browser screenshot and recipe proposal artifacts", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Inspect a web page",
+    });
+    const userTurn = store.createUserTurn(task.id, "Open the page");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    const events: TaskEvent[] = [];
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolEnd }) => {
+        expect(typeof onToolEnd).toBe("function");
+        onToolEnd?.({
+          name: "browser",
+          result: {
+            details: {
+              action: "snap",
+              summary: "Captured screenshot",
+              sessionId: "session-1",
+              pageId: "page-1",
+              url: "https://example.com",
+              screenshotPath: "/tmp/tessera-browser.png",
+              metadata: {
+                recipeProposal: {
+                  id: "recipe-1",
+                  status: "draft",
+                  domain: "example.com",
+                  goal: "Review https://example.com",
+                  source: { sessionId: "session-1" },
+                  permissions: ["browser.read"],
+                  steps: [{ action: "open", url: "https://example.com" }],
+                  artifacts: [{ title: "Browser screenshot", path: "/tmp/tessera-browser.png" }],
+                  createdAt: "2026-05-10T00:00:00.000Z",
+                },
+              },
+            },
+          },
+        });
+        return { text: "Inspection complete.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const artifactEvents = events.filter((event) => event.type === "artifact.created");
+    expect(artifactEvents).toHaveLength(2);
+    const finalTask = store.getTask(task.id);
+    expect(finalTask?.artifacts.map((artifact) => artifact.title)).toEqual([
+      "Browser screenshot",
+      "Browser recipe proposal: example.com",
+    ]);
+    expect(finalTask?.artifacts[0]?.kind).toBe("file");
+    expect(finalTask?.artifacts[0]?.path).toBe("/tmp/tessera-browser.png");
+    expect(finalTask?.artifacts[1]?.contentPreview).toContain('"domain": "example.com"');
+  });
+
   test("summarizes tool activity when the model returns empty text", async () => {
     const store = makeStore();
     const task = store.createTask({

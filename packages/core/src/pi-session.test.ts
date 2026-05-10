@@ -510,6 +510,54 @@ describe("runPiTaskTurn", () => {
     ]);
   });
 
+  test("exposes the browser tool when a browser executor is provided", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { toolNames?: string[]; calls: unknown[] } = { calls: [] };
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const browserTool = factoryOpts.customTools.find((tool) => tool.name === "browser");
+      await browserTool?.execute(
+        "call-1",
+        {
+          action: "open",
+          url: "https://example.com",
+        },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Open the page",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      browser: {
+        async executeBrowser(input) {
+          seen.calls.push(input);
+          return {
+            action: input.action,
+            summary: "Opened https://example.com",
+            sessionId: "session-1",
+            pageId: "page-1",
+            url: "https://example.com",
+          };
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(seen.toolNames).toContain("browser");
+    expect(seen.calls).toEqual([
+      {
+        action: "open",
+        url: "https://example.com",
+      },
+    ]);
+  });
+
   test("exposes skill tools and preloads active task skills", async () => {
     const workspaceRoot = await makeWorkspace();
     let capturedSession: FakeSession | undefined;

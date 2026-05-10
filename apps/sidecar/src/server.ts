@@ -55,6 +55,7 @@ import {
   runWorkflow,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
+import { createPlaywrightBrowserExecutor } from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
 import {
@@ -77,6 +78,12 @@ const WORKFLOW_DB_PATH =
   process.env.TESSERA_WORKFLOW_DB_PATH ?? join(homedir(), ".tessera", "workflow-runs.sqlite");
 const TASK_DB_PATH =
   process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
+const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
+const browserExecutor = createPlaywrightBrowserExecutor({
+  artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
+  profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
+  recipeDir: join(TESSERA_DATA_DIR, "browser-recipes"),
+});
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
@@ -134,6 +141,7 @@ const socketPath = isWindows ? undefined : join(tmpdir(), `tessera-${process.pid
 
 process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
+  void browserExecutor.dispose();
   workflowStore.close();
   taskStore.close();
   agentProfileStore.close();
@@ -893,6 +901,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         taskId,
         userTurnId,
         agentTurnId,
+        browser: browserExecutor,
         cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
@@ -1028,6 +1037,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         taskId,
         userTurnId,
         agentTurnId,
+        browser: browserExecutor,
         cli: { runWorkspaceCli },
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,

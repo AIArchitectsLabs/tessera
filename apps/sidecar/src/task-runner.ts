@@ -9,7 +9,9 @@ import type {
   TaskTurn,
   TodoOperation,
 } from "@tessera/contracts";
+import { BrowserRecipeProposalSchema, BrowserToolResultSchema } from "@tessera/contracts";
 import {
+  type BrowserExecutor,
   type PiTaskTurnResult,
   type WorkspaceCliExecutor,
   createSpawnShellExecutor,
@@ -26,10 +28,12 @@ export interface RunTaskTurnOptions {
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
     credential?: string;
     onActivity?: (activity: string) => void;
+    onToolEnd?: (tool: { name: string; result: unknown }) => void;
     onToolStart?: (tool: { name: string; args: unknown }) => void;
     prompt: string;
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
+    browser?: BrowserExecutor;
     shell?: {
       executeShell(call: {
         command: "web-search" | "web-fetch" | "gcal" | "mail" | "drive" | "contacts";
@@ -48,6 +52,7 @@ export interface RunTaskTurnOptions {
     };
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
+  browser?: BrowserExecutor;
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   promptOverride?: string;
@@ -99,6 +104,20 @@ function toolArtifactTitle(toolName: string, args: unknown): string {
   }
 
   return toolName.replace(/_/g, " ");
+}
+
+function browserResultFromToolResult(result: unknown) {
+  if (!result || typeof result !== "object" || !("details" in result)) return undefined;
+  return BrowserToolResultSchema.safeParse((result as { details?: unknown }).details);
+}
+
+function recipeProposalFromBrowserMetadata(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object" || !("recipeProposal" in metadata)) {
+    return undefined;
+  }
+  const proposal = (metadata as { recipeProposal?: unknown }).recipeProposal;
+  if (!proposal) return undefined;
+  return BrowserRecipeProposalSchema.safeParse(proposal);
 }
 
 function completedTodoItems(todo: TaskTodo): TaskTodo["items"] | undefined {
@@ -241,8 +260,46 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
           artifact,
         });
       },
+      onToolEnd(tool) {
+        if (tool.name !== "browser") return;
+        const parsed = browserResultFromToolResult(tool.result);
+        if (!parsed?.success) return;
+        const browserResult = parsed.data;
+        if (browserResult.screenshotPath) {
+          const artifact = store.createArtifact({
+            taskId,
+            turnId: agentTurnId,
+            kind: "file",
+            title: "Browser screenshot",
+            path: browserResult.screenshotPath,
+          });
+          publish({
+            type: "artifact.created",
+            taskId,
+            emittedAt: new Date().toISOString(),
+            artifact,
+          });
+        }
+        const recipe = recipeProposalFromBrowserMetadata(browserResult.metadata);
+        if (recipe?.success) {
+          const artifact = store.createArtifact({
+            taskId,
+            turnId: agentTurnId,
+            kind: "text",
+            title: `Browser recipe proposal: ${recipe.data.domain}`,
+            contentPreview: JSON.stringify(recipe.data, null, 2),
+          });
+          publish({
+            type: "artifact.created",
+            taskId,
+            emittedAt: new Date().toISOString(),
+            artifact,
+          });
+        }
+      },
       prompt: opts.promptOverride ?? userTurn.content,
       provider,
+      ...(opts.browser ? { browser: opts.browser } : {}),
       ...(shell ? { shell } : {}),
       skillRuntime: {
         activeSkills,

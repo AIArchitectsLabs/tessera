@@ -18,10 +18,10 @@ import type {
   TaskTodo,
   TodoOperation,
 } from "@tessera/contracts";
-import { compileAgentRuntimeContext } from "@tessera/contracts";
+import { BrowserActionInputSchema, compileAgentRuntimeContext } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 import { createTaskToolDefinitions } from "./task-tools.js";
-import type { ShellExecutor } from "./tools.js";
+import type { BrowserExecutor, ShellExecutor } from "./tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 
@@ -67,10 +67,12 @@ export interface RunPiTaskTurnOptions {
   credential?: string;
   factory?: PiSessionFactory;
   onActivity?: (activity: string) => void;
+  onToolEnd?: (tool: { name: string; result: unknown }) => void;
   onToolStart?: (tool: { name: string; args: unknown }) => void;
   prompt: string;
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
+  browser?: BrowserExecutor;
   shell?: ShellExecutor;
   skillRuntime?: {
     activeSkills?: TaskSkillActivation[];
@@ -381,6 +383,36 @@ function createShellToolDefinition(shell?: ShellExecutor): ToolDefinition[] {
   ];
 }
 
+function createBrowserToolDefinition(browser?: BrowserExecutor): ToolDefinition[] {
+  if (!browser) return [];
+
+  return [
+    defineTool({
+      name: "browser",
+      label: "Browser",
+      description: "Inspect public web pages through Tessera's managed browser runtime.",
+      promptSnippet:
+        "browser: inspect public web pages with actions like open, see, snap, back, reload, and close.",
+      parameters: Type.Object({
+        action: Type.String(),
+      }),
+      async execute(_toolCallId, params) {
+        const input = BrowserActionInputSchema.parse(params);
+        const result = await browser.executeBrowser(input);
+        return {
+          content: [
+            {
+              type: "text",
+              text: result.content ?? result.summary ?? `Browser ${result.action} complete.`,
+            },
+          ],
+          details: result,
+        };
+      },
+    }),
+  ];
+}
+
 export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTaskTurnResult> {
   const guard = await createWorkspaceGuard(options.workspaceRoot);
   let boundaryViolations = 0;
@@ -390,11 +422,18 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     },
   });
   const taskTools = createTaskToolDefinitions(options.taskRuntime);
+  const browserTools = createBrowserToolDefinition(options.browser);
   const shellTools = createShellToolDefinition(options.shell);
   const skillTools = createSkillToolDefinitions(options.skillRuntime);
   const runtime =
     options.runtime ?? (options.agent ? compileAgentRuntimeContext(options.agent) : undefined);
-  const toolDefinitions = [...allTools, ...taskTools, ...shellTools, ...skillTools];
+  const toolDefinitions = [
+    ...allTools,
+    ...taskTools,
+    ...browserTools,
+    ...shellTools,
+    ...skillTools,
+  ];
   const allowedTools = new Set(
     runtime?.toolPolicy.allowedTools ?? toolDefinitions.map((tool) => tool.name)
   );
@@ -429,6 +468,12 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       options.onToolStart?.({
         name: event.toolName,
         args: "args" in event ? event.args : undefined,
+      });
+    }
+    if (event.type === "tool_execution_end") {
+      options.onToolEnd?.({
+        name: event.toolName,
+        result: event.result,
       });
     }
     // The SDK fires message_end for user messages too (before the model call).

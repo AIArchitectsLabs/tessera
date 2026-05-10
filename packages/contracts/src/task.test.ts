@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentProfileSchema,
+  BrowserRecipeProposalSchema,
   TaskArtifactSchema,
   TaskCreateRequestSchema,
   TaskCreateTurnRequestSchema,
@@ -12,6 +13,33 @@ import {
 } from "./index.js";
 
 describe("task contracts", () => {
+  test("accepts draft browser recipe proposal contracts", () => {
+    const parsed = BrowserRecipeProposalSchema.parse({
+      id: "recipe-1",
+      status: "draft",
+      domain: "example.com",
+      goal: "Inspect Example",
+      source: { taskId: "task-1", sessionId: "session-1" },
+      permissions: ["browser.read"],
+      steps: [
+        {
+          action: "open",
+          url: "https://example.com",
+          expectedState: "Example Domain page is visible",
+        },
+        {
+          action: "see",
+          expectedState: "Readable page text is extracted",
+        },
+      ],
+      artifacts: [{ title: "Screenshot", path: "/tmp/example.png" }],
+      createdAt: "2026-05-10T00:00:00.000Z",
+    });
+
+    expect(parsed.status).toBe("draft");
+    expect(parsed.permissions).toEqual(["browser.read"]);
+  });
+
   test("accepts workspace task summaries", () => {
     const parsed = TaskSummarySchema.parse({
       id: "task-1",

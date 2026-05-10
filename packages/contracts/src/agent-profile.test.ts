@@ -66,6 +66,7 @@ describe("agent profile contracts", () => {
     expect(readOnly.approvalMode).toBe("never");
     expect(readOnly.allowedTools).toContain("workspace_read");
     expect(readOnly.allowedTools).toContain("workspace_extract");
+    expect(readOnly.allowedTools).toContain("browser");
     expect(readOnly.allowedTools).toContain("todo");
     expect(readOnly.allowedTools).toContain("skill_list");
     expect(readOnly.allowedTools).toContain("skill_load");
@@ -94,6 +95,7 @@ describe("agent profile contracts", () => {
     expect(runtime.templateLabel).toBe("Business Operator");
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_write");
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_extract");
+    expect(runtime.toolPolicy.allowedTools).toContain("browser");
     expect(runtime.toolPolicy.allowedTools).toContain("todo");
     expect(runtime.sectionSummaries.instructions).toContain("Drive concrete next steps");
     expect(runtime.compiledSummary).toContain("2 profile skills enabled");

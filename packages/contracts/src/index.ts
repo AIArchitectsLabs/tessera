@@ -616,6 +616,7 @@ export type BrowserAction = z.infer<typeof BrowserActionSchema>;
 export const BrowserActionInputSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("open"),
+    pageId: z.string().min(1).optional(),
     url: z.string().min(1),
   }),
   z.object({
@@ -677,6 +678,55 @@ export const BrowserToolResultSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 export type BrowserToolResult = z.infer<typeof BrowserToolResultSchema>;
+
+export const BrowserRecipeStatusSchema = z.enum([
+  "draft",
+  "reviewed",
+  "approved_for_action",
+  "stale",
+]);
+export type BrowserRecipeStatus = z.infer<typeof BrowserRecipeStatusSchema>;
+
+export const BrowserRecipePermissionSchema = z.enum([
+  "browser.read",
+  "browser.action",
+  "browser.eval",
+]);
+export type BrowserRecipePermission = z.infer<typeof BrowserRecipePermissionSchema>;
+
+export const BrowserRecipeStepSchema = z.object({
+  action: BrowserActionSchema,
+  url: z.string().url().optional(),
+  selector: z.string().min(1).optional(),
+  text: z.string().optional(),
+  expectedState: z.string().min(1).optional(),
+  fallbackLabel: z.string().min(1).optional(),
+});
+export type BrowserRecipeStep = z.infer<typeof BrowserRecipeStepSchema>;
+
+export const BrowserRecipeProposalSchema = z.object({
+  id: z.string().min(1),
+  status: BrowserRecipeStatusSchema,
+  domain: z.string().min(1),
+  goal: z.string().min(1),
+  source: z.object({
+    taskId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+  }),
+  permissions: z.array(BrowserRecipePermissionSchema),
+  steps: z.array(BrowserRecipeStepSchema).min(1),
+  artifacts: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        path: z.string().min(1),
+      })
+    )
+    .default([]),
+  createdAt: z.string().datetime(),
+  lastVerifiedAt: z.string().datetime().optional(),
+});
+export type BrowserRecipeProposal = z.infer<typeof BrowserRecipeProposalSchema>;
 
 export const ClarifyOptionSchema = z.object({
   id: z.string().min(1),
@@ -1861,6 +1911,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "List directories",
       "Search content",
       "Search and fetch public web pages",
+      "Inspect public web pages with managed browser",
       "Manage task checklist",
     ],
     allowedTools: [
@@ -1869,6 +1920,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_list",
       "workspace_search",
       "shell",
+      "browser",
       "todo",
       "skill_list",
       "skill_load",
@@ -1885,6 +1937,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "List directories",
       "Search content",
       "Search and fetch public web pages",
+      "Inspect public web pages with managed browser",
       "Write files",
       "Edit files",
       "Manage task checklist",
@@ -1895,6 +1948,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_list",
       "workspace_search",
       "shell",
+      "browser",
       "workspace_write",
       "workspace_edit",
       "todo",
@@ -1913,6 +1967,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "List directories",
       "Search content",
       "Search and fetch public web pages",
+      "Inspect public web pages with managed browser",
       "Write files",
       "Edit files",
       "Manage task checklist",
@@ -1923,6 +1978,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "workspace_list",
       "workspace_search",
       "shell",
+      "browser",
       "workspace_write",
       "workspace_edit",
       "todo",
