@@ -79,6 +79,8 @@ pub enum SearchMode {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub provider: IntegrationProvider,
+    #[serde(default)]
+    pub connected: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -277,12 +279,14 @@ pub fn default_settings_file() -> SettingsFile {
 fn default_brave_search_provider_config() -> ProviderConfig {
     ProviderConfig {
         provider: IntegrationProvider::BraveSearch,
+        connected: false,
     }
 }
 
 fn default_google_calendar_provider_config() -> ProviderConfig {
     ProviderConfig {
         provider: IntegrationProvider::GoogleCalendar,
+        connected: false,
     }
 }
 
@@ -592,7 +596,7 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
             },
             google_calendar: ProviderSettings {
                 provider: IntegrationProvider::GoogleCalendar,
-                has_credential: false,
+                has_credential: settings.providers.google_calendar.connected,
             },
         },
         search: SearchSettingsRead {
@@ -700,6 +704,24 @@ pub fn delete(
     delete_at_path(&path, request)
 }
 
+fn set_google_workspace_connected_at_path(
+    path: &Path,
+    connected: bool,
+) -> Result<IntegrationSettingsRead> {
+    let mut settings = load_settings_file(path)?;
+    settings.providers.google_calendar.connected = connected;
+    save_settings_file(path, &settings)?;
+    redact_with_settings(settings)
+}
+
+pub fn set_google_workspace_connected(
+    app: &AppHandle,
+    connected: bool,
+) -> Result<IntegrationSettingsRead> {
+    let path = settings_path(app)?;
+    set_google_workspace_connected_at_path(&path, connected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +760,41 @@ mod tests {
 
         assert_eq!(settings.search.mode, SearchMode::Auto);
         assert!(!settings.search.allow_keyless_fallback);
+        assert!(!settings.providers.google_calendar.connected);
+    }
+
+    #[test]
+    fn google_workspace_connected_state_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SETTINGS_FILE);
+
+        let first = set_google_workspace_connected_at_path(&path, true).expect("connect");
+        assert!(first.providers.google_calendar.has_credential);
+
+        let settings = load_settings_file(&path).expect("load settings");
+        assert!(settings.providers.google_calendar.connected);
+
+        let second = set_google_workspace_connected_at_path(&path, false).expect("disconnect");
+        assert!(!second.providers.google_calendar.has_credential);
+    }
+
+    #[test]
+    fn missing_google_workspace_connected_state_defaults_to_false() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SETTINGS_FILE);
+        fs::write(
+            &path,
+            r#"{
+              "providers": {
+                "braveSearch": { "provider": "brave-search" },
+                "googleCalendar": { "provider": "google-calendar" }
+              }
+            }"#,
+        )
+        .expect("write settings");
+
+        let redacted = redact(load_settings_file(&path).expect("load")).expect("redact");
+        assert!(!redacted.providers.google_calendar.has_credential);
     }
 
     #[test]
