@@ -27,6 +27,8 @@ export interface GoogleWorkspaceConnector {
   readDriveFile(request: {
     fileId: string;
     format: "text" | "markdown" | "csv" | "json";
+    sheet?: string;
+    range?: string;
   }): Promise<DriveReadResult>;
   lookupContacts(request: { query: string; limit: number }): Promise<ContactsLookupResult>;
 }
@@ -159,7 +161,9 @@ export function createGwsGoogleWorkspaceConnector(options: {
         request.fileId,
         stringField(metadata, "mimeType"),
         stringField(metadata, "name"),
-        request.format
+        request.format,
+        request.sheet,
+        request.range
       );
 
       return DriveReadResultSchema.parse({
@@ -531,7 +535,9 @@ async function readDriveContent(
   fileId: string,
   mimeType: string,
   fileName: string,
-  format: "text" | "markdown" | "csv" | "json"
+  format: "text" | "markdown" | "csv" | "json",
+  requestedSheet?: string,
+  requestedRange?: string
 ): Promise<Record<string, unknown>> {
   if (mimeType === "application/vnd.google-apps.spreadsheet") {
     const payload = await runGwsJson(options, [
@@ -547,9 +553,12 @@ async function readDriveContent(
     const { sheetTitle, rowCount, columnCount } = extractSpreadsheetRange(
       payload,
       fileId,
-      fileName
+      fileName,
+      requestedSheet
     );
-    const range = `${quoteSheetTitle(sheetTitle)}!A1:${columnLabel(columnCount)}${rowCount}`;
+    const range = `${quoteSheetTitle(sheetTitle)}!${
+      requestedRange ?? `A1:${columnLabel(columnCount)}${rowCount}`
+    }`;
     const valuesPayload = await runGwsJson(options, [
       "sheets",
       "spreadsheets",
@@ -684,7 +693,8 @@ function extractDocBodyText(body: unknown): string {
 function extractSpreadsheetRange(
   payload: unknown,
   fileId: string,
-  fileName: string
+  fileName: string,
+  requestedSheet?: string
 ): {
   sheetTitle: string;
   rowCount: number;
@@ -696,7 +706,7 @@ function extractSpreadsheetRange(
     );
   }
 
-  const firstSheet = requireSingleSpreadsheetSheet(payload.sheets, fileId, fileName);
+  const firstSheet = selectSpreadsheetSheet(payload.sheets, fileId, fileName, requestedSheet);
 
   const properties = isRecord(firstSheet.properties) ? firstSheet.properties : null;
   const gridProperties = isRecord(properties?.gridProperties) ? properties.gridProperties : null;
@@ -714,19 +724,34 @@ function extractSpreadsheetRange(
   return { sheetTitle, rowCount, columnCount };
 }
 
-function requireSingleSpreadsheetSheet(
+function selectSpreadsheetSheet(
   sheets: unknown[],
   fileId: string,
-  fileName: string
+  fileName: string,
+  requestedSheet?: string
 ): Record<string, unknown> {
-  if (sheets.length !== 1) {
-    const reason = sheets.length === 0 ? "has no sheets" : "has multiple sheets";
+  const records = sheets.filter(isRecord);
+  if (requestedSheet) {
+    const matching = records.find((sheet) => {
+      const properties = isRecord(sheet.properties) ? sheet.properties : null;
+      return properties?.title === requestedSheet;
+    });
+    if (!matching) {
+      throw new GoogleWorkspaceConnectorError(
+        `Google Sheets file "${fileName || fileId}" does not have a sheet named "${requestedSheet}". Available sheets: ${spreadsheetSheetNames(records).join(", ") || "none"}.`
+      );
+    }
+    return matching;
+  }
+
+  if (records.length !== 1) {
+    const reason = records.length === 0 ? "has no sheets" : "has multiple sheets";
     throw new GoogleWorkspaceConnectorError(
-      `Google Sheets file "${fileName || fileId}" ${reason}; multi-sheet reads are not supported yet.`
+      `Google Sheets file "${fileName || fileId}" ${reason}. Choose a sheet with --sheet. Available sheets: ${spreadsheetSheetNames(records).join(", ") || "none"}.`
     );
   }
 
-  const firstSheet = sheets[0];
+  const firstSheet = records[0];
   if (!isRecord(firstSheet)) {
     throw new GoogleWorkspaceConnectorError(
       "Google Sheets metadata is missing a usable first sheet record."
@@ -734,6 +759,15 @@ function requireSingleSpreadsheetSheet(
   }
 
   return firstSheet;
+}
+
+function spreadsheetSheetNames(sheets: Record<string, unknown>[]): string[] {
+  return sheets
+    .map((sheet) => {
+      const properties = isRecord(sheet.properties) ? sheet.properties : null;
+      return typeof properties?.title === "string" ? properties.title : "";
+    })
+    .filter((title) => title.length > 0);
 }
 
 function quoteSheetTitle(title: string): string {

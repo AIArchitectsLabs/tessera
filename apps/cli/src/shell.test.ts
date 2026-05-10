@@ -783,6 +783,72 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("reads a requested Google Sheets range", async () => {
+    const capturedArgs: string[][] = [];
+    const result = await executeCliCommand(
+      ["drive", "read", "sheet-1", "--format", "json", "--sheet", "Pipeline", "--range", "A1:C3"],
+      {
+        runGwsCli: async (args) => {
+          capturedArgs.push(args);
+          if (capturedArgs.length === 1) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                id: "sheet-1",
+                name: "Pipeline",
+                mimeType: "application/vnd.google-apps.spreadsheet",
+              }),
+              stderr: "",
+            };
+          }
+
+          if (capturedArgs.length === 2) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                sheets: [
+                  {
+                    properties: {
+                      title: "Pipeline",
+                      gridProperties: { rowCount: 20, columnCount: 8 },
+                    },
+                  },
+                  {
+                    properties: {
+                      title: "Archive",
+                      gridProperties: { rowCount: 10, columnCount: 4 },
+                    },
+                  },
+                ],
+              }),
+              stderr: "",
+            };
+          }
+
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              values: [
+                ["Account", "Stage", "Owner"],
+                ["Fomora", "Discovery", "Yumi"],
+              ],
+            }),
+            stderr: "",
+          };
+        },
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs[2]?.slice(0, 4)).toEqual(["sheets", "spreadsheets", "values", "get"]);
+    const valuesArgs = capturedArgs[2] ?? [];
+    const params = JSON.parse(valuesArgs[valuesArgs.indexOf("--params") + 1] ?? "{}");
+    expect(params).toEqual({
+      spreadsheetId: "sheet-1",
+      range: "'Pipeline'!A1:C3",
+    });
+  });
+
   test("returns normalized contacts lookup results", async () => {
     const capturedArgs: string[][] = [];
     const result = await executeCliCommand(["contacts", "lookup", "Alex", "--limit", "2"], {

@@ -588,8 +588,7 @@ async function runDriveSearch(args: string[], options: ExecuteCliCommandOptions)
 }
 
 async function runDriveRead(args: string[], options: ExecuteCliCommandOptions) {
-  const { fileId, format } = parseDriveReadArgs(args);
-  return createGoogleWorkspaceConnector(options).readDriveFile({ fileId, format });
+  return createGoogleWorkspaceConnector(options).readDriveFile(parseDriveReadArgs(args));
 }
 
 async function runContactsLookup(args: string[], options: ExecuteCliCommandOptions) {
@@ -892,6 +891,8 @@ function parseDriveSearchArgs(args: string[]): { query: string; limit: number } 
 function parseDriveReadArgs(args: string[]): {
   fileId: string;
   format: "text" | "markdown" | "csv" | "json";
+  sheet?: string;
+  range?: string;
 } {
   const fileId = args[0]?.trim();
   if (!fileId) {
@@ -899,6 +900,8 @@ function parseDriveReadArgs(args: string[]): {
   }
 
   let format: "text" | "markdown" | "csv" | "json" = "text";
+  let sheet = "";
+  let range = "";
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--format") {
@@ -910,10 +913,40 @@ function parseDriveReadArgs(args: string[]): {
       }
       throw new CliCommandError("Usage: drive read <fileId> [--format text|markdown|csv|json]");
     }
-    throw new CliCommandError("Usage: drive read <fileId> [--format text|markdown|csv|json]");
+    if (arg === "--sheet") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError(
+          "Usage: drive read <fileId> [--format text|markdown|csv|json] [--sheet <name>] [--range <A1:B2>]"
+        );
+      }
+      sheet = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--range") {
+      const value = args[index + 1]?.trim();
+      if (!value || !/^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$/.test(value)) {
+        throw new CliCommandError(
+          "Usage: drive read <fileId> [--format text|markdown|csv|json] [--sheet <name>] [--range <A1:B2>]"
+        );
+      }
+      range = value;
+      index += 1;
+      continue;
+    }
+    throw new CliCommandError(
+      "Usage: drive read <fileId> [--format text|markdown|csv|json] [--sheet <name>] [--range <A1:B2>]"
+    );
   }
 
-  return { fileId, format };
+  if ((sheet && !range) || (!sheet && range)) {
+    throw new CliCommandError(
+      "Usage: drive read <fileId> [--format text|markdown|csv|json] [--sheet <name>] [--range <A1:B2>]"
+    );
+  }
+
+  return { fileId, format, ...(sheet ? { sheet } : {}), ...(range ? { range } : {}) };
 }
 
 function parseContactsLookupArgs(args: string[]): { query: string; limit: number } {
