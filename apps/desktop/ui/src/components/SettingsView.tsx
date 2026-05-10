@@ -482,11 +482,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       }
       setIntegrationStatus({
         message: result.message,
-        tone: result.ok
-          ? "success"
-          : result.message.includes("Complete it in your browser")
-            ? "info"
-            : "error",
+        tone: result.ok ? "success" : result.message.includes("Google sign-in") ? "info" : "error",
       });
       if (result.ok) {
         const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");

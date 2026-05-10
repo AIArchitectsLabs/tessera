@@ -470,6 +470,19 @@ fn first_useful_process_line(result: &SpawnResult) -> String {
         .to_string()
 }
 
+fn extract_google_oauth_url(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|part| {
+        let candidate = part.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | ',' | '.'
+            )
+        });
+        (candidate.starts_with("https://accounts.google.com/") && candidate.contains("/o/oauth"))
+            .then(|| candidate.to_string())
+    })
+}
+
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -1015,13 +1028,41 @@ async fn start_google_workspace_login_command(
                 duration_ms: start.elapsed().as_millis() as u64,
             });
         }
+        let output = fs::read_to_string(&log_path).unwrap_or_default();
+        if let Some(url) = extract_google_oauth_url(&output) {
+            let _ = fs::remove_file(&log_path);
+            #[allow(deprecated)]
+            return match app.shell().open(url.clone(), None) {
+                Ok(()) => Ok(SpawnResult {
+                    stdout: "Google sign-in opened in your browser. Complete it there, then click Test connection.".to_string(),
+                    stderr: String::new(),
+                    exit_code: 124,
+                    signal: None,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                }),
+                Err(error) => Ok(SpawnResult {
+                    stdout: format!(
+                        "Could not open your browser automatically. Open this URL to continue Google sign-in: {url}"
+                    ),
+                    stderr: error.to_string(),
+                    exit_code: 124,
+                    signal: None,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                }),
+            };
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
+    let output = fs::read_to_string(&log_path).unwrap_or_default();
     let _ = fs::remove_file(&log_path);
     Ok(SpawnResult {
-        stdout: "Google sign-in is open. Complete it in your browser, then click Test connection."
-            .to_string(),
+        stdout: extract_google_oauth_url(&output)
+            .map(|url| format!("Open this URL to continue Google sign-in: {url}"))
+            .unwrap_or_else(|| {
+                "Google sign-in is waiting. Complete it in your browser, then click Test connection."
+                    .to_string()
+            }),
         stderr: String::new(),
         exit_code: 124,
         signal: None,
@@ -2349,6 +2390,16 @@ mod tests {
             serde_json::Value::String("tessera".to_string())
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn extracts_google_oauth_url_from_cli_output() {
+        let url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&scope=email";
+        assert_eq!(
+            super::extract_google_oauth_url(&format!("Open this URL:\n<{url}>")),
+            Some(url.to_string())
+        );
+        assert_eq!(super::extract_google_oauth_url("No URL here"), None);
     }
 
     #[test]
