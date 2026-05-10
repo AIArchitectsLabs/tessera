@@ -21,7 +21,6 @@ fn keychain_lock() -> &'static Mutex<()> {
 #[serde(rename_all = "kebab-case")]
 pub enum IntegrationProvider {
     BraveSearch,
-    GoogleCalendar,
     GoogleWorkspace,
 }
 
@@ -29,7 +28,6 @@ impl IntegrationProvider {
     pub fn account(self) -> &'static str {
         match self {
             Self::BraveSearch => "integration.brave-search",
-            Self::GoogleCalendar => "integration.google-calendar",
             Self::GoogleWorkspace => "integration.google-workspace",
         }
     }
@@ -37,7 +35,7 @@ impl IntegrationProvider {
     pub fn label(self) -> &'static str {
         match self {
             Self::BraveSearch => "Brave Search",
-            Self::GoogleCalendar | Self::GoogleWorkspace => "Google Workspace",
+            Self::GoogleWorkspace => "Google Workspace",
         }
     }
 }
@@ -104,8 +102,8 @@ pub struct SearchProviderSettings {
 pub struct SettingsProviders {
     #[serde(default = "default_brave_search_provider_config")]
     pub brave_search: ProviderConfig,
-    #[serde(default = "default_google_calendar_provider_config")]
-    pub google_calendar: ProviderConfig,
+    #[serde(default = "default_google_workspace_provider_config")]
+    pub google_workspace: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -129,7 +127,6 @@ pub struct SettingsFile {
 #[serde(rename_all = "camelCase")]
 pub struct ReadProviders {
     pub brave_search: ProviderSettings,
-    pub google_calendar: ProviderSettings,
     pub google_workspace: ProviderSettings,
 }
 
@@ -273,17 +270,14 @@ pub fn default_settings_file() -> SettingsFile {
     SettingsFile {
         providers: SettingsProviders {
             brave_search: default_brave_search_provider_config(),
-            google_calendar: default_google_calendar_provider_config(),
+            google_workspace: default_google_workspace_provider_config(),
         },
         search: default_search_settings(),
     }
 }
 
 fn is_google_workspace_provider(provider: IntegrationProvider) -> bool {
-    matches!(
-        provider,
-        IntegrationProvider::GoogleCalendar | IntegrationProvider::GoogleWorkspace
-    )
+    matches!(provider, IntegrationProvider::GoogleWorkspace)
 }
 
 fn default_brave_search_provider_config() -> ProviderConfig {
@@ -293,9 +287,9 @@ fn default_brave_search_provider_config() -> ProviderConfig {
     }
 }
 
-fn default_google_calendar_provider_config() -> ProviderConfig {
+fn default_google_workspace_provider_config() -> ProviderConfig {
     ProviderConfig {
-        provider: IntegrationProvider::GoogleCalendar,
+        provider: IntegrationProvider::GoogleWorkspace,
         connected: false,
     }
 }
@@ -604,13 +598,9 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
                 provider: IntegrationProvider::BraveSearch,
                 has_credential: get_credential(IntegrationProvider::BraveSearch)?.is_some(),
             },
-            google_calendar: ProviderSettings {
-                provider: IntegrationProvider::GoogleCalendar,
-                has_credential: settings.providers.google_calendar.connected,
-            },
             google_workspace: ProviderSettings {
                 provider: IntegrationProvider::GoogleWorkspace,
-                has_credential: settings.providers.google_calendar.connected,
+                has_credential: settings.providers.google_workspace.connected,
             },
         },
         search: SearchSettingsRead {
@@ -723,7 +713,7 @@ fn set_google_workspace_connected_at_path(
     connected: bool,
 ) -> Result<IntegrationSettingsRead> {
     let mut settings = load_settings_file(path)?;
-    settings.providers.google_calendar.connected = connected;
+    settings.providers.google_workspace.connected = connected;
     save_settings_file(path, &settings)?;
     redact_with_settings(settings)
 }
@@ -764,7 +754,7 @@ mod tests {
             r#"{
               "providers": {
                 "braveSearch": { "provider": "brave-search" },
-                "googleCalendar": { "provider": "google-calendar" }
+                "googleWorkspace": { "provider": "google-workspace" }
               }
             }"#,
         )
@@ -774,7 +764,7 @@ mod tests {
 
         assert_eq!(settings.search.mode, SearchMode::Auto);
         assert!(!settings.search.allow_keyless_fallback);
-        assert!(!settings.providers.google_calendar.connected);
+        assert!(!settings.providers.google_workspace.connected);
     }
 
     #[test]
@@ -783,7 +773,6 @@ mod tests {
         let path = dir.path().join(SETTINGS_FILE);
 
         let first = set_google_workspace_connected_at_path(&path, true).expect("connect");
-        assert!(first.providers.google_calendar.has_credential);
         assert!(first.providers.google_workspace.has_credential);
         assert_eq!(
             first.providers.google_workspace.provider,
@@ -791,10 +780,9 @@ mod tests {
         );
 
         let settings = load_settings_file(&path).expect("load settings");
-        assert!(settings.providers.google_calendar.connected);
+        assert!(settings.providers.google_workspace.connected);
 
         let second = set_google_workspace_connected_at_path(&path, false).expect("disconnect");
-        assert!(!second.providers.google_calendar.has_credential);
         assert!(!second.providers.google_workspace.has_credential);
     }
 
@@ -807,14 +795,13 @@ mod tests {
             r#"{
               "providers": {
                 "braveSearch": { "provider": "brave-search" },
-                "googleCalendar": { "provider": "google-calendar" }
+                "googleWorkspace": { "provider": "google-workspace" }
               }
             }"#,
         )
         .expect("write settings");
 
         let redacted = redact(load_settings_file(&path).expect("load")).expect("redact");
-        assert!(!redacted.providers.google_calendar.has_credential);
         assert!(!redacted.providers.google_workspace.has_credential);
     }
 
@@ -906,7 +893,7 @@ mod tests {
     #[test]
     fn request_targets_reject_mixed_provider_combinations() {
         let request = IntegrationSettingsSaveRequest {
-            provider: Some(IntegrationProvider::GoogleCalendar),
+            provider: Some(IntegrationProvider::GoogleWorkspace),
             search_provider: Some(SearchProvider::Tavily),
             has_existing_credential: false,
             credential: None,
@@ -915,13 +902,13 @@ mod tests {
         assert!(request.target().is_err());
 
         let request = IntegrationCredentialDeleteRequest {
-            provider: Some(IntegrationProvider::GoogleCalendar),
+            provider: Some(IntegrationProvider::GoogleWorkspace),
             search_provider: Some(SearchProvider::Tavily),
         };
         assert!(request.target().is_err());
 
         let request = IntegrationConnectionTestRequest {
-            provider: Some(IntegrationProvider::GoogleCalendar),
+            provider: Some(IntegrationProvider::GoogleWorkspace),
             search_provider: Some(SearchProvider::Tavily),
             credential: None,
         };

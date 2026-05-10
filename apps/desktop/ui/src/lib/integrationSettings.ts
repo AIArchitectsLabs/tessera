@@ -9,7 +9,6 @@ export const KEYLESS_INTEGRATION_PROVIDERS: IntegrationProvider[] = ["google-wor
 export function integrationLabel(provider: IntegrationProvider): string {
   switch (provider) {
     case "google-workspace":
-    case "google-calendar":
       return "Google Workspace";
     case "brave-search":
       return "Brave Search";

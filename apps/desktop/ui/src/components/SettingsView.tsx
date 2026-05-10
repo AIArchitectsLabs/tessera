@@ -162,10 +162,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const hasIntegrationCredential =
-    integrations?.providers.googleWorkspace?.hasCredential ??
-    integrations?.providers.googleCalendar.hasCredential ??
-    false;
+  const hasIntegrationCredential = integrations?.providers.googleWorkspace.hasCredential ?? false;
   const hasSearchCredential =
     searchProviderSettings(integrations, selectedSearchProvider)?.hasCredential ?? false;
   const integrationAllowsCredentials = integrationProviderSupportsCredential(selectedIntegration);
@@ -189,12 +186,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   function hydrateFromIntegrations(loaded: IntegrationSettingsRead) {
     setIntegrations(loaded);
-    if (
-      !(
-        loaded.providers.googleWorkspace?.hasCredential ??
-        loaded.providers.googleCalendar.hasCredential
-      )
-    ) {
+    if (!loaded.providers.googleWorkspace.hasCredential) {
       setGoogleWorkspaceHealth([]);
     }
     setSearchMode(loaded.search.mode);

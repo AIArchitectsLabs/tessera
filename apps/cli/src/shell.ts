@@ -247,8 +247,8 @@ function getDefaultSearchSettings(): IntegrationSettingsRead["search"] {
         provider: "brave-search",
         hasCredential: false,
       },
-      googleCalendar: {
-        provider: "google-calendar",
+      googleWorkspace: {
+        provider: "google-workspace",
         hasCredential: false,
       },
     },

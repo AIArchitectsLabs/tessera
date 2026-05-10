@@ -25,10 +25,6 @@ describe("integration settings contracts", () => {
           provider: "brave-search",
           hasCredential: true,
         },
-        googleCalendar: {
-          provider: "google-calendar",
-          hasCredential: false,
-        },
         googleWorkspace: {
           provider: "google-workspace",
           hasCredential: false,
@@ -37,14 +33,12 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.providers.braveSearch.hasCredential).toBe(true);
-    expect(parsed.providers.googleCalendar.provider).toBe("google-calendar");
-    expect(parsed.providers.googleCalendar.hasCredential).toBe(false);
     expect(parsed.providers.googleWorkspace.provider).toBe("google-workspace");
     expect(parsed.providers.googleWorkspace.hasCredential).toBe(false);
     expect("apiKey" in parsed.providers.braveSearch).toBe(false);
   });
 
-  test("integration settings exposes google workspace provider with legacy calendar alias", () => {
+  test("integration settings exposes google workspace provider", () => {
     const parsed = IntegrationSettingsReadSchema.parse({
       providers: {
         braveSearch: {
@@ -53,10 +47,6 @@ describe("integration settings contracts", () => {
         },
         googleWorkspace: {
           provider: "google-workspace",
-          hasCredential: true,
-        },
-        googleCalendar: {
-          provider: "google-calendar",
           hasCredential: true,
         },
       },
@@ -72,7 +62,6 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.providers.googleWorkspace.hasCredential).toBe(true);
-    expect(parsed.providers.googleCalendar.hasCredential).toBe(true);
   });
 
   test("accepts save requests with an optional replacement key", () => {
@@ -113,20 +102,20 @@ describe("integration settings contracts", () => {
   test("rejects mixed provider combinations", () => {
     expect(() =>
       IntegrationSettingsSaveRequestSchema.parse({
-        provider: "google-calendar",
+        provider: "google-workspace",
         searchProvider: "tavily",
         hasExistingCredential: false,
       })
     ).toThrow();
     expect(() =>
       IntegrationCredentialDeleteRequestSchema.parse({
-        provider: "google-calendar",
+        provider: "google-workspace",
         searchProvider: "tavily",
       })
     ).toThrow();
     expect(() =>
       IntegrationConnectionTestRequestSchema.parse({
-        provider: "google-calendar",
+        provider: "google-workspace",
         searchProvider: "tavily",
         credential: { apiKey: "test" },
       })
@@ -394,8 +383,8 @@ describe("integration search settings contracts", () => {
           provider: "brave-search",
           hasCredential: true,
         },
-        googleCalendar: {
-          provider: "google-calendar",
+        googleWorkspace: {
+          provider: "google-workspace",
           hasCredential: false,
         },
       },
@@ -431,8 +420,8 @@ describe("integration search settings contracts", () => {
           provider: "brave-search",
           hasCredential: false,
         },
-        googleCalendar: {
-          provider: "google-calendar",
+        googleWorkspace: {
+          provider: "google-workspace",
           hasCredential: false,
         },
       },

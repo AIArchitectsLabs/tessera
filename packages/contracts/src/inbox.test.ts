@@ -88,7 +88,7 @@ describe("inbox contracts", () => {
       severity: "warning",
       title: "Credential needed",
       context: {
-        provider: "google-calendar",
+        provider: "google-workspace",
         credential: { apiKey: "sk-secret" },
       },
       actions: [{ id: "open-settings", label: "Open settings" }],

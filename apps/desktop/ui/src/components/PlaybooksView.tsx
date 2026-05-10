@@ -378,9 +378,7 @@ function buildCapabilityInventory(
       fingerprint: hashText(
         JSON.stringify({
           id: "integration.google-workspace",
-          configured:
-            integrationSettings.providers.googleWorkspace?.hasCredential ??
-            integrationSettings.providers.googleCalendar.hasCredential,
+          configured: integrationSettings.providers.googleWorkspace.hasCredential,
         })
       ),
       capabilities: [
@@ -389,12 +387,9 @@ function buildCapabilityInventory(
         "integration.drive.read",
         "integration.contacts.read",
       ],
-      configured:
-        integrationSettings.providers.googleWorkspace?.hasCredential ??
-        integrationSettings.providers.googleCalendar.hasCredential,
+      configured: integrationSettings.providers.googleWorkspace.hasCredential,
       dataPolicies: [
-        (integrationSettings.providers.googleWorkspace?.hasCredential ??
-        integrationSettings.providers.googleCalendar.hasCredential)
+        integrationSettings.providers.googleWorkspace.hasCredential
           ? "cloud-ok"
           : "workspace-local-ok",
       ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],

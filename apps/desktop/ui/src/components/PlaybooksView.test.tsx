@@ -95,7 +95,6 @@ const modelSettings: ModelSettingsRead = {
 const integrationSettings: IntegrationSettingsRead = {
   providers: {
     braveSearch: { provider: "brave-search", hasCredential: false },
-    googleCalendar: { provider: "google-calendar", hasCredential: false },
     googleWorkspace: { provider: "google-workspace", hasCredential: false },
   },
   search: {

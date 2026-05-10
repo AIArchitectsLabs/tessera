@@ -85,10 +85,6 @@ const initialIntegrationSettings = (): IntegrationSettingsRead => ({
       provider: "brave-search",
       hasCredential: false,
     },
-    googleCalendar: {
-      provider: "google-calendar",
-      hasCredential: false,
-    },
     googleWorkspace: {
       provider: "google-workspace",
       hasCredential: false,
@@ -201,10 +197,6 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         ...integrationSettings,
         providers: {
           ...integrationSettings.providers,
-          googleCalendar: {
-            ...integrationSettings.providers.googleCalendar,
-            hasCredential: true,
-          },
           googleWorkspace: {
             ...integrationSettings.providers.googleWorkspace,
             hasCredential: true,
@@ -221,10 +213,6 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         ...integrationSettings,
         providers: {
           ...integrationSettings.providers,
-          googleCalendar: {
-            ...integrationSettings.providers.googleCalendar,
-            hasCredential: false,
-          },
           googleWorkspace: {
             ...integrationSettings.providers.googleWorkspace,
             hasCredential: false,
@@ -415,10 +403,6 @@ describe("SettingsView workspace integration flow", () => {
       ...integrationSettings,
       providers: {
         ...integrationSettings.providers,
-        googleCalendar: {
-          ...integrationSettings.providers.googleCalendar,
-          hasCredential: true,
-        },
         googleWorkspace: {
           ...integrationSettings.providers.googleWorkspace,
           hasCredential: true,

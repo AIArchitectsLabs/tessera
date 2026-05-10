@@ -127,7 +127,7 @@ describe("workspace cli shell commands", () => {
         JSON.stringify({
           providers: {
             braveSearch: { provider: "brave-search" },
-            googleCalendar: { provider: "google-calendar" },
+            googleWorkspace: { provider: "google-workspace" },
           },
           search: {
             mode: "duckduckgo",

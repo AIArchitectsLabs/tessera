@@ -19,7 +19,6 @@ import {
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
     expect(integrationLabel("google-workspace")).toBe("Google Workspace");
-    expect(integrationLabel("google-calendar")).toBe("Google Workspace");
   });
 
   test("labels supported search providers and modes", () => {

@@ -155,15 +155,15 @@ describe("inbox store", () => {
       source: "integration",
       type: "credential",
       severity: "warning",
-      title: "Connect calendar",
-      context: { provider: "google-calendar" },
+      title: "Connect Google Workspace",
+      context: { provider: "google-workspace" },
       actions: [{ id: "open-settings", label: "Open settings", style: "primary" }],
     });
     first.close();
 
     const second = createInboxStore(dbPath);
     try {
-      expect(second.get(created.id)?.title).toBe("Connect calendar");
+      expect(second.get(created.id)?.title).toBe("Connect Google Workspace");
       expect(second.list({ status: "open" })).toHaveLength(1);
     } finally {
       second.close();
