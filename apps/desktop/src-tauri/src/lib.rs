@@ -818,6 +818,20 @@ struct GoogleWorkspaceServiceHealth {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleWorkspaceOAuthClientStatus {
+    has_client: bool,
+    source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleWorkspaceOAuthClientSaveRequest {
+    client_id: String,
+    client_secret: String,
+}
+
 #[tauri::command]
 async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, String> {
     let body = r#"{"binary":"workspace-cli","args":["ping"]}"#;
@@ -907,6 +921,132 @@ fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
         "--services",
         "calendar,gmail,drive,people,docs,sheets",
     ]
+}
+
+fn google_workspace_oauth_client_json(client_id: &str, client_secret: &str) -> serde_json::Value {
+    serde_json::json!({
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["http://localhost"],
+        }
+    })
+}
+
+fn write_google_workspace_oauth_client_file(
+    path: &Path,
+    client_id: &str,
+    client_secret: &str,
+) -> anyhow::Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(&google_workspace_oauth_client_json(
+        client_id,
+        client_secret,
+    ))?;
+    bytes.push(b'\n');
+    fs::write(path, bytes).with_context(|| {
+        format!(
+            "Could not save Google Workspace OAuth client to {}",
+            path.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).with_context(|| {
+            format!(
+                "Could not secure Google Workspace OAuth client file {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn google_workspace_oauth_client_status_for_paths(
+    config_dir: &Path,
+    bundled_file: &Path,
+) -> GoogleWorkspaceOAuthClientStatus {
+    let source = if google_workspace_oauth_client_env_configured() {
+        "build"
+    } else if google_workspace_gws_client_secret_path(config_dir).exists() {
+        "saved"
+    } else if bundled_file.exists() {
+        "bundled"
+    } else {
+        "missing"
+    };
+
+    GoogleWorkspaceOAuthClientStatus {
+        has_client: source != "missing",
+        source: source.to_string(),
+    }
+}
+
+fn google_workspace_oauth_client_status_result(
+    app: &AppHandle,
+) -> anyhow::Result<GoogleWorkspaceOAuthClientStatus> {
+    let app_config_dir = app.path().app_config_dir()?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    let bundled_file = bundled_google_workspace_oauth_client_path(app)?;
+    Ok(google_workspace_oauth_client_status_for_paths(
+        &google_workspace_config_dir,
+        &bundled_file,
+    ))
+}
+
+#[tauri::command]
+async fn google_workspace_oauth_client_status(
+    app: AppHandle,
+) -> Result<GoogleWorkspaceOAuthClientStatus, String> {
+    google_workspace_oauth_client_status_result(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn google_workspace_oauth_client_save(
+    app: AppHandle,
+    request: GoogleWorkspaceOAuthClientSaveRequest,
+) -> Result<GoogleWorkspaceOAuthClientStatus, String> {
+    let client_id = request.client_id.trim();
+    let client_secret = request.client_secret.trim();
+    if client_id.is_empty() {
+        return Err("OAuth client ID cannot be empty".to_string());
+    }
+    if client_secret.is_empty() {
+        return Err("OAuth client secret cannot be empty".to_string());
+    }
+
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    write_google_workspace_oauth_client_file(
+        &google_workspace_gws_client_secret_path(&google_workspace_config_dir),
+        client_id,
+        client_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    google_workspace_oauth_client_status_result(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn google_workspace_oauth_client_delete(
+    app: AppHandle,
+) -> Result<GoogleWorkspaceOAuthClientStatus, String> {
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    let saved_file = google_workspace_gws_client_secret_path(&google_workspace_config_dir);
+    if saved_file.exists() {
+        fs::remove_file(&saved_file).map_err(|error| error.to_string())?;
+    }
+    google_workspace_oauth_client_status_result(&app).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1869,6 +2009,9 @@ pub fn run() {
             google_workspace_connect,
             google_workspace_disconnect,
             google_workspace_health,
+            google_workspace_oauth_client_delete,
+            google_workspace_oauth_client_save,
+            google_workspace_oauth_client_status,
             integration_connection_test,
             integration_credential_delete,
             integration_settings_get,
@@ -1929,10 +2072,10 @@ pub fn run() {
 mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_workspace_config_dir,
-        google_workspace_gws_client_secret_path, google_workspace_oauth_missing_message,
-        google_workspace_readonly_auth_args, search_connection_command, tool_policy_runtime_json,
-        SpawnResult, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
-        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
+        google_workspace_oauth_missing_message, google_workspace_readonly_auth_args,
+        search_connection_command, tool_policy_runtime_json, SpawnResult,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
@@ -2027,6 +2170,23 @@ mod tests {
         assert!(message.contains(GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV));
         assert!(message.contains(GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV));
         assert!(message.contains("google-workspace-oauth-client.json"));
+    }
+
+    #[test]
+    fn google_workspace_oauth_client_json_matches_desktop_client_shape() {
+        assert_eq!(
+            google_workspace_oauth_client_json("client-id", "client-secret"),
+            serde_json::json!({
+                "installed": {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "redirect_uris": ["http://localhost"]
+                }
+            })
+        );
     }
 
     #[test]

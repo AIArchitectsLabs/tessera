@@ -111,6 +111,10 @@ const initialIntegrationSettings = (): IntegrationSettingsRead => ({
 });
 
 let integrationSettings = initialIntegrationSettings();
+let googleWorkspaceOAuthClientStatus = {
+  hasClient: false,
+  source: "missing",
+};
 
 function updateSearchState(provider: SearchProvider, request?: Record<string, unknown>) {
   const search = (request?.search as IntegrationSettingsSaveRequest["search"] | undefined) ?? {
@@ -158,6 +162,20 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
       return modelSettings;
     case "integration_settings_get":
       return integrationSettings;
+    case "google_workspace_oauth_client_status":
+      return googleWorkspaceOAuthClientStatus;
+    case "google_workspace_oauth_client_save":
+      googleWorkspaceOAuthClientStatus = {
+        hasClient: true,
+        source: "saved",
+      };
+      return googleWorkspaceOAuthClientStatus;
+    case "google_workspace_oauth_client_delete":
+      googleWorkspaceOAuthClientStatus = {
+        hasClient: false,
+        source: "missing",
+      };
+      return googleWorkspaceOAuthClientStatus;
     case "integration_settings_save": {
       const request = args?.request;
       const searchProvider = request?.searchProvider as SearchProvider | undefined;
@@ -234,6 +252,10 @@ const { SettingsView } = await import("./SettingsView");
 beforeEach(() => {
   invokeCalls.length = 0;
   integrationSettings = initialIntegrationSettings();
+  googleWorkspaceOAuthClientStatus = {
+    hasClient: false,
+    source: "missing",
+  };
 });
 
 afterEach(() => {
@@ -266,6 +288,13 @@ function searchProvidersSection(view: ReturnType<typeof render>) {
 function workspaceIntegrationSection(view: ReturnType<typeof render>) {
   const heading = view.getByText("Workspace integration");
   return heading.closest("section");
+}
+
+function setInputValue(input: Element, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  if (!setter) throw new Error("Missing input value setter");
+  setter.call(input, value);
+  fireEvent.change(input, { bubbles: true });
 }
 
 describe("SettingsView search flow", () => {
@@ -333,6 +362,43 @@ describe("SettingsView search flow", () => {
 });
 
 describe("SettingsView workspace integration flow", () => {
+  test("saving Google Workspace OAuth client sends client metadata without echoing the secret", async () => {
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    setInputValue(
+      within(section).getByLabelText("OAuth client ID"),
+      "client-id.apps.googleusercontent.com"
+    );
+    setInputValue(within(section).getByLabelText("OAuth client secret"), "client-secret");
+    await waitFor(() => {
+      expect(
+        within(section).getByRole("button", { name: "Save OAuth client" }).hasAttribute("disabled")
+      ).toBe(false);
+    });
+    const saveButton = within(section).getByRole("button", { name: "Save OAuth client" });
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      const saveCall = invokeCalls.find(
+        (call) => call.command === "google_workspace_oauth_client_save"
+      );
+      expect(saveCall?.args?.request).toEqual({
+        clientId: "client-id.apps.googleusercontent.com",
+        clientSecret: "client-secret",
+      });
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("OAuth client saved.")).toBeTruthy();
+    });
+    expect((within(section).getByLabelText("OAuth client secret") as HTMLInputElement).value).toBe(
+      ""
+    );
+  });
+
   test("Google Workspace renders as CLI-authenticated without key controls", async () => {
     const view = await renderIntegrationsView();
 
@@ -382,6 +448,10 @@ describe("SettingsView workspace integration flow", () => {
   });
 
   test("connecting Google Workspace uses the dedicated auth command", async () => {
+    googleWorkspaceOAuthClientStatus = {
+      hasClient: true,
+      source: "saved",
+    };
     const view = await renderIntegrationsView();
 
     const section = workspaceIntegrationSection(view);

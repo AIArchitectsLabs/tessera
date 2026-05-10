@@ -54,6 +54,11 @@ interface GoogleWorkspaceServiceHealth {
   message: string;
 }
 
+interface GoogleWorkspaceOAuthClientStatus {
+  hasClient: boolean;
+  source: "build" | "bundled" | "missing" | "saved";
+}
+
 const GOOGLE_WORKSPACE_CAPABILITIES = ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"];
 
 async function invokeWithTimeout<T>(
@@ -91,6 +96,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [draft, setDraft] = useState<AgentProviderConfig>(defaultDraftForProvider("openai"));
   const [apiKey, setApiKey] = useState("");
   const [integrationApiKey, setIntegrationApiKey] = useState("");
+  const [googleWorkspaceOAuthClientStatus, setGoogleWorkspaceOAuthClientStatus] =
+    useState<GoogleWorkspaceOAuthClientStatus>({ hasClient: false, source: "missing" });
   const [searchApiKey, setSearchApiKey] = useState("");
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<StatusMessage | null>(null);
@@ -103,7 +110,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     null
   );
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
-    "connect" | "disconnect" | "remove" | "save" | "test" | null
+    "connect" | "disconnect" | "remove" | "save" | "saveOAuthClient" | "test" | null
   >(null);
   const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
     null
@@ -112,6 +119,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const modelRequestIdRef = useRef(0);
   const integrationRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
+  const googleWorkspaceClientIdRef = useRef<HTMLInputElement>(null);
+  const googleWorkspaceClientSecretRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -123,15 +132,20 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       setIntegrationStatus(null);
       setSearchStatus(null);
       try {
-        const [loaded, loadedIntegrations] = await Promise.all([
-          invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
-          invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get"),
-        ]);
+        const [loaded, loadedIntegrations, loadedGoogleWorkspaceOAuthClientStatus] =
+          await Promise.all([
+            invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
+            invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get"),
+            invokeWithTimeout<GoogleWorkspaceOAuthClientStatus>(
+              "google_workspace_oauth_client_status"
+            ),
+          ]);
         if (!active) {
           return;
         }
         hydrateFromSettings(loaded);
         hydrateFromIntegrations(loadedIntegrations);
+        setGoogleWorkspaceOAuthClientStatus(loadedGoogleWorkspaceOAuthClientStatus);
       } catch (error) {
         if (!active) {
           return;
@@ -173,6 +187,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const requiresBaseUrl = draft.provider === "local";
   const canSubmit =
     draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
+  const canRemoveGoogleWorkspaceOAuthClient = googleWorkspaceOAuthClientStatus.source === "saved";
 
   function hydrateFromSettings(
     loaded: ModelSettingsRead,
@@ -452,7 +467,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }
 
   async function handleConnectGoogleWorkspace() {
-    if (integrationBusy) return;
+    if (integrationBusy || !googleWorkspaceOAuthClientStatus.hasClient) return;
     const requestId = ++integrationRequestIdRef.current;
     setActiveIntegrationAction("connect");
     setIntegrationStatus({ message: "Opening Google sign-in...", tone: "info" });
@@ -501,6 +516,76 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       hydrateFromIntegrations(next);
       setGoogleWorkspaceHealth([]);
       setIntegrationStatus({ message: "Google Workspace disconnected.", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleSaveGoogleWorkspaceOAuthClient() {
+    if (integrationBusy) return;
+    const clientId = googleWorkspaceClientIdRef.current?.value.trim() ?? "";
+    const clientSecret = googleWorkspaceClientSecretRef.current?.value.trim() ?? "";
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("saveOAuthClient");
+    setIntegrationStatus(null);
+    try {
+      const next = await invokeWithTimeout<GoogleWorkspaceOAuthClientStatus>(
+        "google_workspace_oauth_client_save",
+        {
+          request: {
+            clientId,
+            clientSecret,
+          },
+        }
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setGoogleWorkspaceOAuthClientStatus(next);
+      if (googleWorkspaceClientIdRef.current) googleWorkspaceClientIdRef.current.value = "";
+      if (googleWorkspaceClientSecretRef.current) {
+        googleWorkspaceClientSecretRef.current.value = "";
+      }
+      setIntegrationStatus({ message: "OAuth client saved.", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleRemoveGoogleWorkspaceOAuthClient() {
+    if (integrationBusy || !canRemoveGoogleWorkspaceOAuthClient) return;
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("remove");
+    setIntegrationStatus(null);
+    try {
+      const next = await invokeWithTimeout<GoogleWorkspaceOAuthClientStatus>(
+        "google_workspace_oauth_client_delete"
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setGoogleWorkspaceOAuthClientStatus(next);
+      setIntegrationStatus({ message: "OAuth client removed.", tone: "success" });
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
@@ -1100,6 +1185,93 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
                 {!integrationAllowsCredentials && (
                   <div className="rounded-xl border border-border bg-background px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">OAuth client</div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {googleWorkspaceOAuthClientStatus.hasClient
+                            ? googleWorkspaceOAuthClientStatus.source === "build"
+                              ? "OAuth client bundled with this build."
+                              : googleWorkspaceOAuthClientStatus.source === "bundled"
+                                ? "OAuth client bundled with the desktop app."
+                                : "OAuth client saved for this device."
+                            : "Add a Google Workspace OAuth client before connecting."}
+                        </div>
+                      </div>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                          googleWorkspaceOAuthClientStatus.hasClient
+                            ? "bg-emerald-50 text-emerald-800"
+                            : "bg-secondary text-muted-foreground"
+                        )}
+                      >
+                        {googleWorkspaceOAuthClientStatus.hasClient ? "Ready" : "Required"}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <label className="block">
+                        <span className="text-sm font-medium text-foreground">OAuth client ID</span>
+                        <input
+                          className="input mt-2"
+                          type="text"
+                          ref={googleWorkspaceClientIdRef}
+                          disabled={integrationBusy}
+                          placeholder="Desktop client ID"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-foreground">
+                          OAuth client secret
+                        </span>
+                        <input
+                          className="input mt-2"
+                          type="password"
+                          ref={googleWorkspaceClientSecretRef}
+                          disabled={integrationBusy}
+                          placeholder={
+                            googleWorkspaceOAuthClientStatus.hasClient
+                              ? "Saved client present"
+                              : "Desktop client secret"
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSaveGoogleWorkspaceOAuthClient}
+                        disabled={integrationBusy}
+                      >
+                        {activeIntegrationAction === "saveOAuthClient" ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <KeyRound size={16} />
+                        )}
+                        Save OAuth client
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleRemoveGoogleWorkspaceOAuthClient}
+                        disabled={integrationBusy || !canRemoveGoogleWorkspaceOAuthClient}
+                      >
+                        {activeIntegrationAction === "remove" ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={16} />
+                        )}
+                        Remove OAuth client
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {!integrationAllowsCredentials && (
+                  <div className="rounded-xl border border-border bg-background px-4 py-3">
                     <div className="mb-2 text-sm font-medium text-foreground">
                       Workspace services
                     </div>
@@ -1159,7 +1331,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <Button
                       type="button"
                       onClick={handleConnectGoogleWorkspace}
-                      disabled={integrationBusy}
+                      disabled={integrationBusy || !googleWorkspaceOAuthClientStatus.hasClient}
                     >
                       {activeIntegrationAction === "connect" ? (
                         <Loader2 size={16} className="animate-spin" />
