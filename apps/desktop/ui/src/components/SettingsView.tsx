@@ -1196,7 +1196,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."}
                 </div>
 
-                {integrationAllowsCredentials ? (
+                {integrationAllowsCredentials && (
                   <label className="block">
                     <span className="text-sm font-medium text-foreground">API key</span>
                     <input
@@ -1212,11 +1212,6 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                       onChange={(event) => setIntegrationApiKey(event.target.value)}
                     />
                   </label>
-                ) : (
-                  <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
-                    Connect with Google sign-in. Tessera stores the Workspace session in its app
-                    config and does not store separate API keys for individual Workspace services.
-                  </div>
                 )}
 
                 {!integrationAllowsCredentials && (
