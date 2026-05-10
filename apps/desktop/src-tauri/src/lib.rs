@@ -470,6 +470,23 @@ fn first_useful_process_line(result: &SpawnResult) -> String {
         .to_string()
 }
 
+fn json_object_from_process_output(output: &str) -> Option<serde_json::Value> {
+    let start = output.find('{')?;
+    let end = output.rfind('}')?;
+    serde_json::from_str(&output[start..=end]).ok()
+}
+
+fn google_workspace_auth_status_connected(result: &SpawnResult) -> bool {
+    json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
+        .and_then(|value| {
+            value
+                .get("auth_method")
+                .and_then(|auth_method| auth_method.as_str())
+                .map(|auth_method| auth_method != "none")
+        })
+        .unwrap_or(false)
+}
+
 fn extract_google_oauth_url(output: &str) -> Option<String> {
     output.split_whitespace().find_map(|part| {
         let candidate = part.trim_matches(|ch: char| {
@@ -1749,7 +1766,7 @@ async fn integration_connection_test(
                 }
                 integration_settings::IntegrationProvider::GoogleWorkspace => {
                     let status = google_workspace_auth_status(&app).await?;
-                    if status.exit_code != 0 {
+                    if status.exit_code != 0 || !google_workspace_auth_status_connected(&status) {
                         return Ok(integration_settings::IntegrationConnectionTestResult {
                             ok: false,
                             message: first_useful_process_line(&status),
@@ -1831,6 +1848,29 @@ async fn integration_connection_test(
 }
 
 #[tauri::command]
+async fn google_workspace_connection_status(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let status = google_workspace_auth_status(&app).await?;
+    let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
+    if ok {
+        integration_settings::set_google_workspace_connected(&app, true)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(integration_settings::IntegrationConnectionTestResult {
+        ok,
+        message: if ok {
+            "Google Workspace connected.".to_string()
+        } else {
+            "Waiting for Google sign-in to finish.".to_string()
+        },
+        provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
+        search_provider: None,
+    })
+}
+
+#[tauri::command]
 async fn google_workspace_connect(
     app: AppHandle,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
@@ -1871,7 +1911,7 @@ async fn google_workspace_connect(
     }
 
     let status = google_workspace_auth_status(&app).await?;
-    let ok = status.exit_code == 0;
+    let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
     if ok {
         integration_settings::set_google_workspace_connected(&app, true)
             .map_err(|error| error.to_string())?;
@@ -2177,6 +2217,7 @@ pub fn run() {
             inbox_resolve,
             inbox_snooze,
             google_workspace_connect,
+            google_workspace_connection_status,
             google_workspace_disconnect,
             google_workspace_health,
             google_workspace_oauth_client_delete,

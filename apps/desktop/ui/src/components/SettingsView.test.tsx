@@ -115,6 +115,16 @@ let googleWorkspaceOAuthClientStatus = {
   hasClient: false,
   source: "missing",
 };
+let googleWorkspaceConnectResult: IntegrationConnectionTestResult = {
+  ok: true,
+  message: "Google Workspace connected.",
+  provider: "google-workspace",
+};
+let googleWorkspaceConnectionStatusResult: IntegrationConnectionTestResult = {
+  ok: true,
+  message: "Google Workspace connected.",
+  provider: "google-workspace",
+};
 
 function updateSearchState(provider: SearchProvider, request?: Record<string, unknown>) {
   const search = (request?.search as IntegrationSettingsSaveRequest["search"] | undefined) ?? {
@@ -211,21 +221,33 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         { service: "Sheets", ok: true, message: "Available through Drive reads." },
       ];
     case "google_workspace_connect":
-      integrationSettings = {
-        ...integrationSettings,
-        providers: {
-          ...integrationSettings.providers,
-          googleWorkspace: {
-            ...integrationSettings.providers.googleWorkspace,
-            hasCredential: true,
+      if (googleWorkspaceConnectResult.ok) {
+        integrationSettings = {
+          ...integrationSettings,
+          providers: {
+            ...integrationSettings.providers,
+            googleWorkspace: {
+              ...integrationSettings.providers.googleWorkspace,
+              hasCredential: true,
+            },
           },
-        },
-      };
-      return {
-        ok: true,
-        message: "Google Workspace connected.",
-        provider: "google-workspace",
-      } satisfies IntegrationConnectionTestResult;
+        };
+      }
+      return googleWorkspaceConnectResult;
+    case "google_workspace_connection_status":
+      if (googleWorkspaceConnectionStatusResult.ok) {
+        integrationSettings = {
+          ...integrationSettings,
+          providers: {
+            ...integrationSettings.providers,
+            googleWorkspace: {
+              ...integrationSettings.providers.googleWorkspace,
+              hasCredential: true,
+            },
+          },
+        };
+      }
+      return googleWorkspaceConnectionStatusResult;
     case "google_workspace_disconnect":
       integrationSettings = {
         ...integrationSettings,
@@ -255,6 +277,16 @@ beforeEach(() => {
   googleWorkspaceOAuthClientStatus = {
     hasClient: false,
     source: "missing",
+  };
+  googleWorkspaceConnectResult = {
+    ok: true,
+    message: "Google Workspace connected.",
+    provider: "google-workspace",
+  };
+  googleWorkspaceConnectionStatusResult = {
+    ok: true,
+    message: "Google Workspace connected.",
+    provider: "google-workspace",
   };
 });
 
@@ -463,6 +495,38 @@ describe("SettingsView workspace integration flow", () => {
     await waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "google_workspace_connect")).toBe(true);
     });
+    await waitFor(() => {
+      expect(within(section).getByText("Google Workspace connected.")).toBeTruthy();
+    });
+  });
+
+  test("connecting Google Workspace polls after browser sign-in starts", async () => {
+    googleWorkspaceOAuthClientStatus = {
+      hasClient: true,
+      source: "saved",
+    };
+    googleWorkspaceConnectResult = {
+      ok: false,
+      message:
+        "Google sign-in opened in your browser. Complete it there, then click Test connection.",
+      provider: "google-workspace",
+    };
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    fireEvent.click(within(section).getByRole("button", { name: "Connect Google Workspace" }));
+
+    await waitFor(
+      () => {
+        expect(
+          invokeCalls.some((call) => call.command === "google_workspace_connection_status")
+        ).toBe(true);
+      },
+      { timeout: 3_000 }
+    );
     await waitFor(() => {
       expect(within(section).getByText("Google Workspace connected.")).toBeTruthy();
     });

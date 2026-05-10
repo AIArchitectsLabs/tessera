@@ -221,6 +221,36 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function pollGoogleWorkspaceConnection(requestId: number) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
+        "google_workspace_connection_status"
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      if (result.ok) {
+        setIntegrationStatus({ message: result.message, tone: "success" });
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+          hydrateFromIntegrations(next);
+        }
+        await refreshGoogleWorkspaceHealth(requestId);
+        return;
+      }
+    }
+    if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+      setIntegrationStatus({
+        message: "Finish Google sign-in in your browser, then click Test connection.",
+        tone: "info",
+      });
+    }
+  }
+
   function handleProviderSelect(provider: ModelProvider) {
     if (modelBusy) {
       return;
@@ -490,6 +520,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           hydrateFromIntegrations(next);
         }
         await refreshGoogleWorkspaceHealth(requestId);
+      } else if (result.message.includes("Google sign-in")) {
+        setActiveIntegrationAction(null);
+        void pollGoogleWorkspaceConnection(requestId);
       }
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
