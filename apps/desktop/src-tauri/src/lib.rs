@@ -22,6 +22,7 @@ const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV: &str = "TESSERA_GOOGLE_WORKSPACE
 const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE";
 const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
 const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
+const GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID: &str = "tessera";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -300,6 +301,20 @@ fn google_workspace_oauth_client_env_configured() -> bool {
     google_workspace_oauth_client_id().is_some() && google_workspace_oauth_client_secret().is_some()
 }
 
+fn google_workspace_saved_oauth_client_values(config_dir: &Path) -> Option<(String, String)> {
+    let path = google_workspace_gws_client_secret_path(config_dir);
+    let value = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())?;
+    let installed = value.get("installed")?;
+    let client_id = installed.get("client_id")?.as_str()?.trim().to_string();
+    let client_secret = installed.get("client_secret")?.as_str()?.trim().to_string();
+    if client_id.is_empty() || client_secret.is_empty() {
+        return None;
+    }
+    Some((client_id, client_secret))
+}
+
 fn runtime_or_build_env(name: &str, build_value: Option<&str>) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -331,6 +346,41 @@ fn copy_google_workspace_oauth_client_if_needed(
     Ok(())
 }
 
+fn normalize_google_workspace_oauth_client_file(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let text =
+        fs::read_to_string(path).with_context(|| format!("Could not read {}", path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("Could not parse {}", path.display()))?;
+    let Some(installed) = value
+        .get_mut("installed")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return Ok(());
+    };
+    if installed.contains_key("project_id") {
+        return Ok(());
+    }
+
+    installed.insert(
+        "project_id".to_string(),
+        serde_json::Value::String(GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID.to_string()),
+    );
+    let mut bytes = serde_json::to_vec_pretty(&value)?;
+    bytes.push(b'\n');
+    fs::write(path, bytes).with_context(|| format!("Could not update {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Could not secure {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn install_google_workspace_oauth_client_file(
     app: &AppHandle,
     config_dir: &Path,
@@ -349,16 +399,19 @@ fn install_google_workspace_oauth_client_file(
             );
         }
         copy_google_workspace_oauth_client_if_needed(&explicit_file, &destination)?;
+        normalize_google_workspace_oauth_client_file(&destination)?;
         return Ok(true);
     }
 
     if destination.exists() {
+        normalize_google_workspace_oauth_client_file(&destination)?;
         return Ok(true);
     }
 
     let bundled_file = bundled_google_workspace_oauth_client_path(app)?;
     if bundled_file.exists() {
         copy_google_workspace_oauth_client_if_needed(&bundled_file, &destination)?;
+        normalize_google_workspace_oauth_client_file(&destination)?;
         return Ok(true);
     }
 
@@ -390,8 +443,13 @@ fn apply_google_workspace_env(
     );
     if let Some(client_id) = google_workspace_oauth_client_id() {
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
-    }
-    if let Some(client_secret) = google_workspace_oauth_client_secret() {
+        if let Some(client_secret) = google_workspace_oauth_client_secret() {
+            command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
+        }
+    } else if let Some((client_id, client_secret)) =
+        google_workspace_saved_oauth_client_values(config_dir)
+    {
+        command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
     }
 }
@@ -927,6 +985,7 @@ fn google_workspace_oauth_client_json(client_id: &str, client_secret: &str) -> s
     serde_json::json!({
         "installed": {
             "client_id": client_id,
+            "project_id": GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID,
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
@@ -2074,8 +2133,9 @@ mod tests {
         connection_test_result, first_useful_process_line, google_workspace_config_dir,
         google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
         google_workspace_oauth_missing_message, google_workspace_readonly_auth_args,
-        search_connection_command, tool_policy_runtime_json, SpawnResult,
-        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        normalize_google_workspace_oauth_client_file, search_connection_command,
+        tool_policy_runtime_json, SpawnResult, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
@@ -2179,6 +2239,7 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
+                    "project_id": "tessera",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -2187,6 +2248,37 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn google_workspace_oauth_client_normalization_adds_project_id() {
+        let path =
+            std::env::temp_dir().join(format!("tessera-client-secret-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "installed": {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "redirect_uris": ["http://localhost"]
+                }
+            })
+            .to_string(),
+        )
+        .expect("write temp client");
+
+        normalize_google_workspace_oauth_client_file(&path).expect("normalize");
+        let normalized: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read temp"))
+                .expect("parse normalized");
+        assert_eq!(
+            normalized["installed"]["project_id"],
+            serde_json::Value::String("tessera".to_string())
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
