@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   createPlaywrightBrowserExecutor,
   isBrowserRuntimeUnavailableError,
+  resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
 
 let server: ReturnType<typeof Bun.serve>;
@@ -94,6 +95,22 @@ afterAll(async () => {
 });
 
 describe("createPlaywrightBrowserExecutor", () => {
+  test("resolves packaged browser runtime configuration from env", () => {
+    expect(
+      resolveBrowserRuntimeConfigFromEnv({
+        TESSERA_PLAYWRIGHT_BROWSERS_PATH: " /tmp/ms-playwright ",
+        TESSERA_BROWSER_EXECUTABLE_PATH: " /tmp/chrome ",
+      })
+    ).toEqual({
+      browsersPath: "/tmp/ms-playwright",
+      executablePath: "/tmp/chrome",
+    });
+  });
+
+  test("keeps browser runtime configuration empty when env is unset", () => {
+    expect(resolveBrowserRuntimeConfigFromEnv({})).toEqual({});
+  });
+
   test("opens a page and extracts visible text", async () => {
     await runIfBrowserAvailable(async (executor) => {
       if (!serverAvailable) return;

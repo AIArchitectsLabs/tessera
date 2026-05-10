@@ -853,8 +853,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let workflow_db_path = app_data_dir.join("workflow-runs.sqlite");
     let task_db_path = app_data_dir.join("tasks.sqlite");
     let curated_skills_dir = bin_dir.join("skills");
+    let playwright_browsers_dir = bin_dir.join("playwright-browsers");
 
-    let (mut rx, child) = app
+    let mut sidecar_command = app
         .shell()
         .sidecar("tessera-sidecar")
         .context("Could not create sidecar command")?
@@ -883,7 +884,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // pi-coding-agent resolves its package dir via dirname(process.execPath) when
         // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
         // Point it at binaries/ where package.json is kept alongside the sources.
-        .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref())
+        .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
+
+    if playwright_browsers_dir.exists() {
+        sidecar_command = sidecar_command.env(
+            "TESSERA_PLAYWRIGHT_BROWSERS_PATH",
+            playwright_browsers_dir.to_string_lossy().as_ref(),
+        );
+    }
+
+    let (mut rx, child) = sidecar_command
         .spawn()
         .context("Could not spawn sidecar")?;
 

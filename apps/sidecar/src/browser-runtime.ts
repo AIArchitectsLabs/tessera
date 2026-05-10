@@ -33,6 +33,8 @@ export interface PlaywrightBrowserExecutorOptions {
   artifactDir: string;
   profileDir: string;
   recipeDir: string;
+  browsersPath?: string;
+  executablePath?: string;
   headless?: boolean;
   now?: () => string;
 }
@@ -48,6 +50,12 @@ interface ManagedPage {
 export interface PlaywrightBrowserExecutor {
   executeBrowser(input: BrowserActionInput): Promise<BrowserToolResult>;
   dispose(): Promise<void>;
+}
+
+export interface BrowserRuntimeEnv extends Record<string, string | undefined> {
+  TESSERA_PLAYWRIGHT_BROWSERS_PATH?: string;
+  TESSERA_BROWSER_EXECUTABLE_PATH?: string;
+  TESSERA_PLAYWRIGHT_EXECUTABLE_PATH?: string;
 }
 
 function createId(prefix: string): string {
@@ -69,8 +77,22 @@ function validateHttpUrl(rawUrl: string): URL {
 function describePlaywrightLaunchError(error: unknown): BrowserRuntimeUnavailableError {
   const message = error instanceof Error ? error.message : String(error);
   return new BrowserRuntimeUnavailableError(
-    `Browser runtime unavailable. Install Playwright Chromium for local browser tests. ${message}`
+    `Browser runtime unavailable. Install Playwright Chromium for local browser tests or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH for packaged runtime. ${message}`
   );
+}
+
+export function resolveBrowserRuntimeConfigFromEnv(
+  env: BrowserRuntimeEnv = process.env
+): Pick<PlaywrightBrowserExecutorOptions, "browsersPath" | "executablePath"> {
+  const browsersPath = env.TESSERA_PLAYWRIGHT_BROWSERS_PATH?.trim();
+  const browserExecutablePath = env.TESSERA_BROWSER_EXECUTABLE_PATH?.trim();
+  const playwrightExecutablePath = env.TESSERA_PLAYWRIGHT_EXECUTABLE_PATH?.trim();
+  const executablePath = browserExecutablePath || playwrightExecutablePath;
+
+  return {
+    ...(browsersPath ? { browsersPath } : {}),
+    ...(executablePath ? { executablePath } : {}),
+  };
 }
 
 async function visibleText(page: Page): Promise<string> {
@@ -133,11 +155,15 @@ export function createPlaywrightBrowserExecutor(
     await mkdir(options.profileDir, { recursive: true });
     await mkdir(options.artifactDir, { recursive: true });
     await mkdir(options.recipeDir, { recursive: true });
+    if (options.browsersPath) {
+      process.env.PLAYWRIGHT_BROWSERS_PATH = options.browsersPath;
+    }
 
     try {
       const chromium = await loadChromium();
       context = await chromium.launchPersistentContext(options.profileDir, {
         headless: options.headless ?? true,
+        ...(options.executablePath ? { executablePath: options.executablePath } : {}),
         viewport: { width: 1280, height: 900 },
       });
       context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);

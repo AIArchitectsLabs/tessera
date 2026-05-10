@@ -6,13 +6,24 @@
  * Usage: bun run scripts/build-sidecar.ts
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const binDir = join(repoRoot, "apps/desktop/src-tauri/binaries");
 const googleWorkspaceOAuthClientFile = "google-workspace-oauth-client.json";
+const playwrightBrowsersDir = join(binDir, "playwright-browsers");
 
 function run(cmd: string, args: string[], cwd?: string): void {
   const proc = Bun.spawnSync([cmd, ...args], {
@@ -44,6 +55,13 @@ function verifyExecutable(path: string, args: string[], expected: string): void 
 function requireFile(path: string): string {
   if (!existsSync(path) || statSync(path).size === 0) {
     throw new Error(`Required file is missing or empty: ${path}`);
+  }
+  return path;
+}
+
+function requireDirectory(path: string): string {
+  if (!existsSync(path) || !statSync(path).isDirectory()) {
+    throw new Error(`Required directory is missing: ${path}`);
   }
   return path;
 }
@@ -89,6 +107,47 @@ function writeGoogleWorkspaceOAuthClient(): void {
   console.log(`[build-sidecar] wrote Google Workspace OAuth client → ${destination}`);
 }
 
+function defaultPlaywrightBrowserCacheDir(): string {
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library/Caches/ms-playwright");
+  }
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim();
+    if (!localAppData) {
+      throw new Error("LOCALAPPDATA is required to locate the Playwright browser cache on Windows");
+    }
+    return join(localAppData, "ms-playwright");
+  }
+  return join(homedir(), ".cache/ms-playwright");
+}
+
+function resolvePlaywrightBrowserSourceDir(): string {
+  const explicitSource = process.env.TESSERA_PLAYWRIGHT_BROWSERS_SOURCE?.trim();
+  if (explicitSource) return explicitSource;
+
+  const playwrightBrowsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH?.trim();
+  if (playwrightBrowsersPath && playwrightBrowsersPath !== "0") {
+    return playwrightBrowsersPath;
+  }
+
+  return defaultPlaywrightBrowserCacheDir();
+}
+
+function maybeCopyPlaywrightBrowsers(): void {
+  if (process.env.TESSERA_BUNDLE_PLAYWRIGHT !== "1") {
+    console.log(
+      "[build-sidecar] Playwright browsers not bundled; set TESSERA_BUNDLE_PLAYWRIGHT=1 to package local Chromium"
+    );
+    return;
+  }
+
+  const sourceDir = resolvePlaywrightBrowserSourceDir();
+  requireDirectory(sourceDir);
+  rmSync(playwrightBrowsersDir, { recursive: true, force: true });
+  cpSync(sourceDir, playwrightBrowsersDir, { recursive: true });
+  console.log(`[build-sidecar] copied Playwright browsers → ${playwrightBrowsersDir}`);
+}
+
 // Detect the host triple from rustc
 const rustcOut = capture("rustc", ["-vV"]);
 const tripleMatch = rustcOut.match(/^host:\s+(.+)$/m);
@@ -131,6 +190,7 @@ if (!isWindows) chmodSync(gwsDst, 0o755);
 verifyExecutable(gwsDst, ["--version"], "gws 0.22.5");
 console.log(`[build-sidecar] copied gws    → ${gwsDst}`);
 writeGoogleWorkspaceOAuthClient();
+maybeCopyPlaywrightBrowsers();
 
 // pi-coding-agent reads its own package.json at module init time.
 // When running as a compiled Bun binary it resolves that path via

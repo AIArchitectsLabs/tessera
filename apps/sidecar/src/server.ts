@@ -55,7 +55,10 @@ import {
   runWorkflow,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
-import { createPlaywrightBrowserExecutor } from "./browser-runtime.js";
+import {
+  createPlaywrightBrowserExecutor,
+  resolveBrowserRuntimeConfigFromEnv,
+} from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
 import {
@@ -83,6 +86,7 @@ const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
   recipeDir: join(TESSERA_DATA_DIR, "browser-recipes"),
+  ...resolveBrowserRuntimeConfigFromEnv(),
 });
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
