@@ -320,9 +320,12 @@ export function createPlaywrightBrowserExecutor(
             artifacts: managed.artifacts,
           })
         : undefined;
+    const recipeSummary = recipeProposal
+      ? ` Drafted browser recipe proposal ${recipeProposal.id} for ${recipeProposal.domain}.`
+      : "";
     return {
       action: "close",
-      summary: `Closed browser page ${managed.id}`,
+      summary: `Closed browser page ${managed.id}.${recipeSummary}`,
       sessionId: managed.sessionId,
       pageId: managed.id,
       metadata: {

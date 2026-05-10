@@ -154,6 +154,8 @@ describe("createPlaywrightBrowserExecutor", () => {
 
       const closed = await executor.executeBrowser({ action: "close", pageId: opened.pageId });
       expect(closed.summary).toContain("Closed");
+      expect(closed.summary).toContain("Drafted browser recipe proposal");
+      expect(closed.metadata?.recipeProposal).toBeTruthy();
     });
   }, 20_000);
 
