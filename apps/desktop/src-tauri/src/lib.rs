@@ -487,6 +487,38 @@ fn google_workspace_auth_status_connected(result: &SpawnResult) -> bool {
         .unwrap_or(false)
 }
 
+fn google_workspace_process_message(result: &SpawnResult) -> String {
+    let combined = format!("{}\n{}", result.stderr, result.stdout);
+    if let Some(message) = json_object_from_process_output(&combined)
+        .and_then(|value| value.get("error").cloned())
+        .and_then(|error| error.get("message").cloned())
+        .and_then(|message| message.as_str().map(str::to_string))
+    {
+        if message.contains("dns error") || message.contains("failed to lookup address") {
+            return "Google API could not be reached. Check your internet connection.".to_string();
+        }
+        if message.contains("Access denied") || message.contains("No credentials") {
+            return "Google sign-in needs to be refreshed.".to_string();
+        }
+        return message
+            .lines()
+            .next()
+            .unwrap_or("Connection test failed")
+            .to_string();
+    }
+
+    combined
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && !line.starts_with("Using keyring backend")
+                && !line.starts_with("Warning:")
+        })
+        .unwrap_or("Connection test failed")
+        .to_string()
+}
+
 fn extract_google_oauth_url(output: &str) -> Option<String> {
     output.split_whitespace().find_map(|part| {
         let candidate = part.trim_matches(|ch: char| {
@@ -1945,28 +1977,60 @@ async fn google_workspace_disconnect(
 async fn google_workspace_health(
     app: AppHandle,
 ) -> Result<Vec<GoogleWorkspaceServiceHealth>, String> {
-    let checks: [(&str, &[&str]); 4] = [
-        ("Calendar", &["gcal", "list", "--limit", "1"]),
-        ("Gmail", &["mail", "list", "--limit", "1"]),
-        ("Drive", &["drive", "search", "*", "--limit", "1"]),
-        ("Contacts", &["contacts", "lookup", "test", "--limit", "1"]),
+    let checks: [(&str, Vec<&str>); 4] = [
+        (
+            "Calendar",
+            vec![
+                "calendar",
+                "calendarList",
+                "list",
+                "--params",
+                "{\"maxResults\":1}",
+            ],
+        ),
+        (
+            "Gmail",
+            vec![
+                "gmail",
+                "users",
+                "messages",
+                "list",
+                "--params",
+                "{\"userId\":\"me\",\"maxResults\":1}",
+            ],
+        ),
+        (
+            "Drive",
+            vec![
+                "drive",
+                "files",
+                "list",
+                "--params",
+                "{\"pageSize\":1,\"fields\":\"files(id,name,mimeType)\"}",
+            ],
+        ),
+        (
+            "Contacts",
+            vec![
+                "people",
+                "people",
+                "connections",
+                "list",
+                "--params",
+                "{\"resourceName\":\"people/me\",\"pageSize\":1}",
+            ],
+        ),
     ];
     let mut results = Vec::with_capacity(6);
     let mut drive_ok = false;
 
     for (service, args) in checks {
-        let result = run_workspace_cli_command(&app, args, None).await?;
+        let result = run_workspace_cli_command(&app, &args, None).await?;
         let ok = result.exit_code == 0;
         let message = if ok {
             "Ready".to_string()
         } else {
-            result
-                .stderr
-                .trim()
-                .split('\n')
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("Connection test failed")
-                .to_string()
+            google_workspace_process_message(&result)
         };
         if service == "Drive" {
             drive_ok = ok;
@@ -1979,9 +2043,9 @@ async fn google_workspace_health(
     }
 
     let drive_message = if drive_ok {
-        "Available through Drive reads.".to_string()
+        "Ready through Drive file access.".to_string()
     } else {
-        "Drive access is required.".to_string()
+        "Docs and Sheets use Drive file access. Fix Drive first, then test again.".to_string()
     };
     results.push(GoogleWorkspaceServiceHealth {
         service: "Docs".to_string(),
@@ -2441,6 +2505,26 @@ mod tests {
             Some(url.to_string())
         );
         assert_eq!(super::extract_google_oauth_url("No URL here"), None);
+    }
+
+    #[test]
+    fn google_workspace_process_message_skips_keyring_noise() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "error": {
+                    "message": "HTTP request failed: dns error: failed to lookup address information"
+                }
+            })
+            .to_string(),
+            stderr: "Using keyring backend: keyring\n".to_string(),
+            exit_code: 5,
+            signal: None,
+            duration_ms: 1,
+        };
+        assert_eq!(
+            super::google_workspace_process_message(&result),
+            "Google API could not be reached. Check your internet connection."
+        );
     }
 
     #[test]
