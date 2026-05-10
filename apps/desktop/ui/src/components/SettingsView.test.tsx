@@ -363,9 +363,7 @@ describe("SettingsView workspace integration flow", () => {
       expect(within(section).getByText(service)).toBeTruthy();
     }
     expect(
-      within(section).getByText(
-        /Tessera stores the Workspace session in its app config/
-      )
+      within(section).getByText(/Tessera stores the Workspace session in its app config/)
     ).toBeTruthy();
     expect(within(section).queryByText("API key")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Save" })).toBeNull();

@@ -54,14 +54,7 @@ interface GoogleWorkspaceServiceHealth {
   message: string;
 }
 
-const GOOGLE_WORKSPACE_CAPABILITIES = [
-  "Calendar",
-  "Gmail",
-  "Drive",
-  "Contacts",
-  "Docs",
-  "Sheets",
-];
+const GOOGLE_WORKSPACE_CAPABILITIES = ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"];
 
 async function invokeWithTimeout<T>(
   command: Parameters<typeof invoke>[0],
