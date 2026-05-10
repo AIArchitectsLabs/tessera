@@ -17,10 +17,8 @@ mod model_settings;
 // Compile-time target triple injected by build.rs via `cargo:rustc-env`.
 const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
 const EXE_EXT: &str = if cfg!(windows) { ".exe" } else { "" };
-const GOOGLE_WORKSPACE_OAUTH_CLIENT_ID: Option<&str> =
-    option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_ID");
-const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET: Option<&str> =
-    option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET");
+const GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_CLIENT_ID";
+const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -265,10 +263,26 @@ fn google_workspace_config_dir(app_config_dir: &Path) -> PathBuf {
     app_config_dir.join("google-workspace")
 }
 
-fn google_workspace_oauth_configured() -> bool {
-    GOOGLE_WORKSPACE_OAUTH_CLIENT_ID
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
+fn google_workspace_oauth_client_id() -> Option<String> {
+    runtime_or_build_env(
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_ID"),
+    )
+}
+
+fn google_workspace_oauth_client_secret() -> Option<String> {
+    runtime_or_build_env(
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        option_env!("TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET"),
+    )
+}
+
+fn runtime_or_build_env(name: &str, build_value: Option<&str>) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .or_else(|| build_value.map(str::to_string))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn apply_google_workspace_env(
@@ -285,15 +299,11 @@ fn apply_google_workspace_env(
         "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
         config_dir.to_string_lossy().as_ref(),
     );
-    if let Some(client_id) = GOOGLE_WORKSPACE_OAUTH_CLIENT_ID.map(str::trim) {
-        if !client_id.is_empty() {
-            command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
-        }
+    if let Some(client_id) = google_workspace_oauth_client_id() {
+        command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
     }
-    if let Some(client_secret) = GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET.map(str::trim) {
-        if !client_secret.is_empty() {
-            command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
-        }
+    if let Some(client_secret) = google_workspace_oauth_client_secret() {
+        command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
     }
 }
 
@@ -1429,15 +1439,6 @@ async fn integration_connection_test(
 async fn google_workspace_connect(
     app: AppHandle,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
-    if !google_workspace_oauth_configured() {
-        return Ok(integration_settings::IntegrationConnectionTestResult {
-            ok: false,
-            message: "Google Workspace OAuth client is not configured for this build.".to_string(),
-            provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
-            search_provider: None,
-        });
-    }
-
     let login =
         run_google_workspace_cli_command(&app, &google_workspace_readonly_auth_args()).await?;
     if login.exit_code != 0 {
@@ -1910,6 +1911,14 @@ mod tests {
                 "--services",
                 "calendar,gmail,drive,people,docs,sheets"
             ]
+        );
+    }
+
+    #[test]
+    fn runtime_or_build_env_prefers_non_empty_runtime_values() {
+        assert_eq!(
+            super::runtime_or_build_env("TESSERA_TEST_MISSING_ENV", Some(" build-value ")),
+            Some("build-value".to_string())
         );
     }
 
