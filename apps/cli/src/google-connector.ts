@@ -329,13 +329,13 @@ function normalizeGcalEvent(
   return normalized;
 }
 
-function listMailMessages(
+async function listMailMessages(
   options: {
     runGwsCli: (args: string[]) => Promise<CommandResult>;
   },
   request: { limit: number; query?: string }
 ): Promise<MailListResult> {
-  return runGwsJson(options, [
+  const payload = await runGwsJson(options, [
     "gmail",
     "users",
     "messages",
@@ -346,11 +346,43 @@ function listMailMessages(
       maxResults: request.limit,
       ...(request.query ? { q: request.query } : {}),
     }),
-  ]).then((payload) =>
-    MailListResultSchema.parse({
-      messages: extractArray(payload, ["messages"]).map((message) => normalizeMailSummary(message)),
-    })
+  ]);
+  const messages = await Promise.all(
+    extractArray(payload, ["messages"])
+      .slice(0, request.limit)
+      .map(async (message) => {
+        const id = stringField(message, "id");
+        if (!id) return message;
+        return hydrateMailSummary(options, id);
+      })
   );
+
+  return MailListResultSchema.parse({
+    messages: messages.map((message) => normalizeMailSummary(message)),
+  });
+}
+
+async function hydrateMailSummary(
+  options: {
+    runGwsCli: (args: string[]) => Promise<CommandResult>;
+  },
+  messageId: string
+): Promise<Record<string, unknown>> {
+  const payload = await runGwsJson(options, [
+    "gmail",
+    "users",
+    "messages",
+    "get",
+    "--params",
+    JSON.stringify({
+      userId: "me",
+      id: messageId,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From", "Date", "To", "Cc"],
+    }),
+  ]);
+
+  return isRecord(payload) ? payload : { id: messageId };
 }
 
 function normalizeMailSummary(item: Record<string, unknown>): Record<string, unknown> {

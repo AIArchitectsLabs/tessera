@@ -294,24 +294,33 @@ describe("workspace cli shell commands", () => {
   });
 
   test("returns normalized mail list results with query filters", async () => {
-    let capturedArgs: string[] = [];
+    const calls: string[][] = [];
     const result = await executeCliCommand(["mail", "list", "--limit", "3", "--query", "project"], {
       runGwsCli: async (args) => {
-        capturedArgs = args;
+        calls.push(args);
+        if (args.includes("list")) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              messages: [{ id: "msg-1" }],
+            }),
+            stderr: "",
+          };
+        }
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            messages: [
-              {
-                id: "msg-1",
-                threadId: "thread-1",
-                subject: "Project update",
-                from: "Alex <alex@example.com>",
-                date: "2026-05-09T09:00:00Z",
-                snippet: "Status is green.",
-                labelIds: ["INBOX"],
-              },
-            ],
+            id: "msg-1",
+            threadId: "thread-1",
+            payload: {
+              headers: [
+                { name: "Subject", value: "Project update" },
+                { name: "From", value: "Alex <alex@example.com>" },
+                { name: "Date", value: "2026-05-09T09:00:00Z" },
+              ],
+            },
+            snippet: "Status is green.",
+            labelIds: ["INBOX"],
           }),
           stderr: "",
         };
@@ -319,12 +328,22 @@ describe("workspace cli shell commands", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
-    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    const listArgs = calls.find((call) => call.includes("list")) ?? [];
+    const getArgs = calls.find((call) => call.includes("get")) ?? [];
+    expect(listArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
+    const params = JSON.parse(listArgs[listArgs.indexOf("--params") + 1] ?? "{}");
     expect(params).toEqual({
       userId: "me",
       maxResults: 3,
       q: "project",
+    });
+    expect(getArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "get"]);
+    const getParams = JSON.parse(getArgs[getArgs.indexOf("--params") + 1] ?? "{}");
+    expect(getParams).toMatchObject({
+      userId: "me",
+      id: "msg-1",
+      format: "metadata",
+      metadataHeaders: ["Subject", "From", "Date", "To", "Cc"],
     });
     expect(JSON.parse(result.stdout)).toEqual({
       messages: [
@@ -341,25 +360,32 @@ describe("workspace cli shell commands", () => {
     });
   });
 
-  test("returns normalized mail search results", async () => {
-    let capturedArgs: string[] = [];
-    const result = await executeCliCommand(["mail", "search", "project update", "--limit", "5"], {
+  test("hydrates mail list summaries with metadata", async () => {
+    const calls: string[][] = [];
+    const result = await executeCliCommand(["mail", "list", "--limit", "2"], {
       runGwsCli: async (args) => {
-        capturedArgs = args;
+        calls.push(args);
+        if (args.includes("list")) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ messages: [{ id: "m1" }, { id: "m2" }] }),
+            stderr: "",
+          };
+        }
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            messages: [
-              {
-                id: "msg-2",
-                threadId: "thread-2",
-                subject: "Project update",
-                from: "Alex <alex@example.com>",
-                date: "2026-05-09T09:00:00Z",
-                snippet: "Status is green.",
-                labelIds: ["INBOX", "UNREAD"],
-              },
-            ],
+            id: args[args.indexOf("--params") + 1]?.includes("m1") ? "m1" : "m2",
+            threadId: "t1",
+            payload: {
+              headers: [
+                { name: "Subject", value: "Meeting prep" },
+                { name: "From", value: "Alex <alex@example.com>" },
+                { name: "Date", value: "Sat, 09 May 2026 09:00:00 +0000" },
+              ],
+            },
+            snippet: "Review pricing",
+            labelIds: ["INBOX"],
           }),
           stderr: "",
         };
@@ -367,8 +393,52 @@ describe("workspace cli shell commands", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
-    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    expect(calls.filter((call) => call.includes("get"))).toHaveLength(2);
+    expect(JSON.parse(result.stdout).messages[0]).toMatchObject({
+      id: "m1",
+      subject: "Meeting prep",
+      from: "Alex <alex@example.com>",
+    });
+  });
+
+  test("returns normalized mail search results", async () => {
+    const calls: string[][] = [];
+    const result = await executeCliCommand(["mail", "search", "project update", "--limit", "5"], {
+      runGwsCli: async (args) => {
+        calls.push(args);
+        if (args.includes("list")) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              messages: [{ id: "msg-2" }],
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            id: "msg-2",
+            threadId: "thread-2",
+            payload: {
+              headers: [
+                { name: "Subject", value: "Project update" },
+                { name: "From", value: "Alex <alex@example.com>" },
+                { name: "Date", value: "2026-05-09T09:00:00Z" },
+              ],
+            },
+            snippet: "Status is green.",
+            labelIds: ["INBOX", "UNREAD"],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const listArgs = calls.find((call) => call.includes("list")) ?? [];
+    expect(listArgs.slice(0, 4)).toEqual(["gmail", "users", "messages", "list"]);
+    const params = JSON.parse(listArgs[listArgs.indexOf("--params") + 1] ?? "{}");
     expect(params).toEqual({
       userId: "me",
       maxResults: 5,

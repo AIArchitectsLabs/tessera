@@ -729,7 +729,7 @@ function parseGcalListArgs(args: string[]): { calendarId: string; limit: number 
       if (!value || !Number.isInteger(parsed) || parsed <= 0) {
         throw new CliCommandError("Usage: gcal list [--limit <n>] [--calendar <id>]");
       }
-      limit = parsed;
+      limit = Math.min(parsed, 25);
       index += 1;
       continue;
     }
@@ -790,7 +790,7 @@ function parseMailListArgs(args: string[]): { limit: number; query?: string } {
       if (!Number.isInteger(parsed) || parsed <= 0) {
         throw new CliCommandError("Usage: mail list [--limit <n>] [--query <query>]");
       }
-      limit = parsed;
+      limit = Math.min(parsed, 25);
       index += 1;
       continue;
     }
