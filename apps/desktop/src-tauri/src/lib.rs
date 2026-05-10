@@ -19,6 +19,9 @@ const TARGET_TRIPLE: &str = env!("TESSERA_TARGET_TRIPLE");
 const EXE_EXT: &str = if cfg!(windows) { ".exe" } else { "" };
 const GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_CLIENT_ID";
 const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET";
+const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE";
+const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
+const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -259,8 +262,16 @@ fn bundled_gws_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(binaries_dir(app)?.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}")))
 }
 
+fn bundled_google_workspace_oauth_client_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
+    Ok(binaries_dir(app)?.join(GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE))
+}
+
 fn google_workspace_config_dir(app_config_dir: &Path) -> PathBuf {
     app_config_dir.join("google-workspace")
+}
+
+fn google_workspace_gws_client_secret_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE)
 }
 
 fn google_workspace_oauth_client_id() -> Option<String> {
@@ -277,12 +288,90 @@ fn google_workspace_oauth_client_secret() -> Option<String> {
     )
 }
 
+fn google_workspace_oauth_client_file() -> Option<PathBuf> {
+    runtime_or_build_env(
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV,
+        option_env!("TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE"),
+    )
+    .map(PathBuf::from)
+}
+
+fn google_workspace_oauth_client_env_configured() -> bool {
+    google_workspace_oauth_client_id().is_some() && google_workspace_oauth_client_secret().is_some()
+}
+
 fn runtime_or_build_env(name: &str, build_value: Option<&str>) -> Option<String> {
     std::env::var(name)
         .ok()
         .or_else(|| build_value.map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn copy_google_workspace_oauth_client_if_needed(
+    source: &Path,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    if destination.exists() {
+        let existing = fs::read(destination)
+            .with_context(|| format!("Could not read {}", destination.display()))?;
+        let incoming =
+            fs::read(source).with_context(|| format!("Could not read {}", source.display()))?;
+        if existing == incoming {
+            return Ok(());
+        }
+    }
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "Could not install Google Workspace OAuth client from {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn install_google_workspace_oauth_client_file(
+    app: &AppHandle,
+    config_dir: &Path,
+) -> anyhow::Result<bool> {
+    if google_workspace_oauth_client_env_configured() {
+        return Ok(true);
+    }
+
+    let destination = google_workspace_gws_client_secret_path(config_dir);
+    if let Some(explicit_file) = google_workspace_oauth_client_file() {
+        if !explicit_file.exists() {
+            bail!(
+                "{} points to a missing Google Workspace OAuth client file: {}",
+                GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV,
+                explicit_file.display()
+            );
+        }
+        copy_google_workspace_oauth_client_if_needed(&explicit_file, &destination)?;
+        return Ok(true);
+    }
+
+    if destination.exists() {
+        return Ok(true);
+    }
+
+    let bundled_file = bundled_google_workspace_oauth_client_path(app)?;
+    if bundled_file.exists() {
+        copy_google_workspace_oauth_client_if_needed(&bundled_file, &destination)?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn google_workspace_oauth_missing_message() -> String {
+    format!(
+        "Google Workspace OAuth client is not bundled for this build. Provide {} and {} at build time, or bundle {}.",
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE
+    )
 }
 
 fn apply_google_workspace_env(
@@ -753,6 +842,8 @@ async fn run_workspace_cli_command(
     let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
     let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
     fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    install_google_workspace_oauth_client_file(app, &google_workspace_config_dir)
+        .map_err(|error| error.to_string())?;
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(cli_path);
     command.args(args);
@@ -786,6 +877,8 @@ async fn run_google_workspace_cli_command(
         .map_err(|error| error.to_string())?;
     let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
     fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    install_google_workspace_oauth_client_file(app, &google_workspace_config_dir)
+        .map_err(|error| error.to_string())?;
 
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(gws_path.clone());
@@ -1439,6 +1532,23 @@ async fn integration_connection_test(
 async fn google_workspace_connect(
     app: AppHandle,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    if !install_google_workspace_oauth_client_file(&app, &google_workspace_config_dir)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: google_workspace_oauth_missing_message(),
+            provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
+            search_provider: None,
+        });
+    }
+
     let login =
         run_google_workspace_cli_command(&app, &google_workspace_readonly_auth_args()).await?;
     if login.exit_code != 0 {
@@ -1819,8 +1929,10 @@ pub fn run() {
 mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_workspace_config_dir,
+        google_workspace_gws_client_secret_path, google_workspace_oauth_missing_message,
         google_workspace_readonly_auth_args, search_connection_command, tool_policy_runtime_json,
-        SpawnResult,
+        SpawnResult, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
@@ -1898,6 +2010,23 @@ mod tests {
             google_workspace_config_dir(&app_config),
             std::path::PathBuf::from("/tmp/tessera-config/google-workspace")
         );
+    }
+
+    #[test]
+    fn google_workspace_oauth_client_secret_file_is_scoped_to_gws_config() {
+        let config = std::path::PathBuf::from("/tmp/tessera-config/google-workspace");
+        assert_eq!(
+            google_workspace_gws_client_secret_path(&config),
+            std::path::PathBuf::from("/tmp/tessera-config/google-workspace/client_secret.json")
+        );
+    }
+
+    #[test]
+    fn google_workspace_oauth_missing_message_names_build_input() {
+        let message = google_workspace_oauth_missing_message();
+        assert!(message.contains(GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV));
+        assert!(message.contains(GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV));
+        assert!(message.contains("google-workspace-oauth-client.json"));
     }
 
     #[test]

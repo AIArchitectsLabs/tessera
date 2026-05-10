@@ -6,12 +6,13 @@
  * Usage: bun run scripts/build-sidecar.ts
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const binDir = join(repoRoot, "apps/desktop/src-tauri/binaries");
+const googleWorkspaceOAuthClientFile = "google-workspace-oauth-client.json";
 
 function run(cmd: string, args: string[], cwd?: string): void {
   const proc = Bun.spawnSync([cmd, ...args], {
@@ -55,6 +56,38 @@ function ensureGwsBinary(path: string): void {
   run("node", [join(repoRoot, "node_modules/@googleworkspace/cli/install.js")]);
 }
 
+function writeGoogleWorkspaceOAuthClient(): void {
+  const destination = join(binDir, googleWorkspaceOAuthClientFile);
+  const explicitFile = process.env.TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE?.trim();
+  if (explicitFile) {
+    copyFileSync(requireFile(explicitFile), destination);
+    console.log(`[build-sidecar] copied Google Workspace OAuth client → ${destination}`);
+    return;
+  }
+
+  const clientId = process.env.TESSERA_GOOGLE_WORKSPACE_CLIENT_ID?.trim();
+  const clientSecret = process.env.TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) {
+    console.log(
+      "[build-sidecar] Google Workspace OAuth client not bundled; set TESSERA_GOOGLE_WORKSPACE_CLIENT_ID and TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET for packaged sign-in"
+    );
+    return;
+  }
+
+  const client = {
+    installed: {
+      client_id: clientId,
+      client_secret: clientSecret,
+      auth_uri: "https://accounts.google.com/o/oauth2/auth",
+      token_uri: "https://oauth2.googleapis.com/token",
+      auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+      redirect_uris: ["http://localhost"],
+    },
+  };
+  writeFileSync(destination, `${JSON.stringify(client, null, 2)}\n`, { mode: 0o600 });
+  console.log(`[build-sidecar] wrote Google Workspace OAuth client → ${destination}`);
+}
+
 // Detect the host triple from rustc
 const rustcOut = capture("rustc", ["-vV"]);
 const tripleMatch = rustcOut.match(/^host:\s+(.+)$/m);
@@ -96,6 +129,7 @@ copyFileSync(gwsSrc, gwsDst);
 if (!isWindows) chmodSync(gwsDst, 0o755);
 verifyExecutable(gwsDst, ["--version"], "gws 0.22.5");
 console.log(`[build-sidecar] copied gws    → ${gwsDst}`);
+writeGoogleWorkspaceOAuthClient();
 
 // pi-coding-agent reads its own package.json at module init time.
 // When running as a compiled Bun binary it resolves that path via
