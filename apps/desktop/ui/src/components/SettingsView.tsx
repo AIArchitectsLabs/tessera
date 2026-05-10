@@ -48,6 +48,21 @@ interface StatusMessage {
   tone: StatusTone;
 }
 
+interface GoogleWorkspaceServiceHealth {
+  service: string;
+  ok: boolean;
+  message: string;
+}
+
+const GOOGLE_WORKSPACE_CAPABILITIES = [
+  "Calendar",
+  "Gmail",
+  "Drive",
+  "Contacts",
+  "Docs",
+  "Sheets",
+];
+
 async function invokeWithTimeout<T>(
   command: Parameters<typeof invoke>[0],
   args?: Parameters<typeof invoke>[1],
@@ -75,7 +90,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("openai");
   const [selectedIntegration, setSelectedIntegration] =
-    useState<IntegrationProvider>("google-calendar");
+    useState<IntegrationProvider>("google-workspace");
   const [selectedSearchProvider, setSelectedSearchProvider] =
     useState<SearchProvider>("brave-search");
   const [searchMode, setSearchMode] = useState<SearchMode>("auto");
@@ -86,6 +101,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [searchApiKey, setSearchApiKey] = useState("");
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<StatusMessage | null>(null);
+  const [googleWorkspaceHealth, setGoogleWorkspaceHealth] = useState<
+    GoogleWorkspaceServiceHealth[]
+  >([]);
   const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeModelAction, setActiveModelAction] = useState<"remove" | "save" | "test" | null>(
@@ -151,7 +169,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }, []);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const hasIntegrationCredential = integrations?.providers.googleCalendar.hasCredential ?? false;
+  const hasIntegrationCredential =
+    integrations?.providers.googleWorkspace?.hasCredential ??
+    integrations?.providers.googleCalendar.hasCredential ??
+    false;
   const hasSearchCredential =
     searchProviderSettings(integrations, selectedSearchProvider)?.hasCredential ?? false;
   const integrationAllowsCredentials = integrationProviderSupportsCredential(selectedIntegration);
@@ -175,6 +196,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
   function hydrateFromIntegrations(loaded: IntegrationSettingsRead) {
     setIntegrations(loaded);
+    if (
+      !(
+        loaded.providers.googleWorkspace?.hasCredential ??
+        loaded.providers.googleCalendar.hasCredential
+      )
+    ) {
+      setGoogleWorkspaceHealth([]);
+    }
     setSearchMode(loaded.search.mode);
     setAllowKeylessFallback(loaded.search.allowKeylessFallback);
     setSelectedSearchProvider((current) =>
@@ -182,6 +211,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     );
     setIntegrationApiKey("");
     setSearchApiKey("");
+  }
+
+  async function refreshGoogleWorkspaceHealth(requestId: number) {
+    const health =
+      await invokeWithTimeout<GoogleWorkspaceServiceHealth[]>("google_workspace_health");
+    if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+      setGoogleWorkspaceHealth(health);
+    }
   }
 
   function handleProviderSelect(provider: ModelProvider) {
@@ -411,6 +448,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "info" });
+      if (result.ok && !integrationAllowsCredentials) {
+        await refreshGoogleWorkspaceHealth(requestId);
+      }
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
@@ -446,6 +486,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         if (mountedRef.current && integrationRequestIdRef.current === requestId) {
           hydrateFromIntegrations(next);
         }
+        await refreshGoogleWorkspaceHealth(requestId);
       }
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -473,6 +514,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       hydrateFromIntegrations(next);
+      setGoogleWorkspaceHealth([]);
       setIntegrationStatus({ message: "Google Workspace disconnected.", tone: "success" });
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -1043,8 +1085,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 </div>
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  Google Workspace uses the bundled CLI for Calendar, Gmail, Drive, Contacts, Docs,
-                  and Sheets.
+                  {hasIntegrationCredential
+                    ? "Connected with read-only access."
+                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."}
                 </div>
 
                 {integrationAllowsCredentials ? (
@@ -1065,8 +1108,48 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   </label>
                 ) : (
                   <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
-                    Connect with the Google Workspace CLI auth flow, then test the connection here.
-                    Tessera does not store separate API keys for individual Workspace services.
+                    Connect with Google sign-in. Tessera stores the Workspace session in its app
+                    config and does not store separate API keys for individual Workspace services.
+                  </div>
+                )}
+
+                {!integrationAllowsCredentials && (
+                  <div className="rounded-xl border border-border bg-background px-4 py-3">
+                    <div className="mb-2 text-sm font-medium text-foreground">
+                      Workspace services
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {GOOGLE_WORKSPACE_CAPABILITIES.map((service) => {
+                        const health = googleWorkspaceHealth.find(
+                          (item) => item.service === service
+                        );
+                        const message = health
+                          ? health.message
+                          : hasIntegrationCredential
+                            ? "Not checked"
+                            : "Connect required";
+                        return (
+                          <div
+                            key={service}
+                            className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 px-3 py-2"
+                          >
+                            <span className="text-sm font-medium text-foreground">{service}</span>
+                            <span
+                              className={cn(
+                                "text-xs",
+                                health
+                                  ? health.ok
+                                    ? "text-emerald-700"
+                                    : "text-destructive"
+                                  : "text-muted-foreground"
+                              )}
+                            >
+                              {message}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 

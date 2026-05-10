@@ -711,6 +711,14 @@ struct SpawnResult {
     duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleWorkspaceServiceHealth {
+    service: String,
+    ok: bool,
+    message: String,
+}
+
 #[tauri::command]
 async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, String> {
     let body = r#"{"binary":"workspace-cli","args":["ping"]}"#;
@@ -786,6 +794,16 @@ async fn run_google_workspace_cli_command(
 
 async fn google_workspace_auth_status(app: &AppHandle) -> Result<SpawnResult, String> {
     run_google_workspace_cli_command(app, &["auth", "status"]).await
+}
+
+fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
+    vec![
+        "auth",
+        "login",
+        "--readonly",
+        "--services",
+        "calendar,gmail,drive,people,docs,sheets",
+    ]
 }
 
 #[tauri::command]
@@ -1416,17 +1434,18 @@ async fn google_workspace_connect(
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
             message: "Google Workspace OAuth client is not configured for this build.".to_string(),
-            provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+            provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
             search_provider: None,
         });
     }
 
-    let login = run_google_workspace_cli_command(&app, &["auth", "login"]).await?;
+    let login =
+        run_google_workspace_cli_command(&app, &google_workspace_readonly_auth_args()).await?;
     if login.exit_code != 0 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
             message: first_useful_process_line(&login),
-            provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+            provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
             search_provider: None,
         });
     }
@@ -1445,7 +1464,7 @@ async fn google_workspace_connect(
         } else {
             first_useful_process_line(&status)
         },
-        provider: Some(integration_settings::IntegrationProvider::GoogleCalendar),
+        provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
     })
 }
@@ -1460,6 +1479,62 @@ async fn google_workspace_disconnect(
     }
     integration_settings::set_google_workspace_connected(&app, false)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn google_workspace_health(
+    app: AppHandle,
+) -> Result<Vec<GoogleWorkspaceServiceHealth>, String> {
+    let checks: [(&str, &[&str]); 4] = [
+        ("Calendar", &["gcal", "list", "--limit", "1"]),
+        ("Gmail", &["mail", "list", "--limit", "1"]),
+        ("Drive", &["drive", "search", "*", "--limit", "1"]),
+        ("Contacts", &["contacts", "lookup", "test", "--limit", "1"]),
+    ];
+    let mut results = Vec::with_capacity(6);
+    let mut drive_ok = false;
+
+    for (service, args) in checks {
+        let result = run_workspace_cli_command(&app, args, None).await?;
+        let ok = result.exit_code == 0;
+        let message = if ok {
+            "Ready".to_string()
+        } else {
+            result
+                .stderr
+                .trim()
+                .split('\n')
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("Connection test failed")
+                .to_string()
+        };
+        if service == "Drive" {
+            drive_ok = ok;
+        }
+        results.push(GoogleWorkspaceServiceHealth {
+            service: service.to_string(),
+            ok,
+            message,
+        });
+    }
+
+    let drive_message = if drive_ok {
+        "Available through Drive reads.".to_string()
+    } else {
+        "Drive access is required.".to_string()
+    };
+    results.push(GoogleWorkspaceServiceHealth {
+        service: "Docs".to_string(),
+        ok: drive_ok,
+        message: drive_message.clone(),
+    });
+    results.push(GoogleWorkspaceServiceHealth {
+        service: "Sheets".to_string(),
+        ok: drive_ok,
+        message: drive_message,
+    });
+
+    Ok(results)
 }
 
 fn search_connection_command(
@@ -1683,6 +1758,7 @@ pub fn run() {
             inbox_snooze,
             google_workspace_connect,
             google_workspace_disconnect,
+            google_workspace_health,
             integration_connection_test,
             integration_credential_delete,
             integration_settings_get,
@@ -1743,7 +1819,8 @@ pub fn run() {
 mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_workspace_config_dir,
-        search_connection_command, tool_policy_runtime_json, SpawnResult,
+        google_workspace_readonly_auth_args, search_connection_command, tool_policy_runtime_json,
+        SpawnResult,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
@@ -1820,6 +1897,20 @@ mod tests {
         assert_eq!(
             google_workspace_config_dir(&app_config),
             std::path::PathBuf::from("/tmp/tessera-config/google-workspace")
+        );
+    }
+
+    #[test]
+    fn google_workspace_auth_uses_readonly_multi_service_profile() {
+        assert_eq!(
+            google_workspace_readonly_auth_args(),
+            vec![
+                "auth",
+                "login",
+                "--readonly",
+                "--services",
+                "calendar,gmail,drive,people,docs,sheets"
+            ]
         );
     }
 

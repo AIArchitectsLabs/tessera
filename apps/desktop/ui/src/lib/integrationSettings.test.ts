@@ -18,6 +18,7 @@ import {
 
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
+    expect(integrationLabel("google-workspace")).toBe("Google Workspace");
     expect(integrationLabel("google-calendar")).toBe("Google Workspace");
   });
 
@@ -36,7 +37,7 @@ describe("integration settings UI helpers", () => {
   });
 
   test("exports every supported integration provider", () => {
-    const expected: IntegrationProvider[] = ["google-calendar"];
+    const expected: IntegrationProvider[] = ["google-workspace"];
     expect(INTEGRATION_PROVIDERS).toEqual(expected);
   });
 
@@ -52,7 +53,7 @@ describe("integration settings UI helpers", () => {
   });
 
   test("marks Google Workspace as CLI-connected", () => {
-    expect(KEYLESS_INTEGRATION_PROVIDERS).toEqual(["google-calendar"]);
-    expect(integrationProviderSupportsCredential("google-calendar")).toBe(false);
+    expect(KEYLESS_INTEGRATION_PROVIDERS).toEqual(["google-workspace"]);
+    expect(integrationProviderSupportsCredential("google-workspace")).toBe(false);
   });
 });

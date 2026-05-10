@@ -373,18 +373,28 @@ function buildCapabilityInventory(
 
   const integrations = [
     {
-      id: "integration.google-calendar",
-      label: integrationLabel("google-calendar"),
+      id: "integration.google-workspace",
+      label: integrationLabel("google-workspace"),
       fingerprint: hashText(
         JSON.stringify({
-          id: "integration.google-calendar",
-          configured: integrationSettings.providers.googleCalendar.hasCredential,
+          id: "integration.google-workspace",
+          configured:
+            integrationSettings.providers.googleWorkspace?.hasCredential ??
+            integrationSettings.providers.googleCalendar.hasCredential,
         })
       ),
-      capabilities: ["integration.calendar.events.read"],
-      configured: integrationSettings.providers.googleCalendar.hasCredential,
+      capabilities: [
+        "integration.calendar.events.read",
+        "integration.mail.read",
+        "integration.drive.read",
+        "integration.contacts.read",
+      ],
+      configured:
+        integrationSettings.providers.googleWorkspace?.hasCredential ??
+        integrationSettings.providers.googleCalendar.hasCredential,
       dataPolicies: [
-        integrationSettings.providers.googleCalendar.hasCredential
+        (integrationSettings.providers.googleWorkspace?.hasCredential ??
+        integrationSettings.providers.googleCalendar.hasCredential)
           ? "cloud-ok"
           : "workspace-local-ok",
       ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],

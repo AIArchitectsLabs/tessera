@@ -89,6 +89,10 @@ const initialIntegrationSettings = (): IntegrationSettingsRead => ({
       provider: "google-calendar",
       hasCredential: false,
     },
+    googleWorkspace: {
+      provider: "google-workspace",
+      hasCredential: false,
+    },
   },
   search: {
     mode: "auto",
@@ -183,6 +187,15 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         message: "Connection test succeeded",
         searchProvider: args?.request?.searchProvider as SearchProvider | undefined,
       } satisfies IntegrationConnectionTestResult;
+    case "google_workspace_health":
+      return [
+        { service: "Calendar", ok: true, message: "Ready" },
+        { service: "Gmail", ok: true, message: "Ready" },
+        { service: "Drive", ok: true, message: "Ready" },
+        { service: "Contacts", ok: true, message: "Ready" },
+        { service: "Docs", ok: true, message: "Available through Drive reads." },
+        { service: "Sheets", ok: true, message: "Available through Drive reads." },
+      ];
     case "google_workspace_connect":
       integrationSettings = {
         ...integrationSettings,
@@ -192,12 +205,16 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
             ...integrationSettings.providers.googleCalendar,
             hasCredential: true,
           },
+          googleWorkspace: {
+            ...integrationSettings.providers.googleWorkspace,
+            hasCredential: true,
+          },
         },
       };
       return {
         ok: true,
         message: "Google Workspace connected.",
-        provider: "google-calendar",
+        provider: "google-workspace",
       } satisfies IntegrationConnectionTestResult;
     case "google_workspace_disconnect":
       integrationSettings = {
@@ -206,6 +223,10 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
           ...integrationSettings.providers,
           googleCalendar: {
             ...integrationSettings.providers.googleCalendar,
+            hasCredential: false,
+          },
+          googleWorkspace: {
+            ...integrationSettings.providers.googleWorkspace,
             hasCredential: false,
           },
         },
@@ -335,12 +356,15 @@ describe("SettingsView workspace integration flow", () => {
     expect(within(section).getByText("Uses Google Workspace CLI")).toBeTruthy();
     expect(
       within(section).getByText(
-        "Google Workspace uses the bundled CLI for Calendar, Gmail, Drive, Contacts, Docs, and Sheets."
+        "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."
       )
     ).toBeTruthy();
+    for (const service of ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"]) {
+      expect(within(section).getByText(service)).toBeTruthy();
+    }
     expect(
       within(section).getByText(
-        /Tessera does not store separate API keys for individual Workspace services/
+        /Tessera stores the Workspace session in its app config/
       )
     ).toBeTruthy();
     expect(within(section).queryByText("API key")).toBeNull();
@@ -363,8 +387,11 @@ describe("SettingsView workspace integration flow", () => {
       const testCall = invokeCalls.find((call) => call.command === "integration_connection_test");
       expect(testCall).toBeTruthy();
       expect(testCall?.args?.request).toEqual({
-        provider: "google-calendar",
+        provider: "google-workspace",
       });
+    });
+    await waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "google_workspace_health")).toBe(true);
     });
   });
 
@@ -392,6 +419,10 @@ describe("SettingsView workspace integration flow", () => {
         ...integrationSettings.providers,
         googleCalendar: {
           ...integrationSettings.providers.googleCalendar,
+          hasCredential: true,
+        },
+        googleWorkspace: {
+          ...integrationSettings.providers.googleWorkspace,
           hasCredential: true,
         },
       },
