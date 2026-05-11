@@ -47,8 +47,7 @@ import salesMeetingBriefDraftBrief from "./builtin-playbooks/sales.meeting-brief
 };
 import { loadPlaybookManifest } from "./playbook-loader.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
-
-const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
+import { TERMINAL_STEPS } from "./workflow-constants.js";
 
 type WorkflowExecutionRunResult = WorkflowRunResult & {
   assignmentPlan?: WorkflowRunAssignmentPlan | undefined;

@@ -1,7 +1,7 @@
 import { type PlaybookManifest, PlaybookManifestSchema } from "@tessera/contracts";
+import { TERMINAL_STEPS } from "./workflow-constants.js";
 
 const FILE_PREFIX = "file:";
-const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
 
 export interface LoadPlaybookManifestOptions {
   manifestJson: unknown;
