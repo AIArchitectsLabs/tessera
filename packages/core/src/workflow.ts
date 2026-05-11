@@ -32,12 +32,12 @@ export {
   WorkflowRunAssignmentPlanSchema,
 } from "./workflow-capabilities.js";
 import demoWriteApprovalManifest from "./builtin-playbooks/demo.write-approval/manifest.json";
+import opsWeeklyUpdateManifest from "./builtin-playbooks/ops.weekly-update/manifest.json";
 import { loadPlaybookManifest } from "./playbook-loader.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
 import customerRenewalRiskReviewManifest from "./workflows/customer.renewal-risk-review.json";
 import operationsWeeklyStatusDigestManifest from "./workflows/operations.weekly-status-digest.json";
 import salesMeetingBriefManifest from "./workflows/sales.meeting-brief.json";
-import weeklyUpdateManifest from "./workflows/weekly-update.json";
 
 const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
 
@@ -69,7 +69,9 @@ export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
 export const DEMO_WORKFLOW = loadPlaybookManifest({
   manifestJson: demoWriteApprovalManifest,
 }).workflow;
-export const WEEKLY_UPDATE_WORKFLOW = loadWorkflowDefinition(weeklyUpdateManifest);
+export const WEEKLY_UPDATE_WORKFLOW = loadPlaybookManifest({
+  manifestJson: opsWeeklyUpdateManifest,
+}).workflow;
 export const SALES_MEETING_BRIEF_WORKFLOW = loadWorkflowDefinition(salesMeetingBriefManifest);
 export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadWorkflowDefinition(
   customerRenewalRiskReviewManifest
