@@ -1205,11 +1205,55 @@ export const WorkflowOutputDeclarationSchema = z.object({
     "statusDigest",
     "sourceSummary",
     "approvalRequest",
+    "dashboard",
   ]),
   label: z.string().min(1),
   description: z.string().min(1).optional(),
+  id: z.string().min(1).optional(),
+  layoutScript: z.string().min(1).optional(),
+  layout: z.string().min(1).optional(),
 });
 export type WorkflowOutputDeclaration = z.infer<typeof WorkflowOutputDeclarationSchema>;
+
+export const DashboardSectionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("metrics"),
+    title: z.string().min(1).optional(),
+    items: z
+      .array(
+        z.object({
+          label: z.string().min(1),
+          binding: z.string().min(1),
+          unit: z.string().min(1).optional(),
+        })
+      )
+      .min(1),
+  }),
+  z.object({
+    type: z.literal("list"),
+    title: z.string().min(1),
+    binding: z.string().min(1),
+    emptyLabel: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal("text"),
+    title: z.string().min(1),
+    binding: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("table"),
+    title: z.string().min(1),
+    binding: z.string().min(1),
+    columns: z.array(z.object({ key: z.string().min(1), label: z.string().min(1) })).min(1),
+  }),
+]);
+export type DashboardSection = z.infer<typeof DashboardSectionSchema>;
+
+export const DashboardLayoutSchema = z.object({
+  refreshLabel: z.string().min(1).optional(),
+  sections: z.array(DashboardSectionSchema).min(1),
+});
+export type DashboardLayout = z.infer<typeof DashboardLayoutSchema>;
 
 export const WorkflowDefinitionSchema = z
   .object({
