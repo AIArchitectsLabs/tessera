@@ -121,4 +121,26 @@ describe("workflow checkpoint store", () => {
     ).toEqual(["run-1"]);
     store.close();
   });
+
+  test("saves and reloads a run with dashboardLayout", () => {
+    const store = createWorkflowCheckpointStore(tempDbPath());
+    const layout = {
+      sections: [{ type: "text" as const, title: "Summary", binding: "step1.summary" }],
+    };
+
+    store.save({
+      runId: "run-dashboard",
+      workflowId: "ops.activity-snapshot",
+      status: "completed",
+      input: {},
+      outputs: { step1: { summary: "hello" } },
+      sourceGaps: [],
+      startedAt: "2026-05-11T00:00:00.000Z",
+      updatedAt: "2026-05-11T00:00:01.000Z",
+      dashboardLayout: layout,
+    });
+
+    expect(store.get("run-dashboard")?.dashboardLayout).toEqual(layout);
+    store.close();
+  });
 });

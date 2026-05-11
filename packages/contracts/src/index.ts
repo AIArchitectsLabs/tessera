@@ -1408,6 +1408,7 @@ export const WorkflowRunResultSchema = z.object({
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
   sourceGaps: z.array(WorkflowSourceGapSchema).default([]),
   outputs: z.record(z.unknown()).optional(),
+  dashboardLayout: DashboardLayoutSchema.optional(),
   approval: PermissionDecisionSchema.options[1].shape.approval.optional(),
   error: z.string().optional(),
   startedAt: z.string().datetime().optional(),
