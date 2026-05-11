@@ -31,6 +31,10 @@ export {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
 } from "./workflow-capabilities.js";
+import customerRenewalRiskReviewManifest from "./builtin-playbooks/customer.renewal-risk-review/manifest.json";
+import customerRenewalRiskReviewDraft from "./builtin-playbooks/customer.renewal-risk-review/prompts/draft-risk-review.md" with {
+  type: "text",
+};
 import demoWriteApprovalManifest from "./builtin-playbooks/demo.write-approval/manifest.json";
 import opsWeeklyUpdateManifest from "./builtin-playbooks/ops.weekly-update/manifest.json";
 import salesMeetingBriefManifest from "./builtin-playbooks/sales.meeting-brief/manifest.json";
@@ -39,7 +43,6 @@ import salesMeetingBriefDraftBrief from "./builtin-playbooks/sales.meeting-brief
 };
 import { loadPlaybookManifest } from "./playbook-loader.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
-import customerRenewalRiskReviewManifest from "./workflows/customer.renewal-risk-review.json";
 import operationsWeeklyStatusDigestManifest from "./workflows/operations.weekly-status-digest.json";
 
 const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
@@ -79,9 +82,10 @@ export const SALES_MEETING_BRIEF_WORKFLOW = loadPlaybookManifest({
   manifestJson: salesMeetingBriefManifest,
   prompts: { "prompts/draft-brief.md": salesMeetingBriefDraftBrief },
 }).workflow;
-export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadWorkflowDefinition(
-  customerRenewalRiskReviewManifest
-);
+export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadPlaybookManifest({
+  manifestJson: customerRenewalRiskReviewManifest,
+  prompts: { "prompts/draft-risk-review.md": customerRenewalRiskReviewDraft },
+}).workflow;
 export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadWorkflowDefinition(
   operationsWeeklyStatusDigestManifest
 );
