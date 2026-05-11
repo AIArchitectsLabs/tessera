@@ -2,14 +2,14 @@
 
 ## Decision
 
-Improve Playbook run and detail screens with a hybrid of the current guided flow
-and a persistent inspect surface.
+Improve Playbook run and detail screens with a Guided Preflight flow.
 
 The main panel remains a business-friendly guided experience. Before the first
 run, the user must explicitly review and confirm agent assignment instead of
-Tessera silently auto-assigning. The right-side details panel becomes a richer
-Playbook Inspector that can show workflow structure, per-node agent assignment,
-source coverage, run history, and token usage.
+Tessera silently auto-assigning. The Start screen becomes the primary place to
+view the playbook structure, configure per-node agents, and confirm readiness.
+The existing details panel remains a secondary place to inspect historical run
+events and token usage after execution.
 
 This keeps Playbooks approachable while making the execution plan visible enough
 for multi-agent playbooks.
@@ -53,8 +53,9 @@ Pros:
 - Low implementation risk.
 
 Cons:
-- Workflow visibility is strongest only before run.
-- Multi-agent workflows may become cramped in the main form.
+- Large branching workflows may eventually need a richer visual map.
+- The Start screen needs careful progressive disclosure so it does not become a
+  technical console.
 
 ### Workflow Canvas First
 
@@ -86,20 +87,19 @@ Cons:
 
 ## Recommendation
 
-Use Split Run Workbench as the destination, with Guided Preflight as the first
-implementation slice.
+Use Guided Preflight as the destination for this phase.
 
 The user should see a concise "Before you run" module in the Start state:
 
 - Inputs summary
-- Workflow steps
-- Agent assignment summary
+- Workflow steps grouped by phase
+- Per-node agent assignment controls
 - Missing setup or optional source gaps
 - Estimated readiness
 
-The user should be able to open the inspector from the Start, Preparing, Review,
-and Result states. The inspector should default to the most relevant tab for the
-current state.
+The details panel should support historical inspection, but it is not the main
+interaction model. Users configure the next run directly in the preflight module,
+then inspect past runs through details when needed.
 
 ## Information Architecture
 
@@ -128,12 +128,12 @@ The main panel remains the guided flow:
 3. Review
 4. Result
 
-The Start state gains a required setup checkpoint:
+The Start state gains a required preflight checkpoint:
 
 - "Inputs" remains the existing form.
-- "Workflow" shows a collapsed preview of the steps.
-- "Agents" shows the resolved assignment plan and requires confirmation on the
-  first run.
+- "Workflow" shows the playbook steps before launch.
+- "Agents" shows editable per-node assignment controls and requires
+  confirmation on the first run.
 - The Run button is disabled until required inputs and required assignments are
   complete.
 
@@ -141,18 +141,18 @@ For repeat runs, the last confirmed assignment plan for this playbook should be
 offered as the default. The user can run with the same setup or edit before
 launching.
 
-### Right Inspector
+### Details Panel
 
-Replace the current generic Details panel with a Playbook Inspector. It should
-use tabs or segmented controls:
+Keep the current details panel as a secondary run-inspection surface. It may use
+tabs or segmented controls once the usage view lands:
 
 - `Workflow`: playbook structure, phases, step nodes, transitions.
-- `Agents`: current run assignment plan or next-run draft assignments.
+- `Agents`: assignment plan used by the selected historical run.
 - `Usage`: token usage for the selected run.
 - `Events`: activity log and errors.
 
-The inspector remains optional. The main guided flow should still explain the
-current state without relying on the inspector.
+The details panel remains optional. Next-run configuration belongs in preflight,
+not in the details panel.
 
 ## Workflow Visibility
 
@@ -271,7 +271,7 @@ Usage summary should appear in three places:
 
 - Run history row: compact total token count.
 - Result header: input, output, total tokens for the selected run.
-- Inspector `Usage` tab: per-step breakdown.
+- Details panel `Usage` tab: per-step breakdown.
 
 The detailed view should show:
 
@@ -388,4 +388,4 @@ UI tests:
 - Historical runs show the assignment plan that was used.
 - Completed runs show input, output, and total token usage when reported.
 - Missing token data is clearly shown as provider-unreported, not zero.
-- The main guided flow remains understandable without opening the inspector.
+- The main guided flow remains understandable without opening the details panel.
