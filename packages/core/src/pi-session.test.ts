@@ -98,6 +98,43 @@ describe("runPiTaskTurn", () => {
     expect(seen.modelRegistry).toBeDefined();
   });
 
+  test("captures token usage from nested SDK event.event payloads", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async () =>
+      new FakeSession([
+        {
+          type: "turn_end",
+          event: {
+            usage: {
+              input_tokens: 1,
+              output_tokens: 2,
+              total_tokens: 3,
+            },
+          },
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Draft ready." }],
+          } as never,
+          toolResults: [],
+        } as never,
+      ]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft a note",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.usage).toEqual({
+      inputTokens: 1,
+      outputTokens: 2,
+      totalTokens: 3,
+    });
+    expect(result.text).toBe("Draft ready.");
+  });
+
   test("captures token usage from nested SDK event payloads", async () => {
     const workspaceRoot = await makeWorkspace();
     const factory: PiSessionFactory = async () =>

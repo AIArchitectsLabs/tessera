@@ -207,7 +207,7 @@ function normalizeTokenUsage(payload: unknown): TokenUsage | undefined {
   const directUsage = normalizeUsageRecord(record);
   if (directUsage) return directUsage;
 
-  for (const key of ["usage", "message", "assistantMessageEvent"]) {
+  for (const key of ["usage", "event", "message", "assistantMessageEvent"]) {
     const nestedUsage = normalizeTokenUsage(record[key]);
     if (nestedUsage) return nestedUsage;
   }
