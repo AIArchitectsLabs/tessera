@@ -56,25 +56,6 @@ type WorkflowExecutionRunResult = WorkflowRunResult & {
   steps?: WorkflowExecutionStepRecord[] | undefined;
 };
 
-export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
-  const definition = WorkflowDefinitionSchema.parse(value);
-  const stepIds = new Set(definition.steps.map((step) => step.id));
-
-  if (!stepIds.has(definition.start)) {
-    throw new Error(`Unknown workflow start step: ${definition.start}`);
-  }
-
-  for (const step of definition.steps) {
-    for (const next of [step.onSuccess, step.onFailure]) {
-      if (next && !stepIds.has(next) && !TERMINAL_STEPS.has(next)) {
-        throw new Error(`Unknown workflow transition from ${step.id}: ${next}`);
-      }
-    }
-  }
-
-  return definition;
-}
-
 export const DEMO_WORKFLOW = loadPlaybookManifest({
   manifestJson: demoWriteApprovalManifest,
 }).workflow;
