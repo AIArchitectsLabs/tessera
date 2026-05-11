@@ -35,7 +35,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            desktop-build-args: "-- --bundles deb"
+          - os: macos-latest
+            desktop-build-args: "-- --bundles app"
+          - os: windows-latest
+            desktop-build-args: ""
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -68,4 +74,4 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Compile sidecar and CLI binaries
         run: bun run build:sidecar
-      - run: bun run --filter @tessera/desktop build
+      - run: bun run --filter @tessera/desktop build ${{ matrix.desktop-build-args }}
