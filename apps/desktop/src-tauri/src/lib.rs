@@ -1387,6 +1387,19 @@ async fn playbook_run_get(
 }
 
 #[tauri::command]
+async fn playbook_get_dashboard_layout(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!(
+        "/workflows/runs/{}/dashboard-layout",
+        percent_encode(&run_id)
+    );
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn playbook_run_resume(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
@@ -2305,6 +2318,7 @@ pub fn run() {
             model_credential_delete,
             model_settings_get,
             model_settings_save,
+            playbook_get_dashboard_layout,
             playbook_get,
             playbook_list,
             playbook_run_create,

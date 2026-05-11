@@ -528,6 +528,16 @@ function handleWorkflowRunGet(req: Request, runId: string): Response {
   return Response.json(run);
 }
 
+function handleWorkflowRunDashboardLayout(req: Request, runId: string): Response {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const run = workflowStore.get(runId);
+  if (!run) return Response.json({ error: "Run not found" }, { status: 404 });
+  return Response.json({ layout: run.dashboardLayout ?? null });
+}
+
 function handlePlaybookList(req: Request): Response {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -1588,6 +1598,17 @@ const server = Bun.serve({
 
     if (pathname === "/workflows/runs") {
       return handleWorkflowRunList(req);
+    }
+
+    const workflowRunDashboardLayoutMatch = pathname.match(
+      /^\/workflows\/runs\/([^/]+)\/dashboard-layout$/
+    );
+    const workflowRunDashboardLayoutId = workflowRunDashboardLayoutMatch?.[1];
+    if (workflowRunDashboardLayoutId) {
+      return handleWorkflowRunDashboardLayout(
+        req,
+        decodeURIComponent(workflowRunDashboardLayoutId)
+      );
     }
 
     if (pathname === "/playbooks") {
