@@ -65,6 +65,7 @@ export {
   type SkillRegistryOptions,
 } from "./skills.js";
 export {
+  BUILTIN_PLAYBOOK_ROOTS,
   DEMO_WORKFLOW,
   CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   SALES_MEETING_BRIEF_WORKFLOW,

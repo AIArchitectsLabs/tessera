@@ -1,4 +1,10 @@
-import { type DashboardLayout, DashboardLayoutSchema } from "@tessera/contracts";
+import { readFileSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import {
+  type DashboardLayout,
+  DashboardLayoutSchema,
+  type WorkflowDefinition,
+} from "@tessera/contracts";
 
 export interface RunLayoutScriptOptions {
   scriptPath: string;
@@ -53,4 +59,53 @@ export async function runLayoutScript(
   } catch (err) {
     return { kind: "validation_failed", error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export async function generateDashboardLayout(options: {
+  definition: WorkflowDefinition;
+  packageRoot: string;
+  outputs: Record<string, unknown>;
+  runId: string;
+  completedAt: string;
+}): Promise<DashboardLayout | null> {
+  const dashboardOutput = options.definition.outputs?.find((output) => output.kind === "dashboard");
+  if (!dashboardOutput) return null;
+
+  const packageRoot = resolve(options.packageRoot);
+  if (dashboardOutput.layoutScript) {
+    const scriptPath = resolve(packageRoot, dashboardOutput.layoutScript);
+    if (!isInsidePackageRoot(packageRoot, scriptPath)) return null;
+
+    const result = await runLayoutScript({
+      scriptPath,
+      input: {
+        outputs: options.outputs,
+        meta: {
+          runId: options.runId,
+          completedAt: options.completedAt,
+          playbookId: options.definition.id,
+        },
+      },
+    });
+    return result.kind === "success" ? result.layout : null;
+  }
+
+  if (dashboardOutput.layout) {
+    const layoutPath = resolve(packageRoot, dashboardOutput.layout);
+    if (!isInsidePackageRoot(packageRoot, layoutPath)) return null;
+
+    try {
+      const raw = JSON.parse(readFileSync(layoutPath, "utf8"));
+      return DashboardLayoutSchema.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function isInsidePackageRoot(packageRoot: string, path: string): boolean {
+  const fromRoot = relative(packageRoot, path);
+  return fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot));
 }

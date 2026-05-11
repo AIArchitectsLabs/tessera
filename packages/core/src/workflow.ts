@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
   AgentProviderConfig,
   PermissionDecision,
@@ -73,6 +74,19 @@ export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadPlaybookManifest({
   manifestJson: operationsWeeklyStatusDigestManifest,
   prompts: { "prompts/draft-status-digest.md": operationsWeeklyStatusDigestDraft },
 }).workflow;
+
+const BUILTIN_PLAYBOOKS_DIR = join(import.meta.dir, "builtin-playbooks");
+
+export const BUILTIN_PLAYBOOK_ROOTS: Record<string, string> = {
+  [DEMO_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "demo.write-approval"),
+  [WEEKLY_UPDATE_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.weekly-update"),
+  [SALES_MEETING_BRIEF_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "sales.meeting-brief"),
+  [CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id]: join(
+    BUILTIN_PLAYBOOKS_DIR,
+    "customer.renewal-risk-review"
+  ),
+  [WEEKLY_STATUS_DIGEST_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.weekly-status-digest"),
+};
 
 const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
   [DEMO_WORKFLOW.id, DEMO_WORKFLOW],

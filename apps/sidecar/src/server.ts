@@ -43,6 +43,7 @@ import {
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
 import {
+  BUILTIN_PLAYBOOK_ROOTS,
   CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
@@ -61,6 +62,7 @@ import {
 } from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
+import { generateDashboardLayout } from "./layout-runner.js";
 import {
   buildLocalPlaybookCapabilityInventory,
   mergePlaybookRunMetadata,
@@ -93,12 +95,50 @@ const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
 const taskEventBus = createTaskEventBus();
-const workflowRegistry = new Map([
-  [SALES_MEETING_BRIEF_WORKFLOW.id, SALES_MEETING_BRIEF_WORKFLOW],
-  [CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id, CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW],
-  [WEEKLY_STATUS_DIGEST_WORKFLOW.id, WEEKLY_STATUS_DIGEST_WORKFLOW],
-  [DEMO_WORKFLOW.id, DEMO_WORKFLOW],
-  [WEEKLY_UPDATE_WORKFLOW.id, WEEKLY_UPDATE_WORKFLOW],
+interface WorkflowRegistryEntry {
+  definition: WorkflowDefinition;
+  packageRoot: string;
+}
+
+function builtinPlaybookRoot(workflowId: string): string {
+  const root = BUILTIN_PLAYBOOK_ROOTS[workflowId];
+  if (!root) throw new Error(`Missing built-in playbook root for ${workflowId}`);
+  return root;
+}
+
+const workflowRegistry = new Map<string, WorkflowRegistryEntry>([
+  [
+    SALES_MEETING_BRIEF_WORKFLOW.id,
+    {
+      definition: SALES_MEETING_BRIEF_WORKFLOW,
+      packageRoot: builtinPlaybookRoot(SALES_MEETING_BRIEF_WORKFLOW.id),
+    },
+  ],
+  [
+    CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id,
+    {
+      definition: CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
+      packageRoot: builtinPlaybookRoot(CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id),
+    },
+  ],
+  [
+    WEEKLY_STATUS_DIGEST_WORKFLOW.id,
+    {
+      definition: WEEKLY_STATUS_DIGEST_WORKFLOW,
+      packageRoot: builtinPlaybookRoot(WEEKLY_STATUS_DIGEST_WORKFLOW.id),
+    },
+  ],
+  [
+    DEMO_WORKFLOW.id,
+    { definition: DEMO_WORKFLOW, packageRoot: builtinPlaybookRoot(DEMO_WORKFLOW.id) },
+  ],
+  [
+    WEEKLY_UPDATE_WORKFLOW.id,
+    {
+      definition: WEEKLY_UPDATE_WORKFLOW,
+      packageRoot: builtinPlaybookRoot(WEEKLY_UPDATE_WORKFLOW.id),
+    },
+  ],
 ]);
 
 function profileForAgentId(agentId: string): AgentProfile {
@@ -205,9 +245,38 @@ function playbookSummary(definition: WorkflowDefinition): PlaybookSummary {
   });
 }
 
+function workflowDefinition(workflowId: string): WorkflowDefinition | undefined {
+  return workflowRegistry.get(workflowId)?.definition;
+}
+
+function workflowDefinitions(): WorkflowDefinition[] {
+  return [...workflowRegistry.values()].map((entry) => entry.definition);
+}
+
+async function saveWorkflowRunWithDashboardLayout(
+  run: Parameters<typeof workflowStore.save>[0],
+  entry: WorkflowRegistryEntry | undefined
+): Promise<Parameters<typeof workflowStore.save>[0]> {
+  if (!entry || !["completed", "failed", "denied"].includes(run.status)) {
+    workflowStore.save(run);
+    return run;
+  }
+
+  const layout = await generateDashboardLayout({
+    definition: entry.definition,
+    packageRoot: entry.packageRoot,
+    outputs: run.outputs ?? {},
+    runId: run.runId,
+    completedAt: run.completedAt ?? new Date().toISOString(),
+  });
+  const runWithLayout = layout ? { ...run, dashboardLayout: layout } : run;
+  workflowStore.save(runWithLayout);
+  return runWithLayout;
+}
+
 function playbookRunDetail(run: unknown): unknown {
   const parsed = PlaybookRunDetailSchema.parse(run);
-  const definition = workflowRegistry.get(parsed.workflowId);
+  const definition = workflowDefinition(parsed.workflowId);
   return PlaybookRunDetailSchema.parse({
     ...parsed,
     ...(definition ? { playbook: playbookSummary(definition) } : {}),
@@ -379,8 +448,9 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
 
-  const definition = workflowRegistry.get(parsed.data.workflowId);
-  if (!definition) {
+  const entry = workflowRegistry.get(parsed.data.workflowId);
+  const definition = entry?.definition;
+  if (!entry || !definition) {
     return Response.json({ error: "Unknown workflow id" }, { status: 404 });
   }
 
@@ -398,14 +468,17 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
       },
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
       ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
-      onCheckpoint(run) {
-        workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
+      async onCheckpoint(run) {
+        await saveWorkflowRunWithDashboardLayout(
+          mergePlaybookRunMetadata(run, playbookState),
+          entry
+        );
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    workflowStore.save(merged);
-    ensureWorkflowApprovalInbox(merged);
-    return Response.json(merged);
+    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    ensureWorkflowApprovalInbox(saved);
+    return Response.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
@@ -454,7 +527,7 @@ function handlePlaybookList(req: Request): Response {
 
   return Response.json(
     PlaybookListResultSchema.parse({
-      playbooks: [...workflowRegistry.values()].map((definition) => playbookSummary(definition)),
+      playbooks: workflowDefinitions().map((definition) => playbookSummary(definition)),
     })
   );
 }
@@ -464,7 +537,7 @@ function handlePlaybookGet(req: Request, playbookId: string): Response {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const definition = workflowRegistry.get(playbookId);
+  const definition = workflowDefinition(playbookId);
   if (!definition) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
   return Response.json(
     PlaybookDetailSchema.parse({
@@ -480,8 +553,10 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const definition = workflowRegistry.get(playbookId);
-  if (!definition) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  const entry = workflowRegistry.get(playbookId);
+  const definition = entry?.definition;
+  if (!entry || !definition)
+    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
 
   let body: unknown;
   try {
@@ -506,14 +581,17 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
       },
       ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
       ...(parsed.credential?.apiKey ? { agentCredential: parsed.credential.apiKey } : {}),
-      onCheckpoint(run) {
-        workflowStore.save(mergePlaybookRunMetadata(run, playbookState));
+      async onCheckpoint(run) {
+        await saveWorkflowRunWithDashboardLayout(
+          mergePlaybookRunMetadata(run, playbookState),
+          entry
+        );
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    workflowStore.save(merged);
-    ensureWorkflowApprovalInbox(merged);
-    return Response.json(playbookRunDetail(merged));
+    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    ensureWorkflowApprovalInbox(saved);
+    return Response.json(playbookRunDetail(saved));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
@@ -684,8 +762,11 @@ async function handleInboxResolve(req: Request, messageId: string): Promise<Resp
     ) {
       const run = workflowStore.get(existing.workflowRunId);
       if (!run) return Response.json({ error: "Unknown workflow run" }, { status: 404 });
-      const definition = workflowRegistry.get(run.workflowId);
-      if (!definition) return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+      const entry = workflowRegistry.get(run.workflowId);
+      const definition = entry?.definition;
+      if (!entry || !definition) {
+        return Response.json({ error: "Unknown workflow id" }, { status: 404 });
+      }
       const result = await resumeWorkflowRun({
         run,
         decision: parsed.data.actionId,
@@ -693,12 +774,12 @@ async function handleInboxResolve(req: Request, messageId: string): Promise<Resp
         cli: {
           runWorkspaceCli,
         },
-        onCheckpoint(checkpoint) {
-          workflowStore.save(checkpoint);
+        async onCheckpoint(checkpoint) {
+          await saveWorkflowRunWithDashboardLayout(checkpoint, entry);
         },
       });
-      workflowStore.save(result);
-      ensureWorkflowApprovalInbox(result);
+      const saved = await saveWorkflowRunWithDashboardLayout(result, entry);
+      ensureWorkflowApprovalInbox(saved);
     }
 
     const message = inboxStore.resolve(messageId, parsed.data);
@@ -780,8 +861,9 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   if (!existing) {
     return Response.json({ error: "Unknown workflow run" }, { status: 404 });
   }
-  const definition = workflowRegistry.get(existing.workflowId);
-  if (!definition) {
+  const entry = workflowRegistry.get(existing.workflowId);
+  const definition = entry?.definition;
+  if (!entry || !definition) {
     return Response.json({ error: "Unknown workflow id" }, { status: 404 });
   }
 
@@ -802,14 +884,17 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
       },
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
       ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
-      onCheckpoint(checkpoint) {
-        workflowStore.save(mergePlaybookRunMetadata(checkpoint, playbookState));
+      async onCheckpoint(checkpoint) {
+        await saveWorkflowRunWithDashboardLayout(
+          mergePlaybookRunMetadata(checkpoint, playbookState),
+          entry
+        );
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    workflowStore.save(merged);
-    ensureWorkflowApprovalInbox(merged);
-    return Response.json(merged);
+    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    ensureWorkflowApprovalInbox(saved);
+    return Response.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
