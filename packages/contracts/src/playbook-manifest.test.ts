@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  PlaybookAssignmentPreviewRequestSchema,
   PlaybookAssignmentPreviewResultSchema,
   PlaybookManifestSchema,
   PlaybookRunPreferenceReadRequestSchema,
@@ -172,6 +173,28 @@ describe("PlaybookManifestSchema", () => {
       ],
     });
     expect(preview.confirmationRequired).toBe(true);
+
+    const previewRequest = PlaybookAssignmentPreviewRequestSchema.parse({
+      workspaceRoot: "/tmp/workspace",
+      capabilityInventory: {
+        agents: [],
+        integrations: [],
+      },
+      previousPlan: assignmentPlan,
+    });
+    expect(previewRequest.workspaceRoot).toBe("/tmp/workspace");
+    expect(() =>
+      PlaybookAssignmentPreviewRequestSchema.parse({
+        workspaceRoot: "/tmp/workspace",
+        playbookId: "sales.meeting-brief",
+      })
+    ).toThrow();
+    expect(() =>
+      PlaybookAssignmentPreviewRequestSchema.parse({
+        workspaceRoot: "/tmp/workspace",
+        unexpectedField: true,
+      })
+    ).toThrow();
 
     const preference = PlaybookRunPreferenceSchema.parse({
       workspaceRoot: "/tmp/workspace",

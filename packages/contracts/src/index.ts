@@ -1212,7 +1212,6 @@ export type WorkflowCapabilityInventory = z.infer<typeof WorkflowCapabilityInven
 
 export const PlaybookAssignmentPreviewRequestSchema = z
   .object({
-    playbookId: z.string().min(1),
     workspaceRoot: z.string().min(1).optional(),
     capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
     previousPlan: WorkflowRunAssignmentPlanSchema.optional(),

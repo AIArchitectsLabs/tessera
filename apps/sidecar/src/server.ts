@@ -616,6 +616,15 @@ async function handlePlaybookAssignmentPreview(
   return Response.json(PlaybookAssignmentPreviewResultSchema.parse(preview));
 }
 
+export function isPlaybookRunPreferenceAssignmentPlanValidationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.startsWith("Assignment for step ") ||
+    message.startsWith("Assignment plan ") ||
+    message.startsWith("Unable to resolve assignment for step ")
+  );
+}
+
 async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -737,6 +746,9 @@ async function handlePlaybookRunPreferenceSave(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isPlaybookRunPreferenceAssignmentPlanValidationError(error)) {
+      return Response.json({ error: message }, { status: 409 });
+    }
     return Response.json({ error: message }, { status: 500 });
   }
 }
