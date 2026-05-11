@@ -5,6 +5,10 @@ export interface PlaybookApprovalCopy {
   prepared: string;
 }
 
+export function isDashboardPlaybook(playbook: PlaybookSummary | PlaybookDetail | null): boolean {
+  return playbook?.outputs?.some((output) => output.kind === "dashboard") ?? false;
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

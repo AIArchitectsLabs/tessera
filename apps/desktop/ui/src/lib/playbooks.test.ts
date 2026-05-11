@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PlaybookRunDetail, PlaybookSummary } from "@tessera/contracts";
-import { playbookApprovalCopy } from "./playbooks";
+import { isDashboardPlaybook, playbookApprovalCopy } from "./playbooks";
 
 describe("playbook UI helpers", () => {
   test("turns Sales Meeting Brief approval previews into business copy", () => {
@@ -80,5 +80,24 @@ describe("playbook UI helpers", () => {
       prepared: 'Tessera is ready to prepare "lead" in your workspace using "qualified".',
       approve: "Tessera will add this preparation step to your workspace.",
     });
+  });
+
+  test("detects dashboard playbooks by output kind", () => {
+    const playbook: PlaybookSummary = {
+      id: "ops.activity-snapshot",
+      version: 1,
+      name: "Activity Snapshot",
+      optionalCapabilities: [],
+      requiredCapabilities: [],
+      outputs: [{ kind: "dashboard", label: "Activity dashboard" }],
+      phases: ["Summarize"],
+      stepCount: 1,
+    };
+
+    expect(isDashboardPlaybook(playbook)).toBe(true);
+    expect(
+      isDashboardPlaybook({ ...playbook, outputs: [{ kind: "statusDigest", label: "Digest" }] })
+    ).toBe(false);
+    expect(isDashboardPlaybook(null)).toBe(false);
   });
 });

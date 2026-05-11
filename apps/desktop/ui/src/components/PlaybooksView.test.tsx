@@ -58,6 +58,30 @@ const playbook = {
   phases: ["Prepare"],
 } satisfies PlaybookDetail;
 
+const dashboardPlaybook = {
+  id: "ops.activity-snapshot",
+  version: 1,
+  name: "Activity Snapshot",
+  description: "Refreshable dashboard of recent workspace activity.",
+  category: "Operations",
+  businessUseCase: "Monitor recent workspace activity",
+  requiredCapabilities: [],
+  optionalCapabilities: [],
+  inputs: {
+    scope: {
+      type: "string",
+      required: true,
+      label: "Scope",
+      default: "this week",
+      order: 1,
+    },
+  },
+  outputs: [{ kind: "dashboard", label: "Activity dashboard", layout: "layouts/dashboard.json" }],
+  steps: [],
+  stepCount: 1,
+  phases: ["Summarize"],
+} satisfies PlaybookDetail;
+
 const completedRun = {
   runId: "run-1",
   workflowId: "sales.meeting-brief",
@@ -73,6 +97,26 @@ const completedRun = {
     },
   },
   updatedAt: "2026-05-09T07:17:00.000Z",
+  events: [],
+  steps: [],
+} as unknown as PlaybookRunDetail;
+
+const dashboardRun = {
+  runId: "run-dashboard",
+  workflowId: "ops.activity-snapshot",
+  status: "completed",
+  input: {
+    scope: "this week",
+  },
+  outputs: {
+    draftSnapshot: {
+      openItems: 7,
+      atRisk: 2,
+      highlights: ["Inbox cleared"],
+      summary: "Workspace activity is steady.",
+    },
+  },
+  updatedAt: "2026-05-10T07:17:00.000Z",
   events: [],
   steps: [],
 } as unknown as PlaybookRunDetail;
@@ -108,16 +152,36 @@ const integrationSettings: IntegrationSettingsRead = {
   },
 };
 
-const invoke = mock(async (command: string) => {
+const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   switch (command) {
     case "playbook_list":
-      return { playbooks: [playbook] } satisfies PlaybookListResult;
+      return { playbooks: [playbook, dashboardPlaybook] } satisfies PlaybookListResult;
     case "playbook_get":
-      return playbook;
+      return args?.playbookId === dashboardPlaybook.id ? dashboardPlaybook : playbook;
     case "playbook_run_list":
-      return { runs: [completedRun] } satisfies WorkflowRunListResult;
+      if (args?.playbookId === dashboardPlaybook.id) {
+        return { runs: [dashboardRun] } satisfies WorkflowRunListResult;
+      }
+      if (args?.playbookId === playbook.id) {
+        return { runs: [completedRun] } satisfies WorkflowRunListResult;
+      }
+      return { runs: [dashboardRun, completedRun] } satisfies WorkflowRunListResult;
     case "playbook_run_get":
-      return completedRun;
+      return args?.runId === dashboardRun.runId ? dashboardRun : completedRun;
+    case "playbook_get_dashboard_layout":
+      return {
+        layout: {
+          refreshLabel: "Refresh snapshot",
+          sections: [
+            {
+              type: "metrics",
+              title: "Activity",
+              items: [{ label: "Open items", binding: "draftSnapshot.openItems" }],
+            },
+            { type: "text", title: "Summary", binding: "draftSnapshot.summary" },
+          ],
+        },
+      };
     case "model_settings_get":
       return modelSettings;
     case "integration_settings_get":
@@ -191,5 +255,32 @@ describe("PlaybooksView", () => {
     });
     expect(view.getByText("Meeting brief")).toBeTruthy();
     expect(view.getByText(/Research requested: Web/)).toBeTruthy();
+  });
+
+  test("renders pinned dashboard runs with dashboard layout and refresh button", async () => {
+    const view = render(React.createElement(PlaybooksView, { workspaceRoot: "/tmp/workspace" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Dashboards")).toBeTruthy();
+      expect(view.getAllByText("Dashboard").length).toBeGreaterThan(0);
+    });
+
+    const dashboardButton = view.getAllByText("Activity Snapshot")[0]?.closest("button");
+    if (!dashboardButton) throw new Error("Expected dashboard playbook button");
+    fireEvent.click(dashboardButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 10/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected dashboard run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
+      expect(view.getByText("7")).toBeTruthy();
+      expect(view.getByRole("button", { name: /Refresh snapshot/i })).toBeTruthy();
+    });
   });
 });

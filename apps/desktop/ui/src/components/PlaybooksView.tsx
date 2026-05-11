@@ -1,12 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { integrationLabel, searchProviderLabel } from "@/lib/integrationSettings";
 import { providerLabel } from "@/lib/modelSettings";
-import { playbookApprovalCopy } from "@/lib/playbooks";
+import { isDashboardPlaybook, playbookApprovalCopy } from "@/lib/playbooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AgentProfile,
   AgentProfileListResult,
+  DashboardLayout,
   IntegrationSettingsRead,
   ModelSettingsRead,
   PlaybookDetail,
@@ -24,6 +25,8 @@ import type {
 } from "@tessera/contracts";
 import { AlertTriangle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DashboardView } from "./DashboardView";
+import { PlaybookRefreshButton } from "./PlaybookRefreshButton";
 
 interface PlaybooksViewProps {
   workspaceRoot: string | null;
@@ -49,6 +52,7 @@ const ctaCopyMap: Record<string, string> = {
   "sales.meeting-brief": "Prepare brief",
   "customer.renewal-risk-review": "Prepare risk review",
   "operations.weekly-status-digest": "Create digest",
+  "ops.activity-snapshot": "Create snapshot",
   "demo.write-approval": "Start demo",
   "weekly-update": "Prepare update",
 };
@@ -918,6 +922,10 @@ function GuidedResult({
   playbook,
   playbookDetail,
   workspaceRoot,
+  dashboardLayout,
+  refreshing,
+  refreshNotice,
+  onRefresh,
   onStartAnother,
   onViewDetails,
 }: {
@@ -925,6 +933,10 @@ function GuidedResult({
   playbook: PlaybookSummary | PlaybookDetail | null;
   playbookDetail: PlaybookDetail | null;
   workspaceRoot: string | null;
+  dashboardLayout: DashboardLayout | null;
+  refreshing: boolean;
+  refreshNotice: string | null;
+  onRefresh: () => void;
   onStartAnother: () => void;
   onViewDetails: () => void;
 }) {
@@ -939,6 +951,7 @@ function GuidedResult({
   const runInput = run.input ?? {};
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
+  const isDashboard = isDashboardPlaybook(playbookDetail ?? playbook);
   const visibleOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
   );
@@ -973,7 +986,22 @@ function GuidedResult({
         ) : null}
       </div>
 
-      {visibleOutputs.length > 0 ? (
+      {isDashboard && run.status === "completed" ? (
+        <div className="mb-6 space-y-4">
+          {dashboardLayout ? (
+            <DashboardView layout={dashboardLayout} outputs={runOutputs} />
+          ) : (
+            <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
+              Dashboard layout is not available for this run.
+            </div>
+          )}
+          {refreshNotice ? (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              {refreshNotice}
+            </div>
+          ) : null}
+        </div>
+      ) : visibleOutputs.length > 0 ? (
         <div className="mb-6 space-y-3">
           {visibleOutputs.map((output) => {
             const value = playbookOutputValue(output.kind, runOutputs);
@@ -1048,9 +1076,17 @@ function GuidedResult({
       ) : null}
 
       <div className="flex flex-wrap gap-3">
-        <Button type="button" size="sm" className="rounded-md" onClick={onStartAnother}>
-          Start another
-        </Button>
+        {isDashboard && run.status === "completed" ? (
+          <PlaybookRefreshButton
+            label={dashboardLayout?.refreshLabel ?? `Refresh ${name}`}
+            isRefreshing={refreshing}
+            onRefresh={onRefresh}
+          />
+        ) : (
+          <Button type="button" size="sm" className="rounded-md" onClick={onStartAnother}>
+            Start another
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
@@ -1201,9 +1237,11 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
   const [runs, setRuns] = useState<PlaybookRunDetail[]>([]);
+  const [runHistory, setRunHistory] = useState<PlaybookRunDetail[]>([]);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<PlaybookRunDetail | null>(null);
+  const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettingsRead | null>(null);
   const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettingsRead | null>(
     null
@@ -1215,6 +1253,8 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   const [loadingPlaybooks, setLoadingPlaybooks] = useState(false);
   const [loadingSetup, setLoadingSetup] = useState(false);
   const [running, setRunning] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const runListRequestRef = useRef(0);
@@ -1222,6 +1262,25 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase),
     [playbooks]
+  );
+  const hasCompletedRun = useCallback(
+    (playbookId: string) =>
+      runHistory.some((run) => run.workflowId === playbookId && run.status === "completed"),
+    [runHistory]
+  );
+  const pinnedDashboards = useMemo(
+    () =>
+      businessPlaybooks.filter(
+        (playbook) => isDashboardPlaybook(playbook) && hasCompletedRun(playbook.id)
+      ),
+    [businessPlaybooks, hasCompletedRun]
+  );
+  const regularPlaybooks = useMemo(
+    () =>
+      businessPlaybooks.filter(
+        (playbook) => !pinnedDashboards.some((item) => item.id === playbook.id)
+      ),
+    [businessPlaybooks, pinnedDashboards]
   );
 
   const selectedPlaybook =
@@ -1333,6 +1392,15 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
     }
   }, []);
 
+  const loadRunHistory = useCallback(async () => {
+    try {
+      const result = await invoke<WorkflowRunListResult>("playbook_run_list");
+      setRunHistory(result.runs);
+    } catch {
+      setRunHistory([]);
+    }
+  }, []);
+
   const loadRunDetail = useCallback(async (runId: string) => {
     try {
       const detail = await invoke<PlaybookRunDetail>("playbook_run_get", { runId });
@@ -1346,7 +1414,8 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   useEffect(() => {
     void loadPlaybooks();
     void loadSetup();
-  }, [loadPlaybooks, loadSetup]);
+    void loadRunHistory();
+  }, [loadPlaybooks, loadRunHistory, loadSetup]);
 
   useEffect(() => {
     if (selectedPlaybookId) {
@@ -1368,18 +1437,66 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
 
+  useEffect(() => {
+    if (!refreshNotice) return;
+    const timeout = setTimeout(() => setRefreshNotice(null), 2500);
+    return () => clearTimeout(timeout);
+  }, [refreshNotice]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDashboardLayout(null);
+    if (
+      !selectedRun ||
+      selectedRun.status !== "completed" ||
+      !isDashboardPlaybook(selectedPlaybookForUi)
+    ) {
+      return;
+    }
+
+    if (selectedRun.dashboardLayout) {
+      setDashboardLayout(selectedRun.dashboardLayout);
+    }
+
+    void invoke<{ layout: DashboardLayout | null }>("playbook_get_dashboard_layout", {
+      runId: selectedRun.runId,
+    })
+      .then((result) => {
+        if (!cancelled) setDashboardLayout(result.layout);
+      })
+      .catch(() => {
+        if (!cancelled) setDashboardLayout(selectedRun.dashboardLayout ?? null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPlaybookForUi, selectedRun]);
+
   // Initialize form when detail loads
   useEffect(() => {
     if (!selectedPlaybookDetail) {
       setFormValues({});
       return;
     }
-    setFormValues(initFormValues(selectedPlaybookDetail.inputs ?? {}));
-  }, [selectedPlaybookDetail]);
+    const defaults = initFormValues(selectedPlaybookDetail.inputs ?? {});
+    const latestCompletedRun = runs.find(
+      (run) => run.workflowId === selectedPlaybookDetail.id && run.status === "completed"
+    );
+    if (isDashboardPlaybook(selectedPlaybookDetail) && latestCompletedRun?.input) {
+      const previousInput = Object.fromEntries(
+        Object.entries(latestCompletedRun.input).filter(([key]) => key !== "workspaceRoot")
+      );
+      setFormValues({ ...defaults, ...previousInput });
+      return;
+    }
+    setFormValues(defaults);
+  }, [runs, selectedPlaybookDetail]);
 
   const refreshAll = useCallback(() => {
     void loadPlaybooks();
     void loadSetup();
+    void loadRunHistory();
     void loadRuns(selectedPlaybookId);
     if (selectedPlaybookId) {
       void loadPlaybookDetail(selectedPlaybookId);
@@ -1391,19 +1508,23 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
     loadPlaybookDetail,
     loadPlaybooks,
     loadRunDetail,
+    loadRunHistory,
     loadRuns,
     loadSetup,
     selectedPlaybookId,
     selectedRunId,
   ]);
 
-  async function startRun() {
+  async function startRun(inputOverride?: Record<string, unknown>) {
     if (!selectedPlaybook || !workspaceRoot) return;
     setRunning(true);
     setShowStartForm(false);
     setError(null);
     try {
-      const fullInput: Record<string, unknown> = { ...formValues, workspaceRoot };
+      const fullInput: Record<string, unknown> = {
+        ...(inputOverride ?? formValues),
+        workspaceRoot,
+      };
       const request: WorkflowRunRequest = {
         workflowId: selectedPlaybook.id,
         input: fullInput,
@@ -1414,6 +1535,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
         request,
       });
       setRuns((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
+      setRunHistory((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
       setSelectedRunId(run.runId);
       setSelectedRunDetail(run);
     } catch (runError) {
@@ -1421,6 +1543,23 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
       setShowStartForm(true);
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function refreshDashboardRun() {
+    if (!selectedRun || !selectedPlaybook || refreshing) {
+      setRefreshNotice("Refresh already in progress");
+      return;
+    }
+    setRefreshing(true);
+    setRefreshNotice(null);
+    try {
+      const previousInput = Object.fromEntries(
+        Object.entries(selectedRun.input ?? {}).filter(([key]) => key !== "workspaceRoot")
+      );
+      await startRun({ ...previousInput, ...formValues });
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -1440,6 +1579,7 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
         request,
       });
       setRuns((current) => current.map((item) => (item.runId === run.runId ? run : item)));
+      setRunHistory((current) => current.map((item) => (item.runId === run.runId ? run : item)));
       setSelectedRunDetail(run);
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
@@ -1447,6 +1587,37 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
       setRunning(false);
     }
   }
+
+  const renderPlaybookButton = (playbook: PlaybookSummary) => (
+    <button
+      key={playbook.id}
+      type="button"
+      className={cn(
+        "w-full rounded-md px-3 py-2.5 text-left transition-colors hover:bg-background/70",
+        selectedPlaybook?.id === playbook.id ? "bg-background shadow-sm" : ""
+      )}
+      onClick={() => {
+        const isSamePlaybook = selectedPlaybookId === playbook.id;
+        setSelectedPlaybookId(playbook.id);
+        setShowStartForm(true);
+        setSelectedRunId(null);
+        setSelectedRunDetail(null);
+        if (!isSamePlaybook) {
+          setRuns([]);
+        }
+      }}
+    >
+      <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+        <span>{playbook.name}</span>
+        {isDashboardPlaybook(playbook) ? (
+          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">Dashboard</span>
+        ) : null}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+        {playbook.businessUseCase ?? playbook.description}
+      </div>
+    </button>
+  );
 
   return (
     <main className="flex min-w-0 flex-1 bg-background">
@@ -1469,32 +1640,21 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
         </div>
 
         <div className="border-b border-border p-2">
-          <div className="space-y-1">
-            {businessPlaybooks.map((playbook) => (
-              <button
-                key={playbook.id}
-                type="button"
-                className={cn(
-                  "w-full rounded-md px-3 py-2.5 text-left transition-colors hover:bg-background/70",
-                  selectedPlaybook?.id === playbook.id ? "bg-background shadow-sm" : ""
-                )}
-                onClick={() => {
-                  const isSamePlaybook = selectedPlaybookId === playbook.id;
-                  setSelectedPlaybookId(playbook.id);
-                  setShowStartForm(true);
-                  setSelectedRunId(null);
-                  setSelectedRunDetail(null);
-                  if (!isSamePlaybook) {
-                    setRuns([]);
-                  }
-                }}
-              >
-                <div className="text-sm font-medium text-foreground">{playbook.name}</div>
-                <div className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                  {playbook.businessUseCase ?? playbook.description}
-                </div>
-              </button>
-            ))}
+          <div className="space-y-4">
+            {pinnedDashboards.length > 0 ? (
+              <section>
+                <h2 className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Dashboards
+                </h2>
+                <div className="space-y-1">{pinnedDashboards.map(renderPlaybookButton)}</div>
+              </section>
+            ) : null}
+            <section>
+              <h2 className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Playbooks
+              </h2>
+              <div className="space-y-1">{regularPlaybooks.map(renderPlaybookButton)}</div>
+            </section>
           </div>
         </div>
 
@@ -1575,6 +1735,10 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
             playbook={selectedPlaybookForUi}
             playbookDetail={selectedPlaybookDetail}
             workspaceRoot={workspaceRoot}
+            dashboardLayout={dashboardLayout}
+            refreshing={refreshing}
+            refreshNotice={refreshNotice}
+            onRefresh={() => void refreshDashboardRun()}
             onStartAnother={() => {
               setShowStartForm(true);
               setSelectedRunId(null);
