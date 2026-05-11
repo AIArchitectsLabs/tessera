@@ -400,10 +400,10 @@ function aggregateTokenUsage(steps: WorkflowRunStepRecord[] | undefined): TokenU
   return usage;
 }
 
-function attachRunUsage<T extends { usage?: TokenUsage }>(
-  run: T,
+function attachRunUsage(
+  run: WorkflowExecutionRunResult,
   steps: WorkflowRunStepRecord[] | undefined
-): T {
+): WorkflowExecutionRunResult {
   const usage = aggregateTokenUsage(steps);
   return usage ? { ...run, usage } : run;
 }
