@@ -43,6 +43,7 @@ import {
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
 import {
+  ACTIVITY_SNAPSHOT_WORKFLOW,
   BUILTIN_PLAYBOOK_ROOTS,
   CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
@@ -137,6 +138,13 @@ const workflowRegistry = new Map<string, WorkflowRegistryEntry>([
     {
       definition: WEEKLY_UPDATE_WORKFLOW,
       packageRoot: builtinPlaybookRoot(WEEKLY_UPDATE_WORKFLOW.id),
+    },
+  ],
+  [
+    ACTIVITY_SNAPSHOT_WORKFLOW.id,
+    {
+      definition: ACTIVITY_SNAPSHOT_WORKFLOW,
+      packageRoot: builtinPlaybookRoot(ACTIVITY_SNAPSHOT_WORKFLOW.id),
     },
   ],
 ]);

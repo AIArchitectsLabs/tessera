@@ -1,0 +1,1 @@
+Produce a JSON-shaped activity snapshot for {{inputs.scope}}. Return an object with keys: openItems (integer count), atRisk (integer count), highlights (array of short strings), summary (short paragraph). Use only information available from the workspace; if unavailable, leave fields empty or zero.

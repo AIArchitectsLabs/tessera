@@ -4,7 +4,13 @@ import {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
 } from "@tessera/contracts";
-import { resumeWorkflowRun, runDemoWorkflow, runWorkflow } from "./workflow.js";
+import {
+  ACTIVITY_SNAPSHOT_WORKFLOW,
+  BUILTIN_PLAYBOOK_ROOTS,
+  resumeWorkflowRun,
+  runDemoWorkflow,
+  runWorkflow,
+} from "./workflow.js";
 
 const spawnResult: SpawnResult = {
   stdout: '{"message":"pong"}\n',
@@ -564,5 +570,16 @@ describe("workflow runner", () => {
 
     expect(denied.status).toBe("denied");
     expect(denied.currentStepId).toBe("writeProbe");
+  });
+
+  test("registers the activity snapshot dashboard built-in with a package root", () => {
+    expect(ACTIVITY_SNAPSHOT_WORKFLOW.id).toBe("ops.activity-snapshot");
+    expect(ACTIVITY_SNAPSHOT_WORKFLOW.outputs?.some((output) => output.kind === "dashboard")).toBe(
+      true
+    );
+    expect(ACTIVITY_SNAPSHOT_WORKFLOW.inputs.workspaceRoot).toBeDefined();
+    expect(BUILTIN_PLAYBOOK_ROOTS[ACTIVITY_SNAPSHOT_WORKFLOW.id]).toContain(
+      "ops.activity-snapshot"
+    );
   });
 });

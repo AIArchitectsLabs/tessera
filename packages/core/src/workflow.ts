@@ -37,6 +37,10 @@ import customerRenewalRiskReviewDraft from "./builtin-playbooks/customer.renewal
   type: "text",
 };
 import demoWriteApprovalManifest from "./builtin-playbooks/demo.write-approval/manifest.json";
+import opsActivitySnapshotManifest from "./builtin-playbooks/ops.activity-snapshot/manifest.json";
+import opsActivitySnapshotDraft from "./builtin-playbooks/ops.activity-snapshot/prompts/draft-snapshot.md" with {
+  type: "text",
+};
 import operationsWeeklyStatusDigestManifest from "./builtin-playbooks/ops.weekly-status-digest/manifest.json";
 import operationsWeeklyStatusDigestDraft from "./builtin-playbooks/ops.weekly-status-digest/prompts/draft-status-digest.md" with {
   type: "text",
@@ -74,6 +78,10 @@ export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadPlaybookManifest({
   manifestJson: operationsWeeklyStatusDigestManifest,
   prompts: { "prompts/draft-status-digest.md": operationsWeeklyStatusDigestDraft },
 }).workflow;
+export const ACTIVITY_SNAPSHOT_WORKFLOW = loadPlaybookManifest({
+  manifestJson: opsActivitySnapshotManifest,
+  prompts: { "prompts/draft-snapshot.md": opsActivitySnapshotDraft },
+}).workflow;
 
 const BUILTIN_PLAYBOOKS_DIR = join(import.meta.dir, "builtin-playbooks");
 
@@ -86,6 +94,7 @@ export const BUILTIN_PLAYBOOK_ROOTS: Record<string, string> = {
     "customer.renewal-risk-review"
   ),
   [WEEKLY_STATUS_DIGEST_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.weekly-status-digest"),
+  [ACTIVITY_SNAPSHOT_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.activity-snapshot"),
 };
 
 const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
@@ -94,6 +103,7 @@ const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
   [SALES_MEETING_BRIEF_WORKFLOW.id, SALES_MEETING_BRIEF_WORKFLOW],
   [CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id, CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW],
   [WEEKLY_STATUS_DIGEST_WORKFLOW.id, WEEKLY_STATUS_DIGEST_WORKFLOW],
+  [ACTIVITY_SNAPSHOT_WORKFLOW.id, ACTIVITY_SNAPSHOT_WORKFLOW],
 ]);
 
 export interface RunDemoWorkflowOptions {
