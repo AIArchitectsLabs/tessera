@@ -180,4 +180,54 @@ describe("PlaybookManifestSchema", () => {
     });
     expect(preference.playbookId).toBe("sales.meeting-brief");
   });
+
+  test("rejects playbook assignment preview candidates with mismatched agent identity", () => {
+    expect(() =>
+      PlaybookAssignmentPreviewResultSchema.parse({
+        assignmentPlan: {
+          resolverVersion: 1,
+          createdAt: "2026-05-11T00:00:00.000Z",
+          assignments: {},
+        },
+        confirmationRequired: true,
+        blockers: [],
+        sourceGaps: [],
+        nodePreviews: [
+          {
+            stepId: "draftBrief",
+            stepLabel: "Draft meeting brief",
+            kind: "agent",
+            candidates: [
+              {
+                agentId: "default",
+                agentLabel: "Tessera",
+                assignment: {
+                  stepId: "draftBrief",
+                  agentId: "other",
+                  agentLabel: "Tessera",
+                  skillCapabilities: [],
+                  toolCapabilities: ["tool.workspace.read"],
+                  integrationCapabilities: [],
+                },
+                recommended: true,
+                disabled: false,
+              },
+            ],
+          },
+        ],
+      })
+    ).toThrow();
+  });
+
+  test("accepts legacy workflow run results without usage", () => {
+    const legacyRun = WorkflowRunResultSchema.parse({
+      runId: "run-legacy",
+      workflowId: "sales.meeting-brief",
+      status: "completed",
+      input: {},
+      sourceGaps: [],
+    });
+
+    expect(legacyRun.usage).toBeUndefined();
+  });
 });
