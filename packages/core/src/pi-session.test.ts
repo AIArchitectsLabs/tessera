@@ -98,6 +98,57 @@ describe("runPiTaskTurn", () => {
     expect(seen.modelRegistry).toBeDefined();
   });
 
+  test("captures token usage from nested SDK event payloads", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async () =>
+      new FakeSession([
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Draft ready." }],
+            usage: {
+              input_tokens: 12,
+              output_tokens: 6,
+              total_tokens: 18,
+              cachedInputTokens: 3,
+            },
+          } as never,
+          toolResults: [],
+        },
+        {
+          type: "agent_end",
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Draft ready." }],
+              usage: {
+                prompt_tokens: 20,
+                completion_tokens: 8,
+                total_tokens: 28,
+                reasoningTokens: 5,
+              },
+            } as never,
+          ],
+        },
+      ]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft a note",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+    });
+
+    expect(result.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 8,
+      totalTokens: 28,
+      reasoningTokens: 5,
+    });
+  });
+
   test("ignores message_end for user messages and returns only assistant text", async () => {
     const workspaceRoot = await makeWorkspace();
     // Mirrors the real SDK event sequence from runAgentLoop:

@@ -4,6 +4,7 @@ import type {
   DashboardLayout,
   PermissionDecision,
   PermissionGrant,
+  TokenUsage,
   WorkflowInputDefinition,
   WorkflowRunEvent,
   WorkflowRunResult,
@@ -368,6 +369,45 @@ function markStep(
   return steps.map((step) => (step.id === stepId ? { ...step, ...patch } : step));
 }
 
+function addTokenUsage(total: TokenUsage | undefined, usage: TokenUsage): TokenUsage {
+  if (!total) return { ...usage };
+
+  const merged: TokenUsage = {
+    inputTokens: total.inputTokens + usage.inputTokens,
+    outputTokens: total.outputTokens + usage.outputTokens,
+    totalTokens: total.totalTokens + usage.totalTokens,
+  };
+
+  const cachedInputTokens = (total.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0);
+  if (cachedInputTokens > 0) {
+    merged.cachedInputTokens = cachedInputTokens;
+  }
+
+  const reasoningTokens = (total.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0);
+  if (reasoningTokens > 0) {
+    merged.reasoningTokens = reasoningTokens;
+  }
+
+  return merged;
+}
+
+function aggregateTokenUsage(steps: WorkflowRunStepRecord[] | undefined): TokenUsage | undefined {
+  let usage: TokenUsage | undefined;
+  for (const step of steps ?? []) {
+    if (!step.usage) continue;
+    usage = addTokenUsage(usage, step.usage);
+  }
+  return usage;
+}
+
+function attachRunUsage<T extends { usage?: TokenUsage }>(
+  run: T,
+  steps: WorkflowRunStepRecord[] | undefined
+): T {
+  const usage = aggregateTokenUsage(steps);
+  return usage ? { ...run, usage } : run;
+}
+
 function eventFor(options: {
   runId: string;
   workflowId: string;
@@ -428,21 +468,24 @@ async function executeFromStep(options: {
 
   const checkpoint = async (patch: Partial<WorkflowExecutionRunResult>) => {
     updatedAt = new Date().toISOString();
-    const run: WorkflowExecutionRunResult = {
-      runId,
-      workflowId: definition.id,
-      status: patch.status ?? "running",
-      currentStepId,
-      input,
-      outputs,
-      startedAt,
-      updatedAt,
-      steps,
-      events,
-      assignmentPlan,
-      sourceGaps,
-      ...patch,
-    };
+    const run = attachRunUsage(
+      {
+        runId,
+        workflowId: definition.id,
+        status: patch.status ?? "running",
+        currentStepId,
+        input,
+        outputs,
+        startedAt,
+        updatedAt,
+        steps,
+        events,
+        assignmentPlan,
+        sourceGaps,
+        ...patch,
+      },
+      steps
+    );
     await options.onCheckpoint?.(run);
   };
 
@@ -471,22 +514,25 @@ async function executeFromStep(options: {
           stepId: currentStepId,
         })
       );
-      const failed: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "failed",
-        currentStepId,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-        error: `Unknown workflow step: ${currentStepId}`,
-      };
+      const failed = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error: `Unknown workflow step: ${currentStepId}`,
+        },
+        steps
+      );
       await options.onCheckpoint?.(failed);
       return failed;
     }
@@ -523,23 +569,26 @@ async function executeFromStep(options: {
             stepId: step.id,
           })
         );
-        const failed: WorkflowExecutionRunResult = {
-          runId,
-          workflowId: definition.id,
-          status: "failed",
-          currentStepId: step.id,
-          input,
-          outputs,
-          startedAt,
-          updatedAt: completedAt,
-          completedAt,
-          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-          assignmentPlan,
-          sourceGaps,
-          steps,
-          events,
-          error: `Missing workflow agent workspace root input: ${step.workspaceRootInput}`,
-        };
+        const failed = attachRunUsage(
+          {
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            currentStepId: step.id,
+            input,
+            outputs,
+            startedAt,
+            updatedAt: completedAt,
+            completedAt,
+            durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+            assignmentPlan,
+            sourceGaps,
+            steps,
+            events,
+            error: `Missing workflow agent workspace root input: ${step.workspaceRootInput}`,
+          },
+          steps
+        );
         await options.onCheckpoint?.(failed);
         return failed;
       }
@@ -565,23 +614,26 @@ async function executeFromStep(options: {
             metadata: { sourceGaps: stepGaps },
           })
         );
-        const failed: WorkflowExecutionRunResult = {
-          runId,
-          workflowId: definition.id,
-          status: "failed",
-          currentStepId: step.id,
-          input,
-          outputs,
-          startedAt,
-          updatedAt: completedAt,
-          completedAt,
-          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-          assignmentPlan,
-          sourceGaps,
-          steps,
-          events,
-          error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
-        };
+        const failed = attachRunUsage(
+          {
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            currentStepId: step.id,
+            input,
+            outputs,
+            startedAt,
+            updatedAt: completedAt,
+            completedAt,
+            durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+            assignmentPlan,
+            sourceGaps,
+            steps,
+            events,
+            error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+          },
+          steps
+        );
         await options.onCheckpoint?.(failed);
         return failed;
       }
@@ -663,6 +715,7 @@ async function executeFromStep(options: {
         completedAt,
         durationMs: Date.parse(completedAt) - Date.parse(stepStartedAt),
         outputPreview: previewOutput(result),
+        ...(result.usage ? { usage: result.usage } : {}),
         assignment: selected,
       });
       events.push(
@@ -707,23 +760,26 @@ async function executeFromStep(options: {
           stepId: step.id,
         })
       );
-      const failed: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "failed",
-        currentStepId,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: completedAt,
-        completedAt,
-        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-        error: `Unknown workflow tool: ${step.toolId}`,
-      };
+      const failed = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error: `Unknown workflow tool: ${step.toolId}`,
+        },
+        steps
+      );
       await options.onCheckpoint?.(failed);
       return failed;
     }
@@ -749,23 +805,26 @@ async function executeFromStep(options: {
           metadata: { sourceGaps: stepGaps },
         })
       );
-      const failed: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "failed",
-        currentStepId,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: completedAt,
-        completedAt,
-        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-        error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
-      };
+      const failed = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error: blockingGap.reason ?? `Missing required capability: ${blockingGap.capability}`,
+        },
+        steps
+      );
       await options.onCheckpoint?.(failed);
       return failed;
     }
@@ -788,23 +847,26 @@ async function executeFromStep(options: {
           stepId: step.id,
         })
       );
-      const failed: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "failed",
-        currentStepId,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: completedAt,
-        completedAt,
-        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-        error: `Missing assignment for step: ${step.id}`,
-      };
+      const failed = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "failed",
+          currentStepId,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          error: `Missing assignment for step: ${step.id}`,
+        },
+        steps
+      );
       await options.onCheckpoint?.(failed);
       return failed;
     }
@@ -842,21 +904,24 @@ async function executeFromStep(options: {
           metadata: { approval: decision.approval },
         })
       );
-      const blocked: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "blocked",
-        currentStepId: step.id,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: completedAt,
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-        approval: decision.approval,
-      };
+      const blocked = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "blocked",
+          currentStepId: step.id,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+          approval: decision.approval,
+        },
+        steps
+      );
       await options.onCheckpoint?.(blocked);
       return blocked;
     }
@@ -882,22 +947,25 @@ async function executeFromStep(options: {
           stepId: step.id,
         })
       );
-      const denied: WorkflowExecutionRunResult = {
-        runId,
-        workflowId: definition.id,
-        status: "denied",
-        currentStepId: step.id,
-        input,
-        outputs,
-        startedAt,
-        updatedAt: completedAt,
-        completedAt,
-        durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-        assignmentPlan,
-        sourceGaps,
-        steps,
-        events,
-      };
+      const denied = attachRunUsage(
+        {
+          runId,
+          workflowId: definition.id,
+          status: "denied",
+          currentStepId: step.id,
+          input,
+          outputs,
+          startedAt,
+          updatedAt: completedAt,
+          completedAt,
+          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+          assignmentPlan,
+          sourceGaps,
+          steps,
+          events,
+        },
+        steps
+      );
       await options.onCheckpoint?.(denied);
       return denied;
     }
@@ -933,21 +1001,24 @@ async function executeFromStep(options: {
       message: `${definition.name} ${currentStepId === "completed" ? "completed" : "failed"}`,
     })
   );
-  const finalRun: WorkflowExecutionRunResult = {
-    runId,
-    workflowId: definition.id,
-    status: currentStepId === "completed" ? "completed" : "failed",
-    input,
-    outputs,
-    startedAt,
-    updatedAt: completedAt,
-    completedAt,
-    durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-    assignmentPlan,
-    sourceGaps,
-    steps,
-    events,
-  };
+  const finalRun = attachRunUsage(
+    {
+      runId,
+      workflowId: definition.id,
+      status: currentStepId === "completed" ? "completed" : "failed",
+      input,
+      outputs,
+      startedAt,
+      updatedAt: completedAt,
+      completedAt,
+      durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+      assignmentPlan,
+      sourceGaps,
+      steps,
+      events,
+    },
+    steps
+  );
   await options.onCheckpoint?.(finalRun);
   return finalRun;
 }
@@ -1015,16 +1086,21 @@ export async function resumeWorkflowRun(
       run.steps && run.currentStepId
         ? markStep(run.steps, run.currentStepId, { status: "denied", completedAt })
         : run.steps;
-    const denied: WorkflowExecutionRunResult = {
-      ...run,
-      status: "denied",
-      approval: undefined,
-      updatedAt: completedAt,
-      completedAt,
-      ...(run.startedAt ? { durationMs: Date.parse(completedAt) - Date.parse(run.startedAt) } : {}),
-      ...(steps ? { steps } : {}),
-      events,
-    };
+    const denied = attachRunUsage(
+      {
+        ...run,
+        status: "denied",
+        approval: undefined,
+        updatedAt: completedAt,
+        completedAt,
+        ...(run.startedAt
+          ? { durationMs: Date.parse(completedAt) - Date.parse(run.startedAt) }
+          : {}),
+        ...(steps ? { steps } : {}),
+        events,
+      },
+      steps ?? run.steps
+    );
     await options.onCheckpoint?.(denied);
     return denied;
   }
