@@ -657,23 +657,26 @@ async function executeFromStep(options: {
             stepId: step.id,
           })
         );
-        const failed: WorkflowExecutionRunResult = {
-          runId,
-          workflowId: definition.id,
-          status: "failed",
-          currentStepId: step.id,
-          input,
-          outputs,
-          startedAt,
-          updatedAt: completedAt,
-          completedAt,
-          durationMs: Date.parse(completedAt) - Date.parse(startedAt),
-          assignmentPlan,
-          sourceGaps,
-          steps,
-          events,
-          error,
-        };
+        const failed = attachRunUsage(
+          {
+            runId,
+            workflowId: definition.id,
+            status: "failed",
+            currentStepId: step.id,
+            input,
+            outputs,
+            startedAt,
+            updatedAt: completedAt,
+            completedAt,
+            durationMs: Date.parse(completedAt) - Date.parse(startedAt),
+            assignmentPlan,
+            sourceGaps,
+            steps,
+            events,
+            error,
+          },
+          steps
+        );
         await options.onCheckpoint?.(failed);
         return failed;
       }
