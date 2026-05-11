@@ -31,14 +31,23 @@ export {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
 } from "./workflow-capabilities.js";
+import customerRenewalRiskReviewManifest from "./builtin-playbooks/customer.renewal-risk-review/manifest.json";
+import customerRenewalRiskReviewDraft from "./builtin-playbooks/customer.renewal-risk-review/prompts/draft-risk-review.md" with {
+  type: "text",
+};
+import demoWriteApprovalManifest from "./builtin-playbooks/demo.write-approval/manifest.json";
+import operationsWeeklyStatusDigestManifest from "./builtin-playbooks/ops.weekly-status-digest/manifest.json";
+import operationsWeeklyStatusDigestDraft from "./builtin-playbooks/ops.weekly-status-digest/prompts/draft-status-digest.md" with {
+  type: "text",
+};
+import opsWeeklyUpdateManifest from "./builtin-playbooks/ops.weekly-update/manifest.json";
+import salesMeetingBriefManifest from "./builtin-playbooks/sales.meeting-brief/manifest.json";
+import salesMeetingBriefDraftBrief from "./builtin-playbooks/sales.meeting-brief/prompts/draft-brief.md" with {
+  type: "text",
+};
+import { loadPlaybookManifest } from "./playbook-loader.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
-import customerRenewalRiskReviewManifest from "./workflows/customer.renewal-risk-review.json";
-import demoWorkflowManifest from "./workflows/demo.write-approval.json";
-import operationsWeeklyStatusDigestManifest from "./workflows/operations.weekly-status-digest.json";
-import salesMeetingBriefManifest from "./workflows/sales.meeting-brief.json";
-import weeklyUpdateManifest from "./workflows/weekly-update.json";
-
-const TERMINAL_STEPS = new Set(["completed", "failed", "denied"]);
+import { TERMINAL_STEPS } from "./workflow-constants.js";
 
 type WorkflowExecutionRunResult = WorkflowRunResult & {
   assignmentPlan?: WorkflowRunAssignmentPlan | undefined;
@@ -46,34 +55,24 @@ type WorkflowExecutionRunResult = WorkflowRunResult & {
   steps?: WorkflowExecutionStepRecord[] | undefined;
 };
 
-export function loadWorkflowDefinition(value: unknown): WorkflowDefinition {
-  const definition = WorkflowDefinitionSchema.parse(value);
-  const stepIds = new Set(definition.steps.map((step) => step.id));
-
-  if (!stepIds.has(definition.start)) {
-    throw new Error(`Unknown workflow start step: ${definition.start}`);
-  }
-
-  for (const step of definition.steps) {
-    for (const next of [step.onSuccess, step.onFailure]) {
-      if (next && !stepIds.has(next) && !TERMINAL_STEPS.has(next)) {
-        throw new Error(`Unknown workflow transition from ${step.id}: ${next}`);
-      }
-    }
-  }
-
-  return definition;
-}
-
-export const DEMO_WORKFLOW = loadWorkflowDefinition(demoWorkflowManifest);
-export const WEEKLY_UPDATE_WORKFLOW = loadWorkflowDefinition(weeklyUpdateManifest);
-export const SALES_MEETING_BRIEF_WORKFLOW = loadWorkflowDefinition(salesMeetingBriefManifest);
-export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadWorkflowDefinition(
-  customerRenewalRiskReviewManifest
-);
-export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadWorkflowDefinition(
-  operationsWeeklyStatusDigestManifest
-);
+export const DEMO_WORKFLOW = loadPlaybookManifest({
+  manifestJson: demoWriteApprovalManifest,
+}).workflow;
+export const WEEKLY_UPDATE_WORKFLOW = loadPlaybookManifest({
+  manifestJson: opsWeeklyUpdateManifest,
+}).workflow;
+export const SALES_MEETING_BRIEF_WORKFLOW = loadPlaybookManifest({
+  manifestJson: salesMeetingBriefManifest,
+  prompts: { "prompts/draft-brief.md": salesMeetingBriefDraftBrief },
+}).workflow;
+export const CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW = loadPlaybookManifest({
+  manifestJson: customerRenewalRiskReviewManifest,
+  prompts: { "prompts/draft-risk-review.md": customerRenewalRiskReviewDraft },
+}).workflow;
+export const WEEKLY_STATUS_DIGEST_WORKFLOW = loadPlaybookManifest({
+  manifestJson: operationsWeeklyStatusDigestManifest,
+  prompts: { "prompts/draft-status-digest.md": operationsWeeklyStatusDigestDraft },
+}).workflow;
 
 const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
   [DEMO_WORKFLOW.id, DEMO_WORKFLOW],

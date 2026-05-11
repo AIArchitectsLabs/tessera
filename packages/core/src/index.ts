@@ -69,7 +69,6 @@ export {
   SALES_MEETING_BRIEF_WORKFLOW,
   WEEKLY_UPDATE_WORKFLOW,
   WEEKLY_STATUS_DIGEST_WORKFLOW,
-  loadWorkflowDefinition,
   resumeWorkflowRun,
   runDemoWorkflow,
   runWorkflow,
@@ -77,3 +76,5 @@ export {
   type RunDemoWorkflowOptions,
   type RunWorkflowOptions,
 } from "./workflow.js";
+export { loadPlaybookManifest } from "./playbook-loader.js";
+export type { LoadPlaybookManifestOptions } from "./playbook-loader.js";

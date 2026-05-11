@@ -1,0 +1,1 @@
+Create a weekly status digest for {{inputs.team}} for the week ending {{inputs.weekEnding}}. Focus areas: {{inputs.focusAreas}}. Continue when selected sources are unavailable. Include executive summary, wins, risks, decisions needed, follow-ups, used sources, skipped sources, and source gaps.
