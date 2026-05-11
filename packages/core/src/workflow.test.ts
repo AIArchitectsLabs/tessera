@@ -140,13 +140,52 @@ describe("workflow runner", () => {
           provider: options.provider.provider,
           prompt: options.prompt,
         });
-        return { text: `drafted:${options.provider.model}`, boundaryViolations: 0 };
+        return options.provider.model === "gpt-5.4"
+          ? {
+              text: `drafted:${options.provider.model}`,
+              boundaryViolations: 0,
+              usage: {
+                inputTokens: 10,
+                outputTokens: 4,
+                totalTokens: 14,
+                cachedInputTokens: 2,
+                reasoningTokens: 1,
+              },
+            }
+          : {
+              text: `drafted:${options.provider.model}`,
+              boundaryViolations: 0,
+              usage: {
+                inputTokens: 6,
+                outputTokens: 2,
+                totalTokens: 8,
+              },
+            };
       },
     });
 
     expect(result.status).toBe("completed");
     expect(result.assignmentPlan?.assignments.draft?.agentId).toBe("agent-reasoner");
     expect(result.assignmentPlan?.assignments.summarize?.agentId).toBe("agent-summarizer");
+    expect(result.steps?.find((step) => step.id === "draft")?.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+      totalTokens: 14,
+      cachedInputTokens: 2,
+      reasoningTokens: 1,
+    });
+    expect(result.steps?.find((step) => step.id === "summarize")?.usage).toEqual({
+      inputTokens: 6,
+      outputTokens: 2,
+      totalTokens: 8,
+    });
+    expect(result.usage).toEqual({
+      inputTokens: 16,
+      outputTokens: 6,
+      totalTokens: 22,
+      cachedInputTokens: 2,
+      reasoningTokens: 1,
+    });
     expect(result.steps?.find((step) => step.id === "draft")?.assignment?.agentId).toBe(
       "agent-reasoner"
     );

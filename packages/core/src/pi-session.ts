@@ -17,6 +17,7 @@ import type {
   TaskSkillActivation,
   TaskTodo,
   TodoOperation,
+  TokenUsage,
 } from "@tessera/contracts";
 import { BrowserActionInputSchema, compileAgentRuntimeContext } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
@@ -89,6 +90,7 @@ export interface RunPiTaskTurnOptions {
 export interface PiTaskTurnResult {
   text: string;
   boundaryViolations: number;
+  usage?: TokenUsage;
 }
 
 function providerBaseUrl(provider: AgentProviderConfig): string {
@@ -159,6 +161,65 @@ function textFromMessage(message: unknown): string {
     .filter((item) => item && typeof item === "object" && "type" in item && item.type === "text")
     .map((item) => ("text" in item && typeof item.text === "string" ? item.text : ""))
     .join("");
+}
+
+function numericUsageValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | undefined {
+  const input =
+    numericUsageValue(record.inputTokens) ??
+    numericUsageValue(record.input_tokens) ??
+    numericUsageValue(record.prompt_tokens);
+  const output =
+    numericUsageValue(record.outputTokens) ??
+    numericUsageValue(record.output_tokens) ??
+    numericUsageValue(record.completion_tokens);
+  if (input === undefined || output === undefined) return undefined;
+
+  const usage: TokenUsage = {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens:
+      numericUsageValue(record.totalTokens) ??
+      numericUsageValue(record.total_tokens) ??
+      input + output,
+  };
+
+  const cachedInputTokens = numericUsageValue(record.cachedInputTokens);
+  if (cachedInputTokens !== undefined) {
+    usage.cachedInputTokens = cachedInputTokens;
+  }
+
+  const reasoningTokens = numericUsageValue(record.reasoningTokens);
+  if (reasoningTokens !== undefined) {
+    usage.reasoningTokens = reasoningTokens;
+  }
+
+  return usage;
+}
+
+function normalizeTokenUsage(payload: unknown): TokenUsage | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as Record<string, unknown>;
+
+  const directUsage = normalizeUsageRecord(record);
+  if (directUsage) return directUsage;
+
+  for (const key of ["usage", "event", "message", "assistantMessageEvent"]) {
+    const nestedUsage = normalizeTokenUsage(record[key]);
+    if (nestedUsage) return nestedUsage;
+  }
+
+  if (Array.isArray(record.messages)) {
+    for (let index = record.messages.length - 1; index >= 0; index--) {
+      const nestedUsage = normalizeTokenUsage(record.messages[index]);
+      if (nestedUsage) return nestedUsage;
+    }
+  }
+
+  return undefined;
 }
 
 function defaultFactory(): PiSessionFactory {
@@ -459,8 +520,11 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   let text = "";
   let finalizedText = "";
   let modelError: string | undefined;
+  let latestUsage: TokenUsage | undefined;
 
   const unsubscribe = session.subscribe((event) => {
+    const usage = normalizeTokenUsage(event);
+    if (usage) latestUsage = usage;
     const delta = textDeltaFromEvent(event);
     if (delta) text += delta;
     if (event.type === "tool_execution_start") {
@@ -536,5 +600,9 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
 
   // Prefer the finalized message content (turn_end/agent_end) as it is authoritative;
   // fall back to accumulated deltas only if the SDK did not emit a finalized message.
-  return { text: finalizedText || text, boundaryViolations };
+  return {
+    text: finalizedText || text,
+    boundaryViolations,
+    ...(latestUsage ? { usage: latestUsage } : {}),
+  };
 }

@@ -10,14 +10,18 @@ import type {
   DashboardLayout,
   IntegrationSettingsRead,
   ModelSettingsRead,
+  PlaybookAssignmentPreviewResult,
   PlaybookDetail,
   PlaybookListResult,
   PlaybookRunDetail,
+  PlaybookRunPreferenceReadResult,
   PlaybookSummary,
+  TokenUsage,
   WorkflowCapabilityInventory,
   WorkflowInputDefinition,
   WorkflowNodeAssignment,
   WorkflowResumeRequest,
+  WorkflowRunAssignmentPlan,
   WorkflowRunEvent,
   WorkflowRunListResult,
   WorkflowRunRequest,
@@ -105,6 +109,16 @@ function formatTime(value?: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatTokens(value: number): string {
+  if (value < 1000) return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  })
+    .format(value)
+    .replace(/[A-Z]/g, (char) => char.toLowerCase());
 }
 
 function formatCapabilityLabel(value: string): string {
@@ -531,6 +545,35 @@ function Section({
   );
 }
 
+function UsageSummary({ usage }: { usage: TokenUsage | undefined }) {
+  if (!usage) {
+    return (
+      <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+        Not reported by provider.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-background px-3 py-2">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+        Usage
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span>Input {formatTokens(usage.inputTokens)} tokens</span>
+        <span>Output {formatTokens(usage.outputTokens)} tokens</span>
+        <span>Total {formatTokens(usage.totalTokens)} tokens</span>
+        {usage.cachedInputTokens !== undefined ? (
+          <span>Cached {formatTokens(usage.cachedInputTokens)} tokens</span>
+        ) : null}
+        {usage.reasoningTokens !== undefined ? (
+          <span>Reasoning {formatTokens(usage.reasoningTokens)} tokens</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function RunEventItem({ event }: { event: WorkflowRunEvent }) {
   return (
     <div className="rounded-md border border-border bg-background px-3 py-2">
@@ -649,26 +692,63 @@ function IntakeField({
 function GuidedStart({
   playbook,
   playbookDetail,
+  assignmentPreview,
+  draftAssignmentPlan,
+  agentsConfirmed,
   formValues,
   onFieldChange,
   onStart,
+  onConfirmAgents,
   formReady,
   running,
+  savingPreference,
   workspaceRoot,
   capabilityInventory,
 }: {
   playbook: PlaybookSummary;
   playbookDetail: PlaybookDetail | null;
+  assignmentPreview: PlaybookAssignmentPreviewResult | null;
+  draftAssignmentPlan: WorkflowRunAssignmentPlan | null;
+  agentsConfirmed: boolean;
   formValues: Record<string, unknown>;
   onFieldChange: (key: string, value: unknown) => void;
   onStart: () => void;
+  onConfirmAgents: () => void;
   formReady: boolean;
   running: boolean;
+  savingPreference: boolean;
   workspaceRoot: string | null;
   capabilityInventory: WorkflowCapabilityInventory | null;
 }) {
   const ctaCopy = ctaCopyMap[playbook.id] ?? "Start playbook";
-  const inputs = playbookDetail?.inputs ?? {};
+  const detail = playbookDetail?.id === playbook.id ? playbookDetail : null;
+  const inputs = detail?.inputs ?? {};
+  const workflowSteps = detail?.steps ?? [];
+  const nodePreviews = useMemo(() => {
+    const previews = new Map<
+      string,
+      NonNullable<PlaybookAssignmentPreviewResult["nodePreviews"]>[number]
+    >();
+    for (const nodePreview of assignmentPreview?.nodePreviews ?? []) {
+      previews.set(nodePreview.stepId, nodePreview);
+    }
+    return previews;
+  }, [assignmentPreview]);
+  const blockers = assignmentPreview?.blockers ?? [];
+  const canConfirmAgents =
+    !!workspaceRoot &&
+    !!draftAssignmentPlan &&
+    !running &&
+    !savingPreference &&
+    blockers.length === 0 &&
+    !!assignmentPreview;
+  const canSubmit =
+    formReady &&
+    !!workspaceRoot &&
+    !running &&
+    blockers.length === 0 &&
+    !!draftAssignmentPlan &&
+    agentsConfirmed;
 
   const fields = Object.entries(inputs)
     .filter(([key, spec]) => key !== "workspaceRoot" && spec.group !== "System")
@@ -682,7 +762,119 @@ function GuidedStart({
     groups.set(group, list);
   }
 
-  const canSubmit = formReady && !!workspaceRoot && !running;
+  const preflightPanel = (
+    <div className="rounded-lg border border-border bg-secondary/30 p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-foreground">Before you run</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Review the workflow and confirm the agents Tessera will use.
+          </p>
+        </div>
+        {blockers.length > 0 ? (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+            Blocked
+          </span>
+        ) : agentsConfirmed ? (
+          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+            Confirmed
+          </span>
+        ) : (
+          <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            Review agents
+          </span>
+        )}
+      </div>
+
+      {!workspaceRoot ? (
+        <p className="text-xs text-muted-foreground">
+          Select a workspace to load the assignment preview.
+        </p>
+      ) : !capabilityInventory ? (
+        <p className="text-xs text-muted-foreground">
+          Loading setup before the assignment preview can run.
+        </p>
+      ) : assignmentPreview ? (
+        workflowSteps.length > 0 ? (
+          <div className="space-y-2">
+            {workflowSteps.map((step) => {
+              const preview = nodePreviews.get(step.id);
+              const assignment = draftAssignmentPlan?.assignments[step.id];
+              const recommendedLabel =
+                preview?.recommendedAgentLabel ?? preview?.candidates[0]?.agentLabel ?? null;
+              return (
+                <div
+                  key={step.id}
+                  className="flex items-start justify-between gap-4 rounded-md border border-border bg-background px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-foreground">
+                      {step.label ?? titleFromId(step.id)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {step.kind === "agent" ? "Agent step" : "Tool step"}
+                      {step.phase ? ` · ${step.phase}` : ""}
+                    </div>
+                  </div>
+                  <div className="max-w-[50%] text-right text-xs text-muted-foreground">
+                    {step.kind === "agent" ? (
+                      <>
+                        <div className="font-medium text-foreground">
+                          {assignment?.agentLabel ?? recommendedLabel ?? "Not assigned"}
+                        </div>
+                        {recommendedLabel ? (
+                          <div className="mt-0.5">Recommended: {recommendedLabel}</div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div>Uses workflow tool handling</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">No workflow steps are available yet.</p>
+        )
+      ) : (
+        <p className="text-xs text-muted-foreground">Loading assignment preview…</p>
+      )}
+
+      {blockers.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          {blockers.map((blocker) => (
+            <div
+              key={`${blocker.stepId}:${blocker.capability}`}
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            >
+              {blocker.reason ??
+                `Tessera could not use ${formatCapabilityLabel(blocker.capability)}.`}
+            </div>
+          ))}
+        </div>
+      ) : assignmentPreview ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {agentsConfirmed
+            ? "Agents are confirmed for this workspace."
+            : "Confirm the agents to save this setup for next time."}
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Button
+          type="button"
+          size="sm"
+          className="rounded-md"
+          onClick={onConfirmAgents}
+          disabled={!canConfirmAgents}
+        >
+          {savingPreference ? <Loader2 size={14} className="animate-spin" /> : null}
+          Confirm agents
+        </Button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -746,6 +938,8 @@ function GuidedStart({
             </div>
           ))}
 
+          {preflightPanel}
+
           {!workspaceRoot ? (
             <p className="text-sm text-muted-foreground">
               Select a workspace before starting this playbook.
@@ -759,11 +953,7 @@ function GuidedStart({
         </form>
       ) : (
         <div className="space-y-4">
-          {!workspaceRoot ? (
-            <p className="text-sm text-muted-foreground">
-              Select a workspace before starting this playbook.
-            </p>
-          ) : null}
+          {preflightPanel}
           <Button
             type="button"
             size="lg"
@@ -984,6 +1174,11 @@ function GuidedResult({
         ) : null}
         <h2 className="text-2xl font-semibold text-foreground">{headline}</h2>
         {sub ? <p className="mt-2 text-sm text-muted-foreground">{sub}</p> : null}
+        {run.status === "completed" ? (
+          <div className="mt-3">
+            <UsageSummary usage={run.usage} />
+          </div>
+        ) : null}
         {run.status === "failed" && latestEvent ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {latestEvent.message}
@@ -1262,6 +1457,13 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
+  const [assignmentPreview, setAssignmentPreview] =
+    useState<PlaybookAssignmentPreviewResult | null>(null);
+  const [draftAssignmentPlan, setDraftAssignmentPlan] = useState<WorkflowRunAssignmentPlan | null>(
+    null
+  );
+  const [agentsConfirmed, setAgentsConfirmed] = useState(false);
+  const [savingPreference, setSavingPreference] = useState(false);
   const runListRequestRef = useRef(0);
 
   const businessPlaybooks = useMemo(
@@ -1290,7 +1492,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
 
   const selectedPlaybook =
     businessPlaybooks.find((p) => p.id === selectedPlaybookId) ?? businessPlaybooks[0] ?? null;
-  const selectedPlaybookForUi = selectedPlaybookDetail ?? selectedPlaybook ?? null;
+  const selectedPlaybookForUi =
+    selectedPlaybookDetail?.id === selectedPlaybook?.id ? selectedPlaybookDetail : selectedPlaybook;
   const selectedRun =
     selectedRunDetail ??
     (selectedRunId ? (runs.find((run) => run.runId === selectedRunId) ?? null) : null);
@@ -1321,6 +1524,62 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     if (selectedRun.status === "running") return "preparing";
     return "result";
   }, [showStartForm, running, selectedRun]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedPlaybookId || !workspaceRoot || !capabilityInventory) {
+      setAssignmentPreview(null);
+      setDraftAssignmentPlan(null);
+      setAgentsConfirmed(false);
+      return;
+    }
+
+    setAssignmentPreview(null);
+    setDraftAssignmentPlan(null);
+    setAgentsConfirmed(false);
+
+    void (async () => {
+      try {
+        const preference = await invoke<PlaybookRunPreferenceReadResult>(
+          "playbook_run_preference_get",
+          {
+            playbookId: selectedPlaybookId,
+            request: { workspaceRoot },
+          }
+        );
+        if (cancelled) return;
+
+        const preview = await invoke<PlaybookAssignmentPreviewResult>(
+          "playbook_assignment_preview",
+          {
+            playbookId: selectedPlaybookId,
+            request: {
+              workspaceRoot,
+              capabilityInventory,
+              previousPlan: preference.preference?.assignmentPlan,
+            },
+          }
+        );
+        if (cancelled) return;
+
+        setAssignmentPreview(preview);
+        setDraftAssignmentPlan(
+          preview.assignmentPlan ?? preference.preference?.assignmentPlan ?? null
+        );
+        setAgentsConfirmed(!!preference.preference && preview.blockers.length === 0);
+      } catch (loadError) {
+        if (cancelled) return;
+        setAssignmentPreview(null);
+        setDraftAssignmentPlan(null);
+        setAgentsConfirmed(false);
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [capabilityInventory, selectedPlaybookId, workspaceRoot]);
 
   const loadPlaybooks = useCallback(async () => {
     setLoadingPlaybooks(true);
@@ -1520,8 +1779,17 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     selectedRunId,
   ]);
 
-  async function startRun(inputOverride?: Record<string, unknown>) {
+  async function startRun(
+    inputOverride?: Record<string, unknown>,
+    assignmentPlanOverride?: WorkflowRunAssignmentPlan
+  ) {
+    const assignmentPlan = assignmentPlanOverride ?? draftAssignmentPlan ?? undefined;
     if (!selectedPlaybook || !workspaceRoot) return;
+    if (!assignmentPlan) {
+      setError("Confirm agents before starting this playbook.");
+      setShowStartForm(true);
+      return;
+    }
     setRunning(true);
     setShowStartForm(false);
     setError(null);
@@ -1534,6 +1802,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         workflowId: selectedPlaybook.id,
         input: fullInput,
         capabilityInventory: capabilityInventory ?? undefined,
+        assignmentPlan,
       };
       const run = await invoke<PlaybookRunDetail>("playbook_run_create", {
         playbookId: selectedPlaybook.id,
@@ -1551,9 +1820,36 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }
 
+  async function confirmAgents() {
+    if (!selectedPlaybook || !workspaceRoot || !draftAssignmentPlan || savingPreference) return;
+    setSavingPreference(true);
+    setError(null);
+    try {
+      const saved = await invoke<PlaybookRunPreferenceReadResult>("playbook_run_preference_save", {
+        playbookId: selectedPlaybook.id,
+        request: {
+          workspaceRoot,
+          assignmentPlan: draftAssignmentPlan,
+        },
+      });
+      setDraftAssignmentPlan(saved.preference?.assignmentPlan ?? draftAssignmentPlan);
+      setAgentsConfirmed(true);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      setAgentsConfirmed(false);
+    } finally {
+      setSavingPreference(false);
+    }
+  }
+
   async function refreshDashboardRun() {
     if (!selectedRun || !selectedPlaybook || refreshing) {
       setRefreshNotice("Refresh already in progress");
+      return;
+    }
+    const assignmentPlan = selectedRun.assignmentPlan ?? draftAssignmentPlan ?? undefined;
+    if (!assignmentPlan) {
+      setRefreshNotice("Agent setup is still loading");
       return;
     }
     setRefreshing(true);
@@ -1562,7 +1858,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       const previousInput = Object.fromEntries(
         Object.entries(selectedRun.input ?? {}).filter(([key]) => key !== "workspaceRoot")
       );
-      await startRun({ ...previousInput, ...formValues });
+      await startRun({ ...previousInput, ...formValues }, assignmentPlan);
     } finally {
       setRefreshing(false);
     }
@@ -1704,6 +2000,11 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
                   {statusCopy[run.status]}
                 </span>
               </div>
+              {run.usage ? (
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {formatTokens(run.usage.totalTokens)} tokens
+                </div>
+              ) : null}
             </button>
           ))}
         </div>
@@ -1718,11 +2019,16 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           <GuidedStart
             playbook={selectedPlaybook}
             playbookDetail={selectedPlaybookDetail}
+            assignmentPreview={assignmentPreview}
+            draftAssignmentPlan={draftAssignmentPlan}
+            agentsConfirmed={agentsConfirmed}
             formValues={formValues}
             onFieldChange={(key, value) => setFormValues((prev) => ({ ...prev, [key]: value }))}
             onStart={() => void startRun()}
+            onConfirmAgents={() => void confirmAgents()}
             formReady={formReady}
             running={running}
+            savingPreference={savingPreference}
             workspaceRoot={workspaceRoot}
             capabilityInventory={capabilityInventory}
           />

@@ -53,7 +53,16 @@ const playbook = {
   optionalCapabilities: [],
   inputs: {},
   outputs: [{ kind: "meetingBrief", label: "Meeting brief" }],
-  steps: [],
+  steps: [
+    {
+      id: "draftBrief",
+      kind: "agent",
+      phase: "Prepare",
+      label: "Draft meeting brief",
+      prompt: "Draft a concise meeting brief.",
+      workspaceRootInput: "workspaceRoot",
+    },
+  ],
   stepCount: 1,
   phases: ["Prepare"],
 } satisfies PlaybookDetail;
@@ -95,6 +104,11 @@ const completedRun = {
       text: "Created the brief and saved it to: `Sales Meeting Brief - FOMORA.md`",
       boundaryViolations: 0,
     },
+  },
+  usage: {
+    inputTokens: 1200,
+    outputTokens: 340,
+    totalTokens: 1540,
   },
   updatedAt: "2026-05-09T07:17:00.000Z",
   events: [],
@@ -158,6 +172,75 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
       return { playbooks: [playbook, dashboardPlaybook] } satisfies PlaybookListResult;
     case "playbook_get":
       return args?.playbookId === dashboardPlaybook.id ? dashboardPlaybook : playbook;
+    case "playbook_run_preference_get":
+      return { preference: undefined };
+    case "playbook_assignment_preview":
+      return {
+        assignmentPlan: {
+          resolverVersion: 1,
+          createdAt: "2026-05-11T00:00:00.000Z",
+          assignments: {
+            draftBrief: {
+              stepId: "draftBrief",
+              agentId: "default",
+              agentLabel: "Tessera",
+              skillCapabilities: [],
+              toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+              integrationCapabilities: [],
+            },
+          },
+        },
+        confirmationRequired: true,
+        blockers: [],
+        sourceGaps: [],
+        nodePreviews: [
+          {
+            stepId: "draftBrief",
+            stepLabel: "Draft meeting brief",
+            kind: "agent",
+            recommendedAgentId: "default",
+            recommendedAgentLabel: "Tessera",
+            candidates: [
+              {
+                agentId: "default",
+                agentLabel: "Tessera",
+                assignment: {
+                  stepId: "draftBrief",
+                  agentId: "default",
+                  agentLabel: "Tessera",
+                  skillCapabilities: [],
+                  toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+                  integrationCapabilities: [],
+                },
+                recommended: true,
+                disabled: false,
+              },
+            ],
+          },
+        ],
+      };
+    case "playbook_run_preference_save":
+      return {
+        preference: {
+          workspaceRoot: "/tmp/workspace",
+          playbookId: playbook.id,
+          assignmentPlan: {
+            resolverVersion: 1,
+            createdAt: "2026-05-11T00:00:00.000Z",
+            assignments: {
+              draftBrief: {
+                stepId: "draftBrief",
+                agentId: "default",
+                agentLabel: "Tessera",
+                skillCapabilities: [],
+                toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+                integrationCapabilities: [],
+              },
+            },
+          },
+          updatedAt: "2026-05-11T00:00:00.000Z",
+        },
+      };
     case "playbook_run_list":
       if (args?.playbookId === dashboardPlaybook.id) {
         return { runs: [dashboardRun] } satisfies WorkflowRunListResult;
@@ -168,6 +251,13 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
       return { runs: [dashboardRun, completedRun] } satisfies WorkflowRunListResult;
     case "playbook_run_get":
       return args?.runId === dashboardRun.runId ? dashboardRun : completedRun;
+    case "playbook_run_create":
+      return {
+        ...completedRun,
+        runId: "run-new",
+        updatedAt: "2026-05-11T00:00:00.000Z",
+        assignmentPlan: (args?.request as { assignmentPlan?: unknown } | undefined)?.assignmentPlan,
+      } as PlaybookRunDetail;
     case "playbook_get_dashboard_layout":
       return {
         layout: {
@@ -278,6 +368,58 @@ describe("PlaybooksView", () => {
     });
     expect(view.getByText("Meeting brief")).toBeTruthy();
     expect(view.getByText(/Research requested: Web/)).toBeTruthy();
+  });
+
+  test("requires first-run agent confirmation before enabling run", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText("Before you run")).toBeTruthy();
+      expect(view.getByText("Draft meeting brief")).toBeTruthy();
+    });
+
+    const runButton = view.getByRole("button", { name: "Prepare brief" });
+    expect((runButton as HTMLButtonElement).disabled).toBe(true);
+
+    const confirmButton = view.getByRole("button", { name: "Confirm agents" });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(
+        (view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement).disabled
+      ).toBe(false);
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Prepare brief" }));
+
+    await waitFor(() => {
+      const createCall = invoke.mock.calls.find(([command]) => command === "playbook_run_create");
+      expect(createCall).toBeTruthy();
+      expect(
+        (
+          createCall?.[1] as
+            | { request?: { assignmentPlan?: { assignments?: Record<string, unknown> } } }
+            | undefined
+        )?.request?.assignmentPlan?.assignments?.draftBrief
+      ).toBeTruthy();
+    });
+  });
+
+  test("shows token usage for completed runs with usage data", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText(/1\.5k tokens/i)).toBeTruthy();
+    });
+
+    const runButton = view.getByText(/May 9/).closest("button");
+    if (!runButton) throw new Error("Expected run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Usage")).toBeTruthy();
+      expect(view.getByText(/Total 1\.5k tokens/i)).toBeTruthy();
+    });
   });
 
   test("renders pinned dashboard runs with dashboard layout and refresh button", async () => {

@@ -1056,7 +1056,36 @@ export const PlaybookAssignmentCandidateSchema = z
     disabled: z.boolean().default(false),
     reason: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((candidate, ctx) => {
+    if (candidate.assignment.agentId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Playbook assignment candidates require assignment.agentId",
+        path: ["assignment", "agentId"],
+      });
+    } else if (candidate.agentId !== candidate.assignment.agentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Playbook assignment candidate agentId must match assignment.agentId",
+        path: ["agentId"],
+      });
+    }
+
+    if (candidate.assignment.agentLabel === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Playbook assignment candidates require assignment.agentLabel",
+        path: ["assignment", "agentLabel"],
+      });
+    } else if (candidate.agentLabel !== candidate.assignment.agentLabel) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Playbook assignment candidate agentLabel must match assignment.agentLabel",
+        path: ["agentLabel"],
+      });
+    }
+  });
 export type PlaybookAssignmentCandidate = z.infer<typeof PlaybookAssignmentCandidateSchema>;
 
 export const PlaybookAssignmentNodePreviewSchema = z
@@ -1183,7 +1212,6 @@ export type WorkflowCapabilityInventory = z.infer<typeof WorkflowCapabilityInven
 
 export const PlaybookAssignmentPreviewRequestSchema = z
   .object({
-    playbookId: z.string().min(1),
     workspaceRoot: z.string().min(1).optional(),
     capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
     previousPlan: WorkflowRunAssignmentPlanSchema.optional(),
