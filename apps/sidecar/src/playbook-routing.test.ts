@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   AgentProfileSchema,
+  PlaybookAssignmentPreviewResultSchema,
   WorkflowCapabilityInventorySchema,
   WorkflowDefinitionSchema,
 } from "@tessera/contracts";
 import {
   buildLocalPlaybookCapabilityInventory,
+  createPlaybookAssignmentPreview,
   parsePlaybookRunCreateRequest,
   resolveCheckpointedPlaybookExecutionContext,
   resolvePlaybookExecutionContext,
@@ -42,6 +44,76 @@ describe("playbook routing helpers", () => {
       "tool.workspace.read",
       "tool.workspace.write",
     ]);
+  });
+
+  test("creates an assignment preview that recommends the default agent", () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.preview",
+      version: 1,
+      name: "Preview",
+      start: "draft",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          label: "Draft brief",
+          kind: "agent",
+          prompt: "Draft the brief",
+          workspaceRootInput: "workspaceRoot",
+          requires: {
+            tools: [{ capability: "tool.workspace.read" }],
+          },
+        },
+      ],
+    });
+    const capabilityInventory = buildLocalPlaybookCapabilityInventory([
+      AgentProfileSchema.parse({
+        id: "default",
+        name: "Tessera",
+        model: { mode: "default" },
+        skills: [],
+        toolPolicyPreset: "workspace_editor",
+        instructions: "",
+        soul: "",
+        userContext: "",
+        memoryDefaults: "",
+        createdAt: "2026-05-08T00:00:00.000Z",
+        updatedAt: "2026-05-08T00:00:00.000Z",
+      }),
+    ]);
+
+    const preview = PlaybookAssignmentPreviewResultSchema.parse(
+      createPlaybookAssignmentPreview({
+        definition,
+        capabilityInventory,
+      })
+    );
+
+    expect(preview.confirmationRequired).toBe(true);
+    expect(preview.blockers).toEqual([]);
+    expect(preview.nodePreviews).toHaveLength(1);
+    expect(preview.nodePreviews[0]).toMatchObject({
+      stepId: "draft",
+      stepLabel: "Draft brief",
+      kind: "agent",
+      recommendedAgentId: "default",
+      recommendedAgentLabel: "Tessera",
+      candidates: [
+        {
+          agentId: "default",
+          agentLabel: "Tessera",
+          recommended: true,
+          disabled: false,
+          assignment: {
+            stepId: "draft",
+            agentId: "default",
+            agentLabel: "Tessera",
+          },
+        },
+      ],
+    });
   });
 
   test("resolves different agents for different workflow nodes and records optional gaps", () => {
