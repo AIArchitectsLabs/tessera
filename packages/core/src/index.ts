@@ -9,6 +9,7 @@ export {
   type BrowserRecipeActionInput,
   type BuildBrowserRecipeProposalInput,
 } from "./browser-recipes.js";
+export { resolveBinding } from "./dashboard-layout.js";
 export { createAgentModel, resolveApiKey } from "./model.js";
 export {
   executeWebSearch,
