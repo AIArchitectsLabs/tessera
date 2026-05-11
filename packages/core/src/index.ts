@@ -77,3 +77,5 @@ export {
   type RunDemoWorkflowOptions,
   type RunWorkflowOptions,
 } from "./workflow.js";
+export { loadPlaybookManifest } from "./playbook-loader.js";
+export type { LoadPlaybookManifestOptions } from "./playbook-loader.js";
