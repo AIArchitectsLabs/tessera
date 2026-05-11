@@ -528,14 +528,18 @@ function handleWorkflowRunGet(req: Request, runId: string): Response {
   return Response.json(run);
 }
 
-function handleWorkflowRunDashboardLayout(req: Request, runId: string): Response {
+async function handleWorkflowRunDashboardLayout(req: Request, runId: string): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const run = workflowStore.get(runId);
   if (!run) return Response.json({ error: "Run not found" }, { status: 404 });
-  return Response.json({ layout: run.dashboardLayout ?? null });
+  if (run.dashboardLayout) return Response.json({ layout: run.dashboardLayout });
+
+  const entry = workflowRegistry.get(run.workflowId);
+  const runWithLayout = await saveWorkflowRunWithDashboardLayout(run, entry);
+  return Response.json({ layout: runWithLayout.dashboardLayout ?? null });
 }
 
 function handlePlaybookList(req: Request): Response {

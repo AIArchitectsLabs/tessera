@@ -55,6 +55,40 @@ describe("DashboardView", () => {
     expect(view.getByText(/Open deals/)).toBeTruthy();
   });
 
+  test("renders dashboard fields from JSON text returned by an agent step", () => {
+    const view = render(
+      <DashboardView
+        layout={{
+          sections: [
+            {
+              type: "metrics",
+              title: "Activity",
+              items: [{ label: "Open items", binding: "draftSnapshot.openItems" }],
+            },
+            { type: "list", title: "Highlights", binding: "draftSnapshot.highlights" },
+            { type: "text", title: "Summary", binding: "draftSnapshot.summary" },
+          ],
+        }}
+        outputs={{
+          draftSnapshot: {
+            text: `{
+  "openItems": 15,
+  "highlights": ["Reels outperformed carousels."],
+  "summary": "Reels are the clearest signal."
+}
+
+Caveat: counts were inferred from the digest.`,
+            boundaryViolations: 0,
+          },
+        }}
+      />
+    );
+
+    expect(view.getByText("15")).toBeTruthy();
+    expect(view.getByText("Reels outperformed carousels.")).toBeTruthy();
+    expect(view.getByText("Reels are the clearest signal.")).toBeTruthy();
+  });
+
   test("renders empty-label when list binding is empty", () => {
     const view = render(
       <DashboardView

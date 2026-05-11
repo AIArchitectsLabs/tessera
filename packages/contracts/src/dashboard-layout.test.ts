@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { DashboardLayoutSchema, WorkflowOutputDeclarationSchema } from "./index.js";
+import {
+  DashboardLayoutSchema,
+  WorkflowOutputDeclarationSchema,
+  resolveDashboardBinding,
+} from "./index.js";
 
 describe("DashboardLayoutSchema", () => {
   test("accepts a layout with one metrics section", () => {
@@ -71,5 +75,29 @@ describe("WorkflowOutputDeclarationSchema extensions", () => {
       label: "Meeting brief",
     });
     expect(decl.kind).toBe("meetingBrief");
+  });
+});
+
+describe("resolveDashboardBinding", () => {
+  test("resolves fields from JSON text returned by an agent step", () => {
+    const outputs = {
+      draftSnapshot: {
+        text: `{
+  "openItems": 15,
+  "highlights": ["Reels outperformed carousels."],
+  "summary": "Reels are the clearest signal."
+}
+
+Caveat: counts were inferred from the digest.`,
+      },
+    };
+
+    expect(resolveDashboardBinding(outputs, "draftSnapshot.openItems")).toBe(15);
+    expect(resolveDashboardBinding(outputs, "draftSnapshot.highlights")).toEqual([
+      "Reels outperformed carousels.",
+    ]);
+    expect(resolveDashboardBinding(outputs, "draftSnapshot.summary")).toBe(
+      "Reels are the clearest signal."
+    );
   });
 });

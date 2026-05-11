@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "bun --cwd ../.. run build:sidecar && bun run --filter @tessera/ui dev",
-    "beforeBuildCommand": "bun --cwd ../.. run build:sidecar && bun run --filter @tessera/ui build"
+    "beforeDevCommand": "bun run --cwd ../.. build:sidecar && bun run --filter @tessera/ui dev",
+    "beforeBuildCommand": "bun run --cwd ../.. build:sidecar && bun run --filter @tessera/ui build"
   },
   "app": {
     "windows": [

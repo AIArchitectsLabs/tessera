@@ -324,6 +324,43 @@ describe("TaskDetail composer", () => {
     ).toBe(true);
   });
 
+  test("omits redundant progress and working folder sections from the side pane", () => {
+    const { view } = renderTaskDetail({
+      task: {
+        ...taskDetail(),
+        todo: {
+          items: [{ id: "todo-1", label: "Draft outline", status: "pending", order: 1 }],
+          updatedAt: "2026-05-07T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(view.queryByText("Progress")).toBeNull();
+    expect(view.queryByText("Working folder")).toBeNull();
+    expect(view.getByText("Todo")).toBeTruthy();
+    expect(view.getByText("Agent Context")).toBeTruthy();
+  });
+
+  test("expands hidden context items from the side pane", () => {
+    const artifacts = Array.from({ length: 14 }, (_, index) => ({
+      id: `artifact-${index + 1}`,
+      taskId: "task-1",
+      kind: "text" as const,
+      title: `Context Item ${index + 1}`,
+      contentPreview: `Preview ${index + 1}`,
+      createdAt: "2026-05-07T00:00:00.000Z",
+    }));
+    const { view } = renderTaskDetail({ task: { ...taskDetail(), artifacts } });
+
+    expect(view.getByText("Context Item 1")).toBeTruthy();
+    expect(view.queryByText("Context Item 14")).toBeNull();
+
+    fireEvent.click(view.getByRole("button", { name: "+10 more context items." }));
+
+    expect(view.getByText("Context Item 14")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "+10 more context items." })).toBeNull();
+  });
+
   test("autocompletes a highlighted slash skill without sending the message", async () => {
     const { view, onCreateTurn } = renderTaskDetail();
     const textarea = view.getByPlaceholderText("Write a message...") as HTMLTextAreaElement;

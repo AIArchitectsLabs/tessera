@@ -1,4 +1,8 @@
-import type { DashboardLayout, DashboardSection } from "@tessera/contracts";
+import {
+  type DashboardLayout,
+  type DashboardSection,
+  resolveDashboardBinding,
+} from "@tessera/contracts";
 
 interface DashboardViewProps {
   layout: DashboardLayout;
@@ -34,7 +38,7 @@ function DashboardSectionView({
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           {section.items.map((item, index) => {
-            const value = resolveBinding(outputs, item.binding);
+            const value = resolveDashboardBinding(outputs, item.binding);
             return (
               <div
                 key={`${item.binding}:${index}`}
@@ -54,7 +58,7 @@ function DashboardSectionView({
   }
 
   if (section.type === "list") {
-    const value = resolveBinding(outputs, section.binding);
+    const value = resolveDashboardBinding(outputs, section.binding);
     const items = Array.isArray(value) ? value : [];
     return (
       <section className="rounded-md border border-border bg-background p-4">
@@ -75,7 +79,7 @@ function DashboardSectionView({
   }
 
   if (section.type === "text") {
-    const value = resolveBinding(outputs, section.binding);
+    const value = resolveDashboardBinding(outputs, section.binding);
     return (
       <section className="rounded-md border border-border bg-background p-4">
         <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
@@ -85,7 +89,7 @@ function DashboardSectionView({
   }
 
   if (section.type === "table") {
-    const value = resolveBinding(outputs, section.binding);
+    const value = resolveDashboardBinding(outputs, section.binding);
     const rows = Array.isArray(value) ? value : [];
     return (
       <section className="overflow-hidden rounded-md border border-border bg-background">
@@ -121,18 +125,6 @@ function DashboardSectionView({
   }
 
   return null;
-}
-
-function resolveBinding(outputs: unknown, binding: string): unknown {
-  if (!binding) return undefined;
-  const parts = binding.split(".");
-  let cursor: unknown = outputs;
-  for (const part of parts) {
-    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
-    cursor = (cursor as Record<string, unknown>)[part];
-    if (cursor === undefined) return undefined;
-  }
-  return cursor;
 }
 
 function valueAtKey(value: unknown, key: string): unknown {

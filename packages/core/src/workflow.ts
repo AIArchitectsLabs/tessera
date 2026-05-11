@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type {
   AgentProviderConfig,
+  DashboardLayout,
   PermissionDecision,
   PermissionGrant,
   WorkflowInputDefinition,
@@ -8,6 +9,7 @@ import type {
   WorkflowRunResult,
   WorkflowRunStepRecord,
 } from "@tessera/contracts";
+import { DashboardLayoutSchema } from "@tessera/contracts";
 import { createActor, createMachine } from "xstate";
 import { type PiTaskTurnResult, runPiTaskTurn } from "./pi-session.js";
 import { DEFAULT_AGENT_PROFILE } from "./task-model-resolution.js";
@@ -37,6 +39,7 @@ import customerRenewalRiskReviewDraft from "./builtin-playbooks/customer.renewal
   type: "text",
 };
 import demoWriteApprovalManifest from "./builtin-playbooks/demo.write-approval/manifest.json";
+import opsActivitySnapshotDashboardLayout from "./builtin-playbooks/ops.activity-snapshot/layouts/dashboard.json";
 import opsActivitySnapshotManifest from "./builtin-playbooks/ops.activity-snapshot/manifest.json";
 import opsActivitySnapshotDraft from "./builtin-playbooks/ops.activity-snapshot/prompts/draft-snapshot.md" with {
   type: "text",
@@ -95,6 +98,10 @@ export const BUILTIN_PLAYBOOK_ROOTS: Record<string, string> = {
   ),
   [WEEKLY_STATUS_DIGEST_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.weekly-status-digest"),
   [ACTIVITY_SNAPSHOT_WORKFLOW.id]: join(BUILTIN_PLAYBOOKS_DIR, "ops.activity-snapshot"),
+};
+
+export const BUILTIN_DASHBOARD_LAYOUTS: Record<string, DashboardLayout> = {
+  [ACTIVITY_SNAPSHOT_WORKFLOW.id]: DashboardLayoutSchema.parse(opsActivitySnapshotDashboardLayout),
 };
 
 const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([

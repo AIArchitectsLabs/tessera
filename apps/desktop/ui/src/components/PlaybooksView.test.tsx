@@ -64,7 +64,7 @@ const dashboardPlaybook = {
   name: "Activity Snapshot",
   description: "Refreshable dashboard of recent workspace activity.",
   category: "Operations",
-  businessUseCase: "Monitor recent workspace activity",
+  businessUseCase: "Latest workspace update",
   requiredCapabilities: [],
   optionalCapabilities: [],
   inputs: {
@@ -213,7 +213,20 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke,
 }));
 
+mock.module("@tauri-apps/plugin-dialog", () => ({
+  open: mock(async () => "/tmp/selected-workspace"),
+}));
+
 const { PlaybooksView } = await import("./PlaybooksView");
+
+function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
+  return render(
+    React.createElement(PlaybooksView, {
+      workspaceRoot,
+      onWorkspaceSelect: mock(() => undefined),
+    })
+  );
+}
 
 beforeEach(() => {
   invoke.mockClear();
@@ -224,8 +237,18 @@ afterEach(() => {
 });
 
 describe("PlaybooksView", () => {
+  test("shows the current workspace in the playbooks sidebar", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText("Workspace")).toBeTruthy();
+      expect(view.getByText("workspace")).toBeTruthy();
+      expect(view.getByText("tmp/workspace")).toBeTruthy();
+    });
+  });
+
   test("keeps run history when the selected playbook is clicked again", async () => {
-    const view = render(React.createElement(PlaybooksView, { workspaceRoot: "/tmp/workspace" }));
+    const view = renderPlaybooksView();
 
     await waitFor(() => {
       expect(view.getByText(/May 9/)).toBeTruthy();
@@ -239,7 +262,7 @@ describe("PlaybooksView", () => {
   });
 
   test("renders completed runs even when older payloads omit sourceGaps", async () => {
-    const view = render(React.createElement(PlaybooksView, { workspaceRoot: "/tmp/workspace" }));
+    const view = renderPlaybooksView();
 
     let runButton: HTMLElement | null = null;
     await waitFor(() => {
@@ -258,7 +281,7 @@ describe("PlaybooksView", () => {
   });
 
   test("renders pinned dashboard runs with dashboard layout and refresh button", async () => {
-    const view = render(React.createElement(PlaybooksView, { workspaceRoot: "/tmp/workspace" }));
+    const view = renderPlaybooksView();
 
     await waitFor(() => {
       expect(view.getByText("Dashboards")).toBeTruthy();
@@ -278,7 +301,11 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
+      expect(view.getAllByText("Latest workspace update").length).toBeGreaterThan(0);
       expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
+      expect(
+        view.getByText("Here's what changed, what's at risk, and what needs follow-up.")
+      ).toBeTruthy();
       expect(view.getByText("7")).toBeTruthy();
       expect(view.getByRole("button", { name: /Refresh snapshot/i })).toBeTruthy();
     });

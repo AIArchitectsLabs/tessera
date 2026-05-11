@@ -1255,6 +1255,82 @@ export const DashboardLayoutSchema = z.object({
 });
 export type DashboardLayout = z.infer<typeof DashboardLayoutSchema>;
 
+function extractDashboardJsonValue(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const source = fenced?.[1]?.trim() ?? trimmed;
+  const start = source.search(/[\[{]/);
+  if (start === -1) return undefined;
+
+  const opener = source[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === opener) depth += 1;
+    if (char === closer) depth -= 1;
+
+    if (depth === 0) {
+      try {
+        return JSON.parse(source.slice(start, index + 1));
+      } catch {
+        return undefined;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function dashboardJsonTextFallback(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const text = (value as Record<string, unknown>).text;
+  return typeof text === "string" ? extractDashboardJsonValue(text) : undefined;
+}
+
+export function resolveDashboardBinding(outputs: unknown, binding: string): unknown {
+  if (!binding) return undefined;
+
+  const parts = binding.split(".");
+  let cursor: unknown = outputs;
+
+  for (const part of parts) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
+    const record = cursor as Record<string, unknown>;
+    if (!(part in record)) {
+      const fallback = dashboardJsonTextFallback(cursor);
+      if (!fallback || typeof fallback !== "object" || Array.isArray(fallback)) return undefined;
+      cursor = fallback;
+    }
+    cursor = (cursor as Record<string, unknown>)[part];
+    if (cursor === undefined) return undefined;
+  }
+
+  return cursor;
+}
+
 export const WorkflowDefinitionSchema = z
   .object({
     id: z.string().min(1),

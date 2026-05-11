@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ACTIVITY_SNAPSHOT_WORKFLOW } from "@tessera/core";
 import { generateDashboardLayout, runLayoutScript } from "./layout-runner.js";
 
 async function makeScript(content: string): Promise<string> {
@@ -126,5 +127,27 @@ describe("generateDashboardLayout", () => {
     });
 
     expect(layout).toBeNull();
+  });
+
+  test("falls back to embedded layouts for bundled built-in dashboard playbooks", async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), "missing-builtin-dashboard-package-"));
+
+    const layout = await generateDashboardLayout({
+      definition: ACTIVITY_SNAPSHOT_WORKFLOW,
+      packageRoot,
+      outputs: {
+        draftSnapshot: {
+          openItems: 2,
+          atRisk: 1,
+          highlights: ["Follow up on blocked items"],
+          summary: "Workspace activity is moving.",
+        },
+      },
+      runId: "run-activity",
+      completedAt: "2026-05-11T00:00:00.000Z",
+    });
+
+    expect(layout?.refreshLabel).toBe("Refresh snapshot");
+    expect(layout?.sections).toHaveLength(3);
   });
 });

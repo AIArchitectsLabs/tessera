@@ -27,9 +27,11 @@ import { AlertTriangle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, X } 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DashboardView } from "./DashboardView";
 import { PlaybookRefreshButton } from "./PlaybookRefreshButton";
+import { WorkspacePicker } from "./WorkspacePicker";
 
 interface PlaybooksViewProps {
   workspaceRoot: string | null;
+  onWorkspaceSelect: (path: string) => void;
 }
 
 const statusCopy: Record<PlaybookRunDetail["status"], string> = {
@@ -943,7 +945,6 @@ function GuidedResult({
   const name = playbook?.name ?? "Your playbook";
   const headlineFn = resultHeadline[run.status];
   const headline = headlineFn ? headlineFn(name) : `${name} finished.`;
-  const sub = resultSub[run.status] ?? "";
   const outputs = playbookDetail?.outputs ?? playbook?.outputs ?? [];
   const runOutputs = run.outputs ?? {};
   const latestEvent = run.events?.[run.events.length - 1];
@@ -952,6 +953,10 @@ function GuidedResult({
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const isDashboard = isDashboardPlaybook(playbookDetail ?? playbook);
+  const sub =
+    run.status === "completed" && isDashboard
+      ? "Here's what changed, what's at risk, and what needs follow-up."
+      : (resultSub[run.status] ?? "");
   const visibleOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
   );
@@ -1233,7 +1238,7 @@ function DetailsPanel({
   );
 }
 
-export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
+export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksViewProps) {
   const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
   const [runs, setRuns] = useState<PlaybookRunDetail[]>([]);
@@ -1622,6 +1627,8 @@ export function PlaybooksView({ workspaceRoot }: PlaybooksViewProps) {
   return (
     <main className="flex min-w-0 flex-1 bg-background">
       <aside className="flex w-64 flex-shrink-0 flex-col border-r border-border bg-secondary">
+        <WorkspacePicker currentWorkspace={workspaceRoot} onWorkspaceSelect={onWorkspaceSelect} />
+
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between">
             <h1 className="text-sm font-semibold text-foreground">Playbooks</h1>

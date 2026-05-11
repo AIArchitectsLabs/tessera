@@ -375,7 +375,7 @@ export default function App() {
           workspaceRoot={workspaceRoot}
         />
       ) : activeView === "playbooks" ? (
-        <PlaybooksView workspaceRoot={workspaceRoot} />
+        <PlaybooksView workspaceRoot={workspaceRoot} onWorkspaceSelect={handleWorkspaceSelect} />
       ) : (
         <>
           <Sidebar

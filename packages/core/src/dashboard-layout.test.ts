@@ -27,6 +27,31 @@ describe("resolveBinding", () => {
     expect(resolveBinding(outputs, "draftSnapshot.openDeals.x")).toBeUndefined();
   });
 
+  test("resolves fields from a JSON object in an agent text output", () => {
+    const agentOutputs = {
+      draftSnapshot: {
+        text: `{
+  "openItems": 15,
+  "atRisk": 5,
+  "highlights": ["Reels outperformed carousels."],
+  "summary": "Reels are the clearest signal."
+}
+
+Caveat: counts were inferred from the digest.`,
+        boundaryViolations: 0,
+      },
+    };
+
+    expect(resolveBinding(agentOutputs, "draftSnapshot.openItems")).toBe(15);
+    expect(resolveBinding(agentOutputs, "draftSnapshot.highlights")).toEqual([
+      "Reels outperformed carousels.",
+    ]);
+    expect(resolveBinding(agentOutputs, "draftSnapshot.summary")).toBe(
+      "Reels are the clearest signal."
+    );
+    expect(resolveBinding(agentOutputs, "draftSnapshot.text")).toContain("Caveat");
+  });
+
   test("returns the original value if path is empty", () => {
     expect(resolveBinding(outputs, "")).toBeUndefined();
   });

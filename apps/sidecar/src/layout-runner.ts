@@ -5,6 +5,7 @@ import {
   DashboardLayoutSchema,
   type WorkflowDefinition,
 } from "@tessera/contracts";
+import { BUILTIN_DASHBOARD_LAYOUTS } from "@tessera/core";
 
 export interface RunLayoutScriptOptions {
   scriptPath: string;
@@ -92,17 +93,19 @@ export async function generateDashboardLayout(options: {
 
   if (dashboardOutput.layout) {
     const layoutPath = resolve(packageRoot, dashboardOutput.layout);
-    if (!isInsidePackageRoot(packageRoot, layoutPath)) return null;
+    if (!isInsidePackageRoot(packageRoot, layoutPath)) {
+      return BUILTIN_DASHBOARD_LAYOUTS[options.definition.id] ?? null;
+    }
 
     try {
       const raw = JSON.parse(readFileSync(layoutPath, "utf8"));
       return DashboardLayoutSchema.parse(raw);
     } catch {
-      return null;
+      return BUILTIN_DASHBOARD_LAYOUTS[options.definition.id] ?? null;
     }
   }
 
-  return null;
+  return BUILTIN_DASHBOARD_LAYOUTS[options.definition.id] ?? null;
 }
 
 function isInsidePackageRoot(packageRoot: string, path: string): boolean {

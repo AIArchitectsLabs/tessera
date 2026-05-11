@@ -13,7 +13,7 @@
     "name": "Activity Snapshot",
     "description": "Refreshable dashboard of recent workspace activity.",
     "category": "operations",
-    "businessUseCase": "Monitor recent workspace activity in a refreshable dashboard",
+    "businessUseCase": "Latest workspace update",
     "requiredCapabilities": [],
     "optionalCapabilities": ["drive", "mail", "calendar"],
     "outputs": [

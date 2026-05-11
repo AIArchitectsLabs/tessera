@@ -25,7 +25,6 @@ import {
   ChevronDown,
   Clock,
   FileText,
-  FolderOpen,
   ListTodo,
   Loader2,
   Sparkles,
@@ -301,12 +300,7 @@ export function TaskDetail({
         </div>
 
         {/* Right-side detail pane */}
-        <TaskSidePane
-          task={task}
-          workspaceRoot={workspaceRoot}
-          onSkillRemove={onSkillRemove}
-          onTodoUpdate={onTodoUpdate}
-        />
+        <TaskSidePane task={task} onSkillRemove={onSkillRemove} onTodoUpdate={onTodoUpdate} />
       </div>
 
       {task.clarify && <ClarifyDialog clarify={task.clarify} onSubmit={onClarifyResolve} />}
@@ -860,94 +854,22 @@ function AgentInfoPopover({
 
 function TaskSidePane({
   task,
-  workspaceRoot,
   onSkillRemove,
   onTodoUpdate,
 }: {
   task: TaskDetailType;
-  workspaceRoot: string | null;
   onSkillRemove: (skillId: string) => Promise<void>;
   onTodoUpdate: (operation: TodoOperation) => Promise<void>;
 }) {
-  const [progressOpen, setProgressOpen] = useState(true);
   const [todoOpen, setTodoOpen] = useState(true);
   const [agentOpen, setAgentOpen] = useState(true);
   const [contextOpen, setContextOpen] = useState(true);
-
-  const completedTurns = task.turns.filter((t) => t.status === "completed").length;
-  const totalTurns = task.turns.length;
-  const isDone = task.status === "done";
-  const isActive = task.status === "active";
-
-  const progressSteps = [
-    { label: "Started", done: true },
-    { label: "Processing", done: completedTurns > 0 || isDone },
-    { label: "Complete", done: isDone },
-  ];
-
-  const folderName = workspaceRoot
-    ? workspaceRoot.split("/").pop() || workspaceRoot
-    : "No workspace";
+  const [showAllContext, setShowAllContext] = useState(false);
+  const visibleArtifacts = showAllContext ? task.artifacts : task.artifacts.slice(0, 4);
+  const hiddenArtifactCount = Math.max(0, task.artifacts.length - visibleArtifacts.length);
 
   return (
     <aside className="w-72 border-l border-border flex flex-col bg-background shrink-0 overflow-y-auto">
-      {/* Progress */}
-      <SidePaneSection
-        title="Progress"
-        open={progressOpen}
-        onToggle={() => setProgressOpen(!progressOpen)}
-      >
-        <div className="flex items-center gap-1 mb-3">
-          {progressSteps.map((step, i) => (
-            <div key={step.label} className="flex items-center gap-1">
-              <div
-                className={cn(
-                  "h-7 w-7 rounded-full border-2 flex items-center justify-center transition-colors",
-                  step.done
-                    ? "border-[var(--leaf)] bg-[var(--leaf-soft)]"
-                    : "border-border bg-secondary"
-                )}
-              >
-                {step.done ? (
-                  <CheckCircle2 size={16} className="text-[var(--leaf)]" />
-                ) : isActive && i === progressSteps.findIndex((s) => !s.done) ? (
-                  <Loader2 size={14} className="animate-spin text-muted-foreground" />
-                ) : (
-                  <div className="h-2.5 w-2.5 rounded-full bg-border" />
-                )}
-              </div>
-              {i < progressSteps.length - 1 && (
-                <div
-                  className={cn(
-                    "w-5 h-0.5 rounded-full",
-                    progressSteps[i + 1]?.done ? "bg-[var(--leaf)]" : "bg-border"
-                  )}
-                />
-              )}
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {isDone
-            ? "Task completed successfully."
-            : isActive
-              ? "See task progress for longer tasks."
-              : `${completedTurns} of ${totalTurns} turns completed.`}
-        </p>
-      </SidePaneSection>
-
-      {/* Working folder */}
-      <SidePaneSection title="Working folder" collapsible={false}>
-        <button
-          type="button"
-          className="flex items-center gap-2 text-sm text-foreground hover:text-primary transition-colors w-full text-left"
-        >
-          <FolderOpen size={16} className="shrink-0 text-muted-foreground" />
-          <span className="truncate">{folderName}</span>
-          <ChevronDown size={14} className="ml-auto shrink-0 text-muted-foreground -rotate-90" />
-        </button>
-      </SidePaneSection>
-
       <SidePaneSection title="Todo" open={todoOpen} onToggle={() => setTodoOpen(!todoOpen)}>
         <TodoPanel todo={task.todo} onTodoUpdate={onTodoUpdate} />
       </SidePaneSection>
@@ -1010,7 +932,7 @@ function TaskSidePane({
       >
         {task.artifacts.length > 0 ? (
           <div className="space-y-2">
-            {task.artifacts.slice(0, 4).map((artifact) => (
+            {visibleArtifacts.map((artifact) => (
               <div
                 key={artifact.id}
                 className="rounded-xl border border-border bg-secondary/20 px-3 py-2"
@@ -1032,11 +954,14 @@ function TaskSidePane({
                 </div>
               </div>
             ))}
-            {task.artifacts.length > 4 && (
-              <p className="text-xs text-muted-foreground">
-                +{task.artifacts.length - 4} more context item
-                {task.artifacts.length - 4 === 1 ? "" : "s"}.
-              </p>
+            {hiddenArtifactCount > 0 && (
+              <button
+                type="button"
+                className="text-left text-xs font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                onClick={() => setShowAllContext(true)}
+              >
+                +{hiddenArtifactCount} more context item{hiddenArtifactCount === 1 ? "" : "s"}.
+              </button>
             )}
             <p className="text-xs text-muted-foreground">
               Track tools and referenced files used in this task.
