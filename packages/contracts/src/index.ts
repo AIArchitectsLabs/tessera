@@ -1122,6 +1122,15 @@ export const PlaybookRunPreferenceSchema = z
   .strict();
 export type PlaybookRunPreference = z.infer<typeof PlaybookRunPreferenceSchema>;
 
+export const PlaybookRunPreferenceReadRequestSchema = z
+  .object({
+    workspaceRoot: z.string().min(1),
+  })
+  .strict();
+export type PlaybookRunPreferenceReadRequest = z.infer<
+  typeof PlaybookRunPreferenceReadRequestSchema
+>;
+
 export const PlaybookRunPreferenceReadResultSchema = z
   .object({
     preference: PlaybookRunPreferenceSchema.optional(),

@@ -344,7 +344,7 @@ function previewNodeForStep(options: {
   const recommendedAgentLabel = assignment?.agentLabel;
   const hasAgentIdentity = Boolean(recommendedAgentId && recommendedAgentLabel);
 
-  if (options.step.kind === "agent" && assignment && assignment.agentId && assignment.agentLabel) {
+  if (hasAgentIdentity && assignment && assignment.agentId && assignment.agentLabel) {
     return {
       stepId: options.step.id,
       stepLabel: stepLabel(options.step),
