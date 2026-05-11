@@ -1246,6 +1246,24 @@ export const WorkflowDefinitionSchema = z
 
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
+export const PlaybookMetaSchema = z.object({
+  id: z.string().min(1),
+  version: z.number().int().positive(),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  author: z.string().min(1).optional(),
+  tags: z.array(z.string().min(1)).optional(),
+  signature: z.string().min(1).optional(),
+});
+export type PlaybookMeta = z.infer<typeof PlaybookMetaSchema>;
+
+export const PlaybookManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  meta: PlaybookMetaSchema,
+  workflow: WorkflowDefinitionSchema,
+});
+export type PlaybookManifest = z.infer<typeof PlaybookManifestSchema>;
+
 export const PlaybookSummarySchema = z.object({
   id: z.string().min(1),
   version: z.number().int().positive(),
