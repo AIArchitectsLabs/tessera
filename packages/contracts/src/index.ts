@@ -1047,6 +1047,59 @@ export const WorkflowRunAssignmentPlanSchema = z
   .strict();
 export type WorkflowRunAssignmentPlan = z.infer<typeof WorkflowRunAssignmentPlanSchema>;
 
+export const PlaybookAssignmentCandidateSchema = z
+  .object({
+    agentId: z.string().min(1),
+    agentLabel: z.string().min(1),
+    assignment: WorkflowNodeAssignmentSchema,
+    recommended: z.boolean().default(false),
+    disabled: z.boolean().default(false),
+    reason: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookAssignmentCandidate = z.infer<typeof PlaybookAssignmentCandidateSchema>;
+
+export const PlaybookAssignmentNodePreviewSchema = z
+  .object({
+    stepId: z.string().min(1),
+    stepLabel: z.string().min(1),
+    kind: z.enum(["agent", "tool"]),
+    recommendedAgentId: z.string().min(1).optional(),
+    recommendedAgentLabel: z.string().min(1).optional(),
+    candidates: z.array(PlaybookAssignmentCandidateSchema).default([]),
+    blocker: WorkflowSourceGapSchema.optional(),
+  })
+  .strict();
+export type PlaybookAssignmentNodePreview = z.infer<typeof PlaybookAssignmentNodePreviewSchema>;
+
+export const PlaybookAssignmentPreviewResultSchema = z
+  .object({
+    assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
+    confirmationRequired: z.boolean(),
+    blockers: z.array(WorkflowSourceGapSchema).default([]),
+    sourceGaps: z.array(WorkflowSourceGapSchema).default([]),
+    nodePreviews: z.array(PlaybookAssignmentNodePreviewSchema).default([]),
+  })
+  .strict();
+export type PlaybookAssignmentPreviewResult = z.infer<typeof PlaybookAssignmentPreviewResultSchema>;
+
+export const PlaybookRunPreferenceSchema = z
+  .object({
+    workspaceRoot: z.string().min(1),
+    playbookId: z.string().min(1),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema,
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type PlaybookRunPreference = z.infer<typeof PlaybookRunPreferenceSchema>;
+
+export const PlaybookRunPreferenceReadResultSchema = z
+  .object({
+    preference: PlaybookRunPreferenceSchema.optional(),
+  })
+  .strict();
+export type PlaybookRunPreferenceReadResult = z.infer<typeof PlaybookRunPreferenceReadResultSchema>;
+
 export const WorkflowCapabilityInventorySchema = z
   .object({
     fingerprint: z.string().min(1).optional(),
@@ -1118,6 +1171,18 @@ export const WorkflowCapabilityInventorySchema = z
   })
   .strict();
 export type WorkflowCapabilityInventory = z.infer<typeof WorkflowCapabilityInventorySchema>;
+
+export const PlaybookAssignmentPreviewRequestSchema = z
+  .object({
+    playbookId: z.string().min(1),
+    workspaceRoot: z.string().min(1).optional(),
+    capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
+    previousPlan: WorkflowRunAssignmentPlanSchema.optional(),
+  })
+  .strict();
+export type PlaybookAssignmentPreviewRequest = z.infer<
+  typeof PlaybookAssignmentPreviewRequestSchema
+>;
 
 const WorkflowInputControlSchema = z.enum(["text", "textarea", "date", "checkbox", "multiselect"]);
 const WorkflowInputTypeSchema = z.enum(["string", "number", "boolean", "string[]", "enum"]);
@@ -1448,6 +1513,17 @@ export const WorkflowRunEventSchema = z.object({
 
 export type WorkflowRunEvent = z.infer<typeof WorkflowRunEventSchema>;
 
+export const TokenUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+    reasoningTokens: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type TokenUsage = z.infer<typeof TokenUsageSchema>;
+
 export const WorkflowRunStepRecordSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -1457,6 +1533,7 @@ export const WorkflowRunStepRecordSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   durationMs: z.number().int().nonnegative().optional(),
+  usage: TokenUsageSchema.optional(),
   outputPreview: z.string().optional(),
   error: z.string().optional(),
   assignment: WorkflowNodeAssignmentSchema.optional(),
@@ -1491,6 +1568,7 @@ export const WorkflowRunResultSchema = z.object({
   updatedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   durationMs: z.number().int().nonnegative().optional(),
+  usage: TokenUsageSchema.optional(),
   steps: z.array(WorkflowRunStepRecordSchema).optional(),
   events: z.array(WorkflowRunEventSchema).optional(),
 });
