@@ -16,9 +16,13 @@ import {
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
   NotifyRequestSchema,
+  PlaybookAssignmentPreviewRequestSchema,
+  PlaybookAssignmentPreviewResultSchema,
   PlaybookDetailSchema,
   PlaybookListResultSchema,
   PlaybookRunDetailSchema,
+  PlaybookRunPreferenceReadResultSchema,
+  PlaybookRunPreferenceSchema,
   type PlaybookSummary,
   PlaybookSummarySchema,
   SidecarReadySchema,
@@ -66,11 +70,13 @@ import { createInboxStore } from "./inbox-store.js";
 import { generateDashboardLayout } from "./layout-runner.js";
 import {
   buildLocalPlaybookCapabilityInventory,
+  createPlaybookAssignmentPreview,
   mergePlaybookRunMetadata,
   parsePlaybookRunCreateRequest,
   resolveCheckpointedPlaybookExecutionContext,
   resolvePlaybookExecutionContext,
 } from "./playbook-routing.js";
+import { createPlaybookRunPreferenceStore } from "./playbook-run-preferences.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
@@ -92,6 +98,7 @@ const browserExecutor = createPlaywrightBrowserExecutor({
   ...resolveBrowserRuntimeConfigFromEnv(),
 });
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
+const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
@@ -195,6 +202,7 @@ process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
   void browserExecutor.dispose();
   workflowStore.close();
+  playbookRunPreferenceStore.close();
   taskStore.close();
   agentProfileStore.close();
   inboxStore.close();
@@ -570,6 +578,43 @@ function handlePlaybookGet(req: Request, playbookId: string): Response {
   );
 }
 
+async function handlePlaybookAssignmentPreview(
+  req: Request,
+  playbookId: string
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const entry = workflowRegistry.get(playbookId);
+  const definition = entry?.definition;
+  if (!entry || !definition) {
+    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = PlaybookAssignmentPreviewRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const preview = createPlaybookAssignmentPreview({
+    definition,
+    capabilityInventory:
+      parsed.data.capabilityInventory ??
+      buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
+    ...(parsed.data.previousPlan ? { previousPlan: parsed.data.previousPlan } : {}),
+  });
+
+  return Response.json(PlaybookAssignmentPreviewResultSchema.parse(preview));
+}
+
 async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -614,6 +659,82 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
     const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
     ensureWorkflowApprovalInbox(saved);
     return Response.json(playbookRunDetail(saved));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
+
+async function handlePlaybookRunPreferenceGet(req: Request, playbookId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const entry = workflowRegistry.get(playbookId);
+  if (!entry || !entry.definition) {
+    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const workspaceRoot =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>).workspaceRoot
+      : undefined;
+  if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
+    return Response.json({ error: "Missing workspaceRoot" }, { status: 400 });
+  }
+
+  return Response.json(
+    PlaybookRunPreferenceReadResultSchema.parse({
+      preference: playbookRunPreferenceStore.get(workspaceRoot, playbookId),
+    })
+  );
+}
+
+async function handlePlaybookRunPreferenceSave(
+  req: Request,
+  playbookId: string
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const entry = workflowRegistry.get(playbookId);
+  const definition = entry?.definition;
+  if (!entry || !definition) {
+    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const payload = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const preference = PlaybookRunPreferenceSchema.safeParse({
+    ...(payload as Record<string, unknown>),
+    playbookId,
+  });
+  if (!preference.success) {
+    return Response.json({ error: preference.error.message }, { status: 400 });
+  }
+
+  try {
+    resolvePlaybookExecutionState({
+      definition,
+      capabilityInventory: buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
+      assignmentPlan: preference.data.assignmentPlan,
+    });
+    playbookRunPreferenceStore.save(preference.data);
+    return Response.json({ preference: preference.data });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });
@@ -1697,6 +1818,30 @@ const server = Bun.serve({
     const playbookRunCreateId = playbookRunCreateMatch?.[1];
     if (playbookRunCreateId) {
       return handlePlaybookRunCreate(req, decodeURIComponent(playbookRunCreateId));
+    }
+
+    const playbookAssignmentPreviewMatch = pathname.match(
+      /^\/playbooks\/([^/]+)\/assignment-preview$/
+    );
+    const playbookAssignmentPreviewId = playbookAssignmentPreviewMatch?.[1];
+    if (playbookAssignmentPreviewId) {
+      return handlePlaybookAssignmentPreview(req, decodeURIComponent(playbookAssignmentPreviewId));
+    }
+
+    const playbookRunPreferenceGetMatch = pathname.match(
+      /^\/playbooks\/([^/]+)\/run-preference\/get$/
+    );
+    const playbookRunPreferenceGetId = playbookRunPreferenceGetMatch?.[1];
+    if (playbookRunPreferenceGetId) {
+      return handlePlaybookRunPreferenceGet(req, decodeURIComponent(playbookRunPreferenceGetId));
+    }
+
+    const playbookRunPreferenceSaveMatch = pathname.match(
+      /^\/playbooks\/([^/]+)\/run-preference\/save$/
+    );
+    const playbookRunPreferenceSaveId = playbookRunPreferenceSaveMatch?.[1];
+    if (playbookRunPreferenceSaveId) {
+      return handlePlaybookRunPreferenceSave(req, decodeURIComponent(playbookRunPreferenceSaveId));
     }
 
     const playbookMatch = pathname.match(/^\/playbooks\/([^/]+)$/);

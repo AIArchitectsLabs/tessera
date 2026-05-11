@@ -1355,6 +1355,21 @@ async fn playbook_run_create(
 }
 
 #[tauri::command]
+async fn playbook_assignment_preview(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = request.to_string();
+    let path = format!(
+        "/playbooks/{}/assignment-preview",
+        percent_encode(&playbook_id)
+    );
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn playbook_run_list(
     state: State<'_, SidecarHandle>,
     playbook_id: Option<String>,
@@ -1383,6 +1398,36 @@ async fn playbook_run_get(
 ) -> Result<serde_json::Value, String> {
     let path = format!("/playbook-runs/{}", percent_encode(&run_id));
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_preference_get(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = request.to_string();
+    let path = format!(
+        "/playbooks/{}/run-preference/get",
+        percent_encode(&playbook_id)
+    );
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_preference_save(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = request.to_string();
+    let path = format!(
+        "/playbooks/{}/run-preference/save",
+        percent_encode(&playbook_id)
+    );
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -2318,12 +2363,15 @@ pub fn run() {
             model_credential_delete,
             model_settings_get,
             model_settings_save,
+            playbook_assignment_preview,
             playbook_get_dashboard_layout,
             playbook_get,
             playbook_list,
             playbook_run_create,
             playbook_run_get,
             playbook_run_list,
+            playbook_run_preference_get,
+            playbook_run_preference_save,
             playbook_run_resume,
             sidecar_ping,
             skill_get,

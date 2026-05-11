@@ -3,6 +3,8 @@ import {
   type AgentProfile,
   type AgentProviderConfig,
   AgentProviderConfigSchema,
+  type PlaybookAssignmentPreviewResult,
+  PlaybookAssignmentPreviewResultSchema,
   type WorkflowCapabilityInventory,
   WorkflowCapabilityInventorySchema,
   type WorkflowDefinition,
@@ -286,6 +288,10 @@ function chooseAgentCandidate(options: {
   return candidates[0];
 }
 
+function stepLabel(step: WorkflowStep): string {
+  return step.label ?? step.id;
+}
+
 function agentAssignmentForStep(options: {
   agent: WorkflowCapabilityInventory["agents"][number];
   integrations: string[];
@@ -327,6 +333,48 @@ function normalizeAssignmentPlan(plan: WorkflowRunAssignmentPlan): WorkflowRunAs
         })
     ),
   });
+}
+
+function previewNodeForStep(options: {
+  assignment: WorkflowNodeAssignment | undefined;
+  step: WorkflowStep;
+}): PlaybookAssignmentPreviewResult["nodePreviews"][number] {
+  const assignment = options.assignment;
+  const recommendedAgentId = assignment?.agentId;
+  const recommendedAgentLabel = assignment?.agentLabel;
+  const hasAgentIdentity = Boolean(recommendedAgentId && recommendedAgentLabel);
+
+  if (options.step.kind === "agent" && assignment && assignment.agentId && assignment.agentLabel) {
+    return {
+      stepId: options.step.id,
+      stepLabel: stepLabel(options.step),
+      kind: options.step.kind,
+      recommendedAgentId: assignment.agentId,
+      recommendedAgentLabel: assignment.agentLabel,
+      candidates: [
+        {
+          agentId: assignment.agentId,
+          agentLabel: assignment.agentLabel,
+          assignment,
+          recommended: true,
+          disabled: false,
+        },
+      ],
+    };
+  }
+
+  return {
+    stepId: options.step.id,
+    stepLabel: stepLabel(options.step),
+    kind: options.step.kind,
+    ...(hasAgentIdentity
+      ? {
+          recommendedAgentId,
+          recommendedAgentLabel,
+        }
+      : {}),
+    candidates: [],
+  };
 }
 
 function validateAssignmentAgainstInventory(options: {
@@ -614,6 +662,48 @@ export function resolveCheckpointedPlaybookExecutionContext(options: {
     assignmentPlan,
     sourceGaps,
   };
+}
+
+export function createPlaybookAssignmentPreview(options: {
+  capabilityInventory: WorkflowCapabilityInventory;
+  definition: WorkflowDefinition;
+  previousPlan?: WorkflowRunAssignmentPlan;
+}): PlaybookAssignmentPreviewResult {
+  try {
+    const resolved = resolvePlaybookExecutionContext({
+      definition: options.definition,
+      capabilityInventory: options.capabilityInventory,
+      ...(options.previousPlan ? { assignmentPlan: options.previousPlan } : {}),
+    });
+    return PlaybookAssignmentPreviewResultSchema.parse({
+      assignmentPlan: resolved.assignmentPlan,
+      confirmationRequired: true,
+      blockers: [],
+      sourceGaps: resolved.sourceGaps,
+      nodePreviews: options.definition.steps.map((step) =>
+        previewNodeForStep({
+          step,
+          assignment: resolved.assignmentPlan.assignments[step.id],
+        })
+      ),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return PlaybookAssignmentPreviewResultSchema.parse({
+      confirmationRequired: true,
+      blockers: [
+        WorkflowSourceGapSchema.parse({
+          stepId: options.definition.start,
+          kind: "model",
+          capability: "assignment-preview",
+          optional: false,
+          reason: message,
+        }),
+      ],
+      sourceGaps: [],
+      nodePreviews: [],
+    });
+  }
 }
 
 export function mergePlaybookRunMetadata(run: unknown, context: PlaybookExecutionContext) {
