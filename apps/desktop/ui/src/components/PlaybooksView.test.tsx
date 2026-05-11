@@ -251,6 +251,13 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
       return { runs: [dashboardRun, completedRun] } satisfies WorkflowRunListResult;
     case "playbook_run_get":
       return args?.runId === dashboardRun.runId ? dashboardRun : completedRun;
+    case "playbook_run_create":
+      return {
+        ...completedRun,
+        runId: "run-new",
+        updatedAt: "2026-05-11T00:00:00.000Z",
+        assignmentPlan: (args?.request as { assignmentPlan?: unknown } | undefined)?.assignmentPlan,
+      } as PlaybookRunDetail;
     case "playbook_get_dashboard_layout":
       return {
         layout: {
@@ -381,6 +388,20 @@ describe("PlaybooksView", () => {
       expect(
         (view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement).disabled
       ).toBe(false);
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Prepare brief" }));
+
+    await waitFor(() => {
+      const createCall = invoke.mock.calls.find(([command]) => command === "playbook_run_create");
+      expect(createCall).toBeTruthy();
+      expect(
+        (
+          createCall?.[1] as
+            | { request?: { assignmentPlan?: { assignments?: Record<string, unknown> } } }
+            | undefined
+        )?.request?.assignmentPlan?.assignments?.draftBrief
+      ).toBeTruthy();
     });
   });
 

@@ -545,7 +545,7 @@ function Section({
   );
 }
 
-function UsageSummary({ usage }: { usage?: TokenUsage }) {
+function UsageSummary({ usage }: { usage: TokenUsage | undefined }) {
   if (!usage) {
     return (
       <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
@@ -1779,8 +1779,17 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     selectedRunId,
   ]);
 
-  async function startRun(inputOverride?: Record<string, unknown>) {
+  async function startRun(
+    inputOverride?: Record<string, unknown>,
+    assignmentPlanOverride?: WorkflowRunAssignmentPlan
+  ) {
+    const assignmentPlan = assignmentPlanOverride ?? draftAssignmentPlan ?? undefined;
     if (!selectedPlaybook || !workspaceRoot) return;
+    if (!assignmentPlan) {
+      setError("Confirm agents before starting this playbook.");
+      setShowStartForm(true);
+      return;
+    }
     setRunning(true);
     setShowStartForm(false);
     setError(null);
@@ -1793,7 +1802,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         workflowId: selectedPlaybook.id,
         input: fullInput,
         capabilityInventory: capabilityInventory ?? undefined,
-        assignmentPlan: draftAssignmentPlan ?? undefined,
+        assignmentPlan,
       };
       const run = await invoke<PlaybookRunDetail>("playbook_run_create", {
         playbookId: selectedPlaybook.id,
@@ -1838,13 +1847,18 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setRefreshNotice("Refresh already in progress");
       return;
     }
+    const assignmentPlan = selectedRun.assignmentPlan ?? draftAssignmentPlan ?? undefined;
+    if (!assignmentPlan) {
+      setRefreshNotice("Agent setup is still loading");
+      return;
+    }
     setRefreshing(true);
     setRefreshNotice(null);
     try {
       const previousInput = Object.fromEntries(
         Object.entries(selectedRun.input ?? {}).filter(([key]) => key !== "workspaceRoot")
       );
-      await startRun({ ...previousInput, ...formValues });
+      await startRun({ ...previousInput, ...formValues }, assignmentPlan);
     } finally {
       setRefreshing(false);
     }
