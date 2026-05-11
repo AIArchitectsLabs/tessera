@@ -358,7 +358,9 @@ fn normalize_google_workspace_oauth_client_file(path: &Path) -> anyhow::Result<(
 
     let text =
         fs::read_to_string(path).with_context(|| format!("Could not read {}", path.display()))?;
-    let mut value: serde_json::Value = serde_json::from_str(&text)
+    let text_without_bom = text.trim_start_matches('\u{feff}');
+    let had_bom = text_without_bom.len() != text.len();
+    let mut value: serde_json::Value = serde_json::from_str(text_without_bom)
         .with_context(|| format!("Could not parse {}", path.display()))?;
     let Some(installed) = value
         .get_mut("installed")
@@ -366,14 +368,15 @@ fn normalize_google_workspace_oauth_client_file(path: &Path) -> anyhow::Result<(
     else {
         return Ok(());
     };
-    if installed.contains_key("project_id") {
+    if installed.contains_key("project_id") && !had_bom {
         return Ok(());
     }
 
-    installed.insert(
-        "project_id".to_string(),
-        serde_json::Value::String(GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID.to_string()),
-    );
+    installed
+        .entry("project_id".to_string())
+        .or_insert_with(|| {
+            serde_json::Value::String(GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID.to_string())
+        });
     let mut bytes = serde_json::to_vec_pretty(&value)?;
     bytes.push(b'\n');
     fs::write(path, bytes).with_context(|| format!("Could not update {}", path.display()))?;
@@ -893,13 +896,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let (mut rx, child) = sidecar_command
-        .spawn()
-        .context("Could not spawn sidecar")?;
+    let (mut rx, child) = sidecar_command.spawn().context("Could not spawn sidecar")?;
 
-    // Block until the sidecar emits its ready JSON line (10 s timeout).
+    // Block until the sidecar emits its ready JSON line (60 s timeout).
     let handle = tauri::async_runtime::block_on(async {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(60), async {
             while let Some(event) = rx.recv().await {
                 if let CommandEvent::Stdout(line) = event {
                     let text = String::from_utf8_lossy(&line);
@@ -913,7 +914,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             bail!("Sidecar channel closed before sending ready message")
         })
         .await
-        .unwrap_or_else(|_| bail!("Sidecar startup timed out after 10 s"))
+        .unwrap_or_else(|_| bail!("Sidecar startup timed out after 60 s"))
     })?;
 
     app.manage(handle);
@@ -1141,6 +1142,10 @@ fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
         "--services",
         "calendar,gmail,drive,people,docs,sheets",
     ]
+}
+
+fn google_identity_auth_args() -> Vec<&'static str> {
+    vec!["auth", "login", "--scopes", "openid,email,profile"]
 }
 
 fn google_workspace_oauth_client_json(client_id: &str, client_secret: &str) -> serde_json::Value {
@@ -1985,6 +1990,79 @@ async fn google_workspace_connect(
 }
 
 #[tauri::command]
+async fn google_identity_connection_status(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let status = google_workspace_auth_status(&app).await?;
+    let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
+
+    Ok(integration_settings::IntegrationConnectionTestResult {
+        ok,
+        message: if ok {
+            "Google sign-in complete.".to_string()
+        } else {
+            "Waiting for Google sign-in to finish.".to_string()
+        },
+        provider: None,
+        search_provider: None,
+    })
+}
+
+#[tauri::command]
+async fn google_identity_connect(
+    app: AppHandle,
+) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
+    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+    if !install_google_workspace_oauth_client_file(&app, &google_workspace_config_dir)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: google_workspace_oauth_missing_message(),
+            provider: None,
+            search_provider: None,
+        });
+    }
+
+    let login = start_google_workspace_login_command(&app, &google_identity_auth_args()).await?;
+    if login.exit_code == 124 {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: first_useful_process_line(&login),
+            provider: None,
+            search_provider: None,
+        });
+    }
+    if login.exit_code != 0 {
+        return Ok(integration_settings::IntegrationConnectionTestResult {
+            ok: false,
+            message: first_useful_process_line(&login),
+            provider: None,
+            search_provider: None,
+        });
+    }
+
+    let status = google_workspace_auth_status(&app).await?;
+    let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
+
+    Ok(integration_settings::IntegrationConnectionTestResult {
+        ok,
+        message: if ok {
+            "Google sign-in complete.".to_string()
+        } else {
+            first_useful_process_line(&status)
+        },
+        provider: None,
+        search_provider: None,
+    })
+}
+
+#[tauri::command]
 async fn google_workspace_disconnect(
     app: AppHandle,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
@@ -2303,6 +2381,8 @@ pub fn run() {
             inbox_list,
             inbox_resolve,
             inbox_snooze,
+            google_identity_connect,
+            google_identity_connection_status,
             google_workspace_connect,
             google_workspace_connection_status,
             google_workspace_disconnect,
@@ -2370,12 +2450,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        connection_test_result, first_useful_process_line, google_workspace_config_dir,
-        google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
-        google_workspace_oauth_missing_message, google_workspace_readonly_auth_args,
-        normalize_google_workspace_oauth_client_file, search_connection_command,
-        tool_policy_runtime_json, SpawnResult, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
-        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        connection_test_result, first_useful_process_line, google_identity_auth_args,
+        google_workspace_config_dir, google_workspace_gws_client_secret_path,
+        google_workspace_oauth_client_json, google_workspace_oauth_missing_message,
+        google_workspace_readonly_auth_args, normalize_google_workspace_oauth_client_file,
+        search_connection_command, tool_policy_runtime_json, SpawnResult,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
 
@@ -2522,6 +2602,42 @@ mod tests {
     }
 
     #[test]
+    fn google_workspace_oauth_client_normalization_removes_utf8_bom() {
+        let path = std::env::temp_dir().join(format!(
+            "tessera-client-secret-bom-{}.json",
+            std::process::id()
+        ));
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(
+            serde_json::json!({
+                "installed": {
+                    "client_id": "client-id",
+                    "project_id": "tessera",
+                    "client_secret": "client-secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "redirect_uris": ["http://localhost"]
+                }
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        std::fs::write(&path, bytes).expect("write temp client");
+
+        normalize_google_workspace_oauth_client_file(&path).expect("normalize");
+        let normalized = std::fs::read(&path).expect("read normalized");
+        assert!(!normalized.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let normalized: serde_json::Value =
+            serde_json::from_slice(&normalized).expect("parse normalized");
+        assert_eq!(
+            normalized["installed"]["project_id"],
+            serde_json::Value::String("tessera".to_string())
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn extracts_google_oauth_url_from_cli_output() {
         let url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&scope=email";
         assert_eq!(
@@ -2562,6 +2678,14 @@ mod tests {
                 "--services",
                 "calendar,gmail,drive,people,docs,sheets"
             ]
+        );
+    }
+
+    #[test]
+    fn google_identity_auth_uses_basic_profile_scopes() {
+        assert_eq!(
+            google_identity_auth_args(),
+            vec!["auth", "login", "--scopes", "openid,email,profile"]
         );
     }
 

@@ -4,6 +4,7 @@ import type {
   InboxListResult,
   InboxMessage,
   InboxStatus,
+  IntegrationConnectionTestResult,
   TaskCreateRequest,
   TaskCreateTurnRequest,
   TaskDetail,
@@ -16,6 +17,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { InboxView } from "@/components/InboxView";
+import { LoginView } from "@/components/LoginView";
 import { PlaybooksView } from "@/components/PlaybooksView";
 import { type AppView, RailNav } from "@/components/RailNav";
 import { SettingsView } from "@/components/SettingsView";
@@ -28,8 +30,46 @@ import { mergeTaskSummary, summaryFromDetail } from "./lib/taskSummaries";
 import { useTaskEvents } from "./lib/useTaskEvents";
 
 const WORKSPACE_STORAGE_KEY = "tessera_workspace_root";
+const AUTH_SESSION_STORAGE_KEY = "tessera_auth_session";
+const GOOGLE_CLIENT_ID = "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com";
+const GOOGLE_AUTH_POLL_INTERVAL_MS = 2_000;
+const GOOGLE_AUTH_MAX_POLLS = 60;
+
+interface AuthSession {
+  authenticatedAt: string;
+  clientId: string;
+  provider: "google";
+}
+
+function readAuthSession(): AuthSession | null {
+  const raw = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<AuthSession>;
+    if (parsed.provider !== "google") return null;
+    if (parsed.clientId !== GOOGLE_CLIENT_ID) return null;
+    if (typeof parsed.authenticatedAt !== "string") return null;
+    return {
+      authenticatedAt: parsed.authenticatedAt,
+      clientId: parsed.clientId,
+      provider: parsed.provider,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function googleAuthIsWaiting(message: string): boolean {
+  return message.includes("Google sign-in") || message.includes("Waiting for Google sign-in");
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export default function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => readAuthSession());
+  const [loginStatus, setLoginStatus] = useState<string | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
     return localStorage.getItem(WORKSPACE_STORAGE_KEY);
   });
@@ -191,8 +231,57 @@ export default function App() {
     setTaskListView("active");
   };
 
+  const saveAuthSession = () => {
+    const session: AuthSession = {
+      authenticatedAt: new Date().toISOString(),
+      clientId: GOOGLE_CLIENT_ID,
+      provider: "google",
+    };
+    localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+    setAuthSession(session);
+  };
+
+  const pollGoogleAuthConnection = async () => {
+    for (let attempt = 0; attempt < GOOGLE_AUTH_MAX_POLLS; attempt += 1) {
+      await wait(GOOGLE_AUTH_POLL_INTERVAL_MS);
+      const status = await invoke<IntegrationConnectionTestResult>(
+        "google_identity_connection_status"
+      );
+      if (status.ok) {
+        saveAuthSession();
+        return;
+      }
+      setLoginStatus(status.message);
+    }
+
+    throw new Error("Google sign-in timed out. Finish consent in your browser and try again.");
+  };
+
+  const handleAuthenticate = async () => {
+    if (!GOOGLE_CLIENT_ID.endsWith(".apps.googleusercontent.com")) {
+      throw new Error("Google OAuth client is not configured correctly.");
+    }
+
+    setLoginStatus("Opening Google sign-in...");
+    const result = await invoke<IntegrationConnectionTestResult>("google_identity_connect");
+    setLoginStatus(result.message);
+
+    if (result.ok) {
+      saveAuthSession();
+      return;
+    }
+
+    if (googleAuthIsWaiting(result.message)) {
+      await pollGoogleAuthConnection();
+      return;
+    }
+
+    throw new Error(result.message);
+  };
+
   const handleLogout = () => {
-    // Login/logout will be implemented separately. This intentionally does nothing.
+    localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+    setAuthSession(null);
   };
 
   useEffect(() => {
@@ -349,6 +438,10 @@ export default function App() {
 
   const selectedInboxMessage =
     inboxMessages.find((message) => message.id === selectedInboxId) ?? null;
+
+  if (!authSession) {
+    return <LoginView onAuthenticate={handleAuthenticate} statusMessage={loginStatus} />;
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground font-sans">
