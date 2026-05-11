@@ -21,6 +21,7 @@ import {
   PlaybookDetailSchema,
   PlaybookListResultSchema,
   PlaybookRunDetailSchema,
+  PlaybookRunPreferenceReadRequestSchema,
   PlaybookRunPreferenceReadResultSchema,
   PlaybookRunPreferenceSchema,
   type PlaybookSummary,
@@ -682,17 +683,14 @@ async function handlePlaybookRunPreferenceGet(req: Request, playbookId: string):
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const workspaceRoot =
-    body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>).workspaceRoot
-      : undefined;
-  if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
-    return Response.json({ error: "Missing workspaceRoot" }, { status: 400 });
+  const parsed = PlaybookRunPreferenceReadRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
   }
 
   return Response.json(
     PlaybookRunPreferenceReadResultSchema.parse({
-      preference: playbookRunPreferenceStore.get(workspaceRoot, playbookId),
+      preference: playbookRunPreferenceStore.get(parsed.data.workspaceRoot, playbookId),
     })
   );
 }
@@ -734,7 +732,9 @@ async function handlePlaybookRunPreferenceSave(
       assignmentPlan: preference.data.assignmentPlan,
     });
     playbookRunPreferenceStore.save(preference.data);
-    return Response.json({ preference: preference.data });
+    return Response.json(
+      PlaybookRunPreferenceReadResultSchema.parse({ preference: preference.data })
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 500 });

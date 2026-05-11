@@ -116,6 +116,69 @@ describe("playbook routing helpers", () => {
     });
   });
 
+  test("includes candidates for tool steps when the resolved assignment has an agent identity", () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.tool-preview",
+      version: 1,
+      name: "Tool Preview",
+      start: "ping",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "ping",
+          label: "Ping workspace",
+          kind: "tool",
+          toolId: "workspace.ping",
+          args: {},
+          requires: {
+            tools: [{ capability: "tool.workspace.read" }],
+          },
+        },
+      ],
+    });
+    const capabilityInventory = buildLocalPlaybookCapabilityInventory([
+      AgentProfileSchema.parse({
+        id: "default",
+        name: "Tessera",
+        model: { mode: "default" },
+        skills: [],
+        toolPolicyPreset: "workspace_editor",
+        instructions: "",
+        soul: "",
+        userContext: "",
+        memoryDefaults: "",
+        createdAt: "2026-05-08T00:00:00.000Z",
+        updatedAt: "2026-05-08T00:00:00.000Z",
+      }),
+    ]);
+
+    const preview = PlaybookAssignmentPreviewResultSchema.parse(
+      createPlaybookAssignmentPreview({
+        definition,
+        capabilityInventory,
+      })
+    );
+
+    expect(preview.nodePreviews).toHaveLength(1);
+    expect(preview.nodePreviews[0]).toMatchObject({
+      stepId: "ping",
+      stepLabel: "Ping workspace",
+      kind: "tool",
+      recommendedAgentId: "default",
+      recommendedAgentLabel: "Tessera",
+      candidates: [
+        {
+          agentId: "default",
+          agentLabel: "Tessera",
+          recommended: true,
+          disabled: false,
+        },
+      ],
+    });
+  });
+
   test("resolves different agents for different workflow nodes and records optional gaps", () => {
     const definition = WorkflowDefinitionSchema.parse({
       id: "playbook.capability-routing",

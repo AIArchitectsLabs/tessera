@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   PlaybookAssignmentPreviewResultSchema,
   PlaybookManifestSchema,
+  PlaybookRunPreferenceReadRequestSchema,
   PlaybookRunPreferenceSchema,
   TokenUsageSchema,
   WorkflowRunResultSchema,
@@ -179,5 +180,10 @@ describe("PlaybookManifestSchema", () => {
       updatedAt: "2026-05-11T00:00:00.000Z",
     });
     expect(preference.playbookId).toBe("sales.meeting-brief");
+
+    const readRequest = PlaybookRunPreferenceReadRequestSchema.parse({
+      workspaceRoot: "/tmp/workspace",
+    });
+    expect(readRequest.workspaceRoot).toBe("/tmp/workspace");
   });
 });
