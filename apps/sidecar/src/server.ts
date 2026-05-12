@@ -994,7 +994,9 @@ async function handlePlaybookRunPreferenceSave(
   try {
     resolvePlaybookExecutionState({
       definition,
-      capabilityInventory: buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
+      capabilityInventory:
+        request.data.capabilityInventory ??
+        buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
       assignmentPlan: preference.assignmentPlan,
     });
     playbookRunPreferenceStore.save(preference);

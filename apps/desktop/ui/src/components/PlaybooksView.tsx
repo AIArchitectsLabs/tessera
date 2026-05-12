@@ -1993,6 +1993,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         request: {
           workspaceRoot,
           assignmentPlan: draftAssignmentPlan,
+          ...(capabilityInventory ? { capabilityInventory } : {}),
         },
       });
       setDraftAssignmentPlan(saved.preference?.assignmentPlan ?? draftAssignmentPlan);

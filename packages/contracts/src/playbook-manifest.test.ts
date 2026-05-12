@@ -213,8 +213,25 @@ describe("PlaybookManifestSchema", () => {
     const saveRequest = PlaybookRunPreferenceSaveRequestSchema.parse({
       workspaceRoot: "/tmp/workspace",
       assignmentPlan,
+      capabilityInventory: {
+        agents: [
+          {
+            id: "default",
+            label: "Tessera",
+            fingerprint: "ui-built-agent-fingerprint",
+            modelCapabilities: [],
+            dataPolicies: ["cloud-ok"],
+            skillCapabilities: [],
+            toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          },
+        ],
+        integrations: [],
+      },
     });
     expect(saveRequest.assignmentPlan.assignments.draftBrief?.agentId).toBe("default");
+    expect(saveRequest.capabilityInventory?.agents[0]?.fingerprint).toBe(
+      "ui-built-agent-fingerprint"
+    );
     expect(() =>
       PlaybookRunPreferenceSaveRequestSchema.parse({
         workspaceRoot: "/tmp/workspace",

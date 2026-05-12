@@ -422,6 +422,16 @@ describe("PlaybooksView", () => {
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
+      const saveCall = invoke.mock.calls.find(
+        ([command]) => command === "playbook_run_preference_save"
+      );
+      expect(
+        (
+          saveCall?.[1] as
+            | { request?: { capabilityInventory?: { agents?: Array<{ id?: string }> } } }
+            | undefined
+        )?.request?.capabilityInventory?.agents?.[0]?.id
+      ).toBe("default");
       expect(
         (view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement).disabled
       ).toBe(false);
