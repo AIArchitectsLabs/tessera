@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  WorkflowCapabilityInventorySchema,
+  WorkflowRunAssignmentPlanSchema,
+} from "@tessera/contracts";
 
 type RecordedFetchCall = {
   url: string;
@@ -10,6 +14,9 @@ let isPlaybookRunPreferenceAssignmentPlanValidationError:
   | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
   | undefined;
 let buildPlaybookRunPreference: typeof import("./server.js").buildPlaybookRunPreference | undefined;
+let buildWorkflowExecutionOptions:
+  | typeof import("./server.js").buildWorkflowExecutionOptions
+  | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let requestCodexDeviceCode: typeof import("./server.js").requestCodexDeviceCode | undefined;
 let refreshCodexOAuthCredential:
@@ -25,6 +32,7 @@ beforeAll(async () => {
   try {
     const serverModule = await import("./server.js");
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
+    buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -84,6 +92,55 @@ describe("playbook run preference save error mapping", () => {
       )
     ).toBe(true);
     expect(isPlaybookRunPreferenceAssignmentPlanValidationError?.(new Error("boom"))).toBe(false);
+  });
+
+  test("builds workflow execution options with the resolved assignment plan and runtime credential", () => {
+    expect(buildWorkflowExecutionOptions).toBeDefined();
+    const capabilityInventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "default",
+          label: "Tessera",
+          fingerprint: "ui-b58c78b6",
+          model: { provider: "openai-codex", model: "gpt-5.4" },
+          modelCapabilities: [],
+          dataPolicies: [],
+          skillCapabilities: ["skill.planning"],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+        },
+      ],
+      integrations: [],
+    });
+    const assignmentPlan = WorkflowRunAssignmentPlanSchema.parse({
+      resolverVersion: 1,
+      createdAt: "2026-05-12T00:00:00.000Z",
+      assignments: {
+        draftBrief: {
+          stepId: "draftBrief",
+          provider: { provider: "openai-codex", model: "gpt-5.4" },
+          skillCapabilities: [],
+          toolCapabilities: [],
+          integrationCapabilities: [],
+        },
+      },
+    });
+    const options = buildWorkflowExecutionOptions?.({
+      assignmentPlan,
+      capabilityInventory,
+      credential: {
+        authType: "codex-oauth",
+        accessToken: "access-token",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
+    });
+
+    expect(options?.assignmentPlan).toEqual(assignmentPlan);
+    expect(options?.capabilityInventory).toEqual(capabilityInventory);
+    expect(options?.agentCredential).toEqual({
+      authType: "codex-oauth",
+      accessToken: "access-token",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    });
   });
 });
 

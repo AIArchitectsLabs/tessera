@@ -484,8 +484,6 @@ export function validateWorkflowAssignmentPlan(
       actualAssignment.agentFingerprint !== expectedAssignment.agentFingerprint ||
       actualAssignment.provider?.provider !== expectedAssignment.provider?.provider ||
       actualAssignment.provider?.model !== expectedAssignment.provider?.model ||
-      actualAssignment.providerFingerprint !== expectedAssignment.providerFingerprint ||
-      actualAssignment.credentialRef !== expectedAssignment.credentialRef ||
       JSON.stringify(actualAssignment.skillCapabilities) !==
         JSON.stringify(expectedAssignment.skillCapabilities) ||
       JSON.stringify(actualAssignment.toolCapabilities) !==

@@ -353,6 +353,52 @@ describe("playbook routing helpers", () => {
     ).toThrow("stale or does not match the current inventory");
   });
 
+  test("accepts a freshly resolved plan whose agent has a credentialed model", () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.plan-save-roundtrip",
+      version: 1,
+      name: "Plan Save Roundtrip",
+      start: "draft",
+      inputs: { workspaceRoot: { type: "string", required: true } },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "Draft the brief",
+          workspaceRootInput: "workspaceRoot",
+        },
+      ],
+    });
+    const inventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "sales-agent",
+          label: "Sales Agent",
+          fingerprint: "sales-agent:fingerprint",
+          model: { provider: "openai", model: "gpt-5.4", hasCredential: true },
+          modelCapabilities: [],
+          dataPolicies: [],
+          skillCapabilities: [],
+          toolCapabilities: [],
+        },
+      ],
+      integrations: [],
+    });
+
+    const resolved = resolvePlaybookExecutionContext({
+      definition,
+      capabilityInventory: inventory,
+    });
+
+    expect(() =>
+      resolvePlaybookExecutionContext({
+        definition,
+        capabilityInventory: inventory,
+        assignmentPlan: resolved.assignmentPlan,
+      })
+    ).not.toThrow();
+  });
+
   test("assignment preview refreshes stale previous plans against the current inventory", () => {
     const definition = WorkflowDefinitionSchema.parse({
       id: "playbook.preview-stale-plan",
@@ -507,7 +553,29 @@ describe("playbook routing helpers", () => {
     expect(request.input).toEqual({ message: "weekly", target: "lead" });
     expect(request.capabilityInventory).toEqual(inventory);
     expect(request.agentProvider?.provider).toBe("openai");
-    expect(request.credential?.apiKey).toBe("test-key");
+    expect(request.credential).toEqual({ apiKey: "test-key" });
+  });
+
+  test("parses Codex OAuth playbook credentials without dropping runtime auth", () => {
+    const request = parsePlaybookRunCreateRequest(
+      {
+        input: { message: "weekly", target: "lead" },
+        credential: {
+          authType: "codex-oauth",
+          accessToken: "access-token",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          accountId: "account-123",
+        },
+      },
+      "ops.weekly-update"
+    );
+
+    expect(request.credential).toEqual({
+      authType: "codex-oauth",
+      accessToken: "access-token",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      accountId: "account-123",
+    });
   });
 
   test("normalizes assignment plan equality for checkpoint validation", () => {

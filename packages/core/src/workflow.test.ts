@@ -477,6 +477,97 @@ describe("workflow runner", () => {
     expect(calls).toEqual([{ prompt: "Draft: hello", workspaceRoot: "/workspace/acme" }]);
   });
 
+  test("uses a UI-resolved assignment plan provider for agent workflow steps", async () => {
+    const definition: WorkflowDefinition = {
+      id: "custom.agent-assigned-provider",
+      version: 1,
+      name: "Custom Agent Assigned Provider",
+      requiredCapabilities: [],
+      optionalCapabilities: [],
+      start: "draft",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+        prompt: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "Draft: {{inputs.prompt}}",
+          workspaceRootInput: "workspaceRoot",
+          onSuccess: "completed",
+        },
+      ],
+    };
+    const assignmentPlan = WorkflowRunAssignmentPlanSchema.parse({
+      resolverVersion: 1,
+      createdAt: "2026-05-12T00:00:00.000Z",
+      assignments: {
+        draft: {
+          stepId: "draft",
+          agentId: "default",
+          agentLabel: "Tessera",
+          agentFingerprint: "default-agent",
+          provider: { provider: "openai-codex", model: "gpt-5.4" },
+          providerFingerprint: "c456310d7accdc6d3cb7fa6fa4558642afcd9672fdfa57a21496e7f22790990f",
+          skillCapabilities: [],
+          toolCapabilities: [],
+          integrationCapabilities: [],
+        },
+      },
+    });
+    const capabilityInventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "default",
+          label: "Tessera",
+          fingerprint: "default-agent",
+          model: { provider: "openai-codex", model: "gpt-5.4" },
+          modelCapabilities: [],
+          dataPolicies: [],
+          skillCapabilities: [],
+          toolCapabilities: [],
+        },
+      ],
+      integrations: [],
+    });
+    const calls: Array<{ provider: string; credential: unknown }> = [];
+
+    const result = await runWorkflow({
+      definition,
+      input: { workspaceRoot: "/workspace/acme", prompt: "hello" },
+      capabilityInventory,
+      assignmentPlan,
+      agentCredential: {
+        authType: "codex-oauth",
+        accessToken: "access-token",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
+      cli: {
+        async runWorkspaceCli() {
+          throw new Error("agent workflow should not call tool CLI");
+        },
+      },
+      async agentRunner(options) {
+        calls.push({ provider: options.provider.provider, credential: options.credential });
+        return { text: "drafted", boundaryViolations: 0 };
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.assignmentPlan).toEqual(assignmentPlan);
+    expect(calls).toEqual([
+      {
+        provider: "openai-codex",
+        credential: {
+          authType: "codex-oauth",
+          accessToken: "access-token",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+        },
+      },
+    ]);
+  });
+
   test("fails an agent workflow step when workspace input is missing", async () => {
     const definition: WorkflowDefinition = {
       id: "custom.agent-missing-workspace",

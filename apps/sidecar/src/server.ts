@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AgentProfile,
+  type AgentProviderConfig,
   AgentTurnRequestSchema,
   AuditRecordSchema,
   ClarifyRequestSchema,
@@ -15,6 +16,7 @@ import {
   InboxResolveRequestSchema,
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
+  type ModelRuntimeCredential,
   NotifyRequestSchema,
   PlaybookAssignmentPreviewRequestSchema,
   PlaybookAssignmentPreviewResultSchema,
@@ -38,8 +40,10 @@ import {
   type TaskSkillActivation,
   TaskUpdateRequestSchema,
   TodoOperationSchema,
+  type WorkflowCapabilityInventory,
   type WorkflowDefinition,
   WorkflowResumeRequestSchema,
+  type WorkflowRunAssignmentPlan,
   WorkflowRunAssignmentPlanSchema,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
@@ -245,10 +249,23 @@ function validateWebSocket(req: Request): Response | null {
   return null;
 }
 
-function runtimeApiKeyCredential(credential: unknown): string | undefined {
-  if (!credential || typeof credential !== "object" || !("apiKey" in credential)) return undefined;
-  const apiKey = (credential as { apiKey?: unknown }).apiKey;
-  return typeof apiKey === "string" && apiKey.trim().length > 0 ? apiKey : undefined;
+export function buildWorkflowExecutionOptions(options: {
+  agentProvider?: AgentProviderConfig;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
+  capabilityInventory?: WorkflowCapabilityInventory;
+  credential?: ModelRuntimeCredential;
+}): {
+  agentCredential?: ModelRuntimeCredential;
+  agentProvider?: AgentProviderConfig;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
+  capabilityInventory?: WorkflowCapabilityInventory;
+} {
+  return {
+    ...(options.assignmentPlan ? { assignmentPlan: options.assignmentPlan } : {}),
+    ...(options.capabilityInventory ? { capabilityInventory: options.capabilityInventory } : {}),
+    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
+    ...(options.credential ? { agentCredential: options.credential } : {}),
+  };
 }
 
 function capOutput(text: string): string {
@@ -717,11 +734,16 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
   }
 
   try {
-    const agentCredential = runtimeApiKeyCredential(parsed.data.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.data.capabilityInventory,
       assignmentPlan: parsed.data.assignmentPlan,
+    });
+    const executionOptions = buildWorkflowExecutionOptions({
+      assignmentPlan: playbookState.assignmentPlan,
+      capabilityInventory: playbookState.capabilityInventory,
+      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
     });
     const result = await runWorkflow({
       definition,
@@ -729,8 +751,7 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
       cli: {
         runWorkspaceCli,
       },
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(agentCredential ? { agentCredential } : {}),
+      ...executionOptions,
       async onCheckpoint(run) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(run, playbookState),
@@ -904,11 +925,16 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
   const parsed = parsePlaybookRunCreateRequest(body, playbookId);
 
   try {
-    const agentCredential = runtimeApiKeyCredential(parsed.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.capabilityInventory,
       assignmentPlan: parsed.assignmentPlan,
+    });
+    const executionOptions = buildWorkflowExecutionOptions({
+      assignmentPlan: playbookState.assignmentPlan,
+      capabilityInventory: playbookState.capabilityInventory,
+      ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
+      ...(parsed.credential ? { credential: parsed.credential } : {}),
     });
     const result = await runWorkflow({
       definition,
@@ -916,8 +942,7 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
       cli: {
         runWorkspaceCli,
       },
-      ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
-      ...(agentCredential ? { agentCredential } : {}),
+      ...executionOptions,
       async onCheckpoint(run) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(run, playbookState),
@@ -1280,23 +1305,26 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   }
 
   try {
-    const agentCredential = runtimeApiKeyCredential(parsed.data.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.data.capabilityInventory,
       assignmentPlan: parsed.data.assignmentPlan,
       existingAssignmentPlan: existing.assignmentPlan,
     });
+    const executionOptions = buildWorkflowExecutionOptions({
+      assignmentPlan: playbookState.assignmentPlan,
+      capabilityInventory: playbookState.capabilityInventory,
+      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
+    });
     const result = await resumeWorkflowRun({
       run: existing,
       decision: parsed.data.decision,
       definition,
-      assignmentPlan: playbookState.assignmentPlan,
       cli: {
         runWorkspaceCli,
       },
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(agentCredential ? { agentCredential } : {}),
+      ...executionOptions,
       async onCheckpoint(checkpoint) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(checkpoint, playbookState),

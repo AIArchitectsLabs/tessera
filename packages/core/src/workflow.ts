@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type {
   AgentProviderConfig,
   DashboardLayout,
+  ModelRuntimeCredential,
   PermissionDecision,
   PermissionGrant,
   TokenUsage,
@@ -115,10 +116,10 @@ const WORKFLOW_REGISTRY = new Map<string, WorkflowDefinition>([
 ]);
 
 export interface RunDemoWorkflowOptions {
-  agentCredential?: string;
+  agentCredential?: ModelRuntimeCredential | string;
   agentProvider?: AgentProviderConfig;
   agentRunner?: (options: {
-    credential?: string;
+    credential?: ModelRuntimeCredential | string;
     prompt: string;
     provider: AgentProviderConfig;
     workspaceRoot: string;
@@ -135,10 +136,10 @@ export interface RunWorkflowOptions extends RunDemoWorkflowOptions {
 }
 
 export interface ResumeWorkflowRunOptions {
-  agentCredential?: string;
+  agentCredential?: ModelRuntimeCredential | string;
   agentProvider?: AgentProviderConfig;
   agentRunner?: (options: {
-    credential?: string;
+    credential?: ModelRuntimeCredential | string;
     prompt: string;
     provider: AgentProviderConfig;
     workspaceRoot: string;
@@ -433,10 +434,10 @@ async function executeFromStep(options: {
   capabilityInventory?: WorkflowCapabilityInventory;
   assignmentPlan?: WorkflowRunAssignmentPlan;
   definition: WorkflowDefinition;
-  agentCredential?: string;
+  agentCredential?: ModelRuntimeCredential | string;
   agentProvider?: AgentProviderConfig;
   agentRunner?: (options: {
-    credential?: string;
+    credential?: ModelRuntimeCredential | string;
     prompt: string;
     provider: AgentProviderConfig;
     workspaceRoot: string;

@@ -3,6 +3,8 @@ import {
   type AgentProfile,
   type AgentProviderConfig,
   AgentProviderConfigSchema,
+  type ModelRuntimeCredential,
+  ModelRuntimeCredentialSchema,
   type PlaybookAssignmentPreviewResult,
   PlaybookAssignmentPreviewResultSchema,
   type WorkflowCapabilityInventory,
@@ -395,7 +397,9 @@ function validateAssignmentAgainstInventory(options: {
     }
     if (options.assignment.provider) {
       if (!agent.model) return false;
-      if (stableStringify(agent.model) !== stableStringify(options.assignment.provider))
+      const agentProvider = AgentProviderConfigSchema.safeParse(agent.model);
+      if (!agentProvider.success) return false;
+      if (stableStringify(agentProvider.data) !== stableStringify(options.assignment.provider))
         return false;
     }
     if (options.assignment.providerFingerprint && agent.model) {
@@ -757,7 +761,7 @@ export function parsePlaybookRunCreateRequest(
 ): {
   agentProvider?: AgentProviderConfig;
   capabilityInventory?: WorkflowCapabilityInventory;
-  credential?: { apiKey: string };
+  credential?: ModelRuntimeCredential;
   assignmentPlan?: WorkflowRunAssignmentPlan;
   input: Record<string, unknown>;
   workflowId: string;
@@ -783,8 +787,8 @@ export function parsePlaybookRunCreateRequest(
     ...(payload.agentProvider !== undefined
       ? { agentProvider: AgentProviderConfigSchema.parse(payload.agentProvider) }
       : {}),
-    ...(isRecord(payload.credential) && typeof payload.credential.apiKey === "string"
-      ? { credential: { apiKey: payload.credential.apiKey } }
+    ...(payload.credential !== undefined
+      ? { credential: ModelRuntimeCredentialSchema.parse(payload.credential) }
       : {}),
     ...(payload.capabilityInventory !== undefined
       ? {
