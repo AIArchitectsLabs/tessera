@@ -1162,6 +1162,16 @@ export type PlaybookRunPreferenceReadRequest = z.infer<
   typeof PlaybookRunPreferenceReadRequestSchema
 >;
 
+export const PlaybookRunPreferenceSaveRequestSchema = z
+  .object({
+    workspaceRoot: z.string().min(1),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema,
+  })
+  .strict();
+export type PlaybookRunPreferenceSaveRequest = z.infer<
+  typeof PlaybookRunPreferenceSaveRequestSchema
+>;
+
 export const PlaybookRunPreferenceReadResultSchema = z
   .object({
     preference: PlaybookRunPreferenceSchema.optional(),

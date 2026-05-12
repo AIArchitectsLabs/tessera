@@ -4,6 +4,7 @@ import {
   PlaybookAssignmentPreviewResultSchema,
   PlaybookManifestSchema,
   PlaybookRunPreferenceReadRequestSchema,
+  PlaybookRunPreferenceSaveRequestSchema,
   PlaybookRunPreferenceSchema,
   TokenUsageSchema,
   WorkflowRunResultSchema,
@@ -208,6 +209,19 @@ describe("PlaybookManifestSchema", () => {
       workspaceRoot: "/tmp/workspace",
     });
     expect(readRequest.workspaceRoot).toBe("/tmp/workspace");
+
+    const saveRequest = PlaybookRunPreferenceSaveRequestSchema.parse({
+      workspaceRoot: "/tmp/workspace",
+      assignmentPlan,
+    });
+    expect(saveRequest.assignmentPlan.assignments.draftBrief?.agentId).toBe("default");
+    expect(() =>
+      PlaybookRunPreferenceSaveRequestSchema.parse({
+        workspaceRoot: "/tmp/workspace",
+        assignmentPlan,
+        updatedAt: "2026-05-11T00:00:00.000Z",
+      })
+    ).toThrow();
   });
 
   test("rejects playbook assignment preview candidates with mismatched agent identity", () => {

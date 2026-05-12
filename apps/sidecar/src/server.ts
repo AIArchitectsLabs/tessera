@@ -21,8 +21,11 @@ import {
   PlaybookDetailSchema,
   PlaybookListResultSchema,
   PlaybookRunDetailSchema,
+  type PlaybookRunPreference,
   PlaybookRunPreferenceReadRequestSchema,
   PlaybookRunPreferenceReadResultSchema,
+  type PlaybookRunPreferenceSaveRequest,
+  PlaybookRunPreferenceSaveRequestSchema,
   PlaybookRunPreferenceSchema,
   type PlaybookSummary,
   PlaybookSummarySchema,
@@ -868,6 +871,19 @@ export function isPlaybookRunPreferenceAssignmentPlanValidationError(error: unkn
   );
 }
 
+export function buildPlaybookRunPreference(
+  playbookId: string,
+  request: PlaybookRunPreferenceSaveRequest,
+  updatedAt = new Date()
+): PlaybookRunPreference {
+  return PlaybookRunPreferenceSchema.parse({
+    workspaceRoot: request.workspaceRoot,
+    playbookId,
+    assignmentPlan: request.assignmentPlan,
+    updatedAt: updatedAt.toISOString(),
+  });
+}
+
 async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -969,25 +985,20 @@ async function handlePlaybookRunPreferenceSave(
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const payload = body && typeof body === "object" && !Array.isArray(body) ? body : {};
-  const preference = PlaybookRunPreferenceSchema.safeParse({
-    ...(payload as Record<string, unknown>),
-    playbookId,
-  });
-  if (!preference.success) {
-    return Response.json({ error: preference.error.message }, { status: 400 });
+  const request = PlaybookRunPreferenceSaveRequestSchema.safeParse(body);
+  if (!request.success) {
+    return Response.json({ error: request.error.message }, { status: 400 });
   }
+  const preference = buildPlaybookRunPreference(playbookId, request.data);
 
   try {
     resolvePlaybookExecutionState({
       definition,
       capabilityInventory: buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
-      assignmentPlan: preference.data.assignmentPlan,
+      assignmentPlan: preference.assignmentPlan,
     });
-    playbookRunPreferenceStore.save(preference.data);
-    return Response.json(
-      PlaybookRunPreferenceReadResultSchema.parse({ preference: preference.data })
-    );
+    playbookRunPreferenceStore.save(preference);
+    return Response.json(PlaybookRunPreferenceReadResultSchema.parse({ preference }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isPlaybookRunPreferenceAssignmentPlanValidationError(error)) {

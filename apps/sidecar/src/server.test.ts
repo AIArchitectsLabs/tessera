@@ -9,6 +9,7 @@ const originalServe = Bun.serve;
 let isPlaybookRunPreferenceAssignmentPlanValidationError:
   | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
   | undefined;
+let buildPlaybookRunPreference: typeof import("./server.js").buildPlaybookRunPreference | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let requestCodexDeviceCode: typeof import("./server.js").requestCodexDeviceCode | undefined;
 let refreshCodexOAuthCredential:
@@ -23,6 +24,7 @@ beforeAll(async () => {
 
   try {
     const serverModule = await import("./server.js");
+    buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -38,6 +40,37 @@ afterAll(() => {
 });
 
 describe("playbook run preference save error mapping", () => {
+  test("server stamps stored preference metadata from a save request", () => {
+    expect(buildPlaybookRunPreference).toBeDefined();
+    const preference = buildPlaybookRunPreference?.(
+      "sales.meeting-brief",
+      {
+        workspaceRoot: "/tmp/workspace",
+        assignmentPlan: {
+          resolverVersion: 1,
+          createdAt: "2026-05-11T00:00:00.000Z",
+          assignments: {
+            draftBrief: {
+              stepId: "draftBrief",
+              agentId: "default",
+              agentLabel: "Tessera",
+              skillCapabilities: [],
+              toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+              integrationCapabilities: [],
+            },
+          },
+        },
+      },
+      new Date("2026-05-12T00:00:00.000Z")
+    );
+
+    expect(preference).toMatchObject({
+      workspaceRoot: "/tmp/workspace",
+      playbookId: "sales.meeting-brief",
+      updatedAt: "2026-05-12T00:00:00.000Z",
+    });
+  });
+
   test("treats assignment plan validation failures as client recoverable", () => {
     expect(isPlaybookRunPreferenceAssignmentPlanValidationError).toBeDefined();
     expect(
