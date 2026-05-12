@@ -156,6 +156,16 @@ function summarizeAssignment(assignment: WorkflowNodeAssignment | undefined): st
   return parts.length > 0 ? parts.join(" • ") : "Matched";
 }
 
+function roleLabelFromStep(label: string): string {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("brief")) return "Brief writer";
+  if (normalized.includes("digest")) return "Digest writer";
+  if (normalized.includes("snapshot")) return "Snapshot analyst";
+  if (normalized.includes("review")) return "Review specialist";
+  if (normalized.includes("research")) return "Research specialist";
+  return "Playbook specialist";
+}
+
 function summarizeValue(value: unknown): string {
   if (value === undefined || value === null || value === "") return "Not provided";
   if (typeof value === "string") return value;
@@ -699,6 +709,7 @@ function GuidedStart({
   onFieldChange,
   onStart,
   onConfirmAgents,
+  onAssignmentPlanChange,
   formReady,
   running,
   savingPreference,
@@ -714,6 +725,7 @@ function GuidedStart({
   onFieldChange: (key: string, value: unknown) => void;
   onStart: () => void;
   onConfirmAgents: () => void;
+  onAssignmentPlanChange: (plan: WorkflowRunAssignmentPlan) => void;
   formReady: boolean;
   running: boolean;
   savingPreference: boolean;
@@ -721,6 +733,8 @@ function GuidedStart({
   capabilityInventory: WorkflowCapabilityInventory | null;
 }) {
   const ctaCopy = ctaCopyMap[playbook.id] ?? "Start playbook";
+  const [setupEditorOpen, setSetupEditorOpen] = useState(false);
+  const [workflowDetailsOpen, setWorkflowDetailsOpen] = useState(false);
   const detail = playbookDetail?.id === playbook.id ? playbookDetail : null;
   const inputs = detail?.inputs ?? {};
   const workflowSteps = detail?.steps ?? [];
@@ -749,6 +763,31 @@ function GuidedStart({
     blockers.length === 0 &&
     !!draftAssignmentPlan &&
     agentsConfirmed;
+  const agentSteps = workflowSteps.filter((step) => step.kind === "agent");
+  const savedAgentLabels = [
+    ...new Set(
+      agentSteps
+        .map((step) => draftAssignmentPlan?.assignments[step.id]?.agentLabel)
+        .filter((label): label is string => !!label)
+    ),
+  ];
+  const savedSetupSummary =
+    savedAgentLabels.length > 0 ? `Using saved setup: ${joinLabels(savedAgentLabels)}` : null;
+
+  function selectCandidate(stepId: string, agentId: string) {
+    if (!draftAssignmentPlan) return;
+    const candidate = nodePreviews
+      .get(stepId)
+      ?.candidates.find((item) => item.agentId === agentId && !item.disabled);
+    if (!candidate) return;
+    onAssignmentPlanChange({
+      ...draftAssignmentPlan,
+      assignments: {
+        ...draftAssignmentPlan.assignments,
+        [stepId]: candidate.assignment,
+      },
+    });
+  }
 
   const fields = Object.entries(inputs)
     .filter(([key, spec]) => key !== "workspaceRoot" && spec.group !== "System")
@@ -762,13 +801,36 @@ function GuidedStart({
     groups.set(group, list);
   }
 
-  const preflightPanel = (
+  const showSetupEditor = setupEditorOpen || !agentsConfirmed;
+  const preflightPanel = !showSetupEditor ? (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 px-4 py-3">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-foreground">
+          {savedSetupSummary ?? "Using saved setup"}
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Tessera will use this setup for this workspace.
+        </p>
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="rounded-md"
+        onClick={() => setSetupEditorOpen(true)}
+      >
+        Setup
+      </Button>
+    </div>
+  ) : (
     <div className="rounded-lg border border-border bg-secondary/30 p-4">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-foreground">Before you run</div>
+          <div className="text-sm font-semibold text-foreground">Playbook setup</div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Review the workflow and confirm the agents Tessera will use.
+            {agentsConfirmed
+              ? "Update who Tessera should use for this playbook."
+              : "Tessera is selected for this playbook. You can keep this setup or change it before running."}
           </p>
         </div>
         {blockers.length > 0 ? (
@@ -781,7 +843,7 @@ function GuidedStart({
           </span>
         ) : (
           <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-            Review agents
+            Needs setup
           </span>
         )}
       </div>
@@ -795,13 +857,19 @@ function GuidedStart({
           Loading setup before the assignment preview can run.
         </p>
       ) : assignmentPreview ? (
-        workflowSteps.length > 0 ? (
+        agentSteps.length > 0 ? (
           <div className="space-y-2">
-            {workflowSteps.map((step) => {
+            {agentSteps.map((step) => {
               const preview = nodePreviews.get(step.id);
               const assignment = draftAssignmentPlan?.assignments[step.id];
               const recommendedLabel =
                 preview?.recommendedAgentLabel ?? preview?.candidates[0]?.agentLabel ?? null;
+              const selectedAgentId =
+                assignment?.agentId ??
+                preview?.recommendedAgentId ??
+                preview?.candidates[0]?.agentId ??
+                "";
+              const stepLabel = step.label ?? preview?.stepLabel ?? titleFromId(step.id);
               return (
                 <div
                   key={step.id}
@@ -809,36 +877,102 @@ function GuidedStart({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-foreground">
-                      {step.label ?? titleFromId(step.id)}
+                      {roleLabelFromStep(stepLabel)}
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {step.kind === "agent" ? "Agent step" : "Tool step"}
-                      {step.phase ? ` · ${step.phase}` : ""}
-                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">{stepLabel}</div>
                   </div>
                   <div className="max-w-[50%] text-right text-xs text-muted-foreground">
-                    {step.kind === "agent" ? (
-                      <>
-                        <div className="font-medium text-foreground">
-                          {assignment?.agentLabel ?? recommendedLabel ?? "Not assigned"}
-                        </div>
-                        {recommendedLabel ? (
-                          <div className="mt-0.5">Recommended: {recommendedLabel}</div>
-                        ) : null}
-                      </>
+                    {setupEditorOpen && preview?.candidates.length ? (
+                      <select
+                        className="min-w-32 rounded-md border border-border bg-background px-2 py-1 text-sm font-medium text-foreground outline-none"
+                        value={selectedAgentId}
+                        onChange={(event) => selectCandidate(step.id, event.target.value)}
+                        disabled={running || savingPreference}
+                        aria-label={`Agent for ${roleLabelFromStep(stepLabel)}`}
+                      >
+                        {preview.candidates.map((candidate) => (
+                          <option
+                            key={candidate.agentId}
+                            value={candidate.agentId}
+                            disabled={candidate.disabled}
+                          >
+                            {candidate.agentLabel}
+                          </option>
+                        ))}
+                      </select>
                     ) : (
-                      <div>Uses workflow tool handling</div>
+                      <div className="font-medium text-foreground">
+                        {assignment?.agentLabel ?? recommendedLabel ?? "Not assigned"}
+                      </div>
                     )}
+                    {recommendedLabel ? (
+                      <div className="mt-0.5">Recommended: {recommendedLabel}</div>
+                    ) : null}
                   </div>
                 </div>
               );
             })}
+            {setupEditorOpen ? (
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-auto rounded-md px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
+                  onClick={() => setWorkflowDetailsOpen((open) => !open)}
+                >
+                  Workflow details
+                </Button>
+                {workflowDetailsOpen ? (
+                  <div className="mt-2 space-y-2 rounded-md border border-border bg-background p-3">
+                    {workflowSteps.map((step) => {
+                      const assignment = draftAssignmentPlan?.assignments[step.id];
+                      return (
+                        <div
+                          key={step.id}
+                          className="flex items-start justify-between gap-4 text-xs"
+                        >
+                          <div>
+                            <div className="font-medium text-foreground">
+                              {step.label ?? titleFromId(step.id)}
+                            </div>
+                            <div className="mt-0.5 text-muted-foreground">
+                              {step.kind === "agent" ? "Agent step" : "Tool step"}
+                              {step.phase ? ` · ${step.phase}` : ""}
+                            </div>
+                          </div>
+                          <div className="max-w-[50%] text-right text-muted-foreground">
+                            {step.kind === "agent"
+                              ? (assignment?.agentLabel ?? "Not assigned")
+                              : "Handled by workflow"}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : workflowSteps.length > 0 ? (
+          <div className="space-y-2">
+            {workflowSteps.map((step) => (
+              <div
+                key={step.id}
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              >
+                {step.label ?? titleFromId(step.id)}
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {step.kind === "tool" ? "Handled by workflow" : "Ready"}
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">No workflow steps are available yet.</p>
         )
       ) : (
-        <p className="text-xs text-muted-foreground">Loading assignment preview…</p>
+        <p className="text-xs text-muted-foreground">Loading assignment preview...</p>
       )}
 
       {blockers.length > 0 ? (
@@ -856,8 +990,8 @@ function GuidedStart({
       ) : assignmentPreview ? (
         <p className="mt-3 text-xs text-muted-foreground">
           {agentsConfirmed
-            ? "Agents are confirmed for this workspace."
-            : "Confirm the agents to save this setup for next time."}
+            ? "This setup is saved for future runs in this workspace."
+            : "Use this setup to save it for next time."}
         </p>
       ) : null}
 
@@ -870,8 +1004,33 @@ function GuidedStart({
           disabled={!canConfirmAgents}
         >
           {savingPreference ? <Loader2 size={14} className="animate-spin" /> : null}
-          Confirm agents
+          {agentsConfirmed ? "Save setup" : "Use this setup"}
         </Button>
+        {!setupEditorOpen && assignmentPreview ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="rounded-md"
+            onClick={() => setSetupEditorOpen(true)}
+          >
+            Change setup
+          </Button>
+        ) : null}
+        {setupEditorOpen && agentsConfirmed ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="rounded-md"
+            onClick={() => {
+              setSetupEditorOpen(false);
+              setWorkflowDetailsOpen(false);
+            }}
+          >
+            Done
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -2026,6 +2185,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
             onFieldChange={(key, value) => setFormValues((prev) => ({ ...prev, [key]: value }))}
             onStart={() => void startRun()}
             onConfirmAgents={() => void confirmAgents()}
+            onAssignmentPlanChange={setDraftAssignmentPlan}
             formReady={formReady}
             running={running}
             savingPreference={savingPreference}

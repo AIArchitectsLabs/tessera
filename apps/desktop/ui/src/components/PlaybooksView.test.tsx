@@ -135,6 +135,23 @@ const dashboardRun = {
   steps: [],
 } as unknown as PlaybookRunDetail;
 
+const savedAssignmentPlan = {
+  resolverVersion: 1,
+  createdAt: "2026-05-11T00:00:00.000Z",
+  assignments: {
+    draftBrief: {
+      stepId: "draftBrief",
+      agentId: "default",
+      agentLabel: "Tessera",
+      skillCapabilities: [],
+      toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+      integrationCapabilities: [],
+    },
+  },
+};
+
+let hasSavedPreference = false;
+
 const modelSettings: ModelSettingsRead = {
   selectedProvider: "openai",
   providers: {
@@ -173,7 +190,16 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
     case "playbook_get":
       return args?.playbookId === dashboardPlaybook.id ? dashboardPlaybook : playbook;
     case "playbook_run_preference_get":
-      return { preference: undefined };
+      return {
+        preference: hasSavedPreference
+          ? {
+              workspaceRoot: "/tmp/workspace",
+              playbookId: playbook.id,
+              assignmentPlan: savedAssignmentPlan,
+              updatedAt: "2026-05-11T00:00:00.000Z",
+            }
+          : undefined,
+      };
     case "playbook_assignment_preview":
       return {
         assignmentPlan: {
@@ -220,24 +246,12 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         ],
       };
     case "playbook_run_preference_save":
+      hasSavedPreference = true;
       return {
         preference: {
           workspaceRoot: "/tmp/workspace",
           playbookId: playbook.id,
-          assignmentPlan: {
-            resolverVersion: 1,
-            createdAt: "2026-05-11T00:00:00.000Z",
-            assignments: {
-              draftBrief: {
-                stepId: "draftBrief",
-                agentId: "default",
-                agentLabel: "Tessera",
-                skillCapabilities: [],
-                toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
-                integrationCapabilities: [],
-              },
-            },
-          },
+          assignmentPlan: savedAssignmentPlan,
           updatedAt: "2026-05-11T00:00:00.000Z",
         },
       };
@@ -320,6 +334,7 @@ function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
 
 beforeEach(() => {
   invoke.mockClear();
+  hasSavedPreference = false;
 });
 
 afterEach(() => {
@@ -374,14 +389,15 @@ describe("PlaybooksView", () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByText("Before you run")).toBeTruthy();
-      expect(view.getByText("Draft meeting brief")).toBeTruthy();
+      expect(view.getByText("Playbook setup")).toBeTruthy();
+      expect(view.getByText(/Tessera is selected for this playbook/)).toBeTruthy();
+      expect(view.getByText("Brief writer")).toBeTruthy();
     });
 
     const runButton = view.getByRole("button", { name: "Prepare brief" });
     expect((runButton as HTMLButtonElement).disabled).toBe(true);
 
-    const confirmButton = view.getByRole("button", { name: "Confirm agents" });
+    const confirmButton = view.getByRole("button", { name: "Use this setup" });
     fireEvent.click(confirmButton);
 
     await waitFor(() => {
@@ -402,6 +418,24 @@ describe("PlaybooksView", () => {
             | undefined
         )?.request?.assignmentPlan?.assignments?.draftBrief
       ).toBeTruthy();
+    });
+  });
+
+  test("keeps saved setup compact and exposes role-based setup editor", async () => {
+    hasSavedPreference = true;
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
+    });
+    expect(view.queryByText("Use this setup")).toBeNull();
+
+    fireEvent.click(view.getByRole("button", { name: "Setup" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Playbook setup")).toBeTruthy();
+      expect(view.getByText("Brief writer")).toBeTruthy();
+      expect(view.getByRole("button", { name: "Workflow details" })).toBeTruthy();
     });
   });
 
