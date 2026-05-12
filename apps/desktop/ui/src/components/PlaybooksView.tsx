@@ -1727,7 +1727,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
 
         setAssignmentPreview(preview);
         setDraftAssignmentPlan(
-          preview.assignmentPlan ?? preference.preference?.assignmentPlan ?? null
+          preview.assignmentPlan ??
+            (preview.blockers.length > 0 ? null : (preference.preference?.assignmentPlan ?? null))
         );
         setAgentsConfirmed(!!preference.preference && preview.blockers.length === 0);
       } catch (loadError) {

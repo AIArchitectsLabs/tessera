@@ -4,6 +4,7 @@ import {
   PlaybookAssignmentPreviewResultSchema,
   WorkflowCapabilityInventorySchema,
   WorkflowDefinitionSchema,
+  WorkflowRunAssignmentPlanSchema,
 } from "@tessera/contracts";
 import {
   buildLocalPlaybookCapabilityInventory,
@@ -350,6 +351,69 @@ describe("playbook routing helpers", () => {
         assignmentPlan: invalidPlan,
       })
     ).toThrow("stale or does not match the current inventory");
+  });
+
+  test("assignment preview refreshes stale previous plans against the current inventory", () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.preview-stale-plan",
+      version: 1,
+      name: "Preview Stale Plan",
+      start: "draftRiskBrief",
+      inputs: {
+        workspaceRoot: { type: "string", required: true },
+      },
+      steps: [
+        {
+          id: "draftRiskBrief",
+          kind: "agent",
+          prompt: "Draft the renewal risk brief",
+          workspaceRootInput: "workspaceRoot",
+          requires: {
+            tools: [{ capability: "tool.workspace.read" }],
+          },
+        },
+      ],
+    });
+    const inventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "default",
+          label: "Tessera",
+          fingerprint: "default:fresh",
+          modelCapabilities: [],
+          dataPolicies: [],
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+        },
+      ],
+      integrations: [],
+    });
+    const previousPlan = WorkflowRunAssignmentPlanSchema.parse({
+      resolverVersion: 1,
+      createdAt: "2026-05-11T00:00:00.000Z",
+      assignments: {
+        draftRiskBrief: {
+          stepId: "draftRiskBrief",
+          agentId: "default",
+          agentLabel: "Tessera",
+          agentFingerprint: "default:stale",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          integrationCapabilities: [],
+        },
+      },
+    });
+
+    const preview = createPlaybookAssignmentPreview({
+      definition,
+      capabilityInventory: inventory,
+      previousPlan,
+    });
+
+    expect(preview.blockers).toEqual([]);
+    expect(preview.assignmentPlan?.assignments.draftRiskBrief?.agentFingerprint).toBe(
+      "default:fresh"
+    );
   });
 
   test("resumes checkpointed assignment plans when inventory fingerprints drift", () => {

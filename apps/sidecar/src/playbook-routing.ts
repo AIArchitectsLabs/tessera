@@ -669,12 +669,7 @@ export function createPlaybookAssignmentPreview(options: {
   definition: WorkflowDefinition;
   previousPlan?: WorkflowRunAssignmentPlan;
 }): PlaybookAssignmentPreviewResult {
-  try {
-    const resolved = resolvePlaybookExecutionContext({
-      definition: options.definition,
-      capabilityInventory: options.capabilityInventory,
-      ...(options.previousPlan ? { assignmentPlan: options.previousPlan } : {}),
-    });
+  function resultFromContext(resolved: PlaybookExecutionContext): PlaybookAssignmentPreviewResult {
     return PlaybookAssignmentPreviewResultSchema.parse({
       assignmentPlan: resolved.assignmentPlan,
       confirmationRequired: true,
@@ -687,7 +682,43 @@ export function createPlaybookAssignmentPreview(options: {
         })
       ),
     });
+  }
+
+  try {
+    const resolved = resolvePlaybookExecutionContext({
+      definition: options.definition,
+      capabilityInventory: options.capabilityInventory,
+      ...(options.previousPlan ? { assignmentPlan: options.previousPlan } : {}),
+    });
+    return resultFromContext(resolved);
   } catch (error) {
+    if (options.previousPlan) {
+      try {
+        return resultFromContext(
+          resolvePlaybookExecutionContext({
+            definition: options.definition,
+            capabilityInventory: options.capabilityInventory,
+          })
+        );
+      } catch (freshError) {
+        const message = freshError instanceof Error ? freshError.message : String(freshError);
+        return PlaybookAssignmentPreviewResultSchema.parse({
+          confirmationRequired: true,
+          blockers: [
+            WorkflowSourceGapSchema.parse({
+              stepId: options.definition.start,
+              kind: "model",
+              capability: "assignment-preview",
+              optional: false,
+              reason: message,
+            }),
+          ],
+          sourceGaps: [],
+          nodePreviews: [],
+        });
+      }
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     return PlaybookAssignmentPreviewResultSchema.parse({
       confirmationRequired: true,
