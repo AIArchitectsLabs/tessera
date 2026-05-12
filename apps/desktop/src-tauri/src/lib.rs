@@ -551,6 +551,10 @@ fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json
             "model": provider.model,
             "apiKeyEnv": "OPENAI_API_KEY"
         }),
+        model_settings::ModelProvider::OpenaiCodex => serde_json::json!({
+            "provider": "openai-codex",
+            "model": provider.model
+        }),
         model_settings::ModelProvider::Anthropic => serde_json::json!({
             "provider": "anthropic",
             "model": provider.model,
@@ -574,7 +578,7 @@ fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json
 
 fn model_connection_test_body(
     provider: &model_settings::ProviderConfig,
-    credential: Option<String>,
+    credential: Option<serde_json::Value>,
 ) -> serde_json::Value {
     let provider_value = provider_config_json(provider);
 
@@ -583,10 +587,44 @@ fn model_connection_test_body(
         "provider": provider_value,
         "timeoutMs": 30_000,
     });
-    if let Some(api_key) = credential {
-        body["credential"] = serde_json::json!({ "apiKey": api_key });
+    if let Some(credential) = credential {
+        body["credential"] = credential;
     }
     body
+}
+
+fn api_key_runtime_credential(api_key: String) -> serde_json::Value {
+    serde_json::json!({ "apiKey": api_key })
+}
+
+async fn codex_oauth_runtime_credential(
+    state: &SidecarHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(mut credential) =
+        model_settings::get_codex_oauth_credential().map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    if model_settings::codex_access_token_is_expiring(&credential.tokens.access_token, 120) {
+        let body = model_settings::encode_codex_oauth_credential(&credential)
+            .map_err(|error| error.to_string())?;
+        let json = tokio::time::timeout(
+            Duration::from_secs(20),
+            state.post("/model/codex-oauth/refresh", &body),
+        )
+        .await
+        .map_err(|_| "Codex sign-in refresh timed out after 20s".to_string())?
+        .map_err(|error| error.to_string())?;
+        credential =
+            model_settings::decode_codex_oauth_credential(&json).map_err(|e| e.to_string())?;
+        model_settings::set_codex_oauth_credential(&credential)
+            .map_err(|error| error.to_string())?;
+    }
+
+    Ok(Some(model_settings::codex_oauth_runtime_credential(
+        &credential,
+    )))
 }
 
 fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
@@ -713,6 +751,7 @@ fn compile_agent_runtime_json(agent: &serde_json::Value) -> serde_json::Value {
 fn parse_model_provider(provider: &str) -> Result<model_settings::ModelProvider, String> {
     match provider {
         "openai" => Ok(model_settings::ModelProvider::Openai),
+        "openai-codex" => Ok(model_settings::ModelProvider::OpenaiCodex),
         "anthropic" => Ok(model_settings::ModelProvider::Anthropic),
         "openrouter" => Ok(model_settings::ModelProvider::Openrouter),
         "local" => Ok(model_settings::ModelProvider::Local),
@@ -771,14 +810,17 @@ async fn attach_default_task_execution(
             .and_then(|value| value.as_str())
             .ok_or_else(|| "Resolved provider is missing a provider id".to_string())?,
     )?;
-    let credential =
-        model_settings::get_credential(credential_provider).map_err(|error| error.to_string())?;
+    let credential = if credential_provider == model_settings::ModelProvider::OpenaiCodex {
+        let state = app.state::<SidecarHandle>();
+        codex_oauth_runtime_credential(&state).await?
+    } else {
+        model_settings::get_credential(credential_provider)
+            .map_err(|error| error.to_string())?
+            .map(api_key_runtime_credential)
+    };
 
     if credential.is_none() && credential_provider != model_settings::ModelProvider::Local {
-        return Err(format!(
-            "{} is not configured. Add an API key in Settings > Model.",
-            credential_provider.label()
-        ));
+        return Err(model_settings::missing_credential_result(credential_provider).message);
     }
 
     let mut execution = serde_json::json!({
@@ -787,8 +829,8 @@ async fn attach_default_task_execution(
         "provider": provider
     });
 
-    if let Some(api_key) = credential {
-        execution["credential"] = serde_json::json!({ "apiKey": api_key });
+    if let Some(credential) = credential {
+        execution["credential"] = credential;
     }
 
     request["execution"] = execution;
@@ -813,19 +855,22 @@ async fn attach_default_workflow_execution(
     let selected =
         model_settings::selected_provider_config(&settings).map_err(|error| error.to_string())?;
     let provider = provider_config_json(&selected);
-    let credential =
-        model_settings::get_credential(selected.provider).map_err(|error| error.to_string())?;
+    let credential = if selected.provider == model_settings::ModelProvider::OpenaiCodex {
+        let state = app.state::<SidecarHandle>();
+        codex_oauth_runtime_credential(&state).await?
+    } else {
+        model_settings::get_credential(selected.provider)
+            .map_err(|error| error.to_string())?
+            .map(api_key_runtime_credential)
+    };
 
     if credential.is_none() && selected.provider != model_settings::ModelProvider::Local {
-        return Err(format!(
-            "{} is not configured. Add an API key in Settings > Model.",
-            selected.provider.label()
-        ));
+        return Err(model_settings::missing_credential_result(selected.provider).message);
     }
 
     request["agentProvider"] = provider;
-    if let Some(api_key) = credential {
-        request["credential"] = serde_json::json!({ "apiKey": api_key });
+    if let Some(credential) = credential {
+        request["credential"] = credential;
     }
 
     Ok(request)
@@ -893,9 +938,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let (mut rx, child) = sidecar_command
-        .spawn()
-        .context("Could not spawn sidecar")?;
+    let (mut rx, child) = sidecar_command.spawn().context("Could not spawn sidecar")?;
 
     // Block until the sidecar emits its ready JSON line (10 s timeout).
     let handle = tauri::async_runtime::block_on(async {
@@ -1779,19 +1822,92 @@ async fn model_credential_delete(
 }
 
 #[tauri::command]
+async fn model_codex_oauth_status() -> Result<model_settings::CodexOAuthStatus, String> {
+    model_settings::codex_oauth_status().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_codex_oauth_save(
+    app: AppHandle,
+    credential: model_settings::CodexOAuthCredential,
+) -> Result<model_settings::ModelSettingsRead, String> {
+    model_settings::set_codex_oauth_credential(&credential).map_err(|error| error.to_string())?;
+    model_settings::read(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_codex_oauth_device_code(
+    state: State<'_, SidecarHandle>,
+) -> Result<serde_json::Value, String> {
+    let json = tokio::time::timeout(
+        Duration::from_secs(20),
+        state.post("/model/codex-oauth/device-code", "{}"),
+    )
+    .await
+    .map_err(|_| "Codex sign-in request timed out after 20s".to_string())?
+    .map_err(|error| error.to_string())?;
+    serde_json::from_str(&json).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn model_codex_oauth_poll(
+    app: AppHandle,
+    state: State<'_, SidecarHandle>,
+    device_auth_id: String,
+    user_code: String,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({
+        "deviceAuthId": device_auth_id,
+        "userCode": user_code
+    })
+    .to_string();
+    let json = tokio::time::timeout(
+        Duration::from_secs(20),
+        state.post("/model/codex-oauth/poll", &body),
+    )
+    .await
+    .map_err(|_| "Codex sign-in poll timed out after 20s".to_string())?
+    .map_err(|error| error.to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    if value.get("status").and_then(|status| status.as_str()) == Some("authorized") {
+        let credential = value
+            .get("credential")
+            .cloned()
+            .ok_or_else(|| "Codex sign-in response is missing credential".to_string())
+            .and_then(|credential| {
+                serde_json::from_value::<model_settings::CodexOAuthCredential>(credential)
+                    .map_err(|error| error.to_string())
+            })?;
+        model_settings::set_codex_oauth_credential(&credential)
+            .map_err(|error| error.to_string())?;
+        let read = model_settings::read(&app).map_err(|error| error.to_string())?;
+        return Ok(serde_json::json!({
+            "status": "authorized",
+            "settings": read
+        }));
+    }
+    Ok(value)
+}
+
+#[tauri::command]
 async fn model_connection_test(
     state: State<'_, SidecarHandle>,
     request: model_settings::ModelConnectionTestRequest,
 ) -> Result<model_settings::ModelConnectionTestResult, String> {
     let provider =
         model_settings::validate_provider_config(&request.provider).map_err(|e| e.to_string())?;
-    let credential = match request.credential {
-        Some(input) => {
-            let api_key = input.api_key.trim();
-            (!api_key.is_empty()).then(|| api_key.to_string())
-        }
-        None => {
-            model_settings::get_credential(provider.provider).map_err(|error| error.to_string())?
+    let credential = if provider.provider == model_settings::ModelProvider::OpenaiCodex {
+        codex_oauth_runtime_credential(&state).await?
+    } else {
+        match request.credential {
+            Some(input) => {
+                let api_key = input.api_key.trim();
+                (!api_key.is_empty()).then(|| api_key_runtime_credential(api_key.to_string()))
+            }
+            None => model_settings::get_credential(provider.provider)
+                .map_err(|error| error.to_string())?
+                .map(api_key_runtime_credential),
         }
     };
 
@@ -2360,6 +2476,10 @@ pub fn run() {
             integration_settings_get,
             integration_settings_save,
             model_connection_test,
+            model_codex_oauth_device_code,
+            model_codex_oauth_poll,
+            model_codex_oauth_save,
+            model_codex_oauth_status,
             model_credential_delete,
             model_settings_get,
             model_settings_save,

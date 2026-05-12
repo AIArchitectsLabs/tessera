@@ -305,7 +305,7 @@ describe("workflow contracts", () => {
     expect(parsed.workflowId).toBe("operations.lead-sync");
     expect(parsed.assignmentPlan?.resolverVersion).toBe(1);
     expect(parsed.agentProvider?.provider).toBe("openai");
-    expect(parsed.credential?.apiKey).toBe("test-key");
+    expect(parsed.credential).toMatchObject({ apiKey: "test-key" });
   });
 
   test("accepts workflow run list results", () => {

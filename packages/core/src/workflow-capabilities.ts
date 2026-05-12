@@ -22,6 +22,10 @@ const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
     apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
   }),
   z.object({
+    provider: z.literal("openai-codex"),
+    model: z.string().min(1),
+  }),
+  z.object({
     provider: z.literal("anthropic"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("ANTHROPIC_API_KEY"),
@@ -46,7 +50,13 @@ export const WorkflowCapabilityRequirementSchema = z.object({
 
 export type WorkflowCapabilityRequirement = z.infer<typeof WorkflowCapabilityRequirementSchema>;
 
-const WorkflowModelProviderSchema = z.enum(["openai", "anthropic", "openrouter", "local"]);
+const WorkflowModelProviderSchema = z.enum([
+  "openai",
+  "openai-codex",
+  "anthropic",
+  "openrouter",
+  "local",
+]);
 
 export const WorkflowModelRequirementSchema = z.object({
   acceptableProviders: z.array(WorkflowModelProviderSchema).default([]),

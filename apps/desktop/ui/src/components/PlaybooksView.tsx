@@ -348,10 +348,14 @@ function buildCapabilityInventory(
 ): WorkflowCapabilityInventory | null {
   if (!modelSettings || !integrationSettings) return null;
 
-  const defaultProvider = modelSettings.providers[modelSettings.selectedProvider];
   const providerSettingsByProvider = new Map(
     Object.values(modelSettings.providers).map((provider) => [provider.provider, provider])
   );
+  const defaultProvider =
+    modelSettings.providers[modelSettings.selectedProvider] ??
+    modelSettings.providers.openai ??
+    Object.values(modelSettings.providers)[0];
+  if (!defaultProvider) return null;
 
   const agents = agentProfiles.map((profile) => {
     const model =

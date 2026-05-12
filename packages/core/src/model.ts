@@ -7,6 +7,10 @@ export function resolveApiKey(
 ): string | undefined {
   if (credential) return credential;
 
+  if (config.provider === "openai-codex") {
+    return undefined;
+  }
+
   if (config.provider === "openai") {
     return process.env[config.apiKeyEnv];
   }
@@ -26,6 +30,10 @@ export function resolveApiKey(
 export function createAgentModel(
   config: AgentProviderConfig
 ): Model<"openai-completions" | "anthropic-messages"> {
+  if (config.provider === "openai-codex") {
+    throw new Error("Codex OAuth requires a dedicated transport before task execution.");
+  }
+
   if (config.provider === "openai") {
     return {
       id: config.model,

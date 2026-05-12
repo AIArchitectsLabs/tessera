@@ -692,7 +692,9 @@ async function executeFromStep(options: {
       }
       const credential =
         options.agentCredential ??
-        (provider.provider === "local" || !("apiKeyEnv" in provider)
+        (provider.provider === "local" ||
+        provider.provider === "openai-codex" ||
+        !("apiKeyEnv" in provider)
           ? undefined
           : process.env[provider.apiKeyEnv]);
       const agentPrompt = resolveTemplate(step.prompt, input);

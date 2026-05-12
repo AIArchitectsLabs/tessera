@@ -11,6 +11,7 @@ import type {
   AgentProfile,
   AgentProviderConfig,
   AgentRuntimeContext,
+  ModelRuntimeCredential,
   ShellToolCall,
   SkillDetail,
   SkillSummary,
@@ -65,7 +66,7 @@ export type PiSessionFactory = (options: PiSessionFactoryOptions) => Promise<PiS
 export interface RunPiTaskTurnOptions {
   agent?: AgentProfile;
   conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
-  credential?: string;
+  credential?: ModelRuntimeCredential | string;
   factory?: PiSessionFactory;
   onActivity?: (activity: string) => void;
   onToolEnd?: (tool: { name: string; result: unknown }) => void;
@@ -93,7 +94,10 @@ export interface PiTaskTurnResult {
   usage?: TokenUsage;
 }
 
+type FetchLike = typeof fetch;
+
 function providerBaseUrl(provider: AgentProviderConfig): string {
+  if (provider.provider === "openai-codex") return "https://chatgpt.com/backend-api/codex";
   if (provider.provider === "anthropic") return "https://api.anthropic.com";
   if (provider.provider === "openrouter") return "https://openrouter.ai/api/v1";
   if (provider.provider === "local") return provider.baseUrl;
@@ -108,6 +112,7 @@ function providerApi(provider: AgentProviderConfig): string {
 function providerRequiresCredential(provider: AgentProviderConfig): boolean {
   return (
     provider.provider === "openai" ||
+    provider.provider === "openai-codex" ||
     provider.provider === "anthropic" ||
     provider.provider === "openrouter"
   );
@@ -222,6 +227,179 @@ function normalizeTokenUsage(payload: unknown): TokenUsage | undefined {
   return undefined;
 }
 
+function apiKeyFromCredential(credential?: ModelRuntimeCredential | string): string | undefined {
+  if (typeof credential === "string") return credential;
+  if (credential && "apiKey" in credential) return credential.apiKey;
+  return undefined;
+}
+
+function codexCredentialFromCredential(
+  credential?: ModelRuntimeCredential | string
+): Extract<ModelRuntimeCredential, { authType: "codex-oauth" }> | undefined {
+  if (credential && typeof credential === "object" && "authType" in credential) return credential;
+  return undefined;
+}
+
+function outputTextFromCodexResponse(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const record = payload as Record<string, unknown>;
+  if (typeof record.output_text === "string") return record.output_text;
+  const output = record.output;
+  if (!Array.isArray(output)) return "";
+
+  return output
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const content = (item as Record<string, unknown>).content;
+      if (!Array.isArray(content)) return [];
+      return content
+        .map((part) => {
+          if (!part || typeof part !== "object") return "";
+          const value = part as Record<string, unknown>;
+          if (
+            (value.type === "output_text" || value.type === "text") &&
+            typeof value.text === "string"
+          ) {
+            return value.text;
+          }
+          return "";
+        })
+        .filter((text) => text.length > 0);
+    })
+    .join("");
+}
+
+function codexSseEvents(raw: string): Array<Record<string, unknown>> {
+  return raw.split(/\n\n+/).flatMap((chunk) => {
+    const data = chunk
+      .split(/\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") return [];
+    try {
+      const parsed = JSON.parse(data);
+      return parsed && typeof parsed === "object" ? [parsed as Record<string, unknown>] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function codexResponseErrorMessage(event: Record<string, unknown>): string | undefined {
+  if (event.type === "error") {
+    const code = typeof event.code === "string" ? event.code : "unknown";
+    const message = typeof event.message === "string" ? event.message : "Unknown error";
+    return `${code}: ${message}`;
+  }
+  if (event.type !== "response.failed") return undefined;
+  const response = event.response;
+  if (!response || typeof response !== "object") return "Codex response failed";
+  const error = (response as Record<string, unknown>).error;
+  if (!error || typeof error !== "object") return "Codex response failed";
+  const record = error as Record<string, unknown>;
+  const code = typeof record.code === "string" ? record.code : "unknown";
+  const message = typeof record.message === "string" ? record.message : "Unknown error";
+  return `${code}: ${message}`;
+}
+
+function parseCodexSseResponse(raw: string): { payload: unknown; text: string } {
+  const events = codexSseEvents(raw);
+  let deltaText = "";
+  let finalPayload: unknown;
+
+  for (const event of events) {
+    const errorMessage = codexResponseErrorMessage(event);
+    if (errorMessage) throw new Error(errorMessage);
+
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+      deltaText += event.delta;
+      continue;
+    }
+
+    if (
+      event.type === "response.completed" ||
+      event.type === "response.done" ||
+      event.type === "response.incomplete"
+    ) {
+      finalPayload = event.response;
+    }
+  }
+
+  return {
+    payload: finalPayload,
+    text: finalPayload ? outputTextFromCodexResponse(finalPayload) || deltaText : deltaText,
+  };
+}
+
+async function codexErrorDetail(response: Response): Promise<string> {
+  const raw = await response.text().catch(() => "");
+  if (!raw.trim()) return "";
+  try {
+    const payload = JSON.parse(raw) as {
+      error?: { message?: unknown };
+      message?: unknown;
+    };
+    const message =
+      typeof payload?.error?.message === "string"
+        ? payload.error.message
+        : typeof payload?.message === "string"
+          ? payload.message
+          : "";
+    if (message) return `: ${message}`;
+  } catch {
+    // Fall through to a short raw response preview.
+  }
+  return `: ${raw.trim().slice(0, 240)}`;
+}
+
+export async function runCodexResponsesTurn(options: {
+  credential: Extract<ModelRuntimeCredential, { authType: "codex-oauth" }>;
+  fetchImpl?: FetchLike;
+  prompt: string;
+  provider: Extract<AgentProviderConfig, { provider: "openai-codex" }>;
+}): Promise<PiTaskTurnResult> {
+  const headers: Record<string, string> = {
+    accept: "text/event-stream",
+    Authorization: `Bearer ${options.credential.accessToken}`,
+    "Content-Type": "application/json",
+    "OpenAI-Beta": "responses=experimental",
+    "User-Agent": "codex_cli_rs/0.0.0 (Tessera)",
+    originator: "codex_cli_rs",
+  };
+  if (options.credential.accountId) {
+    headers["ChatGPT-Account-ID"] = options.credential.accountId;
+  }
+  const response = await (options.fetchImpl ?? fetch)(`${options.credential.baseUrl}/responses`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: options.provider.model,
+      instructions: "You are a helpful assistant.",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: options.prompt }],
+        },
+      ],
+      store: false,
+      stream: true,
+    }),
+  });
+  if (!response.ok) {
+    const detail = await codexErrorDetail(response);
+    throw new Error(`Codex Responses request failed with status ${response.status}${detail}`);
+  }
+  const parsed = parseCodexSseResponse(await response.text());
+  const usage = normalizeTokenUsage(parsed.payload);
+  return {
+    text: parsed.text,
+    boundaryViolations: 0,
+    ...(usage ? { usage } : {}),
+  };
+}
+
 function defaultFactory(): PiSessionFactory {
   return async ({ customTools, model, modelRegistry, workspaceRoot }) => {
     const { session } = await createAgentSession({
@@ -250,8 +428,14 @@ export async function createTesseraModelRegistry(options: {
 
   if (providerRequiresCredential(options.provider) && !options.credential) {
     throw new Error(
-      `${options.provider.provider} is not configured. Add an API key in Settings > Model.`
+      options.provider.provider === "openai-codex"
+        ? "openai-codex is not configured. Sign in with ChatGPT in Settings > Model."
+        : `${options.provider.provider} is not configured. Add an API key in Settings > Model.`
     );
+  }
+
+  if (options.provider.provider === "openai-codex") {
+    throw new Error("Codex OAuth uses the dedicated Responses transport.");
   }
 
   let model = modelRegistry.find(options.provider.provider, options.provider.model);
@@ -500,8 +684,31 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   );
   const customTools = toolDefinitions.filter((tool) => allowedTools.has(tool.name));
 
+  if (options.provider.provider === "openai-codex") {
+    const codexCredential = codexCredentialFromCredential(options.credential);
+    if (!codexCredential) {
+      throw new Error("openai-codex is not configured. Sign in with ChatGPT in Settings > Model.");
+    }
+    const agentInstructions = buildAgentInstructions(options.agent, runtime, {
+      hasTaskChecklistTool: false,
+    });
+    const activeSkills = await activeSkillContent(options.skillRuntime);
+    return runCodexResponsesTurn({
+      credential: codexCredential,
+      prompt: buildPrompt(options.prompt, {
+        ...(agentInstructions ? { agentInstructions } : {}),
+        ...(activeSkills ? { activeSkillContent: activeSkills } : {}),
+        ...(options.conversationHistory !== undefined
+          ? { conversationHistory: options.conversationHistory }
+          : {}),
+      }),
+      provider: options.provider,
+    });
+  }
+
+  const apiKey = apiKeyFromCredential(options.credential);
   const { model, modelRegistry } = await createTesseraModelRegistry({
-    ...(options.credential ? { credential: options.credential } : {}),
+    ...(apiKey ? { credential: apiKey } : {}),
     provider: options.provider,
   });
 

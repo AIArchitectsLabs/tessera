@@ -59,6 +59,17 @@ interface GoogleWorkspaceOAuthClientStatus {
   source: "build" | "bundled" | "missing" | "saved";
 }
 
+interface CodexDeviceCode {
+  deviceAuthId: string;
+  interval: number;
+  userCode: string;
+  verificationUri: string;
+}
+
+type CodexPollResult =
+  | { status: "pending" }
+  | { status: "authorized"; settings: ModelSettingsRead };
+
 const GOOGLE_WORKSPACE_CAPABILITIES = ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"];
 
 async function invokeWithTimeout<T>(
@@ -106,9 +117,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   >([]);
   const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeModelAction, setActiveModelAction] = useState<"remove" | "save" | "test" | null>(
-    null
-  );
+  const [activeModelAction, setActiveModelAction] = useState<
+    "codexSignIn" | "remove" | "save" | "test" | null
+  >(null);
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
     "connect" | "disconnect" | "remove" | "save" | "saveOAuthClient" | "test" | null
   >(null);
@@ -187,6 +198,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const requiresBaseUrl = draft.provider === "local";
   const canSubmit =
     draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
+  const isCodexProvider = selectedProvider === "openai-codex";
   const canRemoveGoogleWorkspaceOAuthClient = googleWorkspaceOAuthClientStatus.source === "saved";
 
   function hydrateFromSettings(
@@ -195,7 +207,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   ) {
     setSettings(loaded);
     setSelectedProvider(provider);
-    setDraft(providerConfigFromSettings(loaded.providers[provider]));
+    const providerSettings = loaded.providers[provider];
+    setDraft(providerConfigFromSettings(providerSettings) ?? defaultDraftForProvider(provider));
     setApiKey("");
   }
 
@@ -258,7 +271,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setSelectedProvider(provider);
     setDraft(
       settings
-        ? providerConfigFromSettings(settings.providers[provider])
+        ? (providerConfigFromSettings(settings.providers[provider]) ??
+            defaultDraftForProvider(provider))
         : defaultDraftForProvider(provider)
     );
     setApiKey("");
@@ -378,6 +392,61 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       setStatus({ message: result.message, tone: result.ok ? "success" : "info" });
+    } catch (error) {
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
+        return;
+      }
+      setStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current && modelRequestIdRef.current === requestId) {
+        setActiveModelAction(null);
+      }
+    }
+  }
+
+  async function handleCodexSignIn() {
+    if (modelBusy || !isCodexProvider) return;
+    const requestId = ++modelRequestIdRef.current;
+    setActiveModelAction("codexSignIn");
+    setStatus({ message: "Starting ChatGPT sign-in...", tone: "info" });
+    try {
+      const deviceCode = await invokeWithTimeout<CodexDeviceCode>("model_codex_oauth_device_code");
+      if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
+        return;
+      }
+      setStatus({
+        message: `Open ${deviceCode.verificationUri} and enter code ${deviceCode.userCode}. Waiting for approval...`,
+        tone: "info",
+      });
+      for (let attempt = 0; attempt < 90; attempt += 1) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(3, deviceCode.interval) * 1_000)
+        );
+        if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
+          return;
+        }
+        const result = await invokeWithTimeout<CodexPollResult>("model_codex_oauth_poll", {
+          deviceAuthId: deviceCode.deviceAuthId,
+          userCode: deviceCode.userCode,
+        });
+        if (result.status === "authorized") {
+          if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
+            return;
+          }
+          hydrateFromSettings(result.settings, "openai-codex");
+          setStatus({ message: "ChatGPT sign-in connected", tone: "success" });
+          return;
+        }
+      }
+      if (mountedRef.current && modelRequestIdRef.current === requestId) {
+        setStatus({
+          message: "ChatGPT sign-in is still pending. Start sign-in again when you are ready.",
+          tone: "info",
+        });
+      }
     } catch (error) {
       if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
@@ -806,7 +875,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               <div className="min-w-0">
                 <h1 className="text-xl font-semibold text-foreground">Model</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Global provider defaults for Tessera.
+                  Choose the app default provider and model. Agents can inherit this setting or use
+                  their own model override.
                 </p>
               </div>
             </div>
@@ -816,6 +886,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                 <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
                   Providers
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  The provider marked App default is used by agents set to inherit the Settings
+                  default.
+                </p>
                 <div className="grid gap-3 md:grid-cols-2">
                   {MODEL_PROVIDERS.map((provider) => {
                     const providerSettings = settings?.providers[provider];
@@ -840,12 +914,18 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                           </span>
                           {selected && (
                             <span className="rounded-full bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              Selected
+                              App default
                             </span>
                           )}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {providerSettings?.hasCredential ? "Saved key present" : "No saved key"}
+                          {provider === "openai-codex"
+                            ? providerSettings?.hasCredential
+                              ? "ChatGPT connected"
+                              : "Sign in required"
+                            : providerSettings?.hasCredential
+                              ? "Saved key present"
+                              : "No saved key"}
                         </div>
                       </button>
                     );
@@ -886,17 +966,29 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   </label>
                 )}
 
-                <label className="block">
-                  <span className="text-sm font-medium text-foreground">API key</span>
-                  <input
-                    className="input mt-2"
-                    type="password"
-                    value={apiKey}
-                    disabled={modelBusy}
-                    placeholder={credentialPlaceholder}
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                </label>
+                {isCodexProvider ? (
+                  <div className="rounded-xl border border-border bg-secondary px-4 py-3">
+                    <div className="text-sm font-medium text-foreground">ChatGPT sign-in</div>
+                    <div className="mt-1 text-sm text-muted-foreground">
+                      Use your ChatGPT Codex subscription without storing an OpenAI API key.
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {hasCredential ? "ChatGPT connected" : "No ChatGPT session connected"}
+                    </div>
+                  </div>
+                ) : (
+                  <label className="block">
+                    <span className="text-sm font-medium text-foreground">API key</span>
+                    <input
+                      className="input mt-2"
+                      type="password"
+                      value={apiKey}
+                      disabled={modelBusy}
+                      placeholder={credentialPlaceholder}
+                      onChange={(event) => setApiKey(event.target.value)}
+                    />
+                  </label>
+                )}
 
                 {status && (
                   <div
@@ -922,6 +1014,21 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     )}
                     Save
                   </Button>
+                  {isCodexProvider && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleCodexSignIn}
+                      disabled={modelBusy || !canSubmit}
+                    >
+                      {activeModelAction === "codexSignIn" ? (
+                        <Loader2 size={16} className="animate-spin" />
+                      ) : (
+                        <KeyRound size={16} />
+                      )}
+                      Sign in with ChatGPT
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     variant="outline"
@@ -946,7 +1053,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     ) : (
                       <Trash2 size={16} />
                     )}
-                    Remove key
+                    {isCodexProvider ? "Disconnect" : "Remove key"}
                   </Button>
                 </div>
               </div>
@@ -1442,14 +1549,20 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 }
 
 function providerConfigFromSettings(
-  settings: ModelSettingsRead["providers"][ModelProvider]
-): AgentProviderConfig {
+  settings: ModelSettingsRead["providers"][ModelProvider] | undefined
+): AgentProviderConfig | undefined {
+  if (!settings) return undefined;
   switch (settings.provider) {
     case "openai":
       return {
         provider: "openai",
         model: settings.model,
         apiKeyEnv: "OPENAI_API_KEY",
+      };
+    case "openai-codex":
+      return {
+        provider: "openai-codex",
+        model: settings.model,
       };
     case "anthropic":
       return {

@@ -45,6 +45,15 @@ describe("createAgentModel", () => {
     expect(model.id).toBe("openai/gpt-5.4");
   });
 
+  test("does not route Codex OAuth through the standard OpenAI-compatible model path", () => {
+    const config = AgentProviderConfigSchema.parse({
+      provider: "openai-codex",
+      model: "gpt-5.4",
+    });
+
+    expect(() => createAgentModel(config)).toThrow("Codex OAuth requires a dedicated transport");
+  });
+
   test("creates a local OpenAI-compatible model", () => {
     const config = AgentProviderConfigSchema.parse({
       provider: "local",

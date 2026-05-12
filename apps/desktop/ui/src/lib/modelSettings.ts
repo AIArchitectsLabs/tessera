@@ -1,11 +1,19 @@
 import type { AgentProviderConfig, ModelProvider } from "@tessera/contracts";
 
-export const MODEL_PROVIDERS: ModelProvider[] = ["openai", "anthropic", "openrouter", "local"];
+export const MODEL_PROVIDERS: ModelProvider[] = [
+  "openai",
+  "openai-codex",
+  "anthropic",
+  "openrouter",
+  "local",
+];
 
 export function providerLabel(provider: ModelProvider): string {
   switch (provider) {
     case "openai":
       return "OpenAI";
+    case "openai-codex":
+      return "OpenAI Codex";
     case "anthropic":
       return "Anthropic";
     case "openrouter":
@@ -18,6 +26,8 @@ export function providerLabel(provider: ModelProvider): string {
 export function modelPlaceholderForProvider(provider: ModelProvider): string {
   switch (provider) {
     case "openai":
+      return "gpt-5.4";
+    case "openai-codex":
       return "gpt-5.4";
     case "anthropic":
       return "claude-sonnet-4-6";
@@ -35,6 +45,11 @@ export function defaultDraftForProvider(provider: ModelProvider): AgentProviderC
         provider: "openai",
         model: modelPlaceholderForProvider("openai"),
         apiKeyEnv: "OPENAI_API_KEY",
+      };
+    case "openai-codex":
+      return {
+        provider: "openai-codex",
+        model: modelPlaceholderForProvider("openai-codex"),
       };
     case "anthropic":
       return {

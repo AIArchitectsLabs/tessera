@@ -46,7 +46,9 @@ installDom();
 type InvokeCall = {
   command: string;
   args?: {
+    deviceAuthId?: string;
     request?: Record<string, unknown>;
+    userCode?: string;
   };
 };
 
@@ -58,6 +60,11 @@ const modelSettings: ModelSettingsRead = {
     openai: {
       provider: "openai",
       model: "gpt-4.1",
+      hasCredential: false,
+    },
+    "openai-codex": {
+      provider: "openai-codex",
+      model: "gpt-5.4",
       hasCredential: false,
     },
     anthropic: {
@@ -170,6 +177,15 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
   switch (command) {
     case "model_settings_get":
       return modelSettings;
+    case "model_codex_oauth_device_code":
+      return {
+        deviceAuthId: "device-123",
+        interval: 60,
+        userCode: "ABCD-EFGH",
+        verificationUri: "https://auth.openai.com/codex/device",
+      };
+    case "model_codex_oauth_poll":
+      return { status: "pending" };
     case "integration_settings_get":
       return integrationSettings;
     case "google_workspace_oauth_client_status":
@@ -273,6 +289,12 @@ const { SettingsView } = await import("./SettingsView");
 
 beforeEach(() => {
   invokeCalls.length = 0;
+  modelSettings.selectedProvider = "openai";
+  modelSettings.providers["openai-codex"] = {
+    provider: "openai-codex",
+    model: "gpt-5.4",
+    hasCredential: false,
+  };
   integrationSettings = initialIntegrationSettings();
   googleWorkspaceOAuthClientStatus = {
     hasClient: false,
@@ -307,6 +329,17 @@ async function renderIntegrationsView() {
   return view;
 }
 
+async function renderModelView() {
+  const view = render(React.createElement(SettingsView, { onClose: () => undefined }));
+
+  await waitFor(() => {
+    expect(invokeCalls.some((call) => call.command === "model_settings_get")).toBe(true);
+  });
+
+  await view.findByRole("heading", { name: "Model" });
+  return view;
+}
+
 function searchModeSection(view: ReturnType<typeof render>) {
   const heading = view.getByText("Search mode");
   return heading.closest("section");
@@ -328,6 +361,57 @@ function setInputValue(input: Element, value: string) {
   setter.call(input, value);
   fireEvent.change(input, { bubbles: true });
 }
+
+describe("SettingsView model flow", () => {
+  test("legacy settings missing the selected provider fall back without crashing", async () => {
+    modelSettings.selectedProvider = "openai-codex";
+    Reflect.deleteProperty(
+      modelSettings.providers as unknown as Record<string, unknown>,
+      "openai-codex"
+    );
+
+    const view = await renderModelView();
+
+    expect(view.getByText("ChatGPT sign-in")).toBeTruthy();
+    expect(view.queryByText("API key")).toBeNull();
+  });
+
+  test("Codex selected from saved settings never renders API key controls", async () => {
+    modelSettings.selectedProvider = "openai-codex";
+    const view = await renderModelView();
+
+    expect(view.getByText("ChatGPT sign-in")).toBeTruthy();
+    expect(view.queryByText("API key")).toBeNull();
+    expect(view.getByRole("button", { name: "Sign in with ChatGPT" })).toBeTruthy();
+  });
+
+  test("Codex provider uses ChatGPT sign-in controls instead of API key input", async () => {
+    const view = await renderModelView();
+
+    fireEvent.click(view.getByRole("button", { name: /openai codex/i }));
+
+    expect(view.getByText("ChatGPT sign-in")).toBeTruthy();
+    expect(view.getByText("No ChatGPT session connected")).toBeTruthy();
+    expect(view.queryByText("API key")).toBeNull();
+    expect(view.getByRole("button", { name: "Sign in with ChatGPT" })).toBeTruthy();
+  });
+
+  test("starting Codex sign-in requests a device code", async () => {
+    const view = await renderModelView();
+
+    fireEvent.click(view.getByRole("button", { name: /openai codex/i }));
+    fireEvent.click(view.getByRole("button", { name: "Sign in with ChatGPT" }));
+
+    await waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "model_codex_oauth_device_code")).toBe(
+        true
+      );
+    });
+    await waitFor(() => {
+      expect(view.getByText(/ABCD-EFGH/)).toBeTruthy();
+    });
+  });
+});
 
 describe("SettingsView search flow", () => {
   test("switching search mode to Tavily updates selected search provider state", async () => {

@@ -9,6 +9,7 @@ import {
   type PiSessionFactory,
   type PiSessionLike,
   createTesseraModelRegistry,
+  runCodexResponsesTurn,
   runPiTaskTurn,
 } from "./pi-session.js";
 
@@ -866,5 +867,136 @@ describe("createTesseraModelRegistry", () => {
 
     expect(result.model).toBeDefined();
     await expect(result.modelRegistry.authStorage.getApiKey("local")).resolves.toBeUndefined();
+  });
+});
+
+describe("runCodexResponsesTurn", () => {
+  test("calls ChatGPT Codex Responses endpoint with OAuth headers and extracts output text", async () => {
+    const calls: Array<{ url: string; init: Parameters<typeof fetch>[1] | undefined }> = [];
+    const fakeFetch = (async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(
+        [
+          'data: {"type":"response.output_text.delta","delta":"Codex "}',
+          'data: {"type":"response.output_text.delta","delta":"response"}',
+          `data: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              output: [
+                {
+                  content: [
+                    {
+                      type: "output_text",
+                      text: "Codex response",
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 4,
+                output_tokens: 2,
+                total_tokens: 6,
+              },
+            },
+          })}`,
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }
+      );
+    }) as typeof fetch;
+
+    const result = await runCodexResponsesTurn({
+      credential: {
+        authType: "codex-oauth",
+        accessToken: "access-token",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        accountId: "acct_test",
+      },
+      fetchImpl: fakeFetch,
+      prompt: "Reply OK",
+      provider: { provider: "openai-codex", model: "gpt-5.4" },
+    });
+
+    expect(result).toEqual({
+      text: "Codex response",
+      boundaryViolations: 0,
+      usage: {
+        inputTokens: 4,
+        outputTokens: 2,
+        totalTokens: 6,
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.headers).toMatchObject({
+      Authorization: "Bearer access-token",
+      "ChatGPT-Account-ID": "acct_test",
+      originator: "codex_cli_rs",
+    });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
+      model: "gpt-5.4",
+      instructions: "You are a helpful assistant.",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Reply OK" }],
+        },
+      ],
+      store: false,
+      stream: true,
+    });
+  });
+
+  test("includes Codex error details when the Responses endpoint rejects a request", async () => {
+    const fakeFetch = (async () =>
+      Response.json(
+        {
+          error: {
+            message: "Invalid input shape",
+          },
+        },
+        { status: 400 }
+      )) as unknown as typeof fetch;
+
+    await expect(
+      runCodexResponsesTurn({
+        credential: {
+          authType: "codex-oauth",
+          accessToken: "access-token",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          accountId: "acct_test",
+        },
+        fetchImpl: fakeFetch,
+        prompt: "Reply OK",
+        provider: { provider: "openai-codex", model: "gpt-5.4" },
+      })
+    ).rejects.toThrow("Codex Responses request failed with status 400: Invalid input shape");
+  });
+
+  test("omits ChatGPT account header when the OAuth token has no account id", async () => {
+    const calls: Array<{ url: string; init: Parameters<typeof fetch>[1] | undefined }> = [];
+    const fakeFetch = (async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response('data: {"type":"response.completed","response":{"output":[]}}\n\n');
+    }) as typeof fetch;
+
+    await runCodexResponsesTurn({
+      credential: {
+        authType: "codex-oauth",
+        accessToken: "access-token",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
+      fetchImpl: fakeFetch,
+      prompt: "Reply OK",
+      provider: { provider: "openai-codex", model: "gpt-5.4" },
+    });
+
+    expect(calls[0]?.init?.headers).not.toHaveProperty("ChatGPT-Account-ID");
   });
 });

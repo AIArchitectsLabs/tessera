@@ -2,6 +2,7 @@ import type {
   AgentProfile,
   AgentProviderConfig,
   AgentRuntimeContext,
+  ModelRuntimeCredential,
   TaskEvent,
   TaskExecutionConfig,
   TaskSummary,
@@ -21,12 +22,12 @@ import { createTesseraSkillRegistry } from "./skill-registry.js";
 import type { TaskStore } from "./task-store.js";
 
 export interface RunTaskTurnOptions {
-  credential?: string;
+  credential?: ModelRuntimeCredential | string;
   execution?: TaskExecutionConfig;
   piRunner?: (options: {
     agent?: AgentProfile;
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
-    credential?: string;
+    credential?: ModelRuntimeCredential | string;
     onActivity?: (activity: string) => void;
     onToolEnd?: (tool: { name: string; result: unknown }) => void;
     onToolStart?: (tool: { name: string; args: unknown }) => void;
@@ -159,7 +160,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const { store, taskId, userTurnId, agentTurnId, publish } = opts;
   const delayMs = opts.delayMs ?? 120;
   const provider = opts.execution?.provider ?? opts.provider ?? DEFAULT_PROVIDER;
-  const credential = opts.execution?.credential?.apiKey ?? opts.credential;
+  const credential = opts.execution?.credential ?? opts.credential;
   const piRunner = opts.piRunner ?? runPiTaskTurn;
   const shell = opts.cli ? createSpawnShellExecutor(opts.cli) : undefined;
 

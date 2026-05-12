@@ -156,6 +156,7 @@ const modelSettings: ModelSettingsRead = {
   selectedProvider: "openai",
   providers: {
     openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
+    "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
     local: {
@@ -335,6 +336,12 @@ function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
 beforeEach(() => {
   invoke.mockClear();
   hasSavedPreference = false;
+  modelSettings.selectedProvider = "openai";
+  modelSettings.providers["openai-codex"] = {
+    provider: "openai-codex",
+    model: "gpt-5.4",
+    hasCredential: false,
+  };
 });
 
 afterEach(() => {
@@ -349,6 +356,20 @@ describe("PlaybooksView", () => {
       expect(view.getByText("Workspace")).toBeTruthy();
       expect(view.getByText("workspace")).toBeTruthy();
       expect(view.getByText("tmp/workspace")).toBeTruthy();
+    });
+  });
+
+  test("does not crash when legacy model settings miss the selected provider", async () => {
+    modelSettings.selectedProvider = "openai-codex";
+    Reflect.deleteProperty(
+      modelSettings.providers as unknown as Record<string, unknown>,
+      "openai-codex"
+    );
+
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Sales Meeting Brief").length).toBeGreaterThan(0);
     });
   });
 

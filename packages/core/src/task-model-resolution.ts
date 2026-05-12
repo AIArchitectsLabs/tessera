@@ -3,6 +3,7 @@ import type {
   AgentProviderConfig,
   ModelProvider,
   ModelProviderSettings,
+  ModelRuntimeCredential,
   ModelSettingsRead,
   TaskExecutionConfig,
 } from "@tessera/contracts";
@@ -37,7 +38,7 @@ export const DEFAULT_AGENT_PROFILE: AgentProfile = {
   updatedAt: now,
 };
 
-function apiKeyEnvFor(provider: Exclude<ModelProvider, "local">): string {
+function apiKeyEnvFor(provider: Exclude<ModelProvider, "local" | "openai-codex">): string {
   if (provider === "anthropic") return "ANTHROPIC_API_KEY";
   if (provider === "openrouter") return "OPENROUTER_API_KEY";
   return "OPENAI_API_KEY";
@@ -52,6 +53,13 @@ function providerSettingsToConfig(settings: ModelProviderSettings): AgentProvide
     };
   }
 
+  if (settings.provider === "openai-codex") {
+    return {
+      provider: "openai-codex",
+      model: settings.model,
+    };
+  }
+
   return {
     provider: settings.provider,
     model: settings.model,
@@ -62,6 +70,7 @@ function providerSettingsToConfig(settings: ModelProviderSettings): AgentProvide
 function requiresCredential(provider: AgentProviderConfig): boolean {
   return (
     provider.provider === "openai" ||
+    provider.provider === "openai-codex" ||
     provider.provider === "anthropic" ||
     provider.provider === "openrouter"
   );
@@ -69,7 +78,7 @@ function requiresCredential(provider: AgentProviderConfig): boolean {
 
 export function resolveTaskExecutionConfig(options: {
   agent?: AgentProfile;
-  credential?: string;
+  credential?: ModelRuntimeCredential | string;
   modelSettings: ModelSettingsRead;
 }): TaskExecutionConfig {
   const agent = options.agent ?? DEFAULT_AGENT_PROFILE;
@@ -88,6 +97,13 @@ export function resolveTaskExecutionConfig(options: {
     agent,
     runtime: compileAgentRuntimeContext(agent),
     provider,
-    ...(options.credential ? { credential: { apiKey: options.credential } } : {}),
+    ...(options.credential
+      ? {
+          credential:
+            typeof options.credential === "string"
+              ? { apiKey: options.credential }
+              : options.credential,
+        }
+      : {}),
   };
 }

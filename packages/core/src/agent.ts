@@ -5,9 +5,11 @@ import type {
   AgentToolResultSummary,
   AgentTurnRequest,
   AgentTurnResult,
+  ModelRuntimeCredential,
   PermissionDecision,
 } from "@tessera/contracts";
 import { createAgentModel, resolveApiKey } from "./model.js";
+import { runCodexResponsesTurn } from "./pi-session.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
 import { type WorkspaceCliExecutor, createTesseraTools, summarizeToolResult } from "./tools.js";
 
@@ -44,6 +46,18 @@ function statusFrom(
   return "completed";
 }
 
+function apiKeyFromCredential(credential?: ModelRuntimeCredential): string | undefined {
+  if (credential && "apiKey" in credential) return credential.apiKey;
+  return undefined;
+}
+
+function codexCredentialFromCredential(
+  credential?: ModelRuntimeCredential
+): Extract<ModelRuntimeCredential, { authType: "codex-oauth" }> | undefined {
+  if (credential && "authType" in credential) return credential;
+  return undefined;
+}
+
 export interface ExecuteAgentTurnOptions {
   cli: WorkspaceCliExecutor;
   request: AgentTurnRequest;
@@ -51,8 +65,7 @@ export interface ExecuteAgentTurnOptions {
 
 export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promise<AgentTurnResult> {
   const { request, cli } = options;
-  const model = createAgentModel(request.provider);
-  const apiKey = resolveApiKey(request.provider, request.credential?.apiKey);
+  const apiKey = resolveApiKey(request.provider, apiKeyFromCredential(request.credential));
   const permissionDecisions: PermissionDecision[] = [];
   const toolResults: AgentToolResultSummary[] = [];
   let messages: AgentMessageSummary[] = [];
@@ -61,17 +74,59 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
   if (
     (request.provider.provider === "openai" ||
       request.provider.provider === "anthropic" ||
-      request.provider.provider === "openrouter") &&
-    !apiKey
+      request.provider.provider === "openrouter" ||
+      request.provider.provider === "openai-codex") &&
+    !apiKey &&
+    !codexCredentialFromCredential(request.credential)
   ) {
     return {
       status: "error",
       messages,
       toolResults,
       permissionDecisions,
-      error: `${request.provider.provider} is not configured. Add an API key in Settings > Model.`,
+      error:
+        request.provider.provider === "openai-codex"
+          ? "openai-codex is not configured. Sign in with ChatGPT in Settings > Model."
+          : `${request.provider.provider} is not configured. Add an API key in Settings > Model.`,
     };
   }
+
+  if (request.provider.provider === "openai-codex") {
+    const credential = codexCredentialFromCredential(request.credential);
+    if (!credential) {
+      return {
+        status: "error",
+        messages,
+        toolResults,
+        permissionDecisions,
+        error: "openai-codex is not configured. Sign in with ChatGPT in Settings > Model.",
+      };
+    }
+    try {
+      const result = await runCodexResponsesTurn({
+        credential,
+        prompt: request.prompt,
+        provider: request.provider,
+      });
+      return {
+        status: "completed",
+        messages: [{ role: "assistant", text: result.text }],
+        toolResults,
+        permissionDecisions,
+      };
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      return {
+        status: "error",
+        messages,
+        toolResults,
+        permissionDecisions,
+        error: message,
+      };
+    }
+  }
+
+  const model = createAgentModel(request.provider);
 
   const agent = new Agent({
     initialState: {

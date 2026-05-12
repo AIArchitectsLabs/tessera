@@ -15,6 +15,7 @@ describe("model settings contracts", () => {
         openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
         anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
         openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
+        "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
         local: {
           provider: "local",
           model: "llama3.2",
@@ -26,6 +27,7 @@ describe("model settings contracts", () => {
 
     expect(parsed.providers.openai.hasCredential).toBe(true);
     expect("apiKey" in parsed.providers.openai).toBe(false);
+    expect(parsed.providers["openai-codex"].provider).toBe("openai-codex");
   });
 
   test("accepts a save request with an optional replacement key", () => {
@@ -36,7 +38,7 @@ describe("model settings contracts", () => {
       credential: { apiKey: "sk-test" },
     });
 
-    expect(parsed.credential?.apiKey).toBe("sk-test");
+    expect(parsed.credential).toMatchObject({ apiKey: "sk-test" });
     expect(parsed.hasExistingCredential).toBe(true);
   });
 
@@ -61,8 +63,8 @@ describe("model settings contracts", () => {
   });
 
   test("accepts credential delete request for one provider", () => {
-    const parsed = ModelCredentialDeleteRequestSchema.parse({ provider: "anthropic" });
-    expect(parsed.provider).toBe("anthropic");
+    const parsed = ModelCredentialDeleteRequestSchema.parse({ provider: "openai-codex" });
+    expect(parsed.provider).toBe("openai-codex");
   });
 
   test("agent turn credential is separate from provider config", () => {
@@ -72,7 +74,26 @@ describe("model settings contracts", () => {
       credential: { apiKey: "sk-test" },
     });
 
-    expect(parsed.credential?.apiKey).toBe("sk-test");
+    expect(parsed.credential).toMatchObject({ apiKey: "sk-test" });
     expect("apiKey" in parsed.provider).toBe(false);
+  });
+
+  test("agent turn accepts Codex OAuth runtime credentials without API key shape", () => {
+    const parsed = AgentTurnRequestSchema.parse({
+      prompt: "Reply OK",
+      provider: { provider: "openai-codex", model: "gpt-5.4" },
+      credential: {
+        authType: "codex-oauth",
+        accessToken: "access-token",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        accountId: "acct_test",
+      },
+    });
+
+    expect(parsed.credential).toMatchObject({
+      authType: "codex-oauth",
+      accessToken: "access-token",
+      accountId: "acct_test",
+    });
   });
 });

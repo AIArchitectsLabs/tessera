@@ -1,10 +1,19 @@
 import { Button } from "@/components/ui/button";
+import {
+  MODEL_PROVIDERS,
+  defaultDraftForProvider,
+  modelPlaceholderForProvider,
+  providerLabel,
+} from "@/lib/modelSettings";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AGENT_PROFILE_TEMPLATES,
+  type AgentModelSelection,
   type AgentProfile,
   type AgentProfileListResult,
+  type AgentProviderConfig,
+  type ModelProvider,
   type SkillListResult,
   type SkillSummary,
   TOOL_POLICY_PRESET_DETAILS,
@@ -17,6 +26,7 @@ type DraftState = {
   templateId: string | undefined;
   name: string;
   description: string;
+  model: AgentModelSelection;
   instructions: string;
   soul: string;
   userContext: string;
@@ -30,6 +40,7 @@ function draftFromProfile(profile: AgentProfile | null): DraftState {
     templateId: profile?.templateId,
     name: profile?.name ?? "",
     description: profile?.description ?? "",
+    model: profile?.model ?? { mode: "default" },
     instructions: profile?.instructions ?? "",
     soul: profile?.soul ?? "",
     userContext: profile?.userContext ?? "",
@@ -46,6 +57,7 @@ function draftFromTemplate(templateId: string): DraftState {
       templateId,
       name: "",
       description: "",
+      model: { mode: "default" },
       instructions: "",
       soul: "",
       userContext: "",
@@ -59,6 +71,7 @@ function draftFromTemplate(templateId: string): DraftState {
     templateId: template.id,
     name: template.profile.name,
     description: template.profile.description ?? "",
+    model: { mode: "default" },
     instructions: template.profile.instructions,
     soul: template.profile.soul,
     userContext: template.profile.userContext,
@@ -66,6 +79,15 @@ function draftFromTemplate(templateId: string): DraftState {
     toolPolicyPreset: template.profile.toolPolicyPreset,
     memoryDefaults: template.profile.memoryDefaults,
   };
+}
+
+function modelSummary(model: AgentModelSelection): string {
+  if (model.mode === "default") return "Inherits Settings default";
+  return `${providerLabel(model.provider.provider)} / ${model.provider.model}`;
+}
+
+function modelProvider(model: AgentModelSelection): AgentProviderConfig {
+  return model.mode === "override" ? model.provider : defaultDraftForProvider("openai");
 }
 
 export function AgentSettingsView() {
@@ -133,6 +155,9 @@ export function AgentSettingsView() {
               <div className="text-sm font-medium">{profile.name}</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 {TOOL_POLICY_PRESET_DETAILS[profile.toolPolicyPreset].label}
+              </div>
+              <div className="mt-1 truncate text-xs text-muted-foreground">
+                {modelSummary(profile.model)}
               </div>
             </button>
           ))}
@@ -221,6 +246,7 @@ function AgentEditor({
           }
         : {}),
       instructions: draft.instructions.trim(),
+      model: draft.model,
       soul: draft.soul.trim(),
       userContext: draft.userContext.trim(),
       skills: draft.skills,
@@ -238,7 +264,6 @@ function AgentEditor({
         await invoke("agent_profile_create", {
           request: {
             ...request,
-            model: { mode: "default" },
           },
         });
       }
@@ -361,10 +386,18 @@ function AgentEditor({
             onChange={(event) => updateDraft("description", event.target.value)}
           />
           {isDefaultProfile && (
-            <p className="mt-2 text-xs text-muted-foreground">Model: global workspace default.</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Model: inherits the Settings default.
+            </p>
           )}
         </label>
       </div>
+
+      <ModelField
+        model={draft.model}
+        disabled={busy}
+        onChange={(model) => updateDraft("model", model)}
+      />
 
       <label className="block">
         <span className="text-sm font-medium text-foreground">Tool Policy</span>
@@ -469,6 +502,148 @@ function sourceLabel(skill: SkillSummary): string {
   if (skill.source === "curated") return "Built-in";
   if (skill.source === "workspace") return "Workspace";
   return "User";
+}
+
+function ModelField({
+  model,
+  disabled,
+  onChange,
+}: {
+  model: AgentModelSelection;
+  disabled: boolean;
+  onChange: (model: AgentModelSelection) => void;
+}) {
+  const provider = modelProvider(model);
+
+  function updateProvider(nextProvider: ModelProvider) {
+    onChange({
+      mode: "override",
+      provider: defaultDraftForProvider(nextProvider),
+    });
+  }
+
+  function updateModel(value: string) {
+    onChange({
+      mode: "override",
+      provider: {
+        ...provider,
+        model: value,
+      } as AgentProviderConfig,
+    });
+  }
+
+  function updateBaseUrl(value: string) {
+    if (provider.provider !== "local") return;
+    onChange({
+      mode: "override",
+      provider: {
+        ...provider,
+        baseUrl: value,
+      },
+    });
+  }
+
+  return (
+    <section className="rounded-2xl border border-border bg-secondary/20 p-4">
+      <div className="text-sm font-medium text-foreground">Model</div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Choose whether this agent inherits Settings or always uses a specific provider and model.
+      </p>
+
+      <div className="mt-4 grid gap-2 md:grid-cols-2">
+        <label className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2">
+          <input
+            type="radio"
+            aria-label="Inherit Settings default"
+            className="mt-1"
+            checked={model.mode === "default"}
+            disabled={disabled}
+            onChange={() => onChange({ mode: "default" })}
+          />
+          <span>
+            <span className="block text-sm font-medium text-foreground">
+              Inherit Settings default
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Uses the app default from Settings - Model.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2">
+          <input
+            type="radio"
+            aria-label="Use custom model"
+            className="mt-1"
+            checked={model.mode === "override"}
+            disabled={disabled}
+            onChange={() =>
+              onChange({
+                mode: "override",
+                provider,
+              })
+            }
+          />
+          <span>
+            <span className="block text-sm font-medium text-foreground">Use custom model</span>
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Credentials still come from Settings.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {model.mode === "override" && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="text-sm font-medium text-foreground">Provider</span>
+            <select
+              className="input mt-2"
+              value={provider.provider}
+              disabled={disabled}
+              onChange={(event) => updateProvider(event.target.value as ModelProvider)}
+            >
+              {MODEL_PROVIDERS.map((option) => (
+                <option key={option} value={option}>
+                  {providerLabel(option)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block">
+            <span className="text-sm font-medium text-foreground">Model</span>
+            <input
+              className="input mt-2"
+              value={provider.model}
+              disabled={disabled}
+              placeholder={modelPlaceholderForProvider(provider.provider)}
+              onInput={(event) => updateModel(event.currentTarget.value)}
+              onChange={(event) => updateModel(event.target.value)}
+            />
+          </label>
+
+          {provider.provider === "local" && (
+            <label className="block md:col-span-2">
+              <span className="text-sm font-medium text-foreground">Base URL</span>
+              <input
+                className="input mt-2"
+                value={provider.baseUrl}
+                disabled={disabled}
+                placeholder="http://127.0.0.1:11434/v1"
+                onInput={(event) => updateBaseUrl(event.currentTarget.value)}
+                onChange={(event) => updateBaseUrl(event.target.value)}
+              />
+            </label>
+          )}
+
+          <p className="text-xs text-muted-foreground md:col-span-2">
+            This agent will use {providerLabel(provider.provider)} / {provider.model || "model"}.
+            Provider credentials are managed in Settings - Model.
+          </p>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function SkillPicker({

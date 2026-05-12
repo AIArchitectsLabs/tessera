@@ -92,6 +92,10 @@ const WORKFLOW_DB_PATH =
 const TASK_DB_PATH =
   process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
 const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
+const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
+const CODEX_OAUTH_TOKEN_URL = `${CODEX_OAUTH_ISSUER}/oauth/token`;
+const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
@@ -236,6 +240,12 @@ function validateWebSocket(req: Request): Response | null {
   // Origin allowlist on WS upgrades — prevents cross-site WebSocket hijacking
   if (req.headers.get("origin") !== TAURI_ORIGIN) return forbidden();
   return null;
+}
+
+function runtimeApiKeyCredential(credential: unknown): string | undefined {
+  if (!credential || typeof credential !== "object" || !("apiKey" in credential)) return undefined;
+  const apiKey = (credential as { apiKey?: unknown }).apiKey;
+  return typeof apiKey === "string" && apiKey.trim().length > 0 ? apiKey : undefined;
 }
 
 function capOutput(text: string): string {
@@ -448,6 +458,238 @@ async function handleAgentTurn(req: Request): Promise<Response> {
   }
 }
 
+type FetchLike = typeof fetch;
+
+export async function requestCodexDeviceCode(fetchImpl: FetchLike = fetch): Promise<{
+  deviceAuthId: string;
+  interval: number;
+  userCode: string;
+  verificationUri: string;
+}> {
+  const response = await fetchImpl(`${CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/usercode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: CODEX_OAUTH_CLIENT_ID }),
+  });
+  if (!response.ok) {
+    throw new Error(`Codex device-code request failed with status ${response.status}`);
+  }
+  const payload = (await response.json()) as Record<string, unknown>;
+  const userCode = typeof payload.user_code === "string" ? payload.user_code : "";
+  const deviceAuthId = typeof payload.device_auth_id === "string" ? payload.device_auth_id : "";
+  if (!userCode || !deviceAuthId) {
+    throw new Error("Codex device-code response was missing required fields");
+  }
+  const rawInterval =
+    typeof payload.interval === "number"
+      ? payload.interval
+      : Number.parseInt(String(payload.interval ?? "5"), 10);
+  return {
+    deviceAuthId,
+    interval: Number.isFinite(rawInterval) ? Math.max(3, rawInterval) : 5,
+    userCode,
+    verificationUri: `${CODEX_OAUTH_ISSUER}/codex/device`,
+  };
+}
+
+export async function pollCodexDeviceToken(
+  input: { deviceAuthId: string; userCode: string },
+  fetchImpl: FetchLike = fetch
+): Promise<
+  | { status: "pending" }
+  | {
+      status: "authorized";
+      credential: {
+        authMode: "chatgpt";
+        baseUrl: string;
+        lastRefresh: string;
+        tokens: { accessToken: string; refreshToken: string };
+      };
+    }
+> {
+  const pollResponse = await fetchImpl(`${CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      device_auth_id: input.deviceAuthId,
+      user_code: input.userCode,
+    }),
+  });
+  if (pollResponse.status === 403 || pollResponse.status === 404) {
+    return { status: "pending" };
+  }
+  if (!pollResponse.ok) {
+    throw new Error(`Codex device-code poll failed with status ${pollResponse.status}`);
+  }
+  const pollPayload = (await pollResponse.json()) as Record<string, unknown>;
+  const authorizationCode =
+    typeof pollPayload.authorization_code === "string" ? pollPayload.authorization_code : "";
+  const codeVerifier =
+    typeof pollPayload.code_verifier === "string" ? pollPayload.code_verifier : "";
+  if (!authorizationCode || !codeVerifier) {
+    throw new Error("Codex device-code poll response was missing exchange fields");
+  }
+
+  const form = new URLSearchParams({
+    client_id: CODEX_OAUTH_CLIENT_ID,
+    code: authorizationCode,
+    code_verifier: codeVerifier,
+    grant_type: "authorization_code",
+    redirect_uri: `${CODEX_OAUTH_ISSUER}/deviceauth/callback`,
+  });
+  const tokenResponse = await fetchImpl(CODEX_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form,
+  });
+  if (!tokenResponse.ok) {
+    throw new Error(`Codex token exchange failed with status ${tokenResponse.status}`);
+  }
+  const tokenPayload = (await tokenResponse.json()) as Record<string, unknown>;
+  const accessToken =
+    typeof tokenPayload.access_token === "string" ? tokenPayload.access_token : "";
+  const refreshToken =
+    typeof tokenPayload.refresh_token === "string" ? tokenPayload.refresh_token : "";
+  if (!accessToken || !refreshToken) {
+    throw new Error("Codex token exchange response was missing tokens");
+  }
+  return {
+    status: "authorized",
+    credential: {
+      authMode: "chatgpt",
+      baseUrl: CODEX_DEFAULT_BASE_URL,
+      lastRefresh: new Date().toISOString(),
+      tokens: { accessToken, refreshToken },
+    },
+  };
+}
+
+export async function refreshCodexOAuthCredential(
+  credential: {
+    authMode: "chatgpt";
+    baseUrl?: string;
+    lastRefresh?: string;
+    tokens: { accessToken: string; refreshToken: string };
+  },
+  fetchImpl: FetchLike = fetch
+): Promise<{
+  authMode: "chatgpt";
+  baseUrl: string;
+  lastRefresh: string;
+  tokens: { accessToken: string; refreshToken: string };
+}> {
+  const form = new URLSearchParams({
+    client_id: CODEX_OAUTH_CLIENT_ID,
+    grant_type: "refresh_token",
+    refresh_token: credential.tokens.refreshToken,
+  });
+  const tokenResponse = await fetchImpl(CODEX_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form,
+  });
+  if (!tokenResponse.ok) {
+    throw new Error(`Codex token refresh failed with status ${tokenResponse.status}`);
+  }
+  const tokenPayload = (await tokenResponse.json()) as Record<string, unknown>;
+  const accessToken =
+    typeof tokenPayload.access_token === "string" ? tokenPayload.access_token : "";
+  const refreshToken =
+    typeof tokenPayload.refresh_token === "string" ? tokenPayload.refresh_token : "";
+  if (!accessToken || !refreshToken) {
+    throw new Error("Codex token refresh response was missing tokens");
+  }
+  return {
+    authMode: "chatgpt",
+    baseUrl: credential.baseUrl ?? CODEX_DEFAULT_BASE_URL,
+    lastRefresh: new Date().toISOString(),
+    tokens: { accessToken, refreshToken },
+  };
+}
+
+async function handleCodexOauthDeviceCode(req: Request): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  try {
+    return Response.json(await requestCodexDeviceCode());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 502 });
+  }
+}
+
+async function handleCodexOauthPoll(req: Request): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (
+    !body ||
+    typeof body !== "object" ||
+    typeof (body as { deviceAuthId?: unknown }).deviceAuthId !== "string" ||
+    typeof (body as { userCode?: unknown }).userCode !== "string"
+  ) {
+    return Response.json({ error: "deviceAuthId and userCode are required" }, { status: 400 });
+  }
+  try {
+    return Response.json(
+      await pollCodexDeviceToken({
+        deviceAuthId: (body as { deviceAuthId: string }).deviceAuthId,
+        userCode: (body as { userCode: string }).userCode,
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 502 });
+  }
+}
+
+async function handleCodexOauthRefresh(req: Request): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (!body || typeof body !== "object") {
+    return Response.json({ error: "Codex credential is required" }, { status: 400 });
+  }
+  const credential = body as {
+    authMode?: unknown;
+    baseUrl?: unknown;
+    lastRefresh?: unknown;
+    tokens?: { accessToken?: unknown; refreshToken?: unknown };
+  };
+  if (
+    credential.authMode !== "chatgpt" ||
+    typeof credential.tokens?.accessToken !== "string" ||
+    typeof credential.tokens.refreshToken !== "string"
+  ) {
+    return Response.json({ error: "Valid Codex credential is required" }, { status: 400 });
+  }
+  try {
+    return Response.json(
+      await refreshCodexOAuthCredential({
+        authMode: "chatgpt",
+        ...(typeof credential.baseUrl === "string" ? { baseUrl: credential.baseUrl } : {}),
+        ...(typeof credential.lastRefresh === "string"
+          ? { lastRefresh: credential.lastRefresh }
+          : {}),
+        tokens: {
+          accessToken: credential.tokens.accessToken,
+          refreshToken: credential.tokens.refreshToken,
+        },
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: 502 });
+  }
+}
+
 async function handleWorkflowRun(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -472,6 +714,7 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
   }
 
   try {
+    const agentCredential = runtimeApiKeyCredential(parsed.data.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.data.capabilityInventory,
@@ -484,7 +727,7 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
         runWorkspaceCli,
       },
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
+      ...(agentCredential ? { agentCredential } : {}),
       async onCheckpoint(run) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(run, playbookState),
@@ -645,6 +888,7 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
   const parsed = parsePlaybookRunCreateRequest(body, playbookId);
 
   try {
+    const agentCredential = runtimeApiKeyCredential(parsed.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.capabilityInventory,
@@ -657,7 +901,7 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
         runWorkspaceCli,
       },
       ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
-      ...(parsed.credential?.apiKey ? { agentCredential: parsed.credential.apiKey } : {}),
+      ...(agentCredential ? { agentCredential } : {}),
       async onCheckpoint(run) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(run, playbookState),
@@ -1023,6 +1267,7 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
   }
 
   try {
+    const agentCredential = runtimeApiKeyCredential(parsed.data.credential);
     const playbookState = resolvePlaybookExecutionState({
       definition,
       capabilityInventory: parsed.data.capabilityInventory,
@@ -1038,7 +1283,7 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
         runWorkspaceCli,
       },
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential?.apiKey ? { agentCredential: parsed.data.credential.apiKey } : {}),
+      ...(agentCredential ? { agentCredential } : {}),
       async onCheckpoint(checkpoint) {
         await saveWorkflowRunWithDashboardLayout(
           mergePlaybookRunMetadata(checkpoint, playbookState),
@@ -1727,6 +1972,18 @@ const server = Bun.serve({
 
     if (pathname === "/agent/turn") {
       return handleAgentTurn(req);
+    }
+
+    if (pathname === "/model/codex-oauth/device-code") {
+      return handleCodexOauthDeviceCode(req);
+    }
+
+    if (pathname === "/model/codex-oauth/poll") {
+      return handleCodexOauthPoll(req);
+    }
+
+    if (pathname === "/model/codex-oauth/refresh") {
+      return handleCodexOauthRefresh(req);
     }
 
     if (pathname === "/workflows/run") {

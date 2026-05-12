@@ -157,7 +157,7 @@ describe("task runner", () => {
 
     expect(seen).toEqual([
       expect.objectContaining({
-        credential: "sk-runtime",
+        credential: { apiKey: "sk-runtime" },
         provider: {
           provider: "anthropic",
           model: "claude-sonnet-4-6",

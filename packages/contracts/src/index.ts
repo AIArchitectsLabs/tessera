@@ -53,6 +53,10 @@ export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
     apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
   }),
   z.object({
+    provider: z.literal("openai-codex"),
+    model: z.string().min(1),
+  }),
+  z.object({
     provider: z.literal("anthropic"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("ANTHROPIC_API_KEY"),
@@ -72,11 +76,23 @@ export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
 
 export type AgentProviderConfig = z.infer<typeof AgentProviderConfigSchema>;
 
-export const ModelProviderSchema = z.enum(["openai", "anthropic", "openrouter", "local"]);
+export const ModelProviderSchema = z.enum([
+  "openai",
+  "openai-codex",
+  "anthropic",
+  "openrouter",
+  "local",
+]);
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 
 const OpenAIModelProviderSettingsSchema = z.object({
   provider: z.literal("openai"),
+  model: z.string().min(1),
+  hasCredential: z.boolean().default(false),
+});
+
+const OpenAICodexModelProviderSettingsSchema = z.object({
+  provider: z.literal("openai-codex"),
   model: z.string().min(1),
   hasCredential: z.boolean().default(false),
 });
@@ -102,6 +118,7 @@ const LocalModelProviderSettingsSchema = z.object({
 
 export const ModelProviderSettingsSchema = z.discriminatedUnion("provider", [
   OpenAIModelProviderSettingsSchema,
+  OpenAICodexModelProviderSettingsSchema,
   AnthropicModelProviderSettingsSchema,
   OpenRouterModelProviderSettingsSchema,
   LocalModelProviderSettingsSchema,
@@ -112,6 +129,7 @@ export const ModelSettingsReadSchema = z.object({
   selectedProvider: ModelProviderSchema,
   providers: z.object({
     openai: OpenAIModelProviderSettingsSchema,
+    "openai-codex": OpenAICodexModelProviderSettingsSchema,
     anthropic: AnthropicModelProviderSettingsSchema,
     openrouter: OpenRouterModelProviderSettingsSchema,
     local: LocalModelProviderSettingsSchema,
@@ -161,6 +179,23 @@ export const ModelConnectionTestResultSchema = z.object({
   message: z.string(),
 });
 export type ModelConnectionTestResult = z.infer<typeof ModelConnectionTestResultSchema>;
+
+export const ApiKeyRuntimeCredentialSchema = z.object({
+  apiKey: z.string().min(1),
+});
+
+export const CodexOAuthRuntimeCredentialSchema = z.object({
+  authType: z.literal("codex-oauth"),
+  accessToken: z.string().min(1),
+  baseUrl: z.string().url().default("https://chatgpt.com/backend-api/codex"),
+  accountId: z.string().min(1).optional(),
+});
+
+export const ModelRuntimeCredentialSchema = z.union([
+  ApiKeyRuntimeCredentialSchema,
+  CodexOAuthRuntimeCredentialSchema,
+]);
+export type ModelRuntimeCredential = z.infer<typeof ModelRuntimeCredentialSchema>;
 
 export const GoogleWorkspaceProviderSchema = z.literal("google-workspace");
 
@@ -490,11 +525,7 @@ export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;
 export const AgentTurnRequestSchema = z.object({
   prompt: z.string().min(1),
   provider: AgentProviderConfigSchema,
-  credential: z
-    .object({
-      apiKey: z.string().min(1),
-    })
-    .optional(),
+  credential: ModelRuntimeCredentialSchema.optional(),
   grants: z.array(PermissionGrantSchema).default([]),
   timeoutMs: z.number().int().positive().max(120_000).default(60_000),
 });
@@ -1584,7 +1615,7 @@ export const WorkflowRunRequestSchema = z.object({
   capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
   agentProvider: AgentProviderConfigSchema.optional(),
-  credential: z.object({ apiKey: z.string().min(1) }).optional(),
+  credential: ModelRuntimeCredentialSchema.optional(),
 });
 
 export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
@@ -1630,7 +1661,7 @@ export const WorkflowResumeRequestSchema = z.object({
   capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
   agentProvider: AgentProviderConfigSchema.optional(),
-  credential: z.object({ apiKey: z.string().min(1) }).optional(),
+  credential: ModelRuntimeCredentialSchema.optional(),
 });
 
 export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;
@@ -2041,7 +2072,7 @@ export const TaskExecutionConfigSchema = z.object({
   agent: AgentProfileSchema,
   runtime: AgentRuntimeContextSchema,
   provider: AgentProviderConfigSchema,
-  credential: z.object({ apiKey: z.string().min(1) }).optional(),
+  credential: ModelRuntimeCredentialSchema.optional(),
 });
 export type TaskExecutionConfig = z.infer<typeof TaskExecutionConfigSchema>;
 

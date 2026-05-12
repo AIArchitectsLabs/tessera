@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 #[cfg(not(target_os = "macos"))]
@@ -22,6 +23,8 @@ fn keychain_lock() -> &'static Mutex<()> {
 #[serde(rename_all = "lowercase")]
 pub enum ModelProvider {
     Openai,
+    #[serde(rename = "openai-codex")]
+    OpenaiCodex,
     Anthropic,
     Openrouter,
     Local,
@@ -31,24 +34,17 @@ impl ModelProvider {
     pub fn account(self) -> &'static str {
         match self {
             Self::Openai => "model.openai",
+            Self::OpenaiCodex => "model.openai-codex",
             Self::Anthropic => "model.anthropic",
             Self::Openrouter => "model.openrouter",
             Self::Local => "model.local",
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Openai => "openai",
-            Self::Anthropic => "anthropic",
-            Self::Openrouter => "openrouter",
-            Self::Local => "local",
-        }
-    }
-
     fn default_model(self) -> &'static str {
         match self {
             Self::Openai => "gpt-5.4",
+            Self::OpenaiCodex => "gpt-5.4",
             Self::Anthropic => "claude-sonnet-4-6",
             Self::Openrouter => "openai/gpt-5.4",
             Self::Local => "llama3.2",
@@ -124,6 +120,35 @@ pub struct ModelCredentialDeleteRequest {
     pub provider: ModelProvider,
 }
 
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexOAuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexOAuthCredential {
+    pub tokens: CodexOAuthTokens,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_refresh: Option<String>,
+    pub auth_mode: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexOAuthStatus {
+    pub logged_in: bool,
+    pub reauth_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
 pub fn missing_credential_result(provider: ModelProvider) -> ModelConnectionTestResult {
     ModelConnectionTestResult {
         ok: false,
@@ -134,8 +159,138 @@ pub fn missing_credential_result(provider: ModelProvider) -> ModelConnectionTest
             ModelProvider::Openai | ModelProvider::Anthropic | ModelProvider::Openrouter => {
                 "Add an API key in Settings > Model before running this provider".to_string()
             }
+            ModelProvider::OpenaiCodex => {
+                "Sign in with ChatGPT in Settings > Model before running OpenAI Codex".to_string()
+            }
         },
     }
+}
+
+pub fn encode_codex_oauth_credential(credential: &CodexOAuthCredential) -> Result<String> {
+    serde_json::to_string(credential).context("Could not serialize Codex OAuth credential")
+}
+
+pub fn decode_codex_oauth_credential(value: &str) -> Result<CodexOAuthCredential> {
+    let credential: CodexOAuthCredential =
+        serde_json::from_str(value).context("Could not parse Codex OAuth credential")?;
+    if credential.tokens.access_token.trim().is_empty()
+        || credential.tokens.refresh_token.trim().is_empty()
+    {
+        bail!("Codex OAuth credential is missing tokens");
+    }
+    Ok(credential)
+}
+
+pub fn codex_access_token_is_expiring(access_token: &str, skew_seconds: u64) -> bool {
+    let Some(claims) = decode_jwt_payload(access_token) else {
+        return true;
+    };
+    let Some(exp) = claims.get("exp").and_then(|value| value.as_u64()) else {
+        return true;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(u64::MAX);
+    exp <= now.saturating_add(skew_seconds)
+}
+
+pub fn codex_chatgpt_account_id(access_token: &str) -> Option<String> {
+    let claims = decode_jwt_payload(access_token)?;
+    claims
+        .get("https://api.openai.com/auth")
+        .and_then(|value| value.get("chatgpt_account_id"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+}
+
+pub fn get_codex_oauth_credential() -> Result<Option<CodexOAuthCredential>> {
+    get_credential(ModelProvider::OpenaiCodex).and_then(|value| {
+        value
+            .as_deref()
+            .map(decode_codex_oauth_credential)
+            .transpose()
+    })
+}
+
+pub fn set_codex_oauth_credential(credential: &CodexOAuthCredential) -> Result<()> {
+    let encoded = encode_codex_oauth_credential(credential)?;
+    set_credential(ModelProvider::OpenaiCodex, &encoded)
+}
+
+pub fn codex_oauth_status_from_credential(
+    credential: Option<&CodexOAuthCredential>,
+) -> CodexOAuthStatus {
+    let Some(credential) = credential else {
+        return CodexOAuthStatus {
+            logged_in: false,
+            reauth_required: false,
+            account_id: None,
+            base_url: None,
+        };
+    };
+    let reauth_required = codex_access_token_is_expiring(&credential.tokens.access_token, 0)
+        || credential.tokens.refresh_token.trim().is_empty();
+    CodexOAuthStatus {
+        logged_in: !reauth_required,
+        reauth_required,
+        account_id: codex_chatgpt_account_id(&credential.tokens.access_token),
+        base_url: credential.base_url.clone(),
+    }
+}
+
+pub fn codex_oauth_status() -> Result<CodexOAuthStatus> {
+    let credential = get_codex_oauth_credential()?;
+    Ok(codex_oauth_status_from_credential(credential.as_ref()))
+}
+
+pub fn codex_oauth_runtime_credential(credential: &CodexOAuthCredential) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "authType": "codex-oauth",
+        "accessToken": credential.tokens.access_token,
+        "baseUrl": credential
+            .base_url
+            .as_deref()
+            .unwrap_or("https://chatgpt.com/backend-api/codex")
+    });
+    if let Some(account_id) = codex_chatgpt_account_id(&credential.tokens.access_token) {
+        value["accountId"] = serde_json::json!(account_id);
+    }
+    value
+}
+
+fn decode_jwt_payload(access_token: &str) -> Option<serde_json::Value> {
+    let payload = access_token.split('.').nth(1)?;
+    let bytes = base64url_decode(payload).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn base64url_decode(input: &str) -> Result<Vec<u8>> {
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    let mut output = Vec::new();
+
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            b'=' => continue,
+            _ => bail!("Invalid base64url character"),
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    Ok(output)
 }
 
 pub fn default_settings_file() -> SettingsFile {
@@ -143,6 +298,7 @@ pub fn default_settings_file() -> SettingsFile {
 
     for provider in [
         ModelProvider::Openai,
+        ModelProvider::OpenaiCodex,
         ModelProvider::Anthropic,
         ModelProvider::Openrouter,
         ModelProvider::Local,
@@ -178,7 +334,20 @@ pub fn load_settings_file(path: &Path) -> Result<SettingsFile> {
     }
 
     let text = fs::read_to_string(path).context("Could not read model settings")?;
-    serde_json::from_str(&text).context("Could not parse model settings")
+    let settings: SettingsFile =
+        serde_json::from_str(&text).context("Could not parse model settings")?;
+    Ok(normalize_settings_file(settings))
+}
+
+fn normalize_settings_file(mut settings: SettingsFile) -> SettingsFile {
+    let defaults = default_settings_file();
+    for (provider, config) in defaults.providers {
+        settings.providers.entry(provider).or_insert(config);
+    }
+    if !settings.providers.contains_key(&settings.selected_provider) {
+        settings.selected_provider = defaults.selected_provider;
+    }
+    settings
 }
 
 pub fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
@@ -468,6 +637,7 @@ mod tests {
         fn provider_accounts_are_stable() {
             assert_eq!(KEYCHAIN_SERVICE, "Tessera");
             assert_eq!(ModelProvider::Openai.account(), "model.openai");
+            assert_eq!(ModelProvider::OpenaiCodex.account(), "model.openai-codex");
             assert_eq!(ModelProvider::Anthropic.account(), "model.anthropic");
             assert_eq!(ModelProvider::Openrouter.account(), "model.openrouter");
             assert_eq!(ModelProvider::Local.account(), "model.local");
@@ -478,7 +648,14 @@ mod tests {
             let settings = default_settings_file();
 
             assert_eq!(settings.selected_provider, ModelProvider::Openai);
-            assert_eq!(settings.providers.len(), 4);
+            assert_eq!(settings.providers.len(), 5);
+            assert_eq!(
+                settings
+                    .providers
+                    .get(&ModelProvider::OpenaiCodex)
+                    .map(|provider| provider.model.as_str()),
+                Some("gpt-5.4")
+            );
             assert_eq!(
                 settings
                     .providers
@@ -498,6 +675,57 @@ mod tests {
             let loaded = load_settings_file(&path).expect("load");
 
             assert_eq!(loaded, settings);
+        }
+
+        #[test]
+        fn load_settings_file_backfills_providers_added_after_existing_installs() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(SETTINGS_FILE);
+            let legacy = serde_json::json!({
+                "selectedProvider": "openai",
+                "providers": {
+                    "openai": {
+                        "provider": "openai",
+                        "model": "gpt-4.1"
+                    },
+                    "anthropic": {
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6"
+                    },
+                    "openrouter": {
+                        "provider": "openrouter",
+                        "model": "openai/gpt-5.4"
+                    },
+                    "local": {
+                        "provider": "local",
+                        "model": "llama3.2",
+                        "baseUrl": "http://127.0.0.1:11434/v1"
+                    }
+                }
+            });
+            fs::write(
+                &path,
+                serde_json::to_string_pretty(&legacy).expect("legacy json"),
+            )
+            .expect("write legacy settings");
+
+            let loaded = load_settings_file(&path).expect("load");
+
+            assert_eq!(loaded.selected_provider, ModelProvider::Openai);
+            assert_eq!(
+                loaded
+                    .providers
+                    .get(&ModelProvider::Openai)
+                    .map(|provider| provider.model.as_str()),
+                Some("gpt-4.1")
+            );
+            assert_eq!(
+                loaded
+                    .providers
+                    .get(&ModelProvider::OpenaiCodex)
+                    .map(|provider| provider.model.as_str()),
+                Some("gpt-5.4")
+            );
         }
 
         #[test]
@@ -589,10 +817,10 @@ mod tests {
 
         #[test]
         fn missing_cloud_credential_message_points_to_settings() {
-            let result = missing_credential_result(ModelProvider::Openai);
+            let result = missing_credential_result(ModelProvider::OpenaiCodex);
 
             assert!(!result.ok);
-            assert!(result.message.contains("Settings > Model"));
+            assert!(result.message.contains("Sign in with ChatGPT"));
         }
 
         #[test]
@@ -620,6 +848,122 @@ mod tests {
                     .map(|provider| provider.has_credential),
                 Some(true)
             );
+        }
+
+        #[test]
+        fn codex_oauth_credential_round_trips_as_keychain_json() {
+            let credential = CodexOAuthCredential {
+                tokens: CodexOAuthTokens {
+                    access_token: unsigned_jwt_with_payload(
+                        r#"{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_account_id":"acct_test"}}"#,
+                    ),
+                    refresh_token: "refresh-test".to_string(),
+                },
+                base_url: Some("https://chatgpt.com/backend-api/codex".to_string()),
+                last_refresh: Some("2026-05-12T00:00:00Z".to_string()),
+                auth_mode: "chatgpt".to_string(),
+            };
+
+            let encoded = encode_codex_oauth_credential(&credential).expect("encode");
+            let decoded = decode_codex_oauth_credential(&encoded).expect("decode");
+
+            assert_eq!(decoded, credential);
+            assert_eq!(
+                codex_chatgpt_account_id(&decoded.tokens.access_token),
+                Some("acct_test".to_string())
+            );
+            assert!(!codex_access_token_is_expiring(
+                &decoded.tokens.access_token,
+                120
+            ));
+        }
+
+        #[test]
+        fn codex_access_token_expiry_treats_malformed_or_expiring_tokens_as_expiring() {
+            let expired = unsigned_jwt_with_payload(r#"{"exp":1}"#);
+            let malformed = "not-a-jwt";
+
+            assert!(codex_access_token_is_expiring(&expired, 120));
+            assert!(codex_access_token_is_expiring(malformed, 120));
+        }
+
+        #[test]
+        fn codex_status_redacts_tokens_and_reports_account() {
+            let credential = CodexOAuthCredential {
+                tokens: CodexOAuthTokens {
+                    access_token: unsigned_jwt_with_payload(
+                        r#"{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_account_id":"acct_test"}}"#,
+                    ),
+                    refresh_token: "refresh-test".to_string(),
+                },
+                base_url: Some("https://chatgpt.com/backend-api/codex".to_string()),
+                last_refresh: None,
+                auth_mode: "chatgpt".to_string(),
+            };
+
+            let status = codex_oauth_status_from_credential(Some(&credential));
+
+            assert!(status.logged_in);
+            assert!(!status.reauth_required);
+            assert_eq!(status.account_id, Some("acct_test".to_string()));
+            assert_eq!(
+                status.base_url,
+                Some("https://chatgpt.com/backend-api/codex".to_string())
+            );
+        }
+
+        #[test]
+        fn codex_runtime_credential_uses_oauth_shape_without_refresh_token() {
+            let credential = CodexOAuthCredential {
+                tokens: CodexOAuthTokens {
+                    access_token: unsigned_jwt_with_payload(
+                        r#"{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_account_id":"acct_test"}}"#,
+                    ),
+                    refresh_token: "refresh-test".to_string(),
+                },
+                base_url: Some("https://chatgpt.com/backend-api/codex".to_string()),
+                last_refresh: None,
+                auth_mode: "chatgpt".to_string(),
+            };
+
+            let runtime = codex_oauth_runtime_credential(&credential);
+
+            assert_eq!(runtime["authType"], "codex-oauth");
+            assert_eq!(runtime["accessToken"], credential.tokens.access_token);
+            assert_eq!(runtime["accountId"], "acct_test");
+            assert!(runtime.get("refreshToken").is_none());
+        }
+
+        fn unsigned_jwt_with_payload(payload: &str) -> String {
+            format!("header.{}.", base64url_no_pad(payload.as_bytes()))
+        }
+
+        fn base64url_no_pad(input: &[u8]) -> String {
+            const TABLE: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            let mut index = 0;
+            while index < input.len() {
+                let a = input[index];
+                let b = input.get(index + 1).copied();
+                let c = input.get(index + 2).copied();
+
+                out.push(TABLE[(a >> 2) as usize] as char);
+                out.push(
+                    TABLE[(((a & 0b0000_0011) << 4) | (b.unwrap_or(0) >> 4)) as usize] as char,
+                );
+                if let Some(b) = b {
+                    out.push(
+                        TABLE[(((b & 0b0000_1111) << 2) | (c.unwrap_or(0) >> 6)) as usize] as char,
+                    );
+                }
+                if let Some(c) = c {
+                    out.push(TABLE[(c & 0b0011_1111) as usize] as char);
+                }
+
+                index += 3;
+            }
+            out
         }
     }
 }

@@ -13,6 +13,7 @@ import {
 describe("model settings UI helpers", () => {
   test("labels supported providers", () => {
     expect(providerLabel("openai")).toBe("OpenAI");
+    expect(providerLabel("openai-codex")).toBe("OpenAI Codex");
     expect(providerLabel("anthropic")).toBe("Anthropic");
     expect(providerLabel("openrouter")).toBe("OpenRouter");
     expect(providerLabel("local")).toBe("Local OpenAI-compatible");
@@ -20,6 +21,7 @@ describe("model settings UI helpers", () => {
 
   test("returns model placeholders", () => {
     expect(modelPlaceholderForProvider("openai")).toBe("gpt-5.4");
+    expect(modelPlaceholderForProvider("openai-codex")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("local")).toBe("llama3.2");
   });
 
@@ -37,12 +39,24 @@ describe("model settings UI helpers", () => {
     });
   });
 
+  test("shows Codex OAuth as a selectable model provider", () => {
+    expect(MODEL_PROVIDERS).toContain("openai-codex");
+    expect(defaultDraftForProvider("openai-codex")).toEqual({
+      provider: "openai-codex",
+      model: "gpt-5.4",
+    });
+  });
+
   test("creates schema-valid defaults for every provider", () => {
     const expected: Record<ModelProvider, ReturnType<typeof defaultDraftForProvider>> = {
       openai: {
         provider: "openai",
         model: "gpt-5.4",
         apiKeyEnv: "OPENAI_API_KEY",
+      },
+      "openai-codex": {
+        provider: "openai-codex",
+        model: "gpt-5.4",
       },
       anthropic: {
         provider: "anthropic",
