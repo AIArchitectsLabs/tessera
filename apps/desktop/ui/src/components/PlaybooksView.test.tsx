@@ -201,7 +201,14 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
             }
           : undefined,
       };
-    case "playbook_assignment_preview":
+    case "playbook_assignment_preview": {
+      const previewInventory = (
+        args?.request as
+          | { capabilityInventory?: { agents?: Array<{ fingerprint?: string }> } }
+          | undefined
+      )?.capabilityInventory;
+      const previewAgentFingerprint =
+        previewInventory?.agents?.[0]?.fingerprint ?? "preview-agent-fingerprint";
       return {
         assignmentPlan: {
           resolverVersion: 1,
@@ -211,6 +218,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
               stepId: "draftBrief",
               agentId: "default",
               agentLabel: "Tessera",
+              agentFingerprint: previewAgentFingerprint,
               skillCapabilities: [],
               toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
               integrationCapabilities: [],
@@ -235,6 +243,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
                   stepId: "draftBrief",
                   agentId: "default",
                   agentLabel: "Tessera",
+                  agentFingerprint: previewAgentFingerprint,
                   skillCapabilities: [],
                   toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
                   integrationCapabilities: [],
@@ -246,16 +255,19 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
           },
         ],
       };
-    case "playbook_run_preference_save":
+    }
+    case "playbook_run_preference_save": {
       hasSavedPreference = true;
+      const saveRequest = args?.request as { assignmentPlan?: unknown } | undefined;
       return {
         preference: {
           workspaceRoot: "/tmp/workspace",
           playbookId: playbook.id,
-          assignmentPlan: savedAssignmentPlan,
+          assignmentPlan: saveRequest?.assignmentPlan ?? savedAssignmentPlan,
           updatedAt: "2026-05-11T00:00:00.000Z",
         },
       };
+    }
     case "playbook_run_list":
       if (args?.playbookId === dashboardPlaybook.id) {
         return { runs: [dashboardRun] } satisfies WorkflowRunListResult;
@@ -425,13 +437,20 @@ describe("PlaybooksView", () => {
       const saveCall = invoke.mock.calls.find(
         ([command]) => command === "playbook_run_preference_save"
       );
-      expect(
-        (
-          saveCall?.[1] as
-            | { request?: { capabilityInventory?: { agents?: Array<{ id?: string }> } } }
-            | undefined
-        )?.request?.capabilityInventory?.agents?.[0]?.id
-      ).toBe("default");
+      const saveRequest = saveCall?.[1] as
+        | {
+            request?: {
+              assignmentPlan?: {
+                assignments?: { draftBrief?: { agentFingerprint?: string } };
+              };
+              capabilityInventory?: { agents?: Array<{ fingerprint?: string; id?: string }> };
+            };
+          }
+        | undefined;
+      expect(saveRequest?.request?.capabilityInventory?.agents?.[0]?.id).toBe("default");
+      expect(saveRequest?.request?.capabilityInventory?.agents?.[0]?.fingerprint).toBe(
+        saveRequest?.request?.assignmentPlan?.assignments?.draftBrief?.agentFingerprint
+      );
       expect(
         (view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement).disabled
       ).toBe(false);

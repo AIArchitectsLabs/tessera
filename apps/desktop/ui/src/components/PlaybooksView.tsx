@@ -1625,6 +1625,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [draftAssignmentPlan, setDraftAssignmentPlan] = useState<WorkflowRunAssignmentPlan | null>(
     null
   );
+  const [draftCapabilityInventory, setDraftCapabilityInventory] =
+    useState<WorkflowCapabilityInventory | null>(null);
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const runListRequestRef = useRef(0);
@@ -1693,12 +1695,14 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     if (!selectedPlaybookId || !workspaceRoot || !capabilityInventory) {
       setAssignmentPreview(null);
       setDraftAssignmentPlan(null);
+      setDraftCapabilityInventory(null);
       setAgentsConfirmed(false);
       return;
     }
 
     setAssignmentPreview(null);
     setDraftAssignmentPlan(null);
+    setDraftCapabilityInventory(null);
     setAgentsConfirmed(false);
 
     void (async () => {
@@ -1725,16 +1729,18 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         );
         if (cancelled) return;
 
-        setAssignmentPreview(preview);
-        setDraftAssignmentPlan(
+        const nextAssignmentPlan =
           preview.assignmentPlan ??
-            (preview.blockers.length > 0 ? null : (preference.preference?.assignmentPlan ?? null))
-        );
+          (preview.blockers.length > 0 ? null : (preference.preference?.assignmentPlan ?? null));
+        setAssignmentPreview(preview);
+        setDraftAssignmentPlan(nextAssignmentPlan);
+        setDraftCapabilityInventory(nextAssignmentPlan ? capabilityInventory : null);
         setAgentsConfirmed(!!preference.preference && preview.blockers.length === 0);
       } catch (loadError) {
         if (cancelled) return;
         setAssignmentPreview(null);
         setDraftAssignmentPlan(null);
+        setDraftCapabilityInventory(null);
         setAgentsConfirmed(false);
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
@@ -1965,7 +1971,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       const request: WorkflowRunRequest = {
         workflowId: selectedPlaybook.id,
         input: fullInput,
-        capabilityInventory: capabilityInventory ?? undefined,
+        capabilityInventory: draftCapabilityInventory ?? capabilityInventory ?? undefined,
         assignmentPlan,
       };
       const run = await invoke<PlaybookRunDetail>("playbook_run_create", {
@@ -1994,7 +2000,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         request: {
           workspaceRoot,
           assignmentPlan: draftAssignmentPlan,
-          ...(capabilityInventory ? { capabilityInventory } : {}),
+          ...(draftCapabilityInventory ? { capabilityInventory: draftCapabilityInventory } : {}),
         },
       });
       setDraftAssignmentPlan(saved.preference?.assignmentPlan ?? draftAssignmentPlan);
