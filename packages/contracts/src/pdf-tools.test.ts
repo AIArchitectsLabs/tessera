@@ -3,6 +3,7 @@ import {
   PdfEngineRuntimeSchema,
   PdfExtractResultSchema,
   PdfInspectResultSchema,
+  PdfPageRangeSchema,
   PdfValidateResultSchema,
   TOOL_POLICY_PRESET_DETAILS,
 } from "./index.js";
@@ -20,6 +21,10 @@ describe("pdf tool contracts", () => {
       metadata: {},
       engine: "unpdf",
       engineRuntime: "typescript",
+      provenance: {
+        createdAt: "2026-05-13T00:00:00.000Z",
+        immutableSource: true,
+      },
       warnings: [],
     });
 
@@ -37,6 +42,10 @@ describe("pdf tool contracts", () => {
       truncated: false,
       engine: "unpdf",
       engineRuntime: "typescript",
+      provenance: {
+        createdAt: "2026-05-13T00:00:00.000Z",
+        immutableSource: true,
+      },
       warnings: [],
     });
 
@@ -62,10 +71,44 @@ describe("pdf tool contracts", () => {
       ],
       engine: "unpdf",
       engineRuntime: "typescript",
+      provenance: {
+        createdAt: "2026-05-13T00:00:00.000Z",
+        immutableSource: true,
+      },
       warnings: [],
     });
 
     expect(result.passed).toBe(true);
+  });
+
+  test("rejects invalid page ranges", () => {
+    expect(PdfPageRangeSchema.safeParse({}).success).toBe(false);
+    expect(PdfPageRangeSchema.safeParse({ start: 5, end: 1 }).success).toBe(false);
+  });
+
+  test("rejects extra keys and invalid engine runtimes", () => {
+    expect(
+      PdfInspectResultSchema.safeParse({
+        path: "contracts/master.pdf",
+        fileType: "pdf",
+        bytes: 2048,
+        pageCount: 2,
+        encrypted: false,
+        hasTextLayer: true,
+        pagesWithText: [1, 2],
+        metadata: {},
+        engine: "unpdf",
+        engineRuntime: "typescript",
+        provenance: {
+          createdAt: "2026-05-13T00:00:00.000Z",
+          immutableSource: true,
+        },
+        warnings: [],
+        extra: true,
+      }).success
+    ).toBe(false);
+
+    expect(PdfEngineRuntimeSchema.safeParse("javascript").success).toBe(false);
   });
 
   test("keeps Python as an allowed engine runtime without granting execution", () => {
@@ -74,9 +117,13 @@ describe("pdf tool contracts", () => {
 
   test("exposes read-only PDF tools in every policy preset", () => {
     for (const details of Object.values(TOOL_POLICY_PRESET_DETAILS)) {
-      expect(details.allowedTools).toContain("pdf_inspect");
-      expect(details.allowedTools).toContain("pdf_extract");
-      expect(details.allowedTools).toContain("pdf_validate");
+      const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
+      expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
+      expect(details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 4)).toEqual([
+        "pdf_inspect",
+        "pdf_extract",
+        "pdf_validate",
+      ]);
     }
   });
 });

@@ -2149,7 +2149,26 @@ export const PdfPageRangeSchema = z
     start: z.number().int().positive().optional(),
     end: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.start === undefined && value.end === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Pdf page ranges must specify at least one bound",
+      });
+    }
+
+    if (
+      value.start !== undefined &&
+      value.end !== undefined &&
+      value.end < value.start
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Pdf page ranges must not end before they start",
+      });
+    }
+  });
 export type PdfPageRange = z.infer<typeof PdfPageRangeSchema>;
 
 export const PdfOperationProvenanceSchema = z
@@ -2172,6 +2191,7 @@ export const PdfInspectResultSchema = z
     metadata: z.record(z.string(), z.string()).default({}),
     engine: z.string().min(1),
     engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
     warnings: z.array(PdfWarningSchema).default([]),
   })
   .strict();
@@ -2197,6 +2217,7 @@ export const PdfExtractResultSchema = z
     truncated: z.boolean(),
     engine: z.string().min(1),
     engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
     warnings: z.array(PdfWarningSchema).default([]),
   })
   .strict();
@@ -2223,6 +2244,7 @@ export const PdfValidateResultSchema = z
     checks: z.array(PdfValidationCheckSchema),
     engine: z.string().min(1),
     engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
     warnings: z.array(PdfWarningSchema).default([]),
   })
   .strict();
