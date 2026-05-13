@@ -6,6 +6,7 @@ import {
   WorkflowDefinitionSchema,
   WorkflowRunAssignmentPlanSchema,
 } from "@tessera/contracts";
+import { runWorkflow } from "@tessera/core";
 import {
   buildLocalPlaybookCapabilityInventory,
   createPlaybookAssignmentPreview,
@@ -397,6 +398,63 @@ describe("playbook routing helpers", () => {
         assignmentPlan: resolved.assignmentPlan,
       })
     ).not.toThrow();
+  });
+
+  test("resolves no-requirement assignments that pass core workflow validation", async () => {
+    const definition = WorkflowDefinitionSchema.parse({
+      id: "playbook.no-requirements",
+      version: 1,
+      name: "No Requirements",
+      start: "draftBrief",
+      inputs: { workspaceRoot: { type: "string", required: true } },
+      steps: [
+        {
+          id: "draftBrief",
+          kind: "agent",
+          prompt: "Draft the brief",
+          workspaceRootInput: "workspaceRoot",
+        },
+      ],
+    });
+    const inventory = WorkflowCapabilityInventorySchema.parse({
+      agents: [
+        {
+          id: "default",
+          label: "Tessera",
+          fingerprint: "default:fingerprint",
+          model: { provider: "openai", model: "gpt-5.4", hasCredential: true },
+          modelCapabilities: [],
+          dataPolicies: [],
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+        },
+      ],
+      integrations: [],
+    });
+
+    const resolved = resolvePlaybookExecutionContext({
+      definition,
+      capabilityInventory: inventory,
+    });
+
+    expect(resolved.assignmentPlan.assignments.draftBrief?.toolCapabilities).toEqual([]);
+
+    const result = await runWorkflow({
+      definition,
+      input: { workspaceRoot: "/tmp/workspace" },
+      capabilityInventory: inventory,
+      assignmentPlan: resolved.assignmentPlan,
+      cli: {
+        async runWorkspaceCli() {
+          throw new Error("tool CLI should not be used by agent-only workflow");
+        },
+      },
+      async agentRunner() {
+        return { text: "ok", boundaryViolations: 0 };
+      },
+    });
+
+    expect(result.status).toBe("completed");
   });
 
   test("assignment preview refreshes stale previous plans against the current inventory", () => {

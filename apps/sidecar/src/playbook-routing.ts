@@ -208,23 +208,6 @@ function stepOptionalGaps(
   return gaps;
 }
 
-function candidateIntegrationCapabilities(
-  inventory: WorkflowCapabilityInventory,
-  step: WorkflowStep
-): string[] {
-  const availableIntegrations = integrationCapabilitiesForInventory(inventory);
-  const matched: string[] = [];
-
-  for (const requirement of step.requires?.integrations ?? []) {
-    const capability = normalizeCapability(requirement.capability);
-    if (availableIntegrations.has(capability)) {
-      matched.push(capability);
-    }
-  }
-
-  return matched;
-}
-
 function candidateScore(options: {
   agent: WorkflowCapabilityInventory["agents"][number];
   step: WorkflowStep;
@@ -296,9 +279,10 @@ function stepLabel(step: WorkflowStep): string {
 
 function agentAssignmentForStep(options: {
   agent: WorkflowCapabilityInventory["agents"][number];
-  integrations: string[];
   step: WorkflowStep;
 }): WorkflowNodeAssignment {
+  const requires = options.step.requires;
+
   return WorkflowNodeAssignmentSchema.parse({
     stepId: options.step.id,
     agentId: options.agent.id,
@@ -306,9 +290,23 @@ function agentAssignmentForStep(options: {
     agentFingerprint: options.agent.fingerprint,
     ...(options.agent.model ? { provider: options.agent.model } : {}),
     ...(options.agent.model ? { providerFingerprint: stableHash(options.agent.model) } : {}),
-    skillCapabilities: [...new Set(options.agent.skillCapabilities ?? [])].sort(),
-    toolCapabilities: [...new Set(options.agent.toolCapabilities ?? [])].sort(),
-    integrationCapabilities: [...new Set(options.integrations.map(normalizeCapability))].sort(),
+    skillCapabilities: [
+      ...new Set(
+        (requires?.skills ?? []).map((requirement) => normalizeCapability(requirement.capability))
+      ),
+    ].sort(),
+    toolCapabilities: [
+      ...new Set(
+        (requires?.tools ?? []).map((requirement) => normalizeCapability(requirement.capability))
+      ),
+    ].sort(),
+    integrationCapabilities: [
+      ...new Set(
+        (requires?.integrations ?? []).map((requirement) =>
+          normalizeCapability(requirement.capability)
+        )
+      ),
+    ].sort(),
   });
 }
 
@@ -416,7 +414,6 @@ function validateAssignmentAgainstInventory(options: {
 
   const expected = agentAssignmentForStep({
     agent: candidate,
-    integrations: candidateIntegrationCapabilities(options.inventory, options.step),
     step: options.step,
   });
 
@@ -512,7 +509,6 @@ function createResolvedAssignmentPlan(options: {
 
     assignments[step.id] = agentAssignmentForStep({
       agent: candidate,
-      integrations: candidateIntegrationCapabilities(options.inventory, step),
       step,
     });
     sourceGaps.push(...stepOptionalGaps(step, options.inventory));
