@@ -134,6 +134,9 @@ describe("memory manager", () => {
       listCandidateMemories() {
         throw new Error("boom");
       },
+      isSourceForgotten() {
+        return false;
+      },
       forgetMemory() {},
     };
     const manager = createMemoryManager({ store: brokenStore });
@@ -271,6 +274,42 @@ describe("memory manager", () => {
     expect(memory?.status).toBe("active");
     expect(memory?.type).toBe("preference");
     expect(memory?.body).toBe("prefer concise bullets with source links.");
+  });
+
+  test("candidate extraction skips forgotten source events", async () => {
+    const store = makeStore();
+    const manager = createMemoryManager({ store, ownerId: "local-owner" });
+
+    await manager.recordTaskTurn({
+      task: task(),
+      turn: turn("Remember that weekly customer updates should use concise bullets."),
+    });
+    const eventId = store.getEventByKey("task:task-1:turn:turn-1:completed")?.id;
+    if (!eventId) throw new Error("Missing recorded memory event");
+    store.upsertMemory({
+      id: "memory-forgotten",
+      workspaceKey: workspaceKeyForRoot("/workspace/acme"),
+      ownerId: "local-owner",
+      scope: "workspace",
+      type: "preference",
+      title: "Weekly update style",
+      body: "weekly customer updates should use concise bullets.",
+      status: "active",
+      confidence: 0.95,
+      freshness: "fresh",
+      sourceEventIds: [eventId],
+      sourceDocumentIds: [`memory-document-${eventId}`],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    });
+    store.forgetMemory({
+      memoryId: "memory-forgotten",
+      action: "delete",
+      reason: "User asked to forget this memory.",
+      requestedAt: "2026-05-13T00:02:00.000Z",
+    });
+
+    await expect(manager.proposeCandidates({ eventIds: [eventId] })).resolves.toEqual([]);
   });
 
   test("model-backed semantic extraction uses the configured provider and credential", async () => {

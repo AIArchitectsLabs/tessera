@@ -1054,6 +1054,19 @@ async fn memory_review_decide(
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn memory_forget(
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+    let json = state
+        .post("/memory/forget", &body)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 async fn run_workspace_cli_command(
     app: &AppHandle,
     args: &[&str],
@@ -2588,6 +2601,7 @@ pub fn run() {
             integration_credential_delete,
             integration_settings_get,
             integration_settings_save,
+            memory_forget,
             memory_review_decide,
             memory_review_list,
             memory_status_get,

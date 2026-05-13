@@ -29,6 +29,7 @@ import type {
   IntegrationSettingsSaveRequest,
   Memory,
   MemoryCandidate,
+  MemoryForgetRequest,
   MemoryReviewDecisionRequest,
   MemoryReviewListResult,
   MemoryRuntimeStatus,
@@ -382,6 +383,42 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             : decision === "reject"
               ? "Memory rejected."
               : "Memory archived.",
+        tone: "success",
+      });
+      await loadMemoryReview();
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReviewMessage({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setActiveMemoryAction(null);
+      }
+    }
+  }
+
+  async function handleMemoryForget(memoryId: string) {
+    const actionId = `${memoryId}:delete`;
+    setActiveMemoryAction(actionId);
+    setMemoryReviewMessage(null);
+    try {
+      await invokeWithTimeout<{ ok: boolean }>("memory_forget", {
+        request: {
+          memoryId,
+          action: "delete",
+          reason: "Memory forgotten from Settings.",
+          requestedAt: new Date().toISOString(),
+        } satisfies MemoryForgetRequest,
+      });
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReviewMessage({
+        message: "Memory forgotten.",
         tone: "success",
       });
       await loadMemoryReview();
@@ -1982,6 +2019,20 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                               <Archive size={14} />
                             )}
                             Archive
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleMemoryForget(memory.id)}
+                            disabled={activeMemoryAction !== null}
+                          >
+                            {activeMemoryAction === `${memory.id}:delete` ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                            Forget
                           </Button>
                         </div>
                       </article>

@@ -7,6 +7,7 @@ import {
   MemoryCandidateSchema,
   type MemoryEvent,
   MemoryEventSchema,
+  type MemoryForgetAction,
   type MemoryForgetRequest,
   MemorySchema,
   type MemoryScope,
@@ -58,6 +59,7 @@ export interface MemoryStore {
     ownerId?: string;
     limit?: number;
   }): MemoryCandidate[];
+  isSourceForgotten(sourceId: string): boolean;
   forgetMemory(request: MemoryForgetRequest): void;
 }
 
@@ -98,6 +100,10 @@ interface MemoryRow {
   rationale_json: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface MemoryDocumentRow {
+  id: string;
 }
 
 function createId(prefix: string): string {
@@ -309,8 +315,8 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunk_fts
     USING fts5(content, chunk_id UNINDEXED, document_id UNINDEXED, tokenize = 'unicode61');
 
-    CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY NOT NULL,
+	    CREATE TABLE IF NOT EXISTS memories (
+	      id TEXT PRIMARY KEY NOT NULL,
       workspace_key TEXT,
       owner_id TEXT,
       scope TEXT NOT NULL,
@@ -327,9 +333,17 @@ export function createMemoryStore(dbPath: string): MemoryStore {
       last_used_at TEXT,
       rationale_json TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-  `);
+	      updated_at TEXT NOT NULL
+	    );
+
+	    CREATE TABLE IF NOT EXISTS memory_forget_markers (
+	      source_id TEXT PRIMARY KEY NOT NULL,
+	      memory_id TEXT NOT NULL,
+	      action TEXT NOT NULL,
+	      reason TEXT NOT NULL,
+	      requested_at TEXT NOT NULL
+	    );
+	  `);
 
   const memoryColumns = db
     .prepare<{ name: string }, []>("PRAGMA table_info(memories)")
@@ -360,6 +374,9 @@ export function createMemoryStore(dbPath: string): MemoryStore {
   const deleteChunkFtsRow = db.prepare("DELETE FROM memory_chunk_fts WHERE rowid = ?");
   const deleteChunksByDocument = db.prepare("DELETE FROM memory_chunks WHERE document_id = ?");
   const deleteDocumentById = db.prepare("DELETE FROM memory_documents WHERE id = ?");
+  const listDocumentsBySourceId = db.prepare<MemoryDocumentRow, [string]>(
+    "SELECT id FROM memory_documents WHERE source_id = ?"
+  );
   const insertDocument = db.prepare(`
     INSERT INTO memory_documents (
       id, workspace_key, owner_id, scope, kind, source_id, title, content, metadata_json, created_at, updated_at
@@ -431,6 +448,18 @@ export function createMemoryStore(dbPath: string): MemoryStore {
   );
   const forgetMemoryRow = db.prepare(
     "UPDATE memories SET status = 'archived', updated_at = ? WHERE id = ?"
+  );
+  const insertForgetMarker = db.prepare(`
+	    INSERT INTO memory_forget_markers (source_id, memory_id, action, reason, requested_at)
+	    VALUES (?, ?, ?, ?, ?)
+	    ON CONFLICT(source_id) DO UPDATE SET
+	      memory_id = excluded.memory_id,
+	      action = excluded.action,
+	      reason = excluded.reason,
+	      requested_at = excluded.requested_at
+	  `);
+  const getForgetMarkerBySourceId = db.prepare<{ source_id: string }, [string]>(
+    "SELECT source_id FROM memory_forget_markers WHERE source_id = ?"
   );
   const searchChunkRowsByWorkspace = db.prepare<
     {
@@ -518,6 +547,43 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     return row ? memoryRowToMemory(row) : undefined;
   }
 
+  function deleteIndexedDocument(documentId: string): void {
+    const existingRows = deleteChunkFtsRows.all(documentId);
+    for (const row of existingRows) {
+      deleteChunkFtsRow.run(row.rowid);
+    }
+    deleteChunksByDocument.run(documentId);
+    deleteDocumentById.run(documentId);
+  }
+
+  function deleteIndexedDocumentsForSource(sourceId: string): void {
+    for (const row of listDocumentsBySourceId.all(sourceId)) {
+      deleteIndexedDocument(row.id);
+    }
+  }
+
+  function markSourcesForgotten(input: {
+    memory: Memory;
+    action: MemoryForgetAction;
+    reason: string;
+    requestedAt: string;
+  }): void {
+    const sourceIds = new Set([...input.memory.sourceEventIds, ...input.memory.sourceDocumentIds]);
+    for (const sourceId of sourceIds) {
+      insertForgetMarker.run(
+        sourceId,
+        input.memory.id,
+        input.action,
+        input.reason,
+        input.requestedAt
+      );
+    }
+  }
+
+  function sourceIsForgotten(sourceId: string): boolean {
+    return getForgetMarkerBySourceId.get(sourceId) != null;
+  }
+
   return {
     close() {
       db.close();
@@ -549,6 +615,10 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     getEventByKey,
     getMemoryById: getMemory,
     indexDocument(document) {
+      if (sourceIsForgotten(document.sourceId) || sourceIsForgotten(document.id)) {
+        deleteIndexedDocument(document.id);
+        return;
+      }
       withTransaction(() => {
         const existingRows = deleteChunkFtsRows.all(document.id);
         for (const row of existingRows) {
@@ -666,9 +736,33 @@ export function createMemoryStore(dbPath: string): MemoryStore {
               : listCandidateMemoryRows.all(limit);
       return rows.map((row) => MemoryCandidateSchema.parse(memoryRowToMemory(row)));
     },
+    isSourceForgotten(sourceId) {
+      return sourceIsForgotten(sourceId);
+    },
     forgetMemory(request) {
       const parsed = request;
+      const action = parsed.action ?? "archive";
+      const memory = getMemory(parsed.memoryId);
       forgetMemoryRow.run(parsed.requestedAt, parsed.memoryId);
+      if (!memory) return;
+
+      markSourcesForgotten({
+        memory,
+        action,
+        reason: parsed.reason,
+        requestedAt: parsed.requestedAt,
+      });
+
+      if (action !== "archive") {
+        withTransaction(() => {
+          for (const documentId of memory.sourceDocumentIds) {
+            deleteIndexedDocument(documentId);
+          }
+          for (const sourceEventId of memory.sourceEventIds) {
+            deleteIndexedDocumentsForSource(sourceEventId);
+          }
+        });
+      }
     },
   };
 }

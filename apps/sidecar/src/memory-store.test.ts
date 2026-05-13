@@ -202,6 +202,60 @@ describe("memory store", () => {
     expect(store.listActiveMemories({ workspaceKey: "workspace:one" })).toHaveLength(0);
   });
 
+  test("delete forget removes linked indexed content and marks sources forgotten", () => {
+    const store = makeStore();
+    const memory: Memory = {
+      id: "memory-1",
+      workspaceKey: "workspace:one",
+      ownerId: "local-owner",
+      scope: "workspace",
+      type: "preference",
+      title: "Style",
+      body: "Prefer renewal summaries.",
+      status: "active",
+      confidence: 0.9,
+      freshness: "fresh",
+      sourceEventIds: ["memory-event-1"],
+      sourceDocumentIds: ["doc-1"],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    };
+
+    store.recordEvent(event());
+    store.indexDocument({
+      id: "doc-1",
+      workspaceKey: "workspace:one",
+      ownerId: "local-owner",
+      scope: "task",
+      kind: "event",
+      sourceId: "memory-event-1",
+      title: "Weekly update",
+      content: "Renewal summaries should be concise.",
+      metadata: {},
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    });
+    store.upsertMemory(memory);
+
+    expect(
+      store.searchChunks({ workspaceKey: "workspace:one", query: "renewal", limit: 5 })
+    ).toHaveLength(1);
+
+    store.forgetMemory({
+      memoryId: "memory-1",
+      action: "delete",
+      reason: "User asked to forget it",
+      requestedAt: "2026-05-13T00:01:00.000Z",
+    });
+
+    expect(store.listActiveMemories({ workspaceKey: "workspace:one" })).toHaveLength(0);
+    expect(
+      store.searchChunks({ workspaceKey: "workspace:one", query: "renewal", limit: 5 })
+    ).toHaveLength(0);
+    expect(store.isSourceForgotten("memory-event-1")).toBe(true);
+    expect(store.isSourceForgotten("doc-1")).toBe(true);
+  });
+
   test("lists active memories inside combined workspace and owner boundaries", () => {
     const store = makeStore();
     const baseMemory: Memory = {

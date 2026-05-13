@@ -16,6 +16,7 @@ import {
   InboxResolveRequestSchema,
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
+  MemoryForgetRequestSchema,
   MemoryReviewDecisionRequestSchema,
   MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
@@ -2168,6 +2169,31 @@ export async function handleMemoryReviewDecision(
   return Response.json(updated);
 }
 
+export async function handleMemoryForget(
+  req: Request,
+  store: MemoryStore | undefined = memoryStore
+): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  if (!store) {
+    return Response.json({ error: "Memory store is unavailable" }, { status: 503 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = MemoryForgetRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  store.forgetMemory(parsed.data);
+  return Response.json({ ok: true });
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -2200,6 +2226,10 @@ const server = Bun.serve({
 
     if (pathname === "/memory/review/decision") {
       return handleMemoryReviewDecision(req);
+    }
+
+    if (pathname === "/memory/forget") {
+      return handleMemoryForget(req);
     }
 
     if (pathname === "/spawn") {

@@ -700,6 +700,7 @@ export function createMemoryManager(options: CreateMemoryManagerOptions): Tesser
         for (const eventId of input.eventIds) {
           if (seen.has(eventId)) continue;
           seen.add(eventId);
+          if (store.isSourceForgotten(eventId)) continue;
           const event = store.getEventById(eventId);
           if (!event) continue;
           events.set(eventId, event);

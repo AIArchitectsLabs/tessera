@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MemoryForgetRequestSchema,
   MemoryReviewDecisionRequestSchema,
   MemoryReviewListResultSchema,
   MemoryRuntimeStatusSchema,
@@ -78,5 +79,16 @@ describe("memory contracts", () => {
     });
 
     expect(parsed.memoryId).toBe("memory-candidate-1");
+  });
+
+  test("parses explicit memory forget actions", () => {
+    const parsed = MemoryForgetRequestSchema.parse({
+      memoryId: "memory-active-1",
+      action: "delete",
+      reason: "User asked Tessera to forget this memory.",
+      requestedAt: "2026-05-13T00:00:00.000Z",
+    });
+
+    expect(parsed.action).toBe("delete");
   });
 });

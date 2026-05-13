@@ -2057,8 +2057,12 @@ export const MemoryReviewDecisionRequestSchema = z.object({
 });
 export type MemoryReviewDecisionRequest = z.infer<typeof MemoryReviewDecisionRequestSchema>;
 
+export const MemoryForgetActionSchema = z.enum(["archive", "redact", "delete"]);
+export type MemoryForgetAction = z.infer<typeof MemoryForgetActionSchema>;
+
 export const MemoryForgetRequestSchema = z.object({
   memoryId: z.string().min(1),
+  action: MemoryForgetActionSchema.optional(),
   reason: z.string().min(1),
   requestedAt: z.string().datetime(),
 });

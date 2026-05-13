@@ -19,6 +19,7 @@ let buildWorkflowExecutionOptions:
   | typeof import("./server.js").buildWorkflowExecutionOptions
   | undefined;
 let createServerMemoryRuntime: typeof import("./server.js").createServerMemoryRuntime | undefined;
+let handleMemoryForget: typeof import("./server.js").handleMemoryForget | undefined;
 let handleMemoryReviewDecision: typeof import("./server.js").handleMemoryReviewDecision | undefined;
 let handleMemoryReviewList: typeof import("./server.js").handleMemoryReviewList | undefined;
 let handleMemoryStatus: typeof import("./server.js").handleMemoryStatus | undefined;
@@ -40,6 +41,7 @@ beforeAll(async () => {
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
+    handleMemoryForget = serverModule.handleMemoryForget;
     handleMemoryReviewDecision = serverModule.handleMemoryReviewDecision;
     handleMemoryReviewList = serverModule.handleMemoryReviewList;
     handleMemoryStatus = serverModule.handleMemoryStatus;
@@ -96,6 +98,9 @@ describe("playbook run preference save error mapping", () => {
           },
           listCandidateMemories() {
             return [];
+          },
+          isSourceForgotten() {
+            return false;
           },
           forgetMemory() {},
         };
@@ -236,6 +241,9 @@ describe("playbook run preference save error mapping", () => {
       listCandidateMemories() {
         return [storedCandidate];
       },
+      isSourceForgotten() {
+        return false;
+      },
       forgetMemory() {},
     };
 
@@ -267,6 +275,69 @@ describe("playbook run preference save error mapping", () => {
       status: "active",
       updatedAt: "2026-05-13T00:10:00.000Z",
     });
+  });
+
+  test("memory forget handler accepts explicit delete requests", async () => {
+    expect(handleMemoryForget).toBeDefined();
+    const requests: unknown[] = [];
+    const store = {
+      close() {},
+      recordEvent(event: never) {
+        return event;
+      },
+      getEventById() {
+        return undefined;
+      },
+      getEventByKey() {
+        return undefined;
+      },
+      getMemoryById() {
+        return undefined;
+      },
+      indexDocument() {},
+      searchChunks() {
+        return [];
+      },
+      upsertMemory(memory: never) {
+        return memory;
+      },
+      listActiveMemories() {
+        return [];
+      },
+      listCandidateMemories() {
+        return [];
+      },
+      isSourceForgotten() {
+        return false;
+      },
+      forgetMemory(request: unknown) {
+        requests.push(request);
+      },
+    };
+
+    const response = await handleMemoryForget?.(
+      new Request("http://localhost/memory/forget", {
+        method: "POST",
+        body: JSON.stringify({
+          memoryId: "memory-active",
+          action: "delete",
+          reason: "User asked Tessera to forget this.",
+          requestedAt: "2026-05-13T00:15:00.000Z",
+        }),
+      }),
+      store
+    );
+
+    expect(response?.status).toBe(200);
+    expect(requests).toEqual([
+      {
+        memoryId: "memory-active",
+        action: "delete",
+        reason: "User asked Tessera to forget this.",
+        requestedAt: "2026-05-13T00:15:00.000Z",
+      },
+    ]);
+    expect(await response?.json()).toEqual({ ok: true });
   });
 
   test("falls back to noop memory manager when memory store startup fails", async () => {

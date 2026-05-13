@@ -5,6 +5,7 @@ import type {
   IntegrationConnectionTestResult,
   IntegrationSettingsRead,
   IntegrationSettingsSaveRequest,
+  MemoryForgetRequest,
   MemoryReviewDecisionRequest,
   MemoryReviewListResult,
   MemoryRuntimeStatus,
@@ -280,6 +281,17 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         return { ...active, status: "archived", updatedAt: decision.decidedAt };
       }
       throw new Error("Unknown memory");
+    }
+    case "memory_forget": {
+      const request = args?.request as MemoryForgetRequest | undefined;
+      if (!request) throw new Error("Missing memory forget request");
+      const active = memoryReview.active.find((memory) => memory.id === request.memoryId);
+      if (!active) throw new Error("Unknown memory");
+      memoryReview = {
+        ...memoryReview,
+        active: memoryReview.active.filter((memory) => memory.id !== request.memoryId),
+      };
+      return { ok: true };
     }
     case "google_workspace_oauth_client_status":
       return googleWorkspaceOAuthClientStatus;
@@ -674,6 +686,28 @@ describe("SettingsView memory flow", () => {
       expect(view.queryByText("Semantic extraction needs review.")).toBeNull();
     });
     expect(view.getAllByText("Meeting brief style").length).toBeGreaterThan(0);
+  });
+
+  test("forgets an active memory with explicit delete action", async () => {
+    const view = await renderMemoryView();
+
+    const activeSection = view.getByText("Weekly style").closest("article");
+    if (!activeSection) throw new Error("Missing active memory section");
+    fireEvent.click(within(activeSection).getByRole("button", { name: /forget/i }));
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some(
+          (call) =>
+            call.command === "memory_forget" &&
+            call.args?.request?.memoryId === "memory-active-style" &&
+            call.args.request.action === "delete"
+        )
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(view.queryByText("Weekly style")).toBeNull();
+    });
   });
 
   test("renders fallback startup warning", async () => {
