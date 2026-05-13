@@ -19,6 +19,8 @@ let buildWorkflowExecutionOptions:
   | typeof import("./server.js").buildWorkflowExecutionOptions
   | undefined;
 let createServerMemoryRuntime: typeof import("./server.js").createServerMemoryRuntime | undefined;
+let handleMemoryReviewDecision: typeof import("./server.js").handleMemoryReviewDecision | undefined;
+let handleMemoryReviewList: typeof import("./server.js").handleMemoryReviewList | undefined;
 let handleMemoryStatus: typeof import("./server.js").handleMemoryStatus | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let requestCodexDeviceCode: typeof import("./server.js").requestCodexDeviceCode | undefined;
@@ -38,6 +40,8 @@ beforeAll(async () => {
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
+    handleMemoryReviewDecision = serverModule.handleMemoryReviewDecision;
+    handleMemoryReviewList = serverModule.handleMemoryReviewList;
     handleMemoryStatus = serverModule.handleMemoryStatus;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
@@ -71,7 +75,13 @@ describe("playbook run preference save error mapping", () => {
           recordEvent(event) {
             return event;
           },
+          getEventById() {
+            return undefined;
+          },
           getEventByKey() {
+            return undefined;
+          },
+          getMemoryById() {
             return undefined;
           },
           indexDocument() {},
@@ -82,6 +92,9 @@ describe("playbook run preference save error mapping", () => {
             return memory;
           },
           listActiveMemories() {
+            return [];
+          },
+          listCandidateMemories() {
             return [];
           },
           forgetMemory() {},
@@ -157,6 +170,103 @@ describe("playbook run preference save error mapping", () => {
       dbPath: "/tmp/tessera-memory.sqlite",
     });
     expect(rejected?.status).toBe(405);
+  });
+
+  test("memory review handlers list and accept candidate memories", async () => {
+    expect(handleMemoryReviewList).toBeDefined();
+    expect(handleMemoryReviewDecision).toBeDefined();
+    const activeMemory = {
+      id: "memory-active",
+      workspaceKey: "workspace:one",
+      ownerId: "local-owner",
+      scope: "workspace" as const,
+      type: "preference" as const,
+      title: "Weekly style",
+      body: "Prefer concise bullets.",
+      status: "active" as const,
+      confidence: 0.92,
+      freshness: "fresh" as const,
+      sourceEventIds: ["event-1"],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    };
+    const candidateMemory = {
+      ...activeMemory,
+      id: "memory-candidate",
+      status: "candidate" as const,
+      confidence: 0.62,
+      rationale: {
+        supportingEventIds: ["event-2"],
+        conflictingMemoryIds: [],
+        promotionReason: "Needs review.",
+        riskFlags: ["low_confidence" as const],
+      },
+    };
+    let storedCandidate = candidateMemory;
+    const store = {
+      close() {},
+      recordEvent(event: never) {
+        return event;
+      },
+      getEventById() {
+        return undefined;
+      },
+      getEventByKey() {
+        return undefined;
+      },
+      getMemoryById(id: string) {
+        if (id === "memory-candidate") return storedCandidate;
+        if (id === "memory-active") return activeMemory;
+        return undefined;
+      },
+      indexDocument() {},
+      searchChunks() {
+        return [];
+      },
+      upsertMemory(memory: typeof activeMemory | typeof candidateMemory) {
+        if (memory.id === "memory-candidate") {
+          storedCandidate = memory as typeof candidateMemory;
+        }
+        return memory;
+      },
+      listActiveMemories() {
+        return [activeMemory];
+      },
+      listCandidateMemories() {
+        return [storedCandidate];
+      },
+      forgetMemory() {},
+    };
+
+    const listResponse = await handleMemoryReviewList?.(
+      new Request("http://localhost/memory/review", { method: "GET" }),
+      store
+    );
+    const decisionResponse = await handleMemoryReviewDecision?.(
+      new Request("http://localhost/memory/review/decision", {
+        method: "POST",
+        body: JSON.stringify({
+          memoryId: "memory-candidate",
+          decision: "accept",
+          reason: "User accepted.",
+          decidedAt: "2026-05-13T00:10:00.000Z",
+        }),
+      }),
+      store
+    );
+
+    expect(listResponse?.status).toBe(200);
+    expect(await listResponse?.json()).toEqual({
+      active: [activeMemory],
+      candidates: [candidateMemory],
+    });
+    expect(decisionResponse?.status).toBe(200);
+    expect(await decisionResponse?.json()).toMatchObject({
+      id: "memory-candidate",
+      status: "active",
+      updatedAt: "2026-05-13T00:10:00.000Z",
+    });
   });
 
   test("falls back to noop memory manager when memory store startup fails", async () => {

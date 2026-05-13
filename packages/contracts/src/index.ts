@@ -1868,6 +1868,19 @@ export type MemoryFreshness = z.infer<typeof MemoryFreshnessSchema>;
 export const MemoryStatusSchema = z.enum(["candidate", "active", "rejected", "archived"]);
 export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
 
+export const MemoryRuntimeStatusSchema = z.object({
+  enabled: z.boolean(),
+  mode: z.enum(["active", "disabled", "fallback"]),
+  dbPath: z.string(),
+  startupWarning: z
+    .object({
+      type: z.literal("tessera.memory.startup_failed"),
+      message: z.string(),
+    })
+    .optional(),
+});
+export type MemoryRuntimeStatus = z.infer<typeof MemoryRuntimeStatusSchema>;
+
 export const MemoryEventSchema = z.object({
   id: z.string().min(1),
   eventKey: z.string().min(1),
@@ -2022,6 +2035,12 @@ export const MemoryCandidateSchema = MemorySchema.extend({
 });
 export type MemoryCandidate = z.infer<typeof MemoryCandidateSchema>;
 
+export const MemoryReviewListResultSchema = z.object({
+  active: z.array(MemorySchema),
+  candidates: z.array(MemoryCandidateSchema),
+});
+export type MemoryReviewListResult = z.infer<typeof MemoryReviewListResultSchema>;
+
 export const MemoryPromotionDecisionSchema = z.object({
   candidateId: z.string().min(1),
   decision: z.enum(["accept", "reject", "archive"]),
@@ -2029,6 +2048,14 @@ export const MemoryPromotionDecisionSchema = z.object({
   decidedAt: z.string().datetime(),
 });
 export type MemoryPromotionDecision = z.infer<typeof MemoryPromotionDecisionSchema>;
+
+export const MemoryReviewDecisionRequestSchema = z.object({
+  memoryId: z.string().min(1),
+  decision: z.enum(["accept", "reject", "archive"]),
+  reason: z.string().min(1),
+  decidedAt: z.string().datetime(),
+});
+export type MemoryReviewDecisionRequest = z.infer<typeof MemoryReviewDecisionRequestSchema>;
 
 export const MemoryForgetRequestSchema = z.object({
   memoryId: z.string().min(1),

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Memory, MemoryEvent } from "@tessera/contracts";
+import type { Memory, MemoryCandidate, MemoryEvent } from "@tessera/contracts";
 import { createMemoryStore } from "./memory-store.js";
 
 const stores: ReturnType<typeof createMemoryStore>[] = [];
@@ -43,6 +43,7 @@ describe("memory store", () => {
     const second = store.recordEvent(event({ id: "memory-event-2", content: "Changed retry" }));
 
     expect(second.id).toBe(first.id);
+    expect(store.getEventById(first.id)?.eventKey).toBe("task:task-1:turn:turn-1:completed");
     expect(store.getEventByKey("task:task-1:turn:turn-1:completed")?.content).toBe(
       "Draft a weekly revenue update."
     );
@@ -228,6 +229,71 @@ describe("memory store", () => {
         .listActiveMemories({ workspaceKey: "workspace:one", ownerId: "owner-one" })
         .map((memory) => memory.id)
     ).toEqual(["memory-1"]);
+  });
+
+  test("lists active memories across workspaces for review", () => {
+    const store = makeStore();
+    const baseMemory: Memory = {
+      id: "memory-1",
+      workspaceKey: "workspace:one",
+      ownerId: "owner-one",
+      scope: "workspace",
+      type: "preference",
+      title: "Weekly style",
+      body: "Prefer concise bullets.",
+      status: "active",
+      confidence: 0.9,
+      freshness: "fresh",
+      sourceEventIds: ["event-1"],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    };
+
+    store.upsertMemory(baseMemory);
+    store.upsertMemory({ ...baseMemory, id: "memory-2", workspaceKey: "workspace:two" });
+    store.upsertMemory({ ...baseMemory, id: "memory-3", ownerId: "owner-two" });
+
+    expect(store.listActiveMemories({ ownerId: "owner-one" }).map((memory) => memory.id)).toEqual([
+      "memory-2",
+      "memory-1",
+    ]);
+  });
+
+  test("lists candidate memories inside combined workspace and owner boundaries", () => {
+    const store = makeStore();
+    const baseCandidate: MemoryCandidate = {
+      id: "memory-candidate-1",
+      workspaceKey: "workspace:one",
+      ownerId: "owner-one",
+      scope: "workspace",
+      type: "preference",
+      title: "Weekly update style",
+      body: "Prefer concise weekly updates.",
+      status: "candidate",
+      confidence: 0.72,
+      freshness: "fresh",
+      sourceEventIds: ["memory-event-1"],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+      rationale: {
+        supportingEventIds: ["memory-event-1"],
+        conflictingMemoryIds: [],
+        promotionReason: "Explicit memory request.",
+        riskFlags: [],
+      },
+    };
+
+    store.upsertMemory(baseCandidate);
+    store.upsertMemory({ ...baseCandidate, id: "memory-candidate-2", ownerId: "owner-two" });
+    store.upsertMemory({ ...baseCandidate, id: "memory-active-1", status: "active" });
+
+    expect(
+      store
+        .listCandidateMemories({ workspaceKey: "workspace:one", ownerId: "owner-one" })
+        .map((memory) => memory.id)
+    ).toEqual(["memory-candidate-1"]);
   });
 
   test("normalizes non-positive active memory limits to the default bound", () => {

@@ -2,6 +2,7 @@ import type {
   AgentProfile,
   AgentProviderConfig,
   AgentRuntimeContext,
+  MemoryEvent,
   ModelRuntimeCredential,
   TaskEvent,
   TaskExecutionConfig,
@@ -59,7 +60,8 @@ export interface RunTaskTurnOptions {
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   promptOverride?: string;
-  memory?: Pick<TesseraMemoryManager, "recordTaskTurn" | "recallForTask">;
+  memory?: Pick<TesseraMemoryManager, "recordTaskTurn" | "recallForTask"> &
+    Partial<Pick<TesseraMemoryManager, "proposeCandidates">>;
   store: TaskStore;
   taskId: string;
   userTurnId: string;
@@ -158,9 +160,40 @@ async function bestEffortRecordTurn(
   memory: RunTaskTurnOptions["memory"],
   task: NonNullable<ReturnType<TaskStore["getTask"]>>,
   turn: TaskTurn
-): Promise<void> {
-  if (!memory) return;
-  await withTimeout(() => memory.recordTaskTurn({ task, turn }), undefined, MEMORY_HOOK_TIMEOUT_MS);
+): Promise<MemoryEvent | undefined> {
+  if (!memory) return undefined;
+  return withTimeout(
+    async () => {
+      const event = await memory.recordTaskTurn({ task, turn });
+      return event && typeof event === "object" && "id" in event ? event : undefined;
+    },
+    undefined,
+    MEMORY_HOOK_TIMEOUT_MS
+  );
+}
+
+function scheduleMemoryProposal(input: {
+  memory: RunTaskTurnOptions["memory"];
+  events: Array<MemoryEvent | undefined>;
+  provider: AgentProviderConfig;
+  credential?: ModelRuntimeCredential | string;
+}): void {
+  const eventIds = input.events
+    .map((event) => event?.id)
+    .filter((eventId): eventId is string => typeof eventId === "string" && eventId.length > 0);
+  const proposeCandidates = input.memory?.proposeCandidates;
+  if (!proposeCandidates || eventIds.length === 0) return;
+
+  void withTimeout(
+    () =>
+      proposeCandidates({
+        eventIds,
+        provider: input.provider,
+        ...(input.credential ? { credential: input.credential } : {}),
+      }),
+    [],
+    MEMORY_HOOK_TIMEOUT_MS
+  );
 }
 
 async function bestEffortRecall(
@@ -289,7 +322,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     const registry = createTesseraSkillRegistry({ workspaceRoot: task.workspaceRoot });
     const prompt = opts.promptOverride ?? userTurn.content;
     const memoryContext = await bestEffortRecall(opts.memory, task, prompt);
-    await bestEffortRecordTurn(opts.memory, task, updatedUserTurn);
+    const userMemoryEvent = await bestEffortRecordTurn(opts.memory, task, updatedUserTurn);
 
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
@@ -407,7 +440,13 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       emittedAt: new Date().toISOString(),
       turn: completedAgentTurn,
     });
-    await bestEffortRecordTurn(opts.memory, task, completedAgentTurn);
+    const agentMemoryEvent = await bestEffortRecordTurn(opts.memory, task, completedAgentTurn);
+    scheduleMemoryProposal({
+      memory: opts.memory,
+      events: [userMemoryEvent, agentMemoryEvent],
+      provider,
+      ...(credential ? { credential } : {}),
+    });
 
     if (result.boundaryViolations > 0) {
       store.updateTask(taskId, {

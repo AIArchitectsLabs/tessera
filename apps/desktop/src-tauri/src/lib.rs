@@ -1023,6 +1023,37 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn memory_status_get(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
+    let json = state
+        .get("/memory/status")
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn memory_review_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
+    let json = state
+        .get("/memory/review")
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn memory_review_decide(
+    state: State<'_, SidecarHandle>,
+    decision: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::to_string(&decision).map_err(|e| e.to_string())?;
+    let json = state
+        .post("/memory/review/decision", &body)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
 async fn run_workspace_cli_command(
     app: &AppHandle,
     args: &[&str],
@@ -2557,6 +2588,9 @@ pub fn run() {
             integration_credential_delete,
             integration_settings_get,
             integration_settings_save,
+            memory_review_decide,
+            memory_review_list,
+            memory_status_get,
             model_connection_test,
             model_codex_oauth_device_code,
             model_codex_oauth_poll,

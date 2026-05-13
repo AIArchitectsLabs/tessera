@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { normalize } from "node:path";
 import type {
+  AgentProviderConfig,
   Memory,
-  MemoryCandidate,
   MemoryCapturePolicy,
   MemoryEvent,
   MemoryForgetRequest,
@@ -11,6 +11,7 @@ import type {
   MemoryRecallRequest,
   MemoryRecallResult,
   MemorySensitivity,
+  ModelRuntimeCredential,
 } from "@tessera/contracts";
 
 const MEMORY_OPEN_TAG = "<tessera-memory-context>";
@@ -49,7 +50,11 @@ export interface MemoryProvider {
   initialize(context?: { dbPath?: string }): Promise<void>;
   record(event: MemoryEvent): Promise<void>;
   retrieve(query: MemoryRecallRequest): Promise<MemoryRecallResult>;
-  proposeCandidates(input: { eventIds: string[] }): Promise<MemoryCandidate[]>;
+  proposeCandidates(input: {
+    eventIds: string[];
+    provider?: AgentProviderConfig;
+    credential?: ModelRuntimeCredential | string;
+  }): Promise<Memory[]>;
   promote(decision: MemoryPromotionDecision): Promise<Memory>;
   forget(request: MemoryForgetRequest): Promise<void>;
   shutdown(): Promise<void>;

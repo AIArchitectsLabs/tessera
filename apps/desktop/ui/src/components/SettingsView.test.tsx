@@ -5,6 +5,9 @@ import type {
   IntegrationConnectionTestResult,
   IntegrationSettingsRead,
   IntegrationSettingsSaveRequest,
+  MemoryReviewDecisionRequest,
+  MemoryReviewListResult,
+  MemoryRuntimeStatus,
   ModelSettingsRead,
   SearchProvider,
 } from "@tessera/contracts";
@@ -46,6 +49,7 @@ installDom();
 type InvokeCall = {
   command: string;
   args?: {
+    decision?: MemoryReviewDecisionRequest;
     deviceAuthId?: string;
     request?: Record<string, unknown>;
     userCode?: string;
@@ -118,6 +122,55 @@ const initialIntegrationSettings = (): IntegrationSettingsRead => ({
 });
 
 let integrationSettings = initialIntegrationSettings();
+let memoryStatus: MemoryRuntimeStatus | Error = {
+  enabled: true,
+  mode: "active",
+  dbPath: "/tmp/tessera-memory.sqlite",
+};
+let memoryReview: MemoryReviewListResult = {
+  active: [
+    {
+      id: "memory-active-style",
+      workspaceKey: "workspace:one",
+      ownerId: "local-owner",
+      scope: "workspace",
+      type: "preference",
+      title: "Weekly style",
+      body: "Prefer concise bullets.",
+      status: "active",
+      confidence: 0.92,
+      freshness: "fresh",
+      sourceEventIds: ["event-1"],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    },
+  ],
+  candidates: [
+    {
+      id: "memory-candidate-style",
+      workspaceKey: "workspace:one",
+      ownerId: "local-owner",
+      scope: "workspace",
+      type: "preference",
+      title: "Meeting brief style",
+      body: "Prefer action items first.",
+      status: "candidate",
+      confidence: 0.62,
+      freshness: "fresh",
+      sourceEventIds: ["event-2"],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+      rationale: {
+        supportingEventIds: ["event-2"],
+        conflictingMemoryIds: [],
+        promotionReason: "Semantic extraction needs review.",
+        riskFlags: ["low_confidence"],
+      },
+    },
+  ],
+};
 let googleWorkspaceOAuthClientStatus = {
   hasClient: false,
   source: "missing",
@@ -188,6 +241,46 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
       return { status: "pending" };
     case "integration_settings_get":
       return integrationSettings;
+    case "memory_status_get":
+      if (memoryStatus instanceof Error) {
+        throw memoryStatus;
+      }
+      return memoryStatus;
+    case "memory_review_list":
+      return memoryReview;
+    case "memory_review_decide": {
+      const decision = args?.decision;
+      if (!decision) throw new Error("Missing memory decision");
+      const candidate = memoryReview.candidates.find((memory) => memory.id === decision.memoryId);
+      const active = memoryReview.active.find((memory) => memory.id === decision.memoryId);
+      if (candidate && decision.decision === "accept") {
+        const accepted = {
+          ...candidate,
+          status: "active" as const,
+          updatedAt: decision.decidedAt,
+        };
+        memoryReview = {
+          active: [accepted, ...memoryReview.active],
+          candidates: memoryReview.candidates.filter((memory) => memory.id !== decision.memoryId),
+        };
+        return accepted;
+      }
+      if (candidate && decision.decision !== "accept") {
+        memoryReview = {
+          ...memoryReview,
+          candidates: memoryReview.candidates.filter((memory) => memory.id !== decision.memoryId),
+        };
+        return { ...candidate, status: decision.decision === "reject" ? "rejected" : "archived" };
+      }
+      if (active && decision.decision === "archive") {
+        memoryReview = {
+          ...memoryReview,
+          active: memoryReview.active.filter((memory) => memory.id !== decision.memoryId),
+        };
+        return { ...active, status: "archived", updatedAt: decision.decidedAt };
+      }
+      throw new Error("Unknown memory");
+    }
     case "google_workspace_oauth_client_status":
       return googleWorkspaceOAuthClientStatus;
     case "google_workspace_oauth_client_save":
@@ -296,6 +389,55 @@ beforeEach(() => {
     hasCredential: false,
   };
   integrationSettings = initialIntegrationSettings();
+  memoryStatus = {
+    enabled: true,
+    mode: "active",
+    dbPath: "/tmp/tessera-memory.sqlite",
+  };
+  memoryReview = {
+    active: [
+      {
+        id: "memory-active-style",
+        workspaceKey: "workspace:one",
+        ownerId: "local-owner",
+        scope: "workspace",
+        type: "preference",
+        title: "Weekly style",
+        body: "Prefer concise bullets.",
+        status: "active",
+        confidence: 0.92,
+        freshness: "fresh",
+        sourceEventIds: ["event-1"],
+        sourceDocumentIds: [],
+        createdAt: "2026-05-13T00:00:00.000Z",
+        updatedAt: "2026-05-13T00:00:00.000Z",
+      },
+    ],
+    candidates: [
+      {
+        id: "memory-candidate-style",
+        workspaceKey: "workspace:one",
+        ownerId: "local-owner",
+        scope: "workspace",
+        type: "preference",
+        title: "Meeting brief style",
+        body: "Prefer action items first.",
+        status: "candidate",
+        confidence: 0.62,
+        freshness: "fresh",
+        sourceEventIds: ["event-2"],
+        sourceDocumentIds: [],
+        createdAt: "2026-05-13T00:00:00.000Z",
+        updatedAt: "2026-05-13T00:00:00.000Z",
+        rationale: {
+          supportingEventIds: ["event-2"],
+          conflictingMemoryIds: [],
+          promotionReason: "Semantic extraction needs review.",
+          riskFlags: ["low_confidence"],
+        },
+      },
+    ],
+  };
   googleWorkspaceOAuthClientStatus = {
     hasClient: false,
     source: "missing",
@@ -337,6 +479,19 @@ async function renderModelView() {
   });
 
   await view.findByRole("heading", { name: "Model" });
+  return view;
+}
+
+async function renderMemoryView() {
+  const view = render(React.createElement(SettingsView, { onClose: () => undefined }));
+
+  await waitFor(() => {
+    expect(invokeCalls.some((call) => call.command === "memory_status_get")).toBe(true);
+  });
+
+  fireEvent.click(view.getByRole("button", { name: /memory/i }));
+
+  await view.findByRole("heading", { name: "Memory" });
   return view;
 }
 
@@ -474,6 +629,80 @@ describe("SettingsView search flow", () => {
         },
       });
     });
+  });
+});
+
+describe("SettingsView memory flow", () => {
+  test("renders active local memory status", async () => {
+    const view = await renderMemoryView();
+
+    expect(view.getByText("Local memory store")).toBeTruthy();
+    expect(view.getByText("Memory capture and recall are available for local tasks.")).toBeTruthy();
+    expect(view.getAllByText("Active").length).toBeGreaterThan(0);
+    expect(view.getByText("/tmp/tessera-memory.sqlite")).toBeTruthy();
+  });
+
+  test("renders memory review candidates and active memories", async () => {
+    const view = await renderMemoryView();
+
+    expect(view.getByText("Review queue")).toBeTruthy();
+    expect(view.getByText("Meeting brief style")).toBeTruthy();
+    expect(view.getByText("Prefer action items first.")).toBeTruthy();
+    expect(view.getByText("Semantic extraction needs review.")).toBeTruthy();
+    expect(view.getByText("Active memories")).toBeTruthy();
+    expect(view.getByText("Weekly style")).toBeTruthy();
+  });
+
+  test("accepts a review candidate and refreshes the memory lists", async () => {
+    const view = await renderMemoryView();
+
+    const candidateSection = view.getByText("Meeting brief style").closest("article");
+    if (!candidateSection) throw new Error("Missing candidate section");
+    fireEvent.click(within(candidateSection).getByRole("button", { name: /accept/i }));
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some(
+          (call) =>
+            call.command === "memory_review_decide" &&
+            call.args?.decision?.memoryId === "memory-candidate-style" &&
+            call.args.decision.decision === "accept"
+        )
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(view.queryByText("Semantic extraction needs review.")).toBeNull();
+    });
+    expect(view.getAllByText("Meeting brief style").length).toBeGreaterThan(0);
+  });
+
+  test("renders fallback startup warning", async () => {
+    memoryStatus = {
+      enabled: false,
+      mode: "fallback",
+      dbPath: "/unavailable/memory.sqlite",
+      startupWarning: {
+        type: "tessera.memory.startup_failed",
+        message: "sqlite unavailable",
+      },
+    };
+
+    const view = await renderMemoryView();
+
+    expect(
+      view.getByText("Memory is unavailable, so Tessera is using the no-op fallback.")
+    ).toBeTruthy();
+    expect(view.getByText("sqlite unavailable")).toBeTruthy();
+  });
+
+  test("memory status errors do not block the rest of settings", async () => {
+    memoryStatus = new Error("memory endpoint unavailable");
+    const view = await renderMemoryView();
+
+    expect(view.getByRole("heading", { name: "Memory" })).toBeTruthy();
+    expect(view.getByText("Memory status is not available from the sidecar.")).toBeTruthy();
+    expect(view.getByText("memory endpoint unavailable")).toBeTruthy();
+    expect(invokeCalls.some((call) => call.command === "model_settings_get")).toBe(true);
   });
 });
 

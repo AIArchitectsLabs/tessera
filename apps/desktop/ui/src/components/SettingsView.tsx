@@ -27,13 +27,33 @@ import type {
   IntegrationProvider,
   IntegrationSettingsRead,
   IntegrationSettingsSaveRequest,
+  Memory,
+  MemoryCandidate,
+  MemoryReviewDecisionRequest,
+  MemoryReviewListResult,
+  MemoryRuntimeStatus,
   ModelConnectionTestResult,
   ModelProvider,
   ModelSettingsRead,
   SearchMode,
   SearchProvider,
 } from "@tessera/contracts";
-import { Bot, Box, KeyRound, Loader2, Search, Trash2, Wifi, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  Bot,
+  Box,
+  Check,
+  Database,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  Search,
+  Trash2,
+  Wifi,
+  X,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AgentSettingsView } from "./AgentSettingsView";
 
@@ -97,6 +117,13 @@ async function invokeWithTimeout<T>(
 export function SettingsView({ onClose }: SettingsViewProps) {
   const [settings, setSettings] = useState<ModelSettingsRead | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<MemoryRuntimeStatus | null>(null);
+  const [memoryReview, setMemoryReview] = useState<MemoryReviewListResult>({
+    active: [],
+    candidates: [],
+  });
+  const [memoryStatusMessage, setMemoryStatusMessage] = useState<StatusMessage | null>(null);
+  const [memoryReviewMessage, setMemoryReviewMessage] = useState<StatusMessage | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("openai");
   const [selectedIntegration, setSelectedIntegration] =
     useState<IntegrationProvider>("google-workspace");
@@ -117,6 +144,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   >([]);
   const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
+  const [memoryLoading, setMemoryLoading] = useState(true);
+  const [memoryReviewLoading, setMemoryReviewLoading] = useState(true);
   const [activeModelAction, setActiveModelAction] = useState<
     "codexSignIn" | "remove" | "save" | "test" | null
   >(null);
@@ -126,7 +155,10 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
     null
   );
-  const [activeTab, setActiveTab] = useState<"model" | "integrations" | "agents">("model");
+  const [activeMemoryAction, setActiveMemoryAction] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"model" | "integrations" | "memory" | "agents">(
+    "model"
+  );
   const modelRequestIdRef = useRef(0);
   const integrationRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
@@ -139,10 +171,19 @@ export function SettingsView({ onClose }: SettingsViewProps) {
 
     async function loadSettings() {
       setLoading(true);
+      setMemoryLoading(true);
       setStatus(null);
       setIntegrationStatus(null);
       setSearchStatus(null);
+      setMemoryStatusMessage(null);
+      setMemoryReviewMessage(null);
       try {
+        const memoryStatusResult = invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get")
+          .then((loadedMemoryStatus) => ({ loadedMemoryStatus }))
+          .catch((error: unknown) => ({ error }));
+        const memoryReviewResult = invokeWithTimeout<MemoryReviewListResult>("memory_review_list")
+          .then((loadedMemoryReview) => ({ loadedMemoryReview }))
+          .catch((error: unknown) => ({ error }));
         const [loaded, loadedIntegrations, loadedGoogleWorkspaceOAuthClientStatus] =
           await Promise.all([
             invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
@@ -157,6 +198,36 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         hydrateFromSettings(loaded);
         hydrateFromIntegrations(loadedIntegrations);
         setGoogleWorkspaceOAuthClientStatus(loadedGoogleWorkspaceOAuthClientStatus);
+        const loadedMemoryResult = await memoryStatusResult;
+        if (!active) {
+          return;
+        }
+        if ("loadedMemoryStatus" in loadedMemoryResult) {
+          setMemoryStatus(loadedMemoryResult.loadedMemoryStatus);
+        } else {
+          setMemoryStatusMessage({
+            message:
+              loadedMemoryResult.error instanceof Error
+                ? loadedMemoryResult.error.message
+                : String(loadedMemoryResult.error),
+            tone: "error",
+          });
+        }
+        const loadedReviewResult = await memoryReviewResult;
+        if (!active) {
+          return;
+        }
+        if ("loadedMemoryReview" in loadedReviewResult) {
+          setMemoryReview(loadedReviewResult.loadedMemoryReview);
+        } else {
+          setMemoryReviewMessage({
+            message:
+              loadedReviewResult.error instanceof Error
+                ? loadedReviewResult.error.message
+                : String(loadedReviewResult.error),
+            tone: "error",
+          });
+        }
       } catch (error) {
         if (!active) {
           return;
@@ -168,6 +239,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       } finally {
         if (active) {
           setLoading(false);
+          setMemoryLoading(false);
+          setMemoryReviewLoading(false);
         }
       }
     }
@@ -231,6 +304,99 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       await invokeWithTimeout<GoogleWorkspaceServiceHealth[]>("google_workspace_health");
     if (mountedRef.current && integrationRequestIdRef.current === requestId) {
       setGoogleWorkspaceHealth(health);
+    }
+  }
+
+  async function handleRefreshMemoryStatus() {
+    setMemoryLoading(true);
+    setMemoryStatusMessage(null);
+    try {
+      const next = await invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get");
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryStatus(next);
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryStatusMessage({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setMemoryLoading(false);
+      }
+    }
+    await loadMemoryReview();
+  }
+
+  async function loadMemoryReview() {
+    setMemoryReviewLoading(true);
+    setMemoryReviewMessage(null);
+    try {
+      const next = await invokeWithTimeout<MemoryReviewListResult>("memory_review_list");
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReview(next);
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReviewMessage({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setMemoryReviewLoading(false);
+      }
+    }
+  }
+
+  async function handleMemoryReviewDecision(
+    memoryId: string,
+    decision: MemoryReviewDecisionRequest["decision"]
+  ) {
+    const actionId = `${memoryId}:${decision}`;
+    setActiveMemoryAction(actionId);
+    setMemoryReviewMessage(null);
+    try {
+      await invokeWithTimeout<Memory>("memory_review_decide", {
+        decision: {
+          memoryId,
+          decision,
+          reason: `Memory ${decision} from Settings review.`,
+          decidedAt: new Date().toISOString(),
+        } satisfies MemoryReviewDecisionRequest,
+      });
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReviewMessage({
+        message:
+          decision === "accept"
+            ? "Memory accepted."
+            : decision === "reject"
+              ? "Memory rejected."
+              : "Memory archived.",
+        tone: "success",
+      });
+      await loadMemoryReview();
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setMemoryReviewMessage({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setActiveMemoryAction(null);
+      }
     }
   }
 
@@ -846,6 +1012,19 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         >
           <Search size={16} />
           Integrations
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("memory")}
+          className={cn(
+            "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
+            activeTab === "memory"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+          )}
+        >
+          <Database size={16} />
+          Memory
         </button>
         <button
           type="button"
@@ -1540,6 +1719,278 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               </section>
             </div>
           </div>
+        ) : activeTab === "memory" ? (
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-8 py-6">
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold text-foreground">Memory</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Runtime status for Tessera local memory capture and recall.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <section className="rounded-xl border border-border bg-background px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Database size={18} className="text-muted-foreground" />
+                      <h2 className="text-sm font-semibold text-foreground">Local memory store</h2>
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {memoryStatusDescription(memoryStatus, memoryLoading)}
+                    </p>
+                  </div>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                      memoryStatusTone(memoryStatus, memoryLoading) === "success" &&
+                        "bg-emerald-50 text-emerald-800",
+                      memoryStatusTone(memoryStatus, memoryLoading) === "info" &&
+                        "bg-secondary text-muted-foreground",
+                      memoryStatusTone(memoryStatus, memoryLoading) === "error" &&
+                        "bg-destructive/10 text-destructive"
+                    )}
+                  >
+                    {memoryStatusLabel(memoryStatus, memoryLoading)}
+                  </span>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                      Mode
+                    </div>
+                    <div className="mt-1 text-sm font-medium text-foreground">
+                      {memoryStatus ? memoryModeLabel(memoryStatus.mode) : "Checking"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                      Database
+                    </div>
+                    <div className="mt-1 truncate text-sm font-medium text-foreground">
+                      {memoryStatus?.dbPath ?? "Not available"}
+                    </div>
+                  </div>
+                </div>
+
+                {memoryStatus?.startupWarning && (
+                  <div className="mt-4 flex gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                    <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+                    <span>{memoryStatus.startupWarning.message}</span>
+                  </div>
+                )}
+
+                {memoryStatusMessage && (
+                  <div
+                    className={cn(
+                      "mt-4 rounded-xl border px-3 py-2 text-sm",
+                      memoryStatusMessage.tone === "error" &&
+                        "border-destructive/25 bg-destructive/5 text-destructive",
+                      memoryStatusMessage.tone === "info" &&
+                        "border-border bg-secondary text-foreground",
+                      memoryStatusMessage.tone === "success" &&
+                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    )}
+                  >
+                    {memoryStatusMessage.message}
+                  </div>
+                )}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleRefreshMemoryStatus}
+                    disabled={memoryLoading || memoryReviewLoading}
+                  >
+                    {memoryLoading ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                    Refresh
+                  </Button>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-border bg-background px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-semibold text-foreground">Review queue</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {memoryReview.candidates.length} candidate
+                      {memoryReview.candidates.length === 1 ? "" : "s"} need review.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={loadMemoryReview}
+                    disabled={memoryReviewLoading}
+                  >
+                    {memoryReviewLoading ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={14} />
+                    )}
+                    Refresh
+                  </Button>
+                </div>
+
+                {memoryReviewMessage && (
+                  <div
+                    className={cn(
+                      "mt-4 rounded-xl border px-3 py-2 text-sm",
+                      memoryReviewMessage.tone === "error" &&
+                        "border-destructive/25 bg-destructive/5 text-destructive",
+                      memoryReviewMessage.tone === "info" &&
+                        "border-border bg-secondary text-foreground",
+                      memoryReviewMessage.tone === "success" &&
+                        "border-emerald-200 bg-emerald-50 text-emerald-800"
+                    )}
+                  >
+                    {memoryReviewMessage.message}
+                  </div>
+                )}
+
+                <div className="mt-4 space-y-3">
+                  {memoryReviewLoading && memoryReview.candidates.length === 0 ? (
+                    <div className="rounded-lg border border-border bg-secondary/30 px-3 py-3 text-sm text-muted-foreground">
+                      Loading review queue.
+                    </div>
+                  ) : memoryReview.candidates.length === 0 ? (
+                    <div className="rounded-lg border border-border bg-secondary/30 px-3 py-3 text-sm text-muted-foreground">
+                      No candidate memories need review.
+                    </div>
+                  ) : (
+                    memoryReview.candidates.map((candidate) => (
+                      <article
+                        key={candidate.id}
+                        className="rounded-lg border border-border bg-secondary/20 px-3 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-foreground">
+                              {candidate.title}
+                            </h3>
+                            <p className="mt-1 text-sm text-foreground">{candidate.body}</p>
+                          </div>
+                          <MemoryBadges memory={candidate} />
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {candidate.rationale.promotionReason}
+                        </p>
+                        {candidate.rationale.riskFlags.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {candidate.rationale.riskFlags.map((flag) => (
+                              <span
+                                key={flag}
+                                className="rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-destructive"
+                              >
+                                {memoryRiskLabel(flag)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleMemoryReviewDecision(candidate.id, "accept")}
+                            disabled={activeMemoryAction !== null}
+                          >
+                            {activeMemoryAction === `${candidate.id}:accept` ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Check size={14} />
+                            )}
+                            Accept
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleMemoryReviewDecision(candidate.id, "reject")}
+                            disabled={activeMemoryAction !== null}
+                          >
+                            {activeMemoryAction === `${candidate.id}:reject` ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <XCircle size={14} />
+                            )}
+                            Reject
+                          </Button>
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-border bg-background px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-semibold text-foreground">Active memories</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {memoryReview.active.length === 1
+                        ? "1 active memory"
+                        : `${memoryReview.active.length} active memories`}{" "}
+                      available for recall.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {memoryReviewLoading && memoryReview.active.length === 0 ? (
+                    <div className="rounded-lg border border-border bg-secondary/30 px-3 py-3 text-sm text-muted-foreground">
+                      Loading active memories.
+                    </div>
+                  ) : memoryReview.active.length === 0 ? (
+                    <div className="rounded-lg border border-border bg-secondary/30 px-3 py-3 text-sm text-muted-foreground">
+                      No active memories are stored yet.
+                    </div>
+                  ) : (
+                    memoryReview.active.map((memory) => (
+                      <article
+                        key={memory.id}
+                        className="rounded-lg border border-border bg-secondary/20 px-3 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-foreground">
+                              {memory.title}
+                            </h3>
+                            <p className="mt-1 text-sm text-foreground">{memory.body}</p>
+                          </div>
+                          <MemoryBadges memory={memory} />
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleMemoryReviewDecision(memory.id, "archive")}
+                            disabled={activeMemoryAction !== null}
+                          >
+                            {activeMemoryAction === `${memory.id}:archive` ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Archive size={14} />
+                            )}
+                            Archive
+                          </Button>
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
         ) : (
           <AgentSettingsView />
         )}
@@ -1583,6 +2034,100 @@ function providerConfigFromSettings(
         baseUrl: settings.baseUrl ?? "http://127.0.0.1:11434/v1",
       };
   }
+}
+
+function memoryModeLabel(mode: MemoryRuntimeStatus["mode"]): string {
+  switch (mode) {
+    case "active":
+      return "Active";
+    case "disabled":
+      return "Disabled";
+    case "fallback":
+      return "Fallback";
+  }
+}
+
+function memoryStatusLabel(status: MemoryRuntimeStatus | null, loading: boolean): string {
+  if (loading) return "Checking";
+  if (!status) return "Unavailable";
+  return memoryModeLabel(status.mode);
+}
+
+function memoryStatusTone(status: MemoryRuntimeStatus | null, loading: boolean): StatusTone {
+  if (loading || !status || status.mode === "disabled") return "info";
+  return status.mode === "active" ? "success" : "error";
+}
+
+function memoryStatusDescription(status: MemoryRuntimeStatus | null, loading: boolean): string {
+  if (loading) return "Checking memory runtime status.";
+  if (!status) return "Memory status is not available from the sidecar.";
+  switch (status.mode) {
+    case "active":
+      return "Memory capture and recall are available for local tasks.";
+    case "disabled":
+      return "Memory is explicitly disabled for this runtime.";
+    case "fallback":
+      return "Memory is unavailable, so Tessera is using the no-op fallback.";
+  }
+}
+
+function memoryTypeLabel(type: Memory["type"]): string {
+  switch (type) {
+    case "fact":
+      return "Fact";
+    case "preference":
+      return "Preference";
+    case "procedure":
+      return "Procedure";
+    case "lesson":
+      return "Lesson";
+    case "warning":
+      return "Warning";
+  }
+}
+
+function memoryScopeLabel(scope: Memory["scope"]): string {
+  switch (scope) {
+    case "task":
+      return "Task";
+    case "playbook":
+      return "Playbook";
+    case "user":
+      return "User";
+    case "workspace":
+      return "Workspace";
+    case "system":
+      return "System";
+  }
+}
+
+function memoryRiskLabel(flag: MemoryCandidate["rationale"]["riskFlags"][number]): string {
+  switch (flag) {
+    case "personal":
+      return "Personal";
+    case "secret_suspect":
+      return "Secret suspect";
+    case "stale":
+      return "Conflict";
+    case "low_confidence":
+      return "Low confidence";
+  }
+}
+
+function MemoryBadges({ memory }: { memory: Memory }) {
+  return (
+    <div className="flex flex-wrap justify-end gap-1">
+      <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {memoryTypeLabel(memory.type)}
+      </span>
+      <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {memoryScopeLabel(memory.scope)}
+      </span>
+      <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {Math.round(memory.confidence * 100)}%
+      </span>
+    </div>
+  );
 }
 
 function searchProviderSettings(

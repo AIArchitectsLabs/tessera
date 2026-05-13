@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   type Memory,
+  type MemoryCandidate,
+  MemoryCandidateSchema,
   type MemoryEvent,
   MemoryEventSchema,
   type MemoryForgetRequest,
@@ -44,11 +46,18 @@ export interface MemoryChunkSearchResult {
 export interface MemoryStore {
   close(): void;
   recordEvent(event: MemoryEvent): MemoryEvent;
+  getEventById(id: string): MemoryEvent | undefined;
   getEventByKey(eventKey: string): MemoryEvent | undefined;
+  getMemoryById(id: string): Memory | undefined;
   indexDocument(document: MemoryDocumentInput): void;
   searchChunks(input: MemoryChunkSearchInput): MemoryChunkSearchResult[];
-  upsertMemory(memory: Memory): Memory;
-  listActiveMemories(filter: { workspaceKey: string; ownerId?: string; limit?: number }): Memory[];
+  upsertMemory(memory: Memory | MemoryCandidate): Memory | MemoryCandidate;
+  listActiveMemories(filter: { workspaceKey?: string; ownerId?: string; limit?: number }): Memory[];
+  listCandidateMemories(filter: {
+    workspaceKey?: string;
+    ownerId?: string;
+    limit?: number;
+  }): MemoryCandidate[];
   forgetMemory(request: MemoryForgetRequest): void;
 }
 
@@ -86,6 +95,7 @@ interface MemoryRow {
   source_document_ids_json: string;
   supersedes_memory_id: string | null;
   last_used_at: string | null;
+  rationale_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -109,6 +119,18 @@ function parseJsonArray(value: string): string[] {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function candidateRationale(memory: Memory | MemoryCandidate): MemoryCandidate["rationale"] | null {
+  if (memory.status !== "candidate") return null;
+  const candidate = MemoryCandidateSchema.safeParse(memory);
+  if (candidate.success) return candidate.data.rationale;
+  return {
+    supportingEventIds: memory.sourceEventIds,
+    conflictingMemoryIds: [],
+    promotionReason: "Candidate memory pending review.",
+    riskFlags: [],
+  };
 }
 
 function normalizeMemoryEvent(event: MemoryEvent): MemoryEvent {
@@ -154,7 +176,7 @@ function eventRowToEvent(row: MemoryEventRow): MemoryEvent {
 }
 
 function memoryRowToMemory(row: MemoryRow): Memory {
-  return normalizeMemory({
+  const memory = normalizeMemory({
     id: row.id,
     workspaceKey: row.workspace_key ?? undefined,
     ownerId: row.owner_id ?? undefined,
@@ -172,6 +194,25 @@ function memoryRowToMemory(row: MemoryRow): Memory {
     lastUsedAt: row.last_used_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  });
+  if (memory.status !== "candidate") return memory;
+
+  const rationale = row.rationale_json ? parseJsonObject(row.rationale_json) : {};
+  return MemoryCandidateSchema.parse({
+    ...memory,
+    rationale: {
+      supportingEventIds: Array.isArray(rationale.supportingEventIds)
+        ? rationale.supportingEventIds
+        : memory.sourceEventIds,
+      conflictingMemoryIds: Array.isArray(rationale.conflictingMemoryIds)
+        ? rationale.conflictingMemoryIds
+        : [],
+      promotionReason:
+        typeof rationale.promotionReason === "string"
+          ? rationale.promotionReason
+          : "Candidate memory pending review.",
+      riskFlags: Array.isArray(rationale.riskFlags) ? rationale.riskFlags : [],
+    },
   });
 }
 
@@ -284,10 +325,19 @@ export function createMemoryStore(dbPath: string): MemoryStore {
       source_document_ids_json TEXT NOT NULL,
       supersedes_memory_id TEXT,
       last_used_at TEXT,
+      rationale_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
   `);
+
+  const memoryColumns = db
+    .prepare<{ name: string }, []>("PRAGMA table_info(memories)")
+    .all()
+    .map((column) => column.name);
+  if (!memoryColumns.includes("rationale_json")) {
+    db.exec("ALTER TABLE memories ADD COLUMN rationale_json TEXT");
+  }
 
   const insertEvent = db.prepare(`
     INSERT INTO memory_events (
@@ -297,6 +347,9 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(event_key) DO NOTHING
   `);
+  const getEventByIdRow = db.prepare<MemoryEventRow, [string]>(
+    "SELECT * FROM memory_events WHERE id = ?"
+  );
   const getEvent = db.prepare<MemoryEventRow, [string]>(
     "SELECT * FROM memory_events WHERE event_key = ?"
   );
@@ -327,9 +380,9 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     INSERT INTO memories (
       id, workspace_key, owner_id, scope, memory_type, title, body, status, confidence, freshness,
       expires_at, source_event_ids_json, source_document_ids_json, supersedes_memory_id, last_used_at,
-      created_at, updated_at
+      rationale_json, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       workspace_key = excluded.workspace_key,
       owner_id = excluded.owner_id,
@@ -345,6 +398,7 @@ export function createMemoryStore(dbPath: string): MemoryStore {
       source_document_ids_json = excluded.source_document_ids_json,
       supersedes_memory_id = excluded.supersedes_memory_id,
       last_used_at = excluded.last_used_at,
+      rationale_json = excluded.rationale_json,
       updated_at = excluded.updated_at
   `);
   const getMemoryById = db.prepare<MemoryRow, [string]>("SELECT * FROM memories WHERE id = ?");
@@ -353,6 +407,27 @@ export function createMemoryStore(dbPath: string): MemoryStore {
   );
   const listActiveMemoryRowsByWorkspaceAndOwner = db.prepare<MemoryRow, [string, string, number]>(
     "SELECT * FROM memories WHERE status = 'active' AND workspace_key = ? AND owner_id = ? ORDER BY confidence DESC, updated_at DESC, id DESC LIMIT ?"
+  );
+  const listActiveMemoryRows = db.prepare<MemoryRow, [number]>(
+    "SELECT * FROM memories WHERE status = 'active' ORDER BY confidence DESC, updated_at DESC, id DESC LIMIT ?"
+  );
+  const listActiveMemoryRowsByOwner = db.prepare<MemoryRow, [string, number]>(
+    "SELECT * FROM memories WHERE status = 'active' AND owner_id = ? ORDER BY confidence DESC, updated_at DESC, id DESC LIMIT ?"
+  );
+  const listCandidateMemoryRows = db.prepare<MemoryRow, [number]>(
+    "SELECT * FROM memories WHERE status = 'candidate' ORDER BY updated_at DESC, confidence DESC, id DESC LIMIT ?"
+  );
+  const listCandidateMemoryRowsByWorkspace = db.prepare<MemoryRow, [string, number]>(
+    "SELECT * FROM memories WHERE status = 'candidate' AND workspace_key = ? ORDER BY updated_at DESC, confidence DESC, id DESC LIMIT ?"
+  );
+  const listCandidateMemoryRowsByWorkspaceAndOwner = db.prepare<
+    MemoryRow,
+    [string, string, number]
+  >(
+    "SELECT * FROM memories WHERE status = 'candidate' AND workspace_key = ? AND owner_id = ? ORDER BY updated_at DESC, confidence DESC, id DESC LIMIT ?"
+  );
+  const listCandidateMemoryRowsByOwner = db.prepare<MemoryRow, [string, number]>(
+    "SELECT * FROM memories WHERE status = 'candidate' AND owner_id = ? ORDER BY updated_at DESC, confidence DESC, id DESC LIMIT ?"
   );
   const forgetMemoryRow = db.prepare(
     "UPDATE memories SET status = 'archived', updated_at = ? WHERE id = ?"
@@ -433,6 +508,11 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     return row ? eventRowToEvent(row) : undefined;
   }
 
+  function getEventById(id: string): MemoryEvent | undefined {
+    const row = getEventByIdRow.get(id);
+    return row ? eventRowToEvent(row) : undefined;
+  }
+
   function getMemory(id: string): Memory | undefined {
     const row = getMemoryById.get(id);
     return row ? memoryRowToMemory(row) : undefined;
@@ -465,7 +545,9 @@ export function createMemoryStore(dbPath: string): MemoryStore {
       if (!stored) throw new Error(`Could not load stored memory event: ${parsed.eventKey}`);
       return stored;
     },
+    getEventById,
     getEventByKey,
+    getMemoryById: getMemory,
     indexDocument(document) {
       withTransaction(() => {
         const existingRows = deleteChunkFtsRows.all(document.id);
@@ -531,6 +613,7 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     },
     upsertMemory(memory) {
       const parsed = normalizeMemory(memory);
+      const rationale = candidateRationale(memory);
       upsertMemoryRow.run(
         parsed.id,
         parsed.workspaceKey ?? null,
@@ -547,6 +630,7 @@ export function createMemoryStore(dbPath: string): MemoryStore {
         JSON.stringify(parsed.sourceDocumentIds),
         parsed.supersedesMemoryId ?? null,
         parsed.lastUsedAt ?? null,
+        rationale ? JSON.stringify(rationale) : null,
         parsed.createdAt,
         parsed.updatedAt
       );
@@ -556,10 +640,31 @@ export function createMemoryStore(dbPath: string): MemoryStore {
     },
     listActiveMemories(filter) {
       const limit = filter.limit && filter.limit > 0 ? filter.limit : 8;
-      const rows = filter.ownerId
-        ? listActiveMemoryRowsByWorkspaceAndOwner.all(filter.workspaceKey, filter.ownerId, limit)
-        : listActiveMemoryRowsByWorkspace.all(filter.workspaceKey, limit);
+      const rows =
+        filter.workspaceKey && filter.ownerId
+          ? listActiveMemoryRowsByWorkspaceAndOwner.all(filter.workspaceKey, filter.ownerId, limit)
+          : filter.workspaceKey
+            ? listActiveMemoryRowsByWorkspace.all(filter.workspaceKey, limit)
+            : filter.ownerId
+              ? listActiveMemoryRowsByOwner.all(filter.ownerId, limit)
+              : listActiveMemoryRows.all(limit);
       return rows.map(memoryRowToMemory);
+    },
+    listCandidateMemories(filter) {
+      const limit = filter.limit && filter.limit > 0 ? filter.limit : 8;
+      const rows =
+        filter.workspaceKey && filter.ownerId
+          ? listCandidateMemoryRowsByWorkspaceAndOwner.all(
+              filter.workspaceKey,
+              filter.ownerId,
+              limit
+            )
+          : filter.workspaceKey
+            ? listCandidateMemoryRowsByWorkspace.all(filter.workspaceKey, limit)
+            : filter.ownerId
+              ? listCandidateMemoryRowsByOwner.all(filter.ownerId, limit)
+              : listCandidateMemoryRows.all(limit);
+      return rows.map((row) => MemoryCandidateSchema.parse(memoryRowToMemory(row)));
     },
     forgetMemory(request) {
       const parsed = request;

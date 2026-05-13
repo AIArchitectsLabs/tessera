@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { AgentProfileSchema, type TaskEvent, compileAgentRuntimeContext } from "@tessera/contracts";
+import {
+  AgentProfileSchema,
+  type AgentProviderConfig,
+  type MemoryEvent,
+  type ModelRuntimeCredential,
+  type TaskEvent,
+  compileAgentRuntimeContext,
+} from "@tessera/contracts";
+import { workspaceKeyForRoot } from "@tessera/core";
+import { createMemoryManager } from "./memory-manager.js";
+import { createMemoryStore } from "./memory-store.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 
 const tempStores: ReturnType<typeof createTaskStore>[] = [];
+const tempMemoryStores: ReturnType<typeof createMemoryStore>[] = [];
 
 function makeStore(): ReturnType<typeof createTaskStore> {
   const store = createTaskStore(":memory:");
@@ -15,7 +26,19 @@ afterEach(() => {
   for (const store of tempStores.splice(0)) {
     store.close();
   }
+  for (const store of tempMemoryStores.splice(0)) {
+    store.close();
+  }
 });
+
+async function waitUntil(assertion: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (assertion()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition");
+}
 
 describe("task runner", () => {
   test("happy path: emits events in order and reaches done state", async () => {
@@ -646,6 +669,7 @@ describe("task runner", () => {
       memory: {
         async recordTaskTurn({ turn }) {
           recordedTurns.push(turn.id);
+          return undefined;
         },
         async recallForTask() {
           recordedBeforeRecall = [...recordedTurns];
@@ -681,6 +705,149 @@ describe("task runner", () => {
     expect(recordedTurns).toContain(agentTurn.id);
   });
 
+  test("automatically proposes memories for recorded completed task turns", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const userTurn = store.createUserTurn(
+      task.id,
+      "For future weekly updates, prefer concise bullets."
+    );
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const provider: AgentProviderConfig = {
+      provider: "openai",
+      model: "gpt-5.4",
+      apiKeyEnv: "OPENAI_API_KEY",
+    };
+    const credential: ModelRuntimeCredential = { apiKey: "sk-test" };
+    const proposals: Array<{
+      eventIds: string[];
+      provider?: AgentProviderConfig;
+      credential?: ModelRuntimeCredential | string;
+    }> = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      provider,
+      credential,
+      memory: {
+        async recordTaskTurn({ turn }) {
+          return {
+            id: `memory-event-${turn.id}`,
+            eventKey: `task:${turn.taskId}:turn:${turn.id}:${turn.status}`,
+            workspaceKey: "workspace:test",
+            scope: "task",
+            subjectType: "turn",
+            subjectId: turn.id,
+            eventType: `task.turn.${turn.status}`,
+            content: turn.content,
+            contentHash: "sha256:test",
+            metadata: {},
+            sensitivity: "public",
+            capturePolicy: "summary",
+            schemaVersion: 1,
+            createdAt: turn.completedAt ?? "2026-05-13T00:00:00.000Z",
+          } satisfies MemoryEvent;
+        },
+        async recallForTask() {
+          return {
+            context: "",
+            result: {
+              mode: "task",
+              timedOut: false,
+              items: [],
+              trace: {
+                query: "Draft the weekly update",
+                workspaceKey: "workspace:test",
+                candidateCount: 0,
+                selectedCount: 0,
+                omittedReasons: [],
+                durationMs: 1,
+              },
+            },
+          };
+        },
+        async proposeCandidates(input) {
+          proposals.push(input);
+          return [];
+        },
+      },
+      piRunner: async () => ({ text: "Done", boundaryViolations: 0 }),
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(proposals).toEqual([
+      {
+        eventIds: [`memory-event-${userTurn.id}`, `memory-event-${agentTurn.id}`],
+        provider,
+        credential,
+      },
+    ]);
+  });
+
+  test("recalls active memories created by a previous task turn", async () => {
+    const store = makeStore();
+    const memoryStore = createMemoryStore(":memory:");
+    tempMemoryStores.push(memoryStore);
+    const memory = createMemoryManager({ store: memoryStore, ownerId: "local-owner" });
+    const firstTask = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Record team preference",
+    });
+    const firstUserTurn = store.createUserTurn(
+      firstTask.id,
+      "Remember that weekly customer updates should use concise bullets."
+    );
+    const firstAgentTurn = store.createQueuedAgentTurn(firstTask.id);
+
+    await runTaskTurn({
+      store,
+      taskId: firstTask.id,
+      userTurnId: firstUserTurn.id,
+      agentTurnId: firstAgentTurn.id,
+      memory,
+      piRunner: async () => ({ text: "Recorded", boundaryViolations: 0 }),
+      publish() {},
+      delayMs: 0,
+    });
+
+    await waitUntil(() =>
+      memoryStore
+        .listActiveMemories({ workspaceKey: workspaceKeyForRoot("/workspace/acme") })
+        .some((item) => item.body === "weekly customer updates should use concise bullets.")
+    );
+
+    const secondTask = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const secondUserTurn = store.createUserTurn(secondTask.id, "Draft the weekly update");
+    const secondAgentTurn = store.createQueuedAgentTurn(secondTask.id);
+    let seenMemoryContext = "";
+
+    await runTaskTurn({
+      store,
+      taskId: secondTask.id,
+      userTurnId: secondUserTurn.id,
+      agentTurnId: secondAgentTurn.id,
+      memory,
+      piRunner: async ({ memoryContext }) => {
+        seenMemoryContext = memoryContext ?? "";
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(seenMemoryContext).toContain("weekly customer updates should use concise bullets.");
+  });
+
   test("continues task execution when memory recall fails", async () => {
     const store = makeStore();
     const task = store.createTask({
@@ -697,7 +864,9 @@ describe("task runner", () => {
       userTurnId: userTurn.id,
       agentTurnId: agentTurn.id,
       memory: {
-        async recordTaskTurn() {},
+        async recordTaskTurn() {
+          return undefined;
+        },
         async recallForTask() {
           throw new Error("memory unavailable");
         },
@@ -767,7 +936,7 @@ describe("task runner", () => {
       agentTurnId: agentTurn.id,
       memory: {
         recordTaskTurn() {
-          return new Promise<void>(() => {});
+          return new Promise<MemoryEvent | undefined>(() => {});
         },
         recallForTask() {
           return new Promise(() => {});
@@ -805,7 +974,9 @@ describe("task runner", () => {
       agentTurnId: agentTurn.id,
       promptOverride: "Draft update",
       memory: {
-        async recordTaskTurn() {},
+        async recordTaskTurn() {
+          return undefined;
+        },
         async recallForTask({ query }) {
           recallQuery = query;
           return {

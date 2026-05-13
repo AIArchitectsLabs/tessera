@@ -16,6 +16,8 @@ import {
   InboxResolveRequestSchema,
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
+  MemoryReviewDecisionRequestSchema,
+  MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
   NotifyRequestSchema,
   PlaybookAssignmentPreviewRequestSchema,
@@ -107,6 +109,7 @@ const TASK_DB_PATH =
 const MEMORY_DB_PATH =
   process.env.TESSERA_MEMORY_DB_PATH ?? join(homedir(), ".tessera", "memory.sqlite");
 const MEMORY_DISABLED = process.env.TESSERA_MEMORY_DISABLED === "1";
+const LOCAL_MEMORY_OWNER_ID = "local-owner";
 const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
@@ -188,7 +191,7 @@ export function createServerMemoryRuntime(options: {
 const { memoryStore, memoryManager, memoryStatus } = createServerMemoryRuntime({
   dbPath: MEMORY_DB_PATH,
   disabled: MEMORY_DISABLED,
-  ownerId: "local-owner",
+  ownerId: LOCAL_MEMORY_OWNER_ID,
   warn: (message) => console.warn(message),
 });
 const taskEventBus = createTaskEventBus();
@@ -2094,6 +2097,77 @@ export function handleMemoryStatus(
   return Response.json(status);
 }
 
+export function handleMemoryReviewList(
+  req: Request,
+  store: MemoryStore | undefined = memoryStore
+): Response {
+  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+  if (!store) {
+    return Response.json({ active: [], candidates: [] });
+  }
+
+  const url = new URL(req.url);
+  const workspaceKey = url.searchParams.get("workspaceKey") ?? undefined;
+  const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "24", 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 24;
+  const result = MemoryReviewListResultSchema.parse({
+    active: store.listActiveMemories({
+      ...(workspaceKey ? { workspaceKey } : {}),
+      ownerId: LOCAL_MEMORY_OWNER_ID,
+      limit,
+    }),
+    candidates: store.listCandidateMemories({
+      ...(workspaceKey ? { workspaceKey } : {}),
+      ownerId: LOCAL_MEMORY_OWNER_ID,
+      limit,
+    }),
+  });
+  return Response.json(result);
+}
+
+export async function handleMemoryReviewDecision(
+  req: Request,
+  store: MemoryStore | undefined = memoryStore
+): Promise<Response> {
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  if (!store) {
+    return Response.json({ error: "Memory store is unavailable" }, { status: 503 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = MemoryReviewDecisionRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const memory = store.getMemoryById(parsed.data.memoryId);
+  if (!memory) {
+    return Response.json({ error: "Unknown memory" }, { status: 404 });
+  }
+  if (parsed.data.decision === "accept" && memory.status !== "candidate") {
+    return Response.json({ error: "Only candidate memories can be accepted" }, { status: 400 });
+  }
+
+  const nextStatus =
+    parsed.data.decision === "accept"
+      ? "active"
+      : parsed.data.decision === "reject"
+        ? "rejected"
+        : "archived";
+  const updated = store.upsertMemory({
+    ...memory,
+    status: nextStatus,
+    updatedAt: parsed.data.decidedAt,
+  });
+  return Response.json(updated);
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -2118,6 +2192,14 @@ const server = Bun.serve({
 
     if (pathname === "/memory/status") {
       return handleMemoryStatus(req);
+    }
+
+    if (pathname === "/memory/review") {
+      return handleMemoryReviewList(req);
+    }
+
+    if (pathname === "/memory/review/decision") {
+      return handleMemoryReviewDecision(req);
     }
 
     if (pathname === "/spawn") {
