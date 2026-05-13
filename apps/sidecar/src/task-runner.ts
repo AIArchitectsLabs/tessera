@@ -18,6 +18,7 @@ import {
   createSpawnShellExecutor,
   runPiTaskTurn,
 } from "@tessera/core";
+import type { TesseraMemoryManager } from "./memory-manager.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import type { TaskStore } from "./task-store.js";
 
@@ -32,6 +33,7 @@ export interface RunTaskTurnOptions {
     onToolEnd?: (tool: { name: string; result: unknown }) => void;
     onToolStart?: (tool: { name: string; args: unknown }) => void;
     prompt: string;
+    memoryContext?: string;
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
     browser?: BrowserExecutor;
@@ -57,6 +59,7 @@ export interface RunTaskTurnOptions {
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   promptOverride?: string;
+  memory?: Pick<TesseraMemoryManager, "recordTaskTurn" | "recallForTask">;
   store: TaskStore;
   taskId: string;
   userTurnId: string;
@@ -66,6 +69,7 @@ export interface RunTaskTurnOptions {
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const MEMORY_HOOK_TIMEOUT_MS = 250;
 const DEFAULT_PROVIDER: AgentProviderConfig = {
   provider: "openai",
   model: "gpt-5.4",
@@ -124,6 +128,59 @@ function recipeProposalFromBrowserMetadata(metadata: unknown) {
 function completedTodoItems(todo: TaskTodo): TaskTodo["items"] | undefined {
   if (!todo.items.some((item) => item.status !== "completed")) return undefined;
   return todo.items.map((item) => ({ ...item, status: "completed" as const }));
+}
+
+function withTimeout<T>(run: () => Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), timeoutMs);
+    let work: Promise<T>;
+    try {
+      work = run();
+    } catch {
+      clearTimeout(timer);
+      resolve(fallback);
+      return;
+    }
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
+async function bestEffortRecordTurn(
+  memory: RunTaskTurnOptions["memory"],
+  task: NonNullable<ReturnType<TaskStore["getTask"]>>,
+  turn: TaskTurn
+): Promise<void> {
+  if (!memory) return;
+  await withTimeout(() => memory.recordTaskTurn({ task, turn }), undefined, MEMORY_HOOK_TIMEOUT_MS);
+}
+
+async function bestEffortRecall(
+  memory: RunTaskTurnOptions["memory"],
+  task: NonNullable<ReturnType<TaskStore["getTask"]>>,
+  query: string
+): Promise<string | undefined> {
+  if (!memory) return undefined;
+  const recalled = await withTimeout(
+    () =>
+      memory.recallForTask({
+        task,
+        query,
+        mode: "task",
+        maxCharacters: 1500,
+      }),
+    undefined,
+    MEMORY_HOOK_TIMEOUT_MS
+  );
+  return recalled?.context || undefined;
 }
 
 function fallbackAgentResponse(options: {
@@ -230,6 +287,9 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       new Set([...(agent?.skills ?? []), ...activeSkills.map((skill) => skill.skillId)])
     );
     const registry = createTesseraSkillRegistry({ workspaceRoot: task.workspaceRoot });
+    const prompt = opts.promptOverride ?? userTurn.content;
+    const memoryContext = await bestEffortRecall(opts.memory, task, prompt);
+    await bestEffortRecordTurn(opts.memory, task, updatedUserTurn);
 
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
@@ -298,7 +358,8 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
           });
         }
       },
-      prompt: opts.promptOverride ?? userTurn.content,
+      ...(memoryContext ? { memoryContext } : {}),
+      prompt,
       provider,
       ...(opts.browser ? { browser: opts.browser } : {}),
       ...(shell ? { shell } : {}),
@@ -346,6 +407,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       emittedAt: new Date().toISOString(),
       turn: completedAgentTurn,
     });
+    await bestEffortRecordTurn(opts.memory, task, completedAgentTurn);
 
     if (result.boundaryViolations > 0) {
       store.updateTask(taskId, {
