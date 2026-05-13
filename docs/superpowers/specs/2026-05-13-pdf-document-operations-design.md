@@ -8,8 +8,8 @@ reader for common document formats. It should remain that way. PDF packet work
 needs stronger primitives: inspection, extraction, visual rendering,
 transformation, redaction, form handling, validation, and provenance.
 
-The design pairs a Tessera-native PDF tool family with a portable
-`pdf-documents` skill. The skill should use a Claude-style skill folder shape
+The design pairs a Tessera-native PDF tool family with the existing portable
+`pdf-workflows` skill. The skill should use a Claude-style skill folder shape
 where practical, but the actual capabilities should come from Tessera tools and
 engine adapters rather than from prompt-only shell instructions. The operation
 map is inspired by Anthropic's PDF skill, but Tessera should expose narrower,
@@ -66,13 +66,37 @@ it does not define PDF tools, immutable outputs, operation provenance, OCR
 handling, rendering, redaction, forms, or validation. This design expands that
 capability into a first-class PDF surface.
 
+## Canonical Skill Strategy
+
+Tessera should have one canonical curated PDF skill, not parallel PDF skills.
+The existing `packages/core/skills/pdf-workflows/SKILL.md` skill should be
+evolved in place into the tool-backed procedural layer for PDF document
+operations.
+
+The implementation should not create a separate `pdf-documents` skill. Keeping
+`pdf-workflows` as the canonical slug preserves existing profile defaults,
+registry tests, task-model references, and external skill conflict behavior.
+If product language later prefers "PDF documents", that can be handled through
+the skill description, UI labels, or a deliberate rename migration. It should
+not be handled by shipping two curated PDF skills.
+
+Migration rule:
+
+- `pdf-workflows` remains the only curated PDF skill ID.
+- The existing skill body is replaced or expanded with the approved PDF tool
+  workflow.
+- External Claude or Codex skills named `pdf-workflows` remain opt-in external
+  candidates and do not override the curated skill.
+- A future slug rename requires a compatibility plan for stored agent profile
+  skill IDs and active task skill activations.
+
 ## Product Workflow
 
 The primary workflow is PDF document packet operations:
 
 1. The user asks Tessera to review, transform, redact, fill, or assemble PDF
    documents.
-2. The agent activates or loads the `pdf-documents` skill.
+2. The agent activates or loads the `pdf-workflows` skill.
 3. The skill directs the agent to inspect every source PDF before extraction or
    mutation.
 4. The agent calls the narrow tool required for the current step.
@@ -153,11 +177,10 @@ policy, workspace containment, provenance, and predictable packaging.
 
 ### Portable Skill
 
-Create or evolve a curated `pdf-documents` skill using the standard skill
-folder shape:
+Evolve the curated `pdf-workflows` skill using the standard skill folder shape:
 
 ```text
-pdf-documents/
+pdf-workflows/
   SKILL.md
   references/
   scripts/
@@ -464,7 +487,7 @@ by `skill_load`.
 - Add contracts for PDF tool inputs and result metadata.
 - Add PDF service scaffolding and engine capability model.
 - Add `pdf_inspect`, `pdf_extract`, and `pdf_validate`.
-- Create or evolve the curated portable `pdf-documents` skill.
+- Evolve the existing curated portable `pdf-workflows` skill.
 - Add Python engine adapter scaffolding if the first selected operation benefits
   from Python libraries.
 - Update tool policy capability descriptions.
@@ -503,7 +526,8 @@ by `skill_load`.
 ## Recommendation
 
 Use the first-class PDF tool surface with pluggable engines. Keep
-`workspace_extract` focused on bounded text extraction, and make
-`pdf-documents` the procedural layer that teaches agents how to operate the PDF
-tools safely. Start with inspect, extract, validate, and the portable skill, then
-add rendering and transformations before attempting redaction or forms.
+`workspace_extract` focused on bounded text extraction, and evolve the existing
+`pdf-workflows` skill into the procedural layer that teaches agents how to
+operate the PDF tools safely. Start with inspect, extract, validate, and the
+portable skill, then add rendering and transformations before attempting
+redaction or forms.
