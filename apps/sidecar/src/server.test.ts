@@ -19,6 +19,7 @@ let buildWorkflowExecutionOptions:
   | typeof import("./server.js").buildWorkflowExecutionOptions
   | undefined;
 let createServerMemoryRuntime: typeof import("./server.js").createServerMemoryRuntime | undefined;
+let handleMemoryStatus: typeof import("./server.js").handleMemoryStatus | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let requestCodexDeviceCode: typeof import("./server.js").requestCodexDeviceCode | undefined;
 let refreshCodexOAuthCredential:
@@ -37,6 +38,7 @@ beforeAll(async () => {
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
+    handleMemoryStatus = serverModule.handleMemoryStatus;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -57,6 +59,106 @@ afterAll(() => {
 });
 
 describe("playbook run preference save error mapping", () => {
+  test("reports active memory runtime status", async () => {
+    expect(createServerMemoryRuntime).toBeDefined();
+    const runtime = createServerMemoryRuntime?.({
+      dbPath: "/tmp/tessera-memory.sqlite",
+      disabled: false,
+      ownerId: "local-owner",
+      createStore() {
+        return {
+          close() {},
+          recordEvent(event) {
+            return event;
+          },
+          getEventByKey() {
+            return undefined;
+          },
+          indexDocument() {},
+          searchChunks() {
+            return [];
+          },
+          upsertMemory(memory) {
+            return memory;
+          },
+          listActiveMemories() {
+            return [];
+          },
+          forgetMemory() {},
+        };
+      },
+    });
+
+    expect(runtime?.memoryStatus).toEqual({
+      enabled: true,
+      mode: "active",
+      dbPath: "/tmp/tessera-memory.sqlite",
+    });
+  });
+
+  test("reports disabled and startup fallback memory runtime status", () => {
+    expect(createServerMemoryRuntime).toBeDefined();
+    const disabled = createServerMemoryRuntime?.({
+      dbPath: "/unused/memory.sqlite",
+      disabled: true,
+      ownerId: "local-owner",
+      createStore() {
+        throw new Error("should not create store");
+      },
+    });
+    const fallback = createServerMemoryRuntime?.({
+      dbPath: "/unavailable/memory.sqlite",
+      disabled: false,
+      ownerId: "local-owner",
+      createStore() {
+        throw new Error("sqlite unavailable");
+      },
+    });
+
+    expect(disabled?.memoryStatus).toEqual({
+      enabled: false,
+      mode: "disabled",
+      dbPath: "/unused/memory.sqlite",
+    });
+    expect(fallback?.memoryStatus).toEqual({
+      enabled: false,
+      mode: "fallback",
+      dbPath: "/unavailable/memory.sqlite",
+      startupWarning: {
+        type: "tessera.memory.startup_failed",
+        message: "sqlite unavailable",
+      },
+    });
+  });
+
+  test("memory status handler is read only", async () => {
+    expect(handleMemoryStatus).toBeDefined();
+    const response = await handleMemoryStatus?.(
+      new Request("http://localhost/memory/status", { method: "GET" }),
+      {
+        enabled: true,
+        mode: "active",
+        dbPath: "/tmp/tessera-memory.sqlite",
+      }
+    );
+    const rejected = await handleMemoryStatus?.(
+      new Request("http://localhost/memory/status", { method: "POST" }),
+      {
+        enabled: true,
+        mode: "active",
+        dbPath: "/tmp/tessera-memory.sqlite",
+      }
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual({
+      enabled: true,
+      mode: "active",
+      dbPath: "/tmp/tessera-memory.sqlite",
+    });
+    expect(rejected?.status).toBe(405);
+  });
+
   test("falls back to noop memory manager when memory store startup fails", async () => {
     expect(createServerMemoryRuntime).toBeDefined();
     const warnings: string[] = [];
@@ -73,6 +175,7 @@ describe("playbook run preference save error mapping", () => {
     });
 
     expect(runtime?.memoryStore).toBeUndefined();
+    expect(runtime?.memoryStatus.mode).toBe("fallback");
     const recalled = await runtime?.memoryManager.recallForTask({
       task: {
         id: "task-1",
@@ -112,6 +215,7 @@ describe("playbook run preference save error mapping", () => {
     });
 
     expect(runtime?.memoryStore).toBeUndefined();
+    expect(runtime?.memoryStatus.mode).toBe("disabled");
   });
 
   test("server stamps stored preference metadata from a save request", () => {

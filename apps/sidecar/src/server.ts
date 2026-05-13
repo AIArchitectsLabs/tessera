@@ -123,34 +123,69 @@ const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(WORKFLOW_DB_
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
+export interface MemoryRuntimeStatus {
+  enabled: boolean;
+  mode: "active" | "disabled" | "fallback";
+  dbPath: string;
+  startupWarning?: {
+    type: "tessera.memory.startup_failed";
+    message: string;
+  };
+}
+
 export function createServerMemoryRuntime(options: {
   dbPath: string;
   disabled: boolean;
   ownerId: string;
   createStore?: (dbPath: string) => MemoryStore;
   warn?: (message: string) => void;
-}): { memoryStore?: MemoryStore; memoryManager: TesseraMemoryManager } {
-  if (options.disabled) return { memoryManager: createNoopMemoryManager() };
+}): {
+  memoryStore?: MemoryStore;
+  memoryManager: TesseraMemoryManager;
+  memoryStatus: MemoryRuntimeStatus;
+} {
+  if (options.disabled) {
+    return {
+      memoryManager: createNoopMemoryManager(),
+      memoryStatus: {
+        enabled: false,
+        mode: "disabled",
+        dbPath: options.dbPath,
+      },
+    };
+  }
 
   try {
     const memoryStore = (options.createStore ?? createMemoryStore)(options.dbPath);
     return {
       memoryStore,
       memoryManager: createMemoryManager({ store: memoryStore, ownerId: options.ownerId }),
+      memoryStatus: {
+        enabled: true,
+        mode: "active",
+        dbPath: options.dbPath,
+      },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    options.warn?.(
-      JSON.stringify({
-        type: "tessera.memory.startup_failed",
-        message,
-      })
-    );
-    return { memoryManager: createNoopMemoryManager() };
+    const startupWarning: MemoryRuntimeStatus["startupWarning"] = {
+      type: "tessera.memory.startup_failed",
+      message,
+    };
+    options.warn?.(JSON.stringify(startupWarning));
+    return {
+      memoryManager: createNoopMemoryManager(),
+      memoryStatus: {
+        enabled: false,
+        mode: "fallback",
+        dbPath: options.dbPath,
+        startupWarning,
+      },
+    };
   }
 }
 
-const { memoryStore, memoryManager } = createServerMemoryRuntime({
+const { memoryStore, memoryManager, memoryStatus } = createServerMemoryRuntime({
   dbPath: MEMORY_DB_PATH,
   disabled: MEMORY_DISABLED,
   ownerId: "local-owner",
@@ -2051,6 +2086,14 @@ function handleTaskSkillDelete(req: Request, taskId: string, skillId: string): R
   return Response.json(updated);
 }
 
+export function handleMemoryStatus(
+  req: Request,
+  status: MemoryRuntimeStatus = memoryStatus
+): Response {
+  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+  return Response.json(status);
+}
+
 const server = Bun.serve({
   // Unix domain socket on macOS/Linux (no exposed TCP port).
   // TCP on Windows as a fallback; named pipe support is a future improvement.
@@ -2071,6 +2114,10 @@ const server = Bun.serve({
 
     if (pathname === "/health") {
       return Response.json({ status: "ok" });
+    }
+
+    if (pathname === "/memory/status") {
+      return handleMemoryStatus(req);
     }
 
     if (pathname === "/spawn") {
