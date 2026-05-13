@@ -119,11 +119,9 @@ describe("pdf tool contracts", () => {
     for (const details of Object.values(TOOL_POLICY_PRESET_DETAILS)) {
       const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
       expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
-      expect(details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 4)).toEqual([
-        "pdf_inspect",
-        "pdf_extract",
-        "pdf_validate",
-      ]);
+      expect(
+        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 4)
+      ).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate"]);
     }
   });
 });

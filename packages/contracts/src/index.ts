@@ -2158,11 +2158,7 @@ export const PdfPageRangeSchema = z
       });
     }
 
-    if (
-      value.start !== undefined &&
-      value.end !== undefined &&
-      value.end < value.start
-    ) {
+    if (value.start !== undefined && value.end !== undefined && value.end < value.start) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Pdf page ranges must not end before they start",
