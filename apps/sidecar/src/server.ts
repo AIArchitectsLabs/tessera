@@ -17,6 +17,7 @@ import {
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
   MemoryForgetRequestSchema,
+  type MemoryRecallResult,
   MemoryReviewDecisionRequestSchema,
   MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
@@ -48,8 +49,10 @@ import {
   WorkflowResumeRequestSchema,
   type WorkflowRunAssignmentPlan,
   WorkflowRunAssignmentPlanSchema,
+  type WorkflowRunEvent,
   WorkflowRunListResultSchema,
   WorkflowRunRequestSchema,
+  type WorkflowRunResult,
   WorkflowRunStatusSchema,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
@@ -410,6 +413,79 @@ function workspaceRootFromWorkflowRun(
 ): string | undefined {
   const workspaceRoot = run.input.workspaceRoot;
   return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
+}
+
+function memoryShadowEvent(input: {
+  run: WorkflowRunResult;
+  memoryShadow: MemoryRecallResult;
+}): WorkflowRunEvent {
+  return {
+    id: `workflow-event-memory-shadow-${randomBytes(8).toString("hex")}`,
+    runId: input.run.runId,
+    workflowId: input.run.workflowId,
+    status: "running",
+    message: "Playbook memory shadow recall evaluated",
+    createdAt: new Date().toISOString(),
+    metadata: {
+      memoryShadow: input.memoryShadow,
+    },
+  };
+}
+
+function emptyPlaybookMemoryShadow(input: {
+  run: WorkflowRunResult;
+  workspaceRoot?: string;
+  omittedReason: string;
+}): MemoryRecallResult {
+  return {
+    mode: "workspace",
+    timedOut: false,
+    items: [],
+    trace: {
+      query: input.run.workflowId,
+      ...(input.workspaceRoot ? { workspaceKey: input.workspaceRoot } : {}),
+      candidateCount: 0,
+      selectedCount: 0,
+      omittedReasons: [input.omittedReason],
+      durationMs: 0,
+    },
+  };
+}
+
+export async function attachPlaybookMemoryShadow(
+  run: WorkflowRunResult,
+  manager: Pick<TesseraMemoryManager, "recallForPlaybookRun"> = memoryManager
+): Promise<WorkflowRunResult> {
+  const workspaceRoot = workspaceRootFromWorkflowRun(run);
+  let memoryShadow: MemoryRecallResult;
+  if (!workspaceRoot) {
+    memoryShadow = emptyPlaybookMemoryShadow({
+      run,
+      omittedReason: "playbook memory shadow recall skipped: missing workspace root",
+    });
+  } else {
+    try {
+      memoryShadow = await manager.recallForPlaybookRun({
+        workflowId: run.workflowId,
+        workspaceRoot,
+        maxItems: 8,
+      });
+    } catch {
+      memoryShadow = emptyPlaybookMemoryShadow({
+        run,
+        workspaceRoot,
+        omittedReason: "playbook memory shadow recall failed",
+      });
+    }
+  }
+
+  const events = (run.events ?? []).filter(
+    (event) => !(event.metadata && "memoryShadow" in event.metadata)
+  );
+  return {
+    ...run,
+    events: [...events, memoryShadowEvent({ run, memoryShadow })],
+  };
 }
 
 async function recordWorkflowRunMemory(
@@ -863,7 +939,8 @@ async function handleWorkflowRun(req: Request): Promise<Response> {
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
+    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
     ensureWorkflowApprovalInbox(saved);
     return Response.json(saved);
   } catch (error) {
@@ -1054,7 +1131,8 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
+    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
     ensureWorkflowApprovalInbox(saved);
     return Response.json(playbookRunDetail(saved));
   } catch (error) {
@@ -1318,7 +1396,8 @@ async function handleInboxResolve(req: Request, messageId: string): Promise<Resp
           await saveWorkflowRunWithDashboardLayout(checkpoint, entry);
         },
       });
-      const saved = await saveWorkflowRunWithDashboardLayout(result, entry);
+      const withMemoryShadow = await attachPlaybookMemoryShadow(result);
+      const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
       ensureWorkflowApprovalInbox(saved);
     }
 
@@ -1436,7 +1515,8 @@ async function handleWorkflowResume(req: Request, runId: string): Promise<Respon
       },
     });
     const merged = mergePlaybookRunMetadata(result, playbookState);
-    const saved = await saveWorkflowRunWithDashboardLayout(merged, entry);
+    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
+    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
     ensureWorkflowApprovalInbox(saved);
     return Response.json(saved);
   } catch (error) {

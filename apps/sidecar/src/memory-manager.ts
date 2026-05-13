@@ -42,6 +42,11 @@ export interface TesseraMemoryManager {
     mode: MemoryRecallMode;
     maxCharacters: number;
   }): Promise<TaskRecallOutput>;
+  recallForPlaybookRun(input: {
+    workflowId: string;
+    workspaceRoot: string;
+    maxItems: number;
+  }): Promise<MemoryRecallResult>;
 }
 
 interface ExtractedMemorySignal {
@@ -137,6 +142,16 @@ function memoryToRecallItem(memory: Memory): MemoryRecallItem {
       ...memory.sourceDocumentIds.map((id) => ({ type: "document", id })),
     ],
     reason: "Active curated memory for this workspace.",
+  };
+}
+
+function playbookMemoryToRecallItem(memory: Memory, workflowId: string): MemoryRecallItem {
+  return {
+    ...memoryToRecallItem(memory),
+    reason:
+      memory.scope === "playbook"
+        ? `Active playbook memory for ${workflowId}.`
+        : "Active workspace memory for this playbook run.",
   };
 }
 
@@ -590,6 +605,20 @@ function memoryFromSignal(input: {
   };
 }
 
+function playbookMemoryMatchesWorkflow(input: {
+  memory: Memory;
+  workflowId: string;
+  store: MemoryStore;
+}): boolean {
+  if (input.memory.scope === "workspace") return true;
+  if (input.memory.scope !== "playbook") return false;
+
+  return input.memory.sourceEventIds.some((eventId) => {
+    const event = input.store.getEventById(eventId);
+    return event?.metadata.workflowId === input.workflowId;
+  });
+}
+
 export function createNoopMemoryManager(): TesseraMemoryManager {
   return {
     async recordTaskTurn() {
@@ -601,6 +630,21 @@ export function createNoopMemoryManager(): TesseraMemoryManager {
     },
     async recallForTask(input) {
       return emptyRecall(input);
+    },
+    async recallForPlaybookRun(input) {
+      return {
+        mode: "workspace",
+        timedOut: false,
+        items: [],
+        trace: {
+          query: input.workflowId,
+          workspaceKey: workspaceKeyForRoot(input.workspaceRoot),
+          candidateCount: 0,
+          selectedCount: 0,
+          omittedReasons: [],
+          durationMs: 0,
+        },
+      };
     },
   };
 }
@@ -782,6 +826,57 @@ export function createMemoryManager(options: CreateMemoryManagerOptions): Tesser
           startedAt,
           omittedReasons: ["memory recall failed"],
         });
+      }
+    },
+    async recallForPlaybookRun(input) {
+      const startedAt = Date.now();
+      const workspaceKey = workspaceKeyForRoot(input.workspaceRoot);
+      try {
+        const candidateLimit = Math.max(input.maxItems * 2, input.maxItems, 1);
+        const candidates = store
+          .listActiveMemories({
+            workspaceKey,
+            ...(ownerId ? { ownerId } : {}),
+            limit: candidateLimit,
+          })
+          .filter((memory) =>
+            playbookMemoryMatchesWorkflow({
+              memory,
+              workflowId: input.workflowId,
+              store,
+            })
+          );
+        const items = candidates
+          .slice(0, Math.max(input.maxItems, 0))
+          .map((memory) => playbookMemoryToRecallItem(memory, input.workflowId));
+
+        return {
+          mode: "workspace",
+          timedOut: false,
+          items,
+          trace: {
+            query: input.workflowId,
+            workspaceKey,
+            candidateCount: candidates.length,
+            selectedCount: items.length,
+            omittedReasons: [],
+            durationMs: Math.max(0, Date.now() - startedAt),
+          },
+        };
+      } catch {
+        return {
+          mode: "workspace",
+          timedOut: false,
+          items: [],
+          trace: {
+            query: input.workflowId,
+            workspaceKey,
+            candidateCount: 0,
+            selectedCount: 0,
+            omittedReasons: ["playbook memory recall failed"],
+            durationMs: Math.max(0, Date.now() - startedAt),
+          },
+        };
       }
     },
   };

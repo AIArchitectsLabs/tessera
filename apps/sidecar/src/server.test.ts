@@ -14,6 +14,7 @@ const originalMemoryDisabled = process.env.TESSERA_MEMORY_DISABLED;
 let isPlaybookRunPreferenceAssignmentPlanValidationError:
   | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
   | undefined;
+let attachPlaybookMemoryShadow: typeof import("./server.js").attachPlaybookMemoryShadow | undefined;
 let buildPlaybookRunPreference: typeof import("./server.js").buildPlaybookRunPreference | undefined;
 let buildWorkflowExecutionOptions:
   | typeof import("./server.js").buildWorkflowExecutionOptions
@@ -38,6 +39,7 @@ beforeAll(async () => {
 
   try {
     const serverModule = await import("./server.js");
+    attachPlaybookMemoryShadow = serverModule.attachPlaybookMemoryShadow;
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
@@ -491,6 +493,92 @@ describe("playbook run preference save error mapping", () => {
       authType: "codex-oauth",
       accessToken: "access-token",
       baseUrl: "https://chatgpt.com/backend-api/codex",
+    });
+  });
+
+  test("attaches playbook memory shadow recall without changing run outputs", async () => {
+    expect(attachPlaybookMemoryShadow).toBeDefined();
+    const run = {
+      runId: "run-shadow",
+      workflowId: "ops.weekly-status-digest",
+      status: "completed" as const,
+      input: { workspaceRoot: "/workspace/acme" },
+      outputs: { draft: "original output" },
+      sourceGaps: [],
+      events: [],
+      completedAt: "2026-05-13T00:00:00.000Z",
+    };
+
+    const withShadow = await attachPlaybookMemoryShadow?.(run, {
+      async recallForPlaybookRun() {
+        return {
+          mode: "workspace" as const,
+          timedOut: false,
+          items: [
+            {
+              memoryId: "memory-playbook-lesson",
+              scope: "playbook" as const,
+              type: "lesson" as const,
+              title: "Prior lesson",
+              body: "Check blocked items first.",
+              confidence: 0.91,
+              freshness: "fresh" as const,
+              sourceRefs: [{ type: "event", id: "memory-event-1" }],
+              reason: "Prior playbook memory for this workflow.",
+            },
+          ],
+          trace: {
+            query: "ops.weekly-status-digest",
+            workspaceKey: "workspace:one",
+            candidateCount: 1,
+            selectedCount: 1,
+            omittedReasons: [],
+            durationMs: 1,
+          },
+        };
+      },
+    });
+
+    expect(withShadow?.outputs).toEqual(run.outputs);
+    const shadowEvent = withShadow?.events?.find(
+      (event) => event.metadata && "memoryShadow" in event.metadata
+    );
+    expect(shadowEvent?.message).toBe("Playbook memory shadow recall evaluated");
+    expect(shadowEvent?.metadata?.memoryShadow).toMatchObject({
+      trace: {
+        selectedCount: 1,
+      },
+      items: [{ memoryId: "memory-playbook-lesson" }],
+    });
+  });
+
+  test("playbook memory shadow failure records an omitted reason instead of throwing", async () => {
+    expect(attachPlaybookMemoryShadow).toBeDefined();
+    const run = {
+      runId: "run-shadow-failed",
+      workflowId: "ops.weekly-status-digest",
+      status: "completed" as const,
+      input: { workspaceRoot: "/workspace/acme" },
+      sourceGaps: [],
+      events: [],
+      completedAt: "2026-05-13T00:00:00.000Z",
+    };
+
+    const withShadow = await attachPlaybookMemoryShadow?.(run, {
+      async recallForPlaybookRun() {
+        throw new Error("memory unavailable");
+      },
+    });
+
+    const shadowEvent = withShadow?.events?.find(
+      (event) => event.metadata && "memoryShadow" in event.metadata
+    );
+    expect(shadowEvent?.metadata?.memoryShadow).toMatchObject({
+      items: [],
+      trace: {
+        selectedCount: 0,
+        omittedReasons: ["playbook memory shadow recall failed"],
+      },
     });
   });
 });

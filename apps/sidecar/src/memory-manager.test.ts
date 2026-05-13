@@ -538,4 +538,146 @@ describe("memory manager", () => {
       1
     );
   });
+
+  test("recalls playbook and workspace memories for the same workspace and playbook", async () => {
+    const store = makeStore();
+    const manager = createMemoryManager({ store, ownerId: "local-owner" });
+    const workspaceKey = workspaceKeyForRoot("/workspace/acme");
+    const workflowEvent = store.recordEvent({
+      id: "memory-event-playbook-1",
+      eventKey: "workflow:run-1:completed",
+      workspaceKey,
+      ownerId: "local-owner",
+      scope: "playbook",
+      subjectType: "workflow_run",
+      subjectId: "run-1",
+      eventType: "playbook.run.completed",
+      content: "Workflow completed.",
+      contentHash: "sha256:playbook",
+      metadata: { workflowId: "ops.weekly-status-digest" },
+      sensitivity: "public",
+      capturePolicy: "summary",
+      schemaVersion: 1,
+      createdAt: "2026-05-13T00:00:00.000Z",
+    });
+    store.upsertMemory({
+      id: "memory-playbook-lesson",
+      workspaceKey,
+      ownerId: "local-owner",
+      scope: "playbook",
+      type: "lesson",
+      title: "Weekly digest lesson",
+      body: "Check blocked items before drafting the digest.",
+      status: "active",
+      confidence: 0.91,
+      freshness: "fresh",
+      sourceEventIds: [workflowEvent.id],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    });
+    store.upsertMemory({
+      id: "memory-workspace-style",
+      workspaceKey,
+      ownerId: "local-owner",
+      scope: "workspace",
+      type: "preference",
+      title: "Workspace style",
+      body: "Use concise executive bullets.",
+      status: "active",
+      confidence: 0.88,
+      freshness: "fresh",
+      sourceEventIds: [],
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    });
+
+    const recalled = await manager.recallForPlaybookRun({
+      workflowId: "ops.weekly-status-digest",
+      workspaceRoot: "/workspace/acme",
+      maxItems: 8,
+    });
+
+    expect(recalled.items.map((item) => item.memoryId)).toEqual([
+      "memory-playbook-lesson",
+      "memory-workspace-style",
+    ]);
+    expect(recalled.trace.workspaceKey).toBe(workspaceKey);
+    expect(recalled.trace.selectedCount).toBe(2);
+  });
+
+  test("playbook recall does not cross workspace or playbook boundaries", async () => {
+    const store = makeStore();
+    const manager = createMemoryManager({ store, ownerId: "local-owner" });
+    const workspaceKey = workspaceKeyForRoot("/workspace/acme");
+    const otherWorkspaceKey = workspaceKeyForRoot("/workspace/other");
+    const matchingEvent = store.recordEvent({
+      id: "memory-event-playbook-match",
+      eventKey: "workflow:run-match:completed",
+      workspaceKey,
+      ownerId: "local-owner",
+      scope: "playbook",
+      subjectType: "workflow_run",
+      subjectId: "run-match",
+      eventType: "playbook.run.completed",
+      content: "Workflow completed.",
+      contentHash: "sha256:match",
+      metadata: { workflowId: "ops.weekly-status-digest" },
+      sensitivity: "public",
+      capturePolicy: "summary",
+      schemaVersion: 1,
+      createdAt: "2026-05-13T00:00:00.000Z",
+    });
+    const wrongPlaybookEvent = store.recordEvent({
+      ...matchingEvent,
+      id: "memory-event-playbook-other",
+      eventKey: "workflow:run-other:completed",
+      subjectId: "run-other",
+      metadata: { workflowId: "sales.meeting-brief" },
+    });
+    const baseMemory = {
+      ownerId: "local-owner",
+      scope: "playbook" as const,
+      type: "lesson" as const,
+      status: "active" as const,
+      confidence: 0.9,
+      freshness: "fresh" as const,
+      sourceDocumentIds: [],
+      createdAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    };
+    store.upsertMemory({
+      ...baseMemory,
+      id: "memory-match",
+      workspaceKey,
+      title: "Matching lesson",
+      body: "Use the matching lesson.",
+      sourceEventIds: [matchingEvent.id],
+    });
+    store.upsertMemory({
+      ...baseMemory,
+      id: "memory-wrong-playbook",
+      workspaceKey,
+      title: "Wrong playbook lesson",
+      body: "Do not recall this playbook.",
+      sourceEventIds: [wrongPlaybookEvent.id],
+    });
+    store.upsertMemory({
+      ...baseMemory,
+      id: "memory-wrong-workspace",
+      workspaceKey: otherWorkspaceKey,
+      title: "Wrong workspace lesson",
+      body: "Do not recall this workspace.",
+      sourceEventIds: [matchingEvent.id],
+    });
+
+    const recalled = await manager.recallForPlaybookRun({
+      workflowId: "ops.weekly-status-digest",
+      workspaceRoot: "/workspace/acme",
+      maxItems: 8,
+    });
+
+    expect(recalled.items.map((item) => item.memoryId)).toEqual(["memory-match"]);
+  });
 });
