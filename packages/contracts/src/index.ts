@@ -2133,6 +2133,101 @@ export const TaskSkillActivationSchema = z.object({
 });
 export type TaskSkillActivation = z.infer<typeof TaskSkillActivationSchema>;
 
+export const PdfEngineRuntimeSchema = z.enum(["typescript", "python", "binary"]);
+export type PdfEngineRuntime = z.infer<typeof PdfEngineRuntimeSchema>;
+
+export const PdfWarningSchema = z
+  .object({
+    code: z.string().min(1),
+    message: z.string().min(1),
+  })
+  .strict();
+export type PdfWarning = z.infer<typeof PdfWarningSchema>;
+
+export const PdfPageRangeSchema = z
+  .object({
+    start: z.number().int().positive().optional(),
+    end: z.number().int().positive().optional(),
+  })
+  .strict();
+export type PdfPageRange = z.infer<typeof PdfPageRangeSchema>;
+
+export const PdfOperationProvenanceSchema = z
+  .object({
+    createdAt: z.string().datetime(),
+    immutableSource: z.literal(true),
+  })
+  .strict();
+export type PdfOperationProvenance = z.infer<typeof PdfOperationProvenanceSchema>;
+
+export const PdfInspectResultSchema = z
+  .object({
+    path: z.string().min(1),
+    fileType: z.literal("pdf"),
+    bytes: z.number().int().nonnegative(),
+    pageCount: z.number().int().nonnegative(),
+    encrypted: z.boolean(),
+    hasTextLayer: z.boolean(),
+    pagesWithText: z.array(z.number().int().positive()),
+    metadata: z.record(z.string(), z.string()).default({}),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfInspectResult = z.infer<typeof PdfInspectResultSchema>;
+
+export const PdfExtractPageSchema = z
+  .object({
+    pageNumber: z.number().int().positive(),
+    text: z.string(),
+    charCount: z.number().int().nonnegative(),
+    ocr: z.boolean(),
+  })
+  .strict();
+export type PdfExtractPage = z.infer<typeof PdfExtractPageSchema>;
+
+export const PdfExtractResultSchema = z
+  .object({
+    path: z.string().min(1),
+    fileType: z.literal("pdf"),
+    bytes: z.number().int().nonnegative(),
+    text: z.string(),
+    pages: z.array(PdfExtractPageSchema),
+    truncated: z.boolean(),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfExtractResult = z.infer<typeof PdfExtractResultSchema>;
+
+export const PdfValidationCheckSchema = z
+  .object({
+    name: z.string().min(1),
+    passed: z.boolean(),
+    message: z.string().min(1),
+  })
+  .strict();
+export type PdfValidationCheck = z.infer<typeof PdfValidationCheckSchema>;
+
+export const PdfValidateResultSchema = z
+  .object({
+    path: z.string().min(1),
+    exists: z.boolean(),
+    fileType: z.literal("pdf"),
+    bytes: z.number().int().nonnegative(),
+    pageCount: z.number().int().nonnegative(),
+    hasTextLayer: z.boolean(),
+    passed: z.boolean(),
+    checks: z.array(PdfValidationCheckSchema),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfValidateResult = z.infer<typeof PdfValidateResultSchema>;
+
 export const TaskSummarySchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1),
@@ -2432,7 +2527,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can inspect and search the workspace, research the public web, and maintain the task checklist, but cannot make file changes.",
     capabilities: [
       "Read files",
-      "Extract PDF, Word, and Excel content",
+      "Extract PDF, Word, Excel, and PowerPoint content",
+      "Inspect and validate PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2442,6 +2538,9 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2458,7 +2557,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
     capabilities: [
       "Read files",
-      "Extract PDF, Word, and Excel content",
+      "Extract PDF, Word, Excel, and PowerPoint content",
+      "Inspect and validate PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2470,6 +2570,9 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2488,7 +2591,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
     capabilities: [
       "Read files",
-      "Extract PDF, Word, and Excel content",
+      "Extract PDF, Word, Excel, and PowerPoint content",
+      "Inspect and validate PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2500,6 +2604,9 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
       "workspace_list",
       "workspace_search",
       "shell",
