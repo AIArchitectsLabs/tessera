@@ -15,6 +15,11 @@ engine adapters rather than from prompt-only shell instructions. The operation
 map is inspired by Anthropic's PDF skill, but Tessera should expose narrower,
 auditable tool contracts suited to business workflows.
 
+Python is an acceptable implementation runtime for PDF engines and curated
+skill helper scripts when it provides materially better PDF capability than the
+Node/TypeScript ecosystem. Python execution should still sit behind Tessera's
+typed PDF tools and engine adapters, not behind arbitrary agent shell commands.
+
 ## Goals
 
 - Support end-to-end PDF document packet workflows: intake, inspect, extract,
@@ -25,8 +30,9 @@ auditable tool contracts suited to business workflows.
 - Return structured metadata, warnings, and provenance for every operation.
 - Keep the skill portable while letting Tessera use native tools where
   available.
-- Design for stronger engines such as qpdf, MuPDF/PyMuPDF, PDFium, or
-  Tesseract without requiring all of them in the first implementation slice.
+- Design for stronger engines such as Python PDF libraries, qpdf,
+  MuPDF/PyMuPDF, PDFium, or Tesseract without requiring all of them in the first
+  implementation slice.
 
 ## Non-Goals
 
@@ -38,6 +44,8 @@ auditable tool contracts suited to business workflows.
 - Installing external binaries automatically.
 - Allowing agent-authored skills, plugin permissions, or credential injection
   through the PDF skill.
+- Executing scripts from user, workspace, or external skills without a separate
+  execution-safety design.
 
 ## Current State
 
@@ -114,6 +122,35 @@ Potential engine responsibilities:
 Engines should declare capabilities. Tools should fail clearly when an operation
 requires an unavailable capability instead of silently doing partial work.
 
+### Python Engine And Skill Scripts
+
+Python should be treated as a supported engine runtime, not as a fallback shell
+escape hatch. The PDF service may call repo-owned, allowlisted Python scripts
+through engine adapters when Python has better mature tooling for an operation.
+Likely Python-backed operations include:
+
+- high-fidelity text and layout extraction
+- table extraction
+- rendering
+- true redaction
+- form inspection and filling
+- repair diagnostics
+- OCR orchestration
+
+The boundary is important:
+
+- Tessera tools call controlled engine adapters.
+- Engine adapters may call bundled or repo-owned Python scripts.
+- The portable skill may include `scripts/` for compatibility and reuse.
+- Scripts from user-local, workspace-local, or external skills remain inert
+  unless Tessera later designs a safe script-execution model.
+- Python dependencies should be detected and reported through engine
+  capabilities. Tools should return clear unavailable-capability errors rather
+  than attempting to install packages at runtime.
+
+This lets Tessera benefit from Python's PDF ecosystem while preserving tool
+policy, workspace containment, provenance, and predictable packaging.
+
 ### Portable Skill
 
 Create or evolve a curated `pdf-documents` skill using the standard skill
@@ -128,9 +165,10 @@ pdf-documents/
 ```
 
 The v1 Tessera registry only loads `SKILL.md`, so references, scripts, and
-assets remain optional and inert until a later design exposes them. The skill
-should still be structured portably so it can be copied into Claude-style or
-Codex-style skill roots.
+assets remain optional and inert for ordinary skill loading. Curated PDF helper
+scripts may still live in `scripts/` when they are invoked by explicit
+repo-owned engine adapters. The skill should be structured portably so it can be
+copied into Claude-style or Codex-style skill roots.
 
 The skill should teach process, not grant permissions:
 
@@ -303,6 +341,7 @@ type PdfOperationResult = {
   outputPath?: string;
   operation: string;
   engine: string;
+  engineRuntime?: "typescript" | "python" | "binary";
   pages?: number[];
   warnings: string[];
   provenance: {
@@ -325,6 +364,8 @@ All PDF tools must enforce:
 - clear errors for unsupported formats
 - file-size and page-count limits for expensive operations
 - structured warnings for partial extraction and engine fallbacks
+- dependency and capability checks before invoking optional Python or binary
+  engines
 - explicit OCR opt-in
 - post-operation validation where feasible
 
@@ -350,6 +391,9 @@ The portable skill must not imply extra permission. If a selected agent profile
 does not have a PDF tool, the skill should tell the agent to fall back to
 available read-only extraction or explain the missing capability.
 
+Python-backed PDF operations remain governed by the same tool policy as their
+Tessera tool. Enabling a PDF skill does not grant general Python execution.
+
 ## Testing Strategy
 
 ### Contracts
@@ -373,6 +417,8 @@ Cover:
 - output collision handling
 - unsupported-operation errors
 - engine capability routing
+- unavailable Python dependency reporting
+- Python adapter invocation with controlled arguments
 
 ### Fixture Tests
 
@@ -407,6 +453,10 @@ contains the core workflow requirements:
 - label OCR
 - cite page evidence
 
+If the skill includes Python helper scripts, tests should also verify that the
+scripts are packaged with the curated skill but are not loaded as prompt content
+by `skill_load`.
+
 ## Phasing
 
 ### Slice 1: Foundations
@@ -415,6 +465,8 @@ contains the core workflow requirements:
 - Add PDF service scaffolding and engine capability model.
 - Add `pdf_inspect`, `pdf_extract`, and `pdf_validate`.
 - Create or evolve the curated portable `pdf-documents` skill.
+- Add Python engine adapter scaffolding if the first selected operation benefits
+  from Python libraries.
 - Update tool policy capability descriptions.
 
 ### Slice 2: Visual And Transform
@@ -433,6 +485,8 @@ contains the core workflow requirements:
 
 - Add optional OCR engine support.
 - Add stronger rendering or repair engines.
+- Add Python-backed engines for operations where Python provides the best
+  fidelity or safety.
 - Add signature, attachment, archival, or compliance checks as engine
   capabilities allow.
 
@@ -442,6 +496,7 @@ contains the core workflow requirements:
 - OCR introduces latency and lower-confidence text.
 - PDF forms vary widely across AcroForm, XFA, and generated PDFs.
 - Rendering fidelity may require an external engine.
+- Python packaging adds environment and dependency detection complexity.
 - Signature validation and archival compliance are specialized and should not be
   overpromised in early slices.
 
