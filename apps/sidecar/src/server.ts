@@ -77,6 +77,12 @@ import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
 import { createInboxStore } from "./inbox-store.js";
 import { generateDashboardLayout } from "./layout-runner.js";
 import {
+  type TesseraMemoryManager,
+  createMemoryManager,
+  createNoopMemoryManager,
+} from "./memory-manager.js";
+import { type MemoryStore, createMemoryStore } from "./memory-store.js";
+import {
   buildLocalPlaybookCapabilityInventory,
   createPlaybookAssignmentPreview,
   mergePlaybookRunMetadata,
@@ -98,6 +104,9 @@ const WORKFLOW_DB_PATH =
   process.env.TESSERA_WORKFLOW_DB_PATH ?? join(homedir(), ".tessera", "workflow-runs.sqlite");
 const TASK_DB_PATH =
   process.env.TESSERA_TASK_DB_PATH ?? join(homedir(), ".tessera", "tasks.sqlite");
+const MEMORY_DB_PATH =
+  process.env.TESSERA_MEMORY_DB_PATH ?? join(homedir(), ".tessera", "memory.sqlite");
+const MEMORY_DISABLED = process.env.TESSERA_MEMORY_DISABLED === "1";
 const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
@@ -114,6 +123,39 @@ const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(WORKFLOW_DB_
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
+export function createServerMemoryRuntime(options: {
+  dbPath: string;
+  disabled: boolean;
+  ownerId: string;
+  createStore?: (dbPath: string) => MemoryStore;
+  warn?: (message: string) => void;
+}): { memoryStore?: MemoryStore; memoryManager: TesseraMemoryManager } {
+  if (options.disabled) return { memoryManager: createNoopMemoryManager() };
+
+  try {
+    const memoryStore = (options.createStore ?? createMemoryStore)(options.dbPath);
+    return {
+      memoryStore,
+      memoryManager: createMemoryManager({ store: memoryStore, ownerId: options.ownerId }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    options.warn?.(
+      JSON.stringify({
+        type: "tessera.memory.startup_failed",
+        message,
+      })
+    );
+    return { memoryManager: createNoopMemoryManager() };
+  }
+}
+
+const { memoryStore, memoryManager } = createServerMemoryRuntime({
+  dbPath: MEMORY_DB_PATH,
+  disabled: MEMORY_DISABLED,
+  ownerId: "local-owner",
+  warn: (message) => console.warn(message),
+});
 const taskEventBus = createTaskEventBus();
 interface WorkflowRegistryEntry {
   definition: WorkflowDefinition;
@@ -218,6 +260,7 @@ process.on("exit", () => {
   taskStore.close();
   agentProfileStore.close();
   inboxStore.close();
+  memoryStore?.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => process.exit(0));
@@ -306,6 +349,7 @@ async function saveWorkflowRunWithDashboardLayout(
 ): Promise<Parameters<typeof workflowStore.save>[0]> {
   if (!entry || !["completed", "failed", "denied"].includes(run.status)) {
     workflowStore.save(run);
+    await recordWorkflowRunMemory(run);
     return run;
   }
 
@@ -318,7 +362,27 @@ async function saveWorkflowRunWithDashboardLayout(
   });
   const runWithLayout = layout ? { ...run, dashboardLayout: layout } : run;
   workflowStore.save(runWithLayout);
+  await recordWorkflowRunMemory(runWithLayout);
   return runWithLayout;
+}
+
+function workspaceRootFromWorkflowRun(
+  run: Parameters<typeof workflowStore.save>[0]
+): string | undefined {
+  const workspaceRoot = run.input.workspaceRoot;
+  return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
+}
+
+async function recordWorkflowRunMemory(
+  run: Parameters<typeof workflowStore.save>[0]
+): Promise<void> {
+  try {
+    const workspaceRoot = workspaceRootFromWorkflowRun(run);
+    await memoryManager.recordWorkflowRun({
+      run,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+    });
+  } catch {}
 }
 
 function playbookRunDetail(run: unknown): unknown {
@@ -1433,6 +1497,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         agentTurnId,
         browser: browserExecutor,
         cli: { runWorkspaceCli },
+        memory: memoryManager,
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
         publish: (e) => taskEventBus.publish(taskId, e),
@@ -1569,6 +1634,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         agentTurnId,
         browser: browserExecutor,
         cli: { runWorkspaceCli },
+        memory: memoryManager,
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
         publish: (e) => taskEventBus.publish(taskId, e),

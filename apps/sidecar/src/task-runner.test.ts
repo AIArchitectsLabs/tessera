@@ -625,4 +625,216 @@ describe("task runner", () => {
 
     expect(store.getTask(task.id)?.status).toBe("done");
   });
+
+  test("passes recalled memory context to Pi runner", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const userTurn = store.createUserTurn(task.id, "Draft the weekly update");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let seenMemoryContext = "";
+    const recordedTurns: string[] = [];
+    let recordedBeforeRecall: string[] = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      memory: {
+        async recordTaskTurn({ turn }) {
+          recordedTurns.push(turn.id);
+        },
+        async recallForTask() {
+          recordedBeforeRecall = [...recordedTurns];
+          return {
+            context: "<tessera-memory-context>\nPrefer concise bullets.\n</tessera-memory-context>",
+            result: {
+              mode: "task",
+              timedOut: false,
+              items: [],
+              trace: {
+                query: "Draft the weekly update",
+                workspaceKey: "workspace:test",
+                candidateCount: 1,
+                selectedCount: 0,
+                omittedReasons: [],
+                durationMs: 1,
+              },
+            },
+          };
+        },
+      },
+      piRunner: async ({ memoryContext }) => {
+        seenMemoryContext = memoryContext ?? "";
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(seenMemoryContext).toContain("Prefer concise bullets.");
+    expect(recordedBeforeRecall).toEqual([]);
+    expect(recordedTurns).toContain(userTurn.id);
+    expect(recordedTurns).toContain(agentTurn.id);
+  });
+
+  test("continues task execution when memory recall fails", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const userTurn = store.createUserTurn(task.id, "Draft the weekly update");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let runnerCalled = false;
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      memory: {
+        async recordTaskTurn() {},
+        async recallForTask() {
+          throw new Error("memory unavailable");
+        },
+      },
+      piRunner: async () => {
+        runnerCalled = true;
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(runnerCalled).toBe(true);
+    expect(store.getTask(task.id)?.status).toBe("done");
+  });
+
+  test("continues task execution when memory hooks throw synchronously", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const userTurn = store.createUserTurn(task.id, "Draft the weekly update");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let runnerCalled = false;
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      memory: {
+        recordTaskTurn() {
+          throw new Error("sync record failure");
+        },
+        recallForTask() {
+          throw new Error("sync recall failure");
+        },
+      },
+      piRunner: async () => {
+        runnerCalled = true;
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(runnerCalled).toBe(true);
+    expect(store.getTask(task.id)?.status).toBe("done");
+  });
+
+  test("continues task execution when memory hooks hang", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Draft update",
+    });
+    const userTurn = store.createUserTurn(task.id, "Draft the weekly update");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let runnerCalled = false;
+    const startedAt = Date.now();
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      memory: {
+        recordTaskTurn() {
+          return new Promise<void>(() => {});
+        },
+        recallForTask() {
+          return new Promise(() => {});
+        },
+      },
+      piRunner: async () => {
+        runnerCalled = true;
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(runnerCalled).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1200);
+    expect(store.getTask(task.id)?.status).toBe("done");
+  });
+
+  test("uses prompt override for memory recall", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "/skill planning Draft update",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected first turn");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let recallQuery = "";
+    let seenPrompt = "";
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      promptOverride: "Draft update",
+      memory: {
+        async recordTaskTurn() {},
+        async recallForTask({ query }) {
+          recallQuery = query;
+          return {
+            context: "",
+            result: {
+              mode: "task",
+              timedOut: false,
+              items: [],
+              trace: {
+                query,
+                candidateCount: 0,
+                selectedCount: 0,
+                omittedReasons: [],
+                durationMs: 1,
+              },
+            },
+          };
+        },
+      },
+      piRunner: async ({ prompt }) => {
+        seenPrompt = prompt;
+        return { text: "Done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(recallQuery).toBe("Draft update");
+    expect(seenPrompt).toBe("Draft update");
+    expect(store.getTurn(userTurn.id).content).toBe("/skill planning Draft update");
+  });
 });

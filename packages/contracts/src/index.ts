@@ -1839,6 +1839,204 @@ export const TaskArtifactSchema = z.object({
 });
 export type TaskArtifact = z.infer<typeof TaskArtifactSchema>;
 
+export const MemoryScopeSchema = z.enum(["task", "playbook", "user", "workspace", "system"]);
+export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
+
+export const MemoryTypeSchema = z.enum(["fact", "preference", "procedure", "lesson", "warning"]);
+export type MemoryType = z.infer<typeof MemoryTypeSchema>;
+
+export const MemorySensitivitySchema = z.enum([
+  "public",
+  "personal",
+  "sensitive",
+  "secret_suspect",
+]);
+export type MemorySensitivity = z.infer<typeof MemorySensitivitySchema>;
+
+export const MemoryCapturePolicySchema = z.enum([
+  "full",
+  "summary",
+  "metadata_only",
+  "redacted",
+  "rejected",
+]);
+export type MemoryCapturePolicy = z.infer<typeof MemoryCapturePolicySchema>;
+
+export const MemoryFreshnessSchema = z.enum(["fresh", "aging", "stale", "unknown"]);
+export type MemoryFreshness = z.infer<typeof MemoryFreshnessSchema>;
+
+export const MemoryStatusSchema = z.enum(["candidate", "active", "rejected", "archived"]);
+export type MemoryStatus = z.infer<typeof MemoryStatusSchema>;
+
+export const MemoryEventSchema = z.object({
+  id: z.string().min(1),
+  eventKey: z.string().min(1),
+  workspaceKey: z.string().min(1).optional(),
+  ownerId: z.string().min(1).optional(),
+  scope: MemoryScopeSchema,
+  subjectType: z.string().min(1),
+  subjectId: z.string().min(1),
+  eventType: z.string().min(1),
+  content: z.string(),
+  contentHash: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  sensitivity: MemorySensitivitySchema,
+  capturePolicy: MemoryCapturePolicySchema,
+  schemaVersion: z.literal(1),
+  createdAt: z.string().datetime(),
+});
+export type MemoryEvent = z.infer<typeof MemoryEventSchema>;
+
+export const MemorySourceRefSchema = z.object({
+  type: z.string().min(1),
+  id: z.string().min(1),
+});
+export type MemorySourceRef = z.infer<typeof MemorySourceRefSchema>;
+
+export const MemorySchema = z.object({
+  id: z.string().min(1),
+  workspaceKey: z.string().min(1).optional(),
+  ownerId: z.string().min(1).optional(),
+  scope: MemoryScopeSchema,
+  type: MemoryTypeSchema,
+  title: z.string().min(1),
+  body: z.string().min(1),
+  status: MemoryStatusSchema,
+  confidence: z.number().min(0).max(1),
+  freshness: MemoryFreshnessSchema,
+  expiresAt: z.string().datetime().optional(),
+  sourceEventIds: z.array(z.string().min(1)),
+  sourceDocumentIds: z.array(z.string().min(1)),
+  supersedesMemoryId: z.string().min(1).optional(),
+  lastUsedAt: z.string().datetime().optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type Memory = z.infer<typeof MemorySchema>;
+
+export const MemoryRecallModeSchema = z.enum(["none", "task", "workspace", "personalized"]);
+export type MemoryRecallMode = z.infer<typeof MemoryRecallModeSchema>;
+
+export const MemoryRecallItemSchema = z.object({
+  memoryId: z.string().min(1),
+  scope: MemoryScopeSchema,
+  type: MemoryTypeSchema,
+  title: z.string().min(1),
+  body: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  freshness: MemoryFreshnessSchema,
+  sourceRefs: z.array(MemorySourceRefSchema),
+  reason: z.string().min(1),
+});
+export type MemoryRecallItem = z.infer<typeof MemoryRecallItemSchema>;
+
+export const MemoryRecallTraceSchema = z.object({
+  query: z.string(),
+  workspaceKey: z.string().min(1).optional(),
+  candidateCount: z.number().int().nonnegative(),
+  selectedCount: z.number().int().nonnegative(),
+  omittedReasons: z.array(z.string().min(1)).default([]),
+  durationMs: z.number().nonnegative(),
+});
+export type MemoryRecallTrace = z.infer<typeof MemoryRecallTraceSchema>;
+
+export const MemoryRecallRequestSchema = z.object({
+  mode: MemoryRecallModeSchema,
+  query: z.string(),
+  workspaceKey: z.string().min(1).optional(),
+  ownerId: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
+  maxCharacters: z.number().int().positive().default(1500),
+});
+export type MemoryRecallRequest = z.infer<typeof MemoryRecallRequestSchema>;
+
+export const MemoryRecallResultSchema = z
+  .object({
+    mode: MemoryRecallModeSchema,
+    timedOut: z.boolean().default(false),
+    items: z.array(MemoryRecallItemSchema),
+    trace: MemoryRecallTraceSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.trace.selectedCount > value.trace.candidateCount) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "trace.selectedCount cannot exceed trace.candidateCount",
+        path: ["trace", "selectedCount"],
+      });
+    }
+
+    if (value.trace.selectedCount !== value.items.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "trace.selectedCount must match items.length",
+        path: ["trace", "selectedCount"],
+      });
+    }
+
+    if (value.timedOut && value.items.length !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "timedOut results must not include items",
+        path: ["items"],
+      });
+    }
+
+    if (value.timedOut && value.trace.selectedCount !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "timedOut results must report zero selected items",
+        path: ["trace", "selectedCount"],
+      });
+    }
+
+    if (value.mode === "none" && value.items.length !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'mode "none" must not return items',
+        path: ["items"],
+      });
+    }
+
+    if (value.mode === "none" && value.trace.selectedCount !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'mode "none" must report zero selected items',
+        path: ["trace", "selectedCount"],
+      });
+    }
+  });
+export type MemoryRecallResult = z.infer<typeof MemoryRecallResultSchema>;
+
+export const MemoryCandidateRationaleSchema = z.object({
+  supportingEventIds: z.array(z.string().min(1)),
+  conflictingMemoryIds: z.array(z.string().min(1)),
+  promotionReason: z.string().min(1),
+  riskFlags: z.array(z.enum(["personal", "secret_suspect", "stale", "low_confidence"])),
+});
+export type MemoryCandidateRationale = z.infer<typeof MemoryCandidateRationaleSchema>;
+
+export const MemoryCandidateSchema = MemorySchema.extend({
+  status: z.literal("candidate"),
+  rationale: MemoryCandidateRationaleSchema,
+});
+export type MemoryCandidate = z.infer<typeof MemoryCandidateSchema>;
+
+export const MemoryPromotionDecisionSchema = z.object({
+  candidateId: z.string().min(1),
+  decision: z.enum(["accept", "reject", "archive"]),
+  reason: z.string().min(1),
+  decidedAt: z.string().datetime(),
+});
+export type MemoryPromotionDecision = z.infer<typeof MemoryPromotionDecisionSchema>;
+
+export const MemoryForgetRequestSchema = z.object({
+  memoryId: z.string().min(1),
+  reason: z.string().min(1),
+  requestedAt: z.string().datetime(),
+});
+export type MemoryForgetRequest = z.infer<typeof MemoryForgetRequestSchema>;
+
 export const TodoItemStatusSchema = z.enum(["pending", "in_progress", "completed"]);
 export type TodoItemStatus = z.infer<typeof TodoItemStatusSchema>;
 
