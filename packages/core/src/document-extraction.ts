@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { basename, extname } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import * as mammoth from "mammoth";
 import { extractText } from "unpdf";
 import * as XLSX from "xlsx";
@@ -8,7 +9,7 @@ const DEFAULT_MAX_CHARS = 100_000;
 const DEFAULT_MAX_ROWS = 100;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
-const supportedExtensions = new Set([".pdf", ".docx", ".xlsx", ".xls"]);
+const supportedExtensions = new Set([".pdf", ".docx", ".xlsx", ".xls", ".pptx"]);
 
 export interface DocumentExtractionOptions {
   sheet?: string;
@@ -24,7 +25,7 @@ export interface DocumentExtractionResult {
   text: string;
   details: {
     path: string;
-    fileType: "pdf" | "docx" | "xlsx" | "xls";
+    fileType: "pdf" | "docx" | "xlsx" | "xls" | "pptx";
     bytes: number;
     truncated: boolean;
     warnings: string[];
@@ -57,6 +58,8 @@ export async function extractWorkspaceDocument(
     body = await extractDocx(path);
   } else if (extension === ".xlsx" || extension === ".xls") {
     body = await extractSpreadsheet(path, options);
+  } else if (extension === ".pptx") {
+    body = await extractPresentation(path);
   } else {
     throw new Error(`Unsupported document format: ${extension || "unknown"}`);
   }
@@ -123,6 +126,111 @@ async function extractSpreadsheet(
   return sections.join("\n\n");
 }
 
+async function extractPresentation(path: string): Promise<string> {
+  const buffer = await readFile(path);
+  const slideEntries = readZipEntries(buffer)
+    .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry.name))
+    .sort((left, right) => slideNumber(left.name) - slideNumber(right.name));
+
+  return slideEntries
+    .map((entry) => {
+      const xml = entry.data.toString("utf8");
+      const textRuns = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+        .map((match) => decodeXmlText(match[1] ?? "").trim())
+        .filter((text) => text.length > 0);
+      return `[Slide ${slideNumber(entry.name)}]\n${textRuns.join("\n")}`;
+    })
+    .filter((section) => !section.endsWith("\n"))
+    .join("\n\n");
+}
+
+function readZipEntries(buffer: Buffer): Array<{ name: string; data: Buffer }> {
+  const eocdOffset = findEndOfCentralDirectory(buffer);
+  const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+  const centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+  const entries: Array<{ name: string; data: Buffer }> = [];
+  let cursor = centralDirectoryOffset;
+
+  for (let index = 0; index < entryCount; index++) {
+    if (buffer.readUInt32LE(cursor) !== 0x02014b50) {
+      throw new Error("Unsupported zip archive: invalid central directory entry");
+    }
+    const method = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24);
+    const nameLength = buffer.readUInt16LE(cursor + 28);
+    const extraLength = buffer.readUInt16LE(cursor + 30);
+    const commentLength = buffer.readUInt16LE(cursor + 32);
+    const localHeaderOffset = buffer.readUInt32LE(cursor + 42);
+    const name = buffer.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
+    const data = readZipEntryData(buffer, {
+      compressedSize,
+      localHeaderOffset,
+      method,
+      uncompressedSize,
+    });
+    entries.push({ name, data });
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function readZipEntryData(
+  buffer: Buffer,
+  entry: {
+    compressedSize: number;
+    localHeaderOffset: number;
+    method: number;
+    uncompressedSize: number;
+  }
+): Buffer {
+  const cursor = entry.localHeaderOffset;
+  if (buffer.readUInt32LE(cursor) !== 0x04034b50) {
+    throw new Error("Unsupported zip archive: invalid local file header");
+  }
+  const nameLength = buffer.readUInt16LE(cursor + 26);
+  const extraLength = buffer.readUInt16LE(cursor + 28);
+  const dataStart = cursor + 30 + nameLength + extraLength;
+  const compressed = buffer.subarray(dataStart, dataStart + entry.compressedSize);
+
+  let data: Buffer;
+  if (entry.method === 0) {
+    data = compressed;
+  } else if (entry.method === 8) {
+    data = inflateRawSync(compressed);
+  } else {
+    throw new Error(`Unsupported zip compression method: ${entry.method}`);
+  }
+  if (entry.uncompressedSize !== data.length) {
+    throw new Error("Unsupported zip archive: entry size mismatch");
+  }
+  return data;
+}
+
+function findEndOfCentralDirectory(buffer: Buffer): number {
+  const minimumOffset = Math.max(0, buffer.length - 65_557);
+  for (let offset = buffer.length - 22; offset >= minimumOffset; offset--) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) return offset;
+  }
+  throw new Error("Unsupported zip archive: end of central directory not found");
+}
+
+function slideNumber(path: string): number {
+  const match = path.match(/slide(\d+)\.xml$/);
+  const value = match?.[1];
+  return value ? Number.parseInt(value, 10) : Number.MAX_SAFE_INTEGER;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&amp;", "&");
+}
+
 function positiveInteger(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.max(1, Math.floor(value));
@@ -144,5 +252,6 @@ function limitText(
 function labelForExtension(extension: string): string {
   if (extension === ".pdf") return "PDF";
   if (extension === ".docx") return "Word document";
+  if (extension === ".pptx") return "PowerPoint presentation";
   return "Spreadsheet";
 }

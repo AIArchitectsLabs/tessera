@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateRawSync } from "node:zlib";
 import * as XLSX from "xlsx";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
@@ -28,8 +29,99 @@ async function makeTools() {
     "Accounts"
   );
   XLSX.writeFile(workbook, join(root, "accounts.xlsx"));
+  await writeFile(
+    join(root, "deck.pptx"),
+    minimalZip({
+      "ppt/slides/slide1.xml": `
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree><p:sp><p:txBody>
+            <a:p><a:r><a:t>Pipeline review</a:t></a:r></a:p>
+            <a:p><a:r><a:t>Acme renewal risk</a:t></a:r></a:p>
+          </p:txBody></p:sp></p:spTree></p:cSld>
+        </p:sld>`,
+      "ppt/slides/slide2.xml": `
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+          xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree><p:sp><p:txBody>
+            <a:p><a:r><a:t>Next steps</a:t></a:r></a:p>
+          </p:txBody></p:sp></p:spTree></p:cSld>
+        </p:sld>`,
+    })
+  );
   const guard = await createWorkspaceGuard(root);
   return { root, tools: createWorkspaceToolDefinitions(guard) };
+}
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let index = 0; index < 8; index++) {
+      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function minimalZip(entries: Record<string, string>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+
+  for (const [name, content] of Object.entries(entries)) {
+    const nameBytes = Buffer.from(name);
+    const contentBytes = Buffer.from(content);
+    const compressed = deflateRawSync(contentBytes);
+    const checksum = crc32(contentBytes);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(0, 10);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(contentBytes.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, nameBytes, compressed);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(0, 12);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(contentBytes.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBytes);
+
+    offset += local.length + nameBytes.length + compressed.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(Object.keys(entries).length, 8);
+  end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
 function samplePdf(text: string): string {
@@ -127,6 +219,59 @@ describe("createWorkspaceToolDefinitions", () => {
     expect(resultText(xlsx)).toContain("Acme");
   });
 
+  test("workspace_extract extracts readable content from PPTX files", async () => {
+    const { tools } = await makeTools();
+
+    const pptx = await tool(tools, "workspace_extract").execute(
+      "call-pptx",
+      { path: "deck.pptx" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(pptx)).toContain("[Slide 1]");
+    expect(resultText(pptx)).toContain("Pipeline review");
+    expect(resultText(pptx)).toContain("Acme renewal risk");
+    expect(resultText(pptx)).toContain("[Slide 2]");
+    expect(resultText(pptx)).toContain("Next steps");
+    expect(pptx.details).toMatchObject({
+      path: "deck.pptx",
+      fileType: "pptx",
+    });
+  });
+
+  test("workspace_extract honors spreadsheet sheet and row limits", async () => {
+    const { tools } = await makeTools();
+
+    const xlsx = await tool(tools, "workspace_extract").execute(
+      "call-xlsx",
+      { path: "accounts.xlsx", sheet: "Accounts", maxRows: 2 },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(xlsx)).toContain("[Sheet: Accounts]");
+    expect(resultText(xlsx)).toContain("Acme");
+    expect(resultText(xlsx)).not.toContain("Globex");
+    expect(resultText(xlsx)).toContain("[1 more rows omitted]");
+  });
+
+  test("workspace_extract rejects missing spreadsheet sheets clearly", async () => {
+    const { tools } = await makeTools();
+
+    await expect(
+      tool(tools, "workspace_extract").execute(
+        "call-xlsx",
+        { path: "accounts.xlsx", sheet: "Missing" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("Sheet not found: Missing");
+  });
+
   test("workspace_read routes supported document formats through extraction", async () => {
     const { tools } = await makeTools();
 
@@ -140,6 +285,73 @@ describe("createWorkspaceToolDefinitions", () => {
 
     expect(resultText(result)).toContain("Extracted from: brief.docx");
     expect(resultText(result)).toContain("Walking on imported air");
+  });
+
+  test("workspace_read truncates large text files with metadata", async () => {
+    const { root, tools } = await makeTools();
+    const largeText = `${"a".repeat(120_000)}\nlast line should be omitted\n`;
+    await writeFile(join(root, "src", "large.log"), largeText);
+
+    const result = await tool(tools, "workspace_read").execute(
+      "call-1",
+      { path: "src/large.log" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(result).length).toBeLessThan(largeText.length);
+    expect(resultText(result)).toContain("[Output truncated]");
+    expect(resultText(result)).not.toContain("last line should be omitted");
+    expect(result.details).toMatchObject({
+      path: "src/large.log",
+      bytes: Buffer.byteLength(largeText),
+      truncated: true,
+      warnings: ["Output truncated to 100000 characters."],
+    });
+  });
+
+  test("workspace_read can read a later byte window from a large text file", async () => {
+    const { root, tools } = await makeTools();
+    const firstChunk = "first chunk\n";
+    const secondChunk = "second chunk\n";
+    await writeFile(join(root, "src", "window.log"), `${firstChunk}${secondChunk}`);
+
+    const result = await tool(tools, "workspace_read").execute(
+      "call-1",
+      {
+        path: "src/window.log",
+        offset: Buffer.byteLength(firstChunk),
+        maxBytes: Buffer.byteLength(secondChunk),
+      },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(resultText(result)).toBe(secondChunk);
+    expect(result.details).toMatchObject({
+      path: "src/window.log",
+      bytes: Buffer.byteLength(`${firstChunk}${secondChunk}`),
+      offset: Buffer.byteLength(firstChunk),
+      bytesRead: Buffer.byteLength(secondChunk),
+      truncated: false,
+    });
+  });
+
+  test("workspace_read rejects binary-looking files", async () => {
+    const { root, tools } = await makeTools();
+    await writeFile(join(root, "src", "image.bin"), Buffer.from([0, 1, 2, 3, 4, 5]));
+
+    await expect(
+      tool(tools, "workspace_read").execute(
+        "call-1",
+        { path: "src/image.bin" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("appears to be binary");
   });
 
   test("searches inside the workspace", async () => {

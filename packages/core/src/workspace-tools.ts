@@ -1,4 +1,4 @@
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
@@ -14,6 +14,12 @@ type WorkspaceToolDefinition<TParams extends TSchema, TDetails = unknown> = Tool
   TParams,
   TDetails
 >;
+
+const readSchema = Type.Object({
+  path: Type.String(),
+  offset: Type.Optional(Type.Number()),
+  maxBytes: Type.Optional(Type.Number()),
+});
 
 const pathSchema = Type.Object({
   path: Type.String(),
@@ -48,6 +54,39 @@ const editSchema = Type.Object({
   newText: Type.String(),
 });
 
+const RAW_TEXT_MAX_BYTES = 256 * 1024;
+const RAW_TEXT_MAX_CHARS = 100_000;
+
+interface RawTextReadResult {
+  text: string;
+  details: {
+    bytes: number;
+    offset: number;
+    bytesRead: number;
+    nextOffset?: number;
+    truncated: boolean;
+    warnings: string[];
+  };
+}
+
+type WorkspaceReadDetails =
+  | {
+      path: string;
+      fileType: string;
+      bytes: number;
+      truncated: boolean;
+      warnings: string[];
+    }
+  | {
+      path: string;
+      bytes: number;
+      offset: number;
+      bytesRead: number;
+      nextOffset?: number;
+      truncated: boolean;
+      warnings: string[];
+    };
+
 function textResult<TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> {
   return {
     content: [{ type: "text", text }],
@@ -73,19 +112,96 @@ async function walkFiles(root: string, dir: string, files: string[] = []): Promi
   return files;
 }
 
+function looksBinary(buffer: Buffer): boolean {
+  if (buffer.includes(0)) return true;
+  const sampleLength = Math.min(buffer.length, 4096);
+  if (sampleLength === 0) return false;
+
+  let controlBytes = 0;
+  for (const byte of buffer.subarray(0, sampleLength)) {
+    const allowedWhitespace = byte === 9 || byte === 10 || byte === 12 || byte === 13;
+    if (byte < 32 && !allowedWhitespace) controlBytes++;
+  }
+
+  return controlBytes / sampleLength > 0.05;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
+}
+
+async function readBoundedTextFile(options: {
+  bytes: number;
+  maxBytes?: number;
+  offset?: number;
+  path: string;
+}): Promise<RawTextReadResult> {
+  const offset = Math.min(nonNegativeInteger(options.offset, 0), options.bytes);
+  const requestedBytes = positiveInteger(options.maxBytes, RAW_TEXT_MAX_BYTES);
+  const readLimit = Math.min(requestedBytes, RAW_TEXT_MAX_BYTES);
+  const remainingBytes = options.bytes - offset;
+  const readBytes = Math.min(remainingBytes, readLimit);
+  const handle = await open(options.path, "r");
+  try {
+    const buffer = Buffer.alloc(readBytes);
+    const { bytesRead } = await handle.read(buffer, 0, readBytes, offset);
+    const content = buffer.subarray(0, bytesRead);
+    if (looksBinary(content)) {
+      throw new Error("File appears to be binary. Use another tool or convert it to text first.");
+    }
+
+    const warnings: string[] = [];
+    let text = content.toString("utf8");
+    let truncated = offset + bytesRead < options.bytes;
+    const byteTruncated = truncated;
+    if (text.length > RAW_TEXT_MAX_CHARS) {
+      text = text.slice(0, RAW_TEXT_MAX_CHARS);
+      truncated = true;
+    }
+    if (truncated) {
+      warnings.push(
+        byteTruncated
+          ? `Output truncated to ${readLimit} bytes.`
+          : `Output truncated to ${RAW_TEXT_MAX_CHARS} characters.`
+      );
+      text = `${text}\n\n[Output truncated]`;
+    }
+
+    return {
+      text,
+      details: {
+        bytes: options.bytes,
+        bytesRead,
+        ...(offset + bytesRead < options.bytes ? { nextOffset: offset + bytesRead } : {}),
+        offset,
+        truncated,
+        warnings,
+      },
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
 export function createWorkspaceToolDefinitions(
   guard: WorkspaceGuard,
   options?: { onViolation?: (toolName: string) => void }
 ): ToolDefinition[] {
-  const readTool = defineTool({
+  const readTool = defineTool<typeof readSchema, WorkspaceReadDetails>({
     name: "workspace_read",
     label: "Read",
     description:
       "Read a text file inside the selected workspace, or extract readable content from supported documents.",
     promptSnippet:
-      "workspace_read: read text files and supported PDF, Word, and Excel documents inside the selected workspace.",
-    parameters: pathSchema,
-    async execute(_toolCallId, params: Static<typeof pathSchema>) {
+      "workspace_read: read text files inside the selected workspace. It also auto-extracts supported documents, but use workspace_extract when you need PDF page ranges, spreadsheet sheets/rows, or output limits.",
+    parameters: readSchema,
+    async execute(_toolCallId, params: Static<typeof readSchema>) {
       let absolute: string;
       try {
         absolute = await guard.resolveInsideWorkspace(params.path);
@@ -102,18 +218,26 @@ export function createWorkspaceToolDefinitions(
           path: relative(guard.root, absolute),
         });
       }
-      const text = await readFile(absolute, "utf8");
-      return textResult(text, { path: relative(guard.root, absolute) });
+      const read = await readBoundedTextFile({
+        bytes: metadata.size,
+        ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
+        ...(params.offset !== undefined ? { offset: params.offset } : {}),
+        path: absolute,
+      });
+      return textResult(read.text, {
+        path: relative(guard.root, absolute),
+        ...read.details,
+      });
     },
-  }) satisfies WorkspaceToolDefinition<typeof pathSchema, { path: string }>;
+  }) satisfies WorkspaceToolDefinition<typeof readSchema, WorkspaceReadDetails>;
 
   const extractTool = defineTool({
     name: "workspace_extract",
     label: "Extract",
     description:
-      "Extract readable content from PDF, Word, and Excel files inside the selected workspace.",
+      "Extract readable content from PDF, Word, Excel, and PowerPoint files inside the selected workspace.",
     promptSnippet:
-      "workspace_extract: extract readable text from PDF, Word (.docx), and Excel (.xlsx/.xls) files inside the selected workspace.",
+      "workspace_extract: extract readable text from PDF, Word (.docx), Excel (.xlsx/.xls), and PowerPoint (.pptx) files inside the selected workspace. Use pages, sheet, maxRows, and maxChars to keep output focused.",
     parameters: extractSchema,
     async execute(_toolCallId, params: Static<typeof extractSchema>) {
       let absolute: string;
