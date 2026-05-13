@@ -10,6 +10,7 @@ type RecordedFetchCall = {
 };
 
 const originalServe = Bun.serve;
+const originalMemoryDisabled = process.env.TESSERA_MEMORY_DISABLED;
 let isPlaybookRunPreferenceAssignmentPlanValidationError:
   | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
   | undefined;
@@ -17,6 +18,7 @@ let buildPlaybookRunPreference: typeof import("./server.js").buildPlaybookRunPre
 let buildWorkflowExecutionOptions:
   | typeof import("./server.js").buildWorkflowExecutionOptions
   | undefined;
+let createServerMemoryRuntime: typeof import("./server.js").createServerMemoryRuntime | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let requestCodexDeviceCode: typeof import("./server.js").requestCodexDeviceCode | undefined;
 let refreshCodexOAuthCredential:
@@ -28,11 +30,13 @@ beforeAll(async () => {
     port: 0,
     stop() {},
   })) as typeof Bun.serve;
+  process.env.TESSERA_MEMORY_DISABLED = "1";
 
   try {
     const serverModule = await import("./server.js");
     buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
     buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
+    createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -45,9 +49,71 @@ beforeAll(async () => {
 
 afterAll(() => {
   (Bun as typeof Bun & { serve: typeof Bun.serve }).serve = originalServe;
+  if (originalMemoryDisabled === undefined) {
+    process.env.TESSERA_MEMORY_DISABLED = undefined;
+  } else {
+    process.env.TESSERA_MEMORY_DISABLED = originalMemoryDisabled;
+  }
 });
 
 describe("playbook run preference save error mapping", () => {
+  test("falls back to noop memory manager when memory store startup fails", async () => {
+    expect(createServerMemoryRuntime).toBeDefined();
+    const warnings: string[] = [];
+    const runtime = createServerMemoryRuntime?.({
+      dbPath: "/unavailable/memory.sqlite",
+      disabled: false,
+      ownerId: "local-owner",
+      createStore() {
+        throw new Error("sqlite unavailable");
+      },
+      warn(message) {
+        warnings.push(message);
+      },
+    });
+
+    expect(runtime?.memoryStore).toBeUndefined();
+    const recalled = await runtime?.memoryManager.recallForTask({
+      task: {
+        id: "task-1",
+        workspaceRoot: "/workspace/acme",
+        title: "Task",
+        status: "active",
+        agentId: "default",
+        turns: [],
+        artifacts: [],
+        notifications: [],
+        auditRecords: [],
+        activeSkills: [],
+        createdAt: "2026-05-13T00:00:00.000Z",
+        updatedAt: "2026-05-13T00:00:00.000Z",
+      },
+      query: "anything",
+      mode: "task",
+      maxCharacters: 800,
+    });
+
+    expect(recalled?.context).toBe("");
+    expect(JSON.parse(warnings[0] ?? "{}")).toEqual({
+      type: "tessera.memory.startup_failed",
+      message: "sqlite unavailable",
+    });
+  });
+
+  test("uses noop memory manager when memory is explicitly disabled", () => {
+    expect(createServerMemoryRuntime).toBeDefined();
+    const runtime = createServerMemoryRuntime?.({
+      dbPath: "/unused/memory.sqlite",
+      disabled: true,
+      ownerId: "local-owner",
+      createStore() {
+        throw new Error("should not create store");
+      },
+    });
+
+    expect(runtime?.memoryStore).toBeUndefined();
+  });
+
   test("server stamps stored preference metadata from a save request", () => {
     expect(buildPlaybookRunPreference).toBeDefined();
     const preference = buildPlaybookRunPreference?.(
