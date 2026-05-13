@@ -72,6 +72,7 @@ export interface RunPiTaskTurnOptions {
   onToolEnd?: (tool: { name: string; result: unknown }) => void;
   onToolStart?: (tool: { name: string; args: unknown }) => void;
   prompt: string;
+  memoryContext?: string;
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
   browser?: BrowserExecutor;
@@ -465,6 +466,7 @@ function buildPrompt(
     agentInstructions?: string;
     activeSkillContent?: string;
     conversationHistory?: Array<{ role: "user" | "agent"; content: string }>;
+    memoryContext?: string;
   }
 ): string {
   const { conversationHistory } = options;
@@ -484,6 +486,9 @@ function buildPrompt(
       .map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.content}`)
       .join("\n");
     sections.push(`Prior conversation:\n${lines}`);
+  }
+  if (options.memoryContext) {
+    sections.push(options.memoryContext);
   }
   sections.push(
     "Response requirement:\nAfter using tools, always end your turn with a concise user-visible response summarizing what you did, where any deliverable was saved, and any relevant caveat. Do not end with only tool calls."
@@ -698,6 +703,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       prompt: buildPrompt(options.prompt, {
         ...(agentInstructions ? { agentInstructions } : {}),
         ...(activeSkills ? { activeSkillContent: activeSkills } : {}),
+        ...(options.memoryContext ? { memoryContext: options.memoryContext } : {}),
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),
@@ -790,6 +796,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       buildPrompt(options.prompt, {
         ...(agentInstructions ? { agentInstructions } : {}),
         ...(activeSkills ? { activeSkillContent: activeSkills } : {}),
+        ...(options.memoryContext ? { memoryContext: options.memoryContext } : {}),
         ...(options.conversationHistory !== undefined
           ? { conversationHistory: options.conversationHistory }
           : {}),
