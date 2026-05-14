@@ -66,10 +66,14 @@ import {
   CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
+  type OptionalCapabilityInstallProgress,
+  type OptionalCapabilityManager,
   SALES_MEETING_BRIEF_WORKFLOW,
   WEEKLY_STATUS_DIGEST_WORKFLOW,
   WEEKLY_UPDATE_WORKFLOW,
+  createOptionalCapabilityManager,
   executeAgentTurn,
+  optionalCapabilityDefinitionsFromEnv,
   resolveSlashSkillInvocation,
   resumeWorkflowRun,
   runWorkflow,
@@ -119,12 +123,35 @@ const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
 const CODEX_OAUTH_TOKEN_URL = `${CODEX_OAUTH_ISSUER}/oauth/token`;
 const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
+const GOOGLE_WORKSPACE_CAPABILITY_ID = "google-workspace-cli";
+const GOOGLE_WORKSPACE_BINARY_NAME = "gws";
+const GOOGLE_WORKSPACE_CLI_COMMANDS = new Set([
+  "calendar",
+  "contacts",
+  "drive",
+  "gcal",
+  "gmail",
+  "mail",
+  "people",
+]);
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
   recipeDir: join(TESSERA_DATA_DIR, "browser-recipes"),
   ...resolveBrowserRuntimeConfigFromEnv(),
 });
+const optionalCapabilityManager = createOptionalCapabilityManager({
+  rootDir: join(TESSERA_DATA_DIR, "capabilities"),
+  definitions: optionalCapabilityDefinitionsFromEnv(process.env),
+});
+type CapabilityInstallProgress = {
+  phase: OptionalCapabilityInstallProgress["phase"] | "available" | "failed";
+  downloadedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+};
+const capabilityInstallProgress = new Map<string, CapabilityInstallProgress>();
+const capabilityInstallTasks = new Map<string, Promise<void>>();
 const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
@@ -546,6 +573,212 @@ function resolvePlaybookExecutionState(options: {
   });
 }
 
+async function resolveCapabilityBinary(options: {
+  capabilityManager: OptionalCapabilityManager;
+  capabilityId: string;
+  binaryName: string;
+  install: boolean;
+}) {
+  const initialStatus = await options.capabilityManager.status(options.capabilityId);
+  let path = await options.capabilityManager.resolveBinary(
+    options.capabilityId,
+    options.binaryName
+  );
+
+  if (!path && options.install && initialStatus.installAvailable) {
+    await installCapabilityBinary({
+      capabilityManager: options.capabilityManager,
+      capabilityId: options.capabilityId,
+      binaryName: options.binaryName,
+    });
+    path = await options.capabilityManager.resolveBinary(options.capabilityId, options.binaryName);
+  }
+
+  const status = await options.capabilityManager.status(options.capabilityId);
+  const progress =
+    capabilityInstallProgress.get(capabilityKey(options.capabilityId, options.binaryName)) ??
+    (path !== undefined
+      ? ({
+          phase: "installed",
+          ...(status.sizeBytes !== undefined
+            ? { downloadedBytes: status.sizeBytes, totalBytes: status.sizeBytes }
+            : {}),
+        } satisfies CapabilityInstallProgress)
+      : status.installAvailable
+        ? ({
+            phase: "available",
+            ...(status.sizeBytes !== undefined ? { totalBytes: status.sizeBytes } : {}),
+          } satisfies CapabilityInstallProgress)
+        : undefined);
+  return {
+    capabilityId: options.capabilityId,
+    binaryName: options.binaryName,
+    ...(path !== undefined ? { path } : {}),
+    installed: path !== undefined,
+    installAvailable: status.installAvailable,
+    version: status.version,
+    ...(status.sizeBytes !== undefined ? { sizeBytes: status.sizeBytes } : {}),
+    ...(status.message !== undefined ? { message: status.message } : {}),
+    ...(progress !== undefined ? { progress } : {}),
+  };
+}
+
+function capabilityKey(capabilityId: string, binaryName: string): string {
+  return `${capabilityId}:${binaryName}`;
+}
+
+async function installCapabilityBinary(options: {
+  capabilityManager: OptionalCapabilityManager;
+  capabilityId: string;
+  binaryName: string;
+}): Promise<void> {
+  const key = capabilityKey(options.capabilityId, options.binaryName);
+  const existingTask = capabilityInstallTasks.get(key);
+  if (existingTask) {
+    await existingTask;
+    return;
+  }
+
+  const task = (async () => {
+    try {
+      const initialStatus = await options.capabilityManager.status(options.capabilityId);
+      if (initialStatus.installed) {
+        capabilityInstallProgress.set(key, {
+          phase: "installed",
+          ...(initialStatus.sizeBytes !== undefined
+            ? { downloadedBytes: initialStatus.sizeBytes, totalBytes: initialStatus.sizeBytes }
+            : {}),
+        });
+        return;
+      }
+      capabilityInstallProgress.set(key, {
+        phase: "downloading",
+        ...(initialStatus.sizeBytes !== undefined ? { totalBytes: initialStatus.sizeBytes } : {}),
+      });
+      await options.capabilityManager.install(options.capabilityId, {
+        onProgress(progress) {
+          capabilityInstallProgress.set(key, {
+            phase: progress.phase,
+            ...(progress.downloadedBytes !== undefined
+              ? { downloadedBytes: progress.downloadedBytes }
+              : {}),
+            ...(progress.totalBytes !== undefined ? { totalBytes: progress.totalBytes } : {}),
+          });
+        },
+      });
+      const installedStatus = await options.capabilityManager.status(options.capabilityId);
+      const currentProgress = capabilityInstallProgress.get(key);
+      capabilityInstallProgress.set(
+        key,
+        installedStatus.sizeBytes !== undefined
+          ? {
+              phase: "installed",
+              downloadedBytes: installedStatus.sizeBytes,
+              totalBytes: installedStatus.sizeBytes,
+            }
+          : currentProgress?.phase === "installed"
+            ? currentProgress
+            : { phase: "installed" }
+      );
+    } catch (error) {
+      capabilityInstallProgress.set(key, {
+        phase: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      capabilityInstallTasks.delete(key);
+    }
+  })();
+  capabilityInstallTasks.set(key, task);
+  await task;
+}
+
+export async function handleCapabilityBinary(
+  req: Request,
+  capabilityId: string,
+  binaryName: string,
+  capabilityManager: OptionalCapabilityManager = optionalCapabilityManager
+): Promise<Response> {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  try {
+    const result = await resolveCapabilityBinary({
+      capabilityManager,
+      capabilityId,
+      binaryName,
+      install: false,
+    });
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Unknown optional capability") ? 404 : 500 }
+    );
+  }
+}
+
+export async function handleCapabilityBinaryInstall(
+  req: Request,
+  capabilityId: string,
+  binaryName: string,
+  capabilityManager: OptionalCapabilityManager = optionalCapabilityManager
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  try {
+    await installCapabilityBinary({
+      capabilityManager,
+      capabilityId,
+      binaryName,
+    });
+    const result = await resolveCapabilityBinary({
+      capabilityManager,
+      capabilityId,
+      binaryName,
+      install: false,
+    });
+    return Response.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Unknown optional capability") ? 404 : 500 }
+    );
+  }
+}
+
+function usesGoogleWorkspaceCli(args: string[]): boolean {
+  const command = args[0];
+  return command !== undefined && GOOGLE_WORKSPACE_CLI_COMMANDS.has(command);
+}
+
+export async function resolveGoogleWorkspaceCliEnv(
+  args: string[],
+  capabilityManager: OptionalCapabilityManager = optionalCapabilityManager,
+  env: Record<string, string | undefined> = process.env
+): Promise<Record<string, string>> {
+  if (!usesGoogleWorkspaceCli(args)) return {};
+  if (env.TESSERA_GWS_CLI_PATH?.trim()) return {};
+
+  try {
+    const result = await resolveCapabilityBinary({
+      capabilityManager,
+      capabilityId: GOOGLE_WORKSPACE_CAPABILITY_ID,
+      binaryName: GOOGLE_WORKSPACE_BINARY_NAME,
+      install: false,
+    });
+    return result.path ? { TESSERA_GWS_CLI_PATH: result.path } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function handleSpawn(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -586,7 +819,9 @@ async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<Spaw
   }
 
   const startMs = Date.now();
+  const managedEnv = await resolveGoogleWorkspaceCliEnv(args);
   const proc = Bun.spawn([cliPath, ...args], {
+    env: { ...process.env, ...managedEnv },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -1615,6 +1850,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         userTurnId,
         agentTurnId,
         browser: browserExecutor,
+        capabilityManager: optionalCapabilityManager,
         cli: { runWorkspaceCli },
         memory: memoryManager,
         ...(execution ? { execution } : {}),
@@ -1752,6 +1988,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         userTurnId,
         agentTurnId,
         browser: browserExecutor,
+        capabilityManager: optionalCapabilityManager,
         cli: { runWorkspaceCli },
         memory: memoryManager,
         ...(execution ? { execution } : {}),
@@ -2314,6 +2551,26 @@ const server = Bun.serve({
 
     if (pathname === "/spawn") {
       return handleSpawn(req);
+    }
+
+    const capabilityBinaryInstallMatch = pathname.match(
+      /^\/capabilities\/([^/]+)\/binaries\/([^/]+)\/install$/
+    );
+    if (capabilityBinaryInstallMatch) {
+      return handleCapabilityBinaryInstall(
+        req,
+        decodeURIComponent(capabilityBinaryInstallMatch[1] ?? ""),
+        decodeURIComponent(capabilityBinaryInstallMatch[2] ?? "")
+      );
+    }
+
+    const capabilityBinaryMatch = pathname.match(/^\/capabilities\/([^/]+)\/binaries\/([^/]+)$/);
+    if (capabilityBinaryMatch) {
+      return handleCapabilityBinary(
+        req,
+        decodeURIComponent(capabilityBinaryMatch[1] ?? ""),
+        decodeURIComponent(capabilityBinaryMatch[2] ?? "")
+      );
     }
 
     if (pathname === "/agent/turn") {
