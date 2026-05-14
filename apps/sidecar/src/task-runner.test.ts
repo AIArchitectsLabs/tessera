@@ -7,6 +7,7 @@ import {
   type TaskEvent,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
+import type { OptionalCapabilityInstallProgress, OptionalCapabilityManager } from "@tessera/core";
 import { workspaceKeyForRoot } from "@tessera/core";
 import { createMemoryManager } from "./memory-manager.js";
 import { createMemoryStore } from "./memory-store.js";
@@ -397,6 +398,90 @@ describe("task runner", () => {
     const finalTask = store.getTask(task.id);
     expect(finalTask?.artifacts).toHaveLength(1);
     expect(finalTask?.artifacts[0]?.title).toBe("web-fetch fetch");
+  });
+
+  test("publishes capability install progress from tool-triggered PDF setup", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Render the PDF",
+    });
+    const userTurn = store.createUserTurn(task.id, "Render the PDF");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const progressEvents: OptionalCapabilityInstallProgress[] = [
+      {
+        id: "pdf-render",
+        label: "PDF render engine",
+        version: "1.0.0",
+        phase: "downloading",
+        downloadedBytes: 50,
+        totalBytes: 100,
+      },
+      {
+        id: "pdf-render",
+        label: "PDF render engine",
+        version: "1.0.0",
+        phase: "verifying",
+        downloadedBytes: 100,
+        totalBytes: 100,
+      },
+      {
+        id: "pdf-render",
+        label: "PDF render engine",
+        version: "1.0.0",
+        phase: "installed",
+        downloadedBytes: 100,
+        totalBytes: 100,
+      },
+    ];
+    const capabilityManager: OptionalCapabilityManager = {
+      resolveBinary: async () => undefined,
+      status: async () => ({
+        id: "pdf-render",
+        label: "PDF render engine",
+        version: "1.0.0",
+        status: "available",
+        installed: false,
+        installAvailable: true,
+        binaryPaths: {},
+      }),
+      install: async (_capabilityId, options) => {
+        for (const progress of progressEvents) {
+          options?.onProgress?.(progress);
+        }
+        return {
+          id: "pdf-render",
+          label: "PDF render engine",
+          version: "1.0.0",
+          status: "installed",
+          binaryPaths: { pdftoppm: "/managed/pdftoppm" },
+        };
+      },
+    };
+
+    const events: TaskEvent[] = [];
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      capabilityManager,
+      piRunner: async ({ capabilityManager }) => {
+        await capabilityManager?.install("pdf-render");
+        return { text: "Rendered.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const notifications = events.filter((event) => event.type === "task.notification");
+    expect(notifications).toHaveLength(3);
+    expect(notifications.map((event) => event.notification.body)).toEqual([
+      "Downloading PDF render engine... 50%",
+      "Verifying PDF render engine...",
+      "PDF render engine is ready.",
+    ]);
+    expect(store.getTask(task.id)?.latestActivity).toBe("Completed");
   });
 
   test("records browser screenshot and recipe proposal artifacts", async () => {

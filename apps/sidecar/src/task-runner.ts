@@ -4,6 +4,7 @@ import type {
   AgentRuntimeContext,
   MemoryEvent,
   ModelRuntimeCredential,
+  NotifyRequest,
   TaskEvent,
   TaskExecutionConfig,
   TaskSummary,
@@ -14,6 +15,7 @@ import type {
 import { BrowserRecipeProposalSchema, BrowserToolResultSchema } from "@tessera/contracts";
 import {
   type BrowserExecutor,
+  type OptionalCapabilityInstallProgress,
   type OptionalCapabilityManager,
   type PiTaskTurnResult,
   type WorkspaceCliExecutor,
@@ -114,6 +116,77 @@ function toolArtifactTitle(toolName: string, args: unknown): string {
   }
 
   return toolName.replace(/_/g, " ");
+}
+
+function capabilityProgressBody(progress: OptionalCapabilityInstallProgress): string {
+  if (progress.phase === "downloading") {
+    const percent =
+      progress.downloadedBytes !== undefined &&
+      progress.totalBytes !== undefined &&
+      progress.totalBytes > 0
+        ? ` ${Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100))}%`
+        : "";
+    return `Downloading ${progress.label}...${percent}`;
+  }
+  if (progress.phase === "verifying") return `Verifying ${progress.label}...`;
+  if (progress.phase === "installing") return `Installing ${progress.label}...`;
+  return `${progress.label} is ready.`;
+}
+
+function createTaskCapabilityManager(options: {
+  capabilityManager: OptionalCapabilityManager;
+  publish: (event: TaskEvent) => void;
+  store: TaskStore;
+  taskId: string;
+}): OptionalCapabilityManager {
+  const { capabilityManager, publish, store, taskId } = options;
+  const lastProgressBody = new Map<string, string>();
+
+  function publishProgress(progress: OptionalCapabilityInstallProgress) {
+    const body = capabilityProgressBody(progress);
+    if (lastProgressBody.get(progress.id) === body) return;
+    lastProgressBody.set(progress.id, body);
+    const notification: NotifyRequest = {
+      title: "PDF tool setup",
+      body,
+      taskId,
+    };
+    store.addNotification(taskId, notification);
+    publish({
+      type: "task.notification",
+      taskId,
+      emittedAt: new Date().toISOString(),
+      notification,
+    });
+    store.updateTask(taskId, { latestActivity: body });
+    const task = store.getTaskSummary(taskId);
+    if (task) {
+      publish({
+        type: "task.updated",
+        taskId,
+        emittedAt: new Date().toISOString(),
+        task,
+      });
+    }
+  }
+
+  return {
+    resolveBinary(capabilityId, binaryName) {
+      return capabilityManager.resolveBinary(capabilityId, binaryName);
+    },
+    status(capabilityId) {
+      return capabilityManager.status(capabilityId);
+    },
+    install(capabilityId, installOptions = {}) {
+      return capabilityManager.install(capabilityId, {
+        ...installOptions,
+        onProgress(progress) {
+          publishProgress(progress);
+          installOptions.onProgress?.(progress);
+        },
+      });
+    },
+  };
 }
 
 function browserResultFromToolResult(result: unknown) {
@@ -326,6 +399,14 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     const prompt = opts.promptOverride ?? userTurn.content;
     const memoryContext = await bestEffortRecall(opts.memory, task, prompt);
     const userMemoryEvent = await bestEffortRecordTurn(opts.memory, task, updatedUserTurn);
+    const capabilityManager = opts.capabilityManager
+      ? createTaskCapabilityManager({
+          capabilityManager: opts.capabilityManager,
+          publish: opts.publish,
+          store,
+          taskId,
+        })
+      : undefined;
 
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
@@ -398,7 +479,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       prompt,
       provider,
       ...(opts.browser ? { browser: opts.browser } : {}),
-      ...(opts.capabilityManager ? { capabilityManager: opts.capabilityManager } : {}),
+      ...(capabilityManager ? { capabilityManager } : {}),
       ...(shell ? { shell } : {}),
       skillRuntime: {
         activeSkills,
