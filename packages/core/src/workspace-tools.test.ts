@@ -190,16 +190,38 @@ describe("createWorkspaceToolDefinitions", () => {
     expect(list.content[0]).toEqual({ type: "text", text: "index.ts" });
   });
 
-  test("extracts readable content from PDF, DOCX, and XLSX files", async () => {
+  test("extracts readable content from PDF through dedicated PDF tools", async () => {
     const { tools } = await makeTools();
 
-    const pdf = await tool(tools, "workspace_extract").execute(
+    const pdf = await tool(tools, "pdf_extract").execute(
       "call-pdf",
       { path: "sample.pdf" },
       undefined,
       undefined,
       undefined as never
     );
+
+    expect(resultText(pdf)).toContain("[Page 1]");
+    expect(resultText(pdf)).toContain("Hello PDF");
+  });
+
+  test("workspace_extract defers PDF files to dedicated PDF tools", async () => {
+    const { tools } = await makeTools();
+
+    await expect(
+      tool(tools, "workspace_extract").execute(
+        "call-pdf",
+        { path: "sample.pdf" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("Use pdf_inspect first");
+  });
+
+  test("extracts readable content from DOCX and XLSX files", async () => {
+    const { tools } = await makeTools();
+
     const docx = await tool(tools, "workspace_extract").execute(
       "call-docx",
       { path: "brief.docx" },
@@ -215,8 +237,6 @@ describe("createWorkspaceToolDefinitions", () => {
       undefined as never
     );
 
-    expect(resultText(pdf)).toContain("[Page 1]");
-    expect(resultText(pdf)).toContain("Hello PDF");
     expect(resultText(docx)).toContain("Walking on imported air");
     expect(resultText(xlsx)).toContain("[Sheet: Accounts]");
     expect(resultText(xlsx)).toContain("Acme");
@@ -288,6 +308,20 @@ describe("createWorkspaceToolDefinitions", () => {
 
     expect(resultText(result)).toContain("Extracted from: brief.docx");
     expect(resultText(result)).toContain("Walking on imported air");
+  });
+
+  test("workspace_read defers PDF files to dedicated PDF tools", async () => {
+    const { tools } = await makeTools();
+
+    await expect(
+      tool(tools, "workspace_read").execute(
+        "call-1",
+        { path: "sample.pdf" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow("Use pdf_inspect first");
   });
 
   test("workspace_read truncates large text files with metadata", async () => {

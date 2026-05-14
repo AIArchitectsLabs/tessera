@@ -1,5 +1,5 @@
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { extname, join, relative } from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
 import { type ToolDefinition, defineTool } from "@mariozechner/pi-coding-agent";
@@ -57,6 +57,8 @@ const editSchema = Type.Object({
 
 const RAW_TEXT_MAX_BYTES = 256 * 1024;
 const RAW_TEXT_MAX_CHARS = 100_000;
+const PDF_TOOL_DEFER_MESSAGE =
+  "PDF files require the PDF workflow. Use pdf_inspect first, then pdf_extract for page-scoped text or pdf_validate for validation.";
 
 interface RawTextReadResult {
   text: string;
@@ -97,6 +99,10 @@ function textResult<TDetails>(text: string, details: TDetails): AgentToolResult<
 
 function denied(path: string): never {
   throw new WorkspaceBoundaryError(`Workspace tool denied access outside the workspace: ${path}`);
+}
+
+function isPdfPath(path: string): boolean {
+  return extname(path).toLowerCase() === ".pdf";
 }
 
 async function walkFiles(root: string, dir: string, files: string[] = []): Promise<string[]> {
@@ -212,6 +218,9 @@ export function createWorkspaceToolDefinitions(
       }
       const metadata = await stat(absolute);
       if (!metadata.isFile()) throw new Error(`Path is not a file: ${params.path}`);
+      if (isPdfPath(absolute)) {
+        throw new Error(PDF_TOOL_DEFER_MESSAGE);
+      }
       if (isExtractableDocumentPath(absolute)) {
         const extracted = await extractWorkspaceDocument(absolute);
         return textResult(extracted.text, {
@@ -236,9 +245,9 @@ export function createWorkspaceToolDefinitions(
     name: "workspace_extract",
     label: "Extract",
     description:
-      "Extract readable content from PDF, Word, Excel, and PowerPoint files inside the selected workspace.",
+      "Extract readable content from Word, Excel, and PowerPoint files inside the selected workspace.",
     promptSnippet:
-      "workspace_extract: extract readable text from PDF, Word (.docx), Excel (.xlsx/.xls), and PowerPoint (.pptx) files inside the selected workspace. Use pages, sheet, maxRows, and maxChars to keep output focused.",
+      "workspace_extract: extract readable text from Word (.docx), Excel (.xlsx/.xls), and PowerPoint (.pptx) files inside the selected workspace. For PDFs, use pdf_inspect first, then pdf_extract or pdf_validate; use workspace_extract for PDFs only if PDF-specific tools are unavailable.",
     parameters: extractSchema,
     async execute(_toolCallId, params: Static<typeof extractSchema>) {
       let absolute: string;
@@ -247,6 +256,9 @@ export function createWorkspaceToolDefinitions(
       } catch (error) {
         if (error instanceof WorkspaceBoundaryError) options?.onViolation?.("workspace_extract");
         throw error;
+      }
+      if (isPdfPath(absolute)) {
+        throw new Error(PDF_TOOL_DEFER_MESSAGE);
       }
       const extractionOptions: DocumentExtractionOptions = {};
       if (params.sheet !== undefined) extractionOptions.sheet = params.sheet;
