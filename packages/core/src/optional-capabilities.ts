@@ -186,10 +186,7 @@ function gwsExecutableForPlatform(platform: NodeJS.Platform): string {
   return platform === "win32" ? "gws.exe" : "gws";
 }
 
-function builtinGwsDefinition(
-  version: string,
-  hostPlatform: NodeJS.Platform
-): OptionalCapabilityDefinition {
+function builtinGwsDefinition(hostPlatform: NodeJS.Platform): OptionalCapabilityDefinition {
   const relativePath = gwsExecutableForPlatform(hostPlatform);
   const assets: OptionalCapabilityAsset[] = GWS_CLI_TRIPLES.map((entry) => {
     const executableName = gwsExecutableForPlatform(entry.platform);
@@ -206,7 +203,7 @@ function builtinGwsDefinition(
   return {
     id: "google-workspace-cli",
     label: "Google Workspace CLI",
-    version,
+    version: GWS_CLI_VERSION,
     binaries: [{ name: "gws", relativePath }],
     assets,
   };
@@ -216,7 +213,7 @@ export function builtinCapabilityDefinitions(
   options: { platform?: NodeJS.Platform } = {}
 ): OptionalCapabilityDefinition[] {
   const platform = options.platform ?? process.platform;
-  return [builtinGwsDefinition(GWS_CLI_VERSION, platform)];
+  return [builtinGwsDefinition(platform)];
 }
 
 export function optionalCapabilityDefinitionsFromEnv(
@@ -265,8 +262,7 @@ export function optionalCapabilityDefinitionsFromEnv(
     });
   }
 
-  const gwsVersion = env.TESSERA_GWS_CLI_VERSION?.trim() || GWS_CLI_VERSION;
-  const gws = builtinGwsDefinition(gwsVersion, platform);
+  const gws = builtinGwsDefinition(platform);
   const envIsForHost = platform === process.platform && arch === process.arch;
   const gwsOverride = envIsForHost
     ? assetFromEnv({
@@ -279,6 +275,13 @@ export function optionalCapabilityDefinitionsFromEnv(
       })
     : undefined;
   if (gwsOverride) {
+    // Only honor the env-provided version label when env also supplies URL + SHA.
+    // The builtin SHAs are pinned to v0.22.5; relabeling without replacing the
+    // asset would silently mismatch.
+    const overrideVersion = env.TESSERA_GWS_CLI_VERSION?.trim();
+    if (overrideVersion) {
+      gws.version = overrideVersion;
+    }
     gws.assets = gws.assets.map((asset) =>
       asset.platform === platform && asset.arch === arch ? gwsOverride : asset
     );

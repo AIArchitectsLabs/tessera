@@ -124,6 +124,39 @@ describe("optional capability manager", () => {
     );
   });
 
+  test("linux x64 defaults to glibc, not musl", () => {
+    const defs = optionalCapabilityDefinitionsFromEnv({}, { platform: "linux", arch: "x64" });
+    const gws = defs.find((d) => d.id === "google-workspace-cli");
+    if (!gws) throw new Error("expected google-workspace-cli definition");
+    const linuxX64Assets = gws.assets.filter((a) => a.platform === "linux" && a.arch === "x64");
+    // findAsset's linear search picks the first match — gnu must win.
+    const winner = linuxX64Assets[0];
+    expect(winner?.url).toContain("x86_64-unknown-linux-gnu");
+    expect(winner?.url).not.toContain("musl");
+  });
+
+  test("linux arm64 defaults to glibc, not musl", () => {
+    const defs = optionalCapabilityDefinitionsFromEnv({}, { platform: "linux", arch: "arm64" });
+    const gws = defs.find((d) => d.id === "google-workspace-cli");
+    if (!gws) throw new Error("expected google-workspace-cli definition");
+    const linuxArm64Assets = gws.assets.filter((a) => a.platform === "linux" && a.arch === "arm64");
+    const winner = linuxArm64Assets[0];
+    expect(winner?.url).toContain("aarch64-unknown-linux-gnu");
+    expect(winner?.url).not.toContain("musl");
+  });
+
+  test("ignores TESSERA_GWS_CLI_VERSION alone without URL + SHA override", () => {
+    const defs = optionalCapabilityDefinitionsFromEnv(
+      { TESSERA_GWS_CLI_VERSION: "0.99.0-orphan" },
+      { platform: process.platform, arch: process.arch }
+    );
+    const gws = defs.find((d) => d.id === "google-workspace-cli");
+    // Without a matching URL + SHA, the version label stays pinned to the
+    // builtin so URLs and hashes can't drift apart.
+    expect(gws?.version).toBe("0.22.5");
+    expect(gws?.assets.every((a) => a.url.includes("/v0.22.5/"))).toBe(true);
+  });
+
   test("uses gws.exe relativePath when host platform is win32", () => {
     const definitions = optionalCapabilityDefinitionsFromEnv(
       {},
