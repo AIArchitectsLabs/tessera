@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import {
   type PdfCapabilitiesResult,
   PdfCapabilitiesResultSchema,
+  type PdfCreateResult,
+  PdfCreateResultSchema,
   type PdfExtractResult,
   PdfExtractResultSchema,
   type PdfInspectResult,
@@ -23,13 +25,18 @@ import {
   PdfValidateResultSchema,
   type PdfWarning,
 } from "@tessera/contracts";
-import { PDFDocument, degrees } from "pdf-lib";
+import { PDFDocument, type PDFFont, type PDFPage, StandardFonts, degrees, rgb } from "pdf-lib";
 import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_CHARS = 100_000;
+const PDF_PAGE_SIZE: [number, number] = [612, 792];
+const PDF_MARGIN = 54;
+const PDF_BODY_SIZE = 11;
+const PDF_LINE_HEIGHT = 15;
+const PDF_TABLE_ROW_HEIGHT = 22;
 const NO_TEXT_LAYER_WARNING: PdfWarning = {
   code: "no_text_layer",
   message: "No extractable text layer was found. OCR may be required for scanned pages.",
@@ -103,6 +110,41 @@ export interface PdfTransformOptions {
   capabilityManager?: OptionalCapabilityManager;
 }
 
+export type PdfCreateBlock =
+  | {
+      type: "heading";
+      text: string;
+      level?: 1 | 2 | 3;
+    }
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "table";
+      headers?: string[];
+      rows: string[][];
+    }
+  | {
+      type: "image";
+      path: string;
+      displayPath?: string;
+      width?: number;
+      height?: number;
+    }
+  | {
+      type: "pageBreak";
+    };
+
+export interface PdfCreateOptions {
+  outputPath: string;
+  displayOutputPath?: string;
+  title?: string;
+  author?: string;
+  sourcePaths?: string[];
+  blocks: PdfCreateBlock[];
+}
+
 export interface PdfPacketManifestOptions {
   packetId: string;
   outputPath: string;
@@ -136,8 +178,8 @@ export async function getPdfCapabilities(
     engine: "pdf-lib",
     engineRuntime: "typescript" as const,
     available: true,
-    provides: ["pdf_transform" as const],
-    message: "TypeScript PDF transforms are bundled.",
+    provides: ["pdf_transform" as const, "pdf_create" as const],
+    message: "TypeScript PDF transforms and creation are bundled.",
   };
   const engines = [
     {
@@ -175,6 +217,11 @@ export async function getPdfCapabilities(
     },
     {
       name: "pdf_transform" as const,
+      available: transformEngine.available,
+      requiredEngines: ["pdf-lib"],
+    },
+    {
+      name: "pdf_create" as const,
       available: transformEngine.available,
       requiredEngines: ["pdf-lib"],
     },
@@ -445,6 +492,57 @@ export async function transformPdfDocument(
   });
 }
 
+export async function createPdfDocument(options: PdfCreateOptions): Promise<PdfCreateResult> {
+  assertPdfInput(options.outputPath);
+  await mkdir(dirname(options.outputPath), { recursive: true });
+
+  const document = await PDFDocument.create();
+  if (options.title) document.setTitle(options.title);
+  if (options.author) document.setAuthor(options.author);
+  const regularFont = await document.embedFont(StandardFonts.Helvetica);
+  const boldFont = await document.embedFont(StandardFonts.HelveticaBold);
+  const context = {
+    document,
+    regularFont,
+    boldFont,
+    page: document.addPage(PDF_PAGE_SIZE),
+    y: PDF_PAGE_SIZE[1] - PDF_MARGIN,
+  };
+
+  for (const block of options.blocks) {
+    switch (block.type) {
+      case "heading":
+        drawHeading(context, block);
+        break;
+      case "text":
+        drawParagraph(context, block.text);
+        break;
+      case "table":
+        drawTable(context, block);
+        break;
+      case "image":
+        await drawImage(context, block);
+        break;
+      case "pageBreak":
+        addCreatePage(context);
+        break;
+    }
+  }
+
+  await writeFile(options.outputPath, await document.save({ useObjectStreams: false }));
+
+  return PdfCreateResultSchema.parse({
+    outputPath: options.displayOutputPath ?? basename(options.outputPath),
+    fileType: "pdf",
+    pageCount: document.getPageCount(),
+    sourcePaths: sourcePathsForCreate(options),
+    engine: "pdf-lib",
+    engineRuntime: "typescript",
+    provenance: createProvenance(),
+    warnings: [],
+  });
+}
+
 export async function validatePdfDocument(
   path: string,
   options: PdfValidateOptions = {}
@@ -570,6 +668,187 @@ export async function writePdfPacketManifest(
 
   await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
+}
+
+interface PdfCreateRenderContext {
+  document: PDFDocument;
+  regularFont: PDFFont;
+  boldFont: PDFFont;
+  page: PDFPage;
+  y: number;
+}
+
+function drawHeading(
+  context: PdfCreateRenderContext,
+  block: Extract<PdfCreateBlock, { type: "heading" }>
+): void {
+  const level = block.level ?? 1;
+  const size = level === 1 ? 22 : level === 2 ? 16 : 13;
+  const gap = level === 1 ? 14 : 10;
+  ensureCreateSpace(context, size + gap);
+  context.y = drawWrappedText(context.page, block.text, {
+    x: PDF_MARGIN,
+    y: context.y,
+    maxWidth: contentWidth(),
+    font: context.boldFont,
+    size,
+    lineHeight: size + 5,
+  });
+  context.y -= gap;
+}
+
+function drawParagraph(context: PdfCreateRenderContext, text: string): void {
+  const lines = wrapText(text, context.regularFont, PDF_BODY_SIZE, contentWidth());
+  ensureCreateSpace(context, Math.max(PDF_LINE_HEIGHT, lines.length * PDF_LINE_HEIGHT) + 8);
+  context.y = drawTextLines(context.page, lines, {
+    x: PDF_MARGIN,
+    y: context.y,
+    font: context.regularFont,
+    size: PDF_BODY_SIZE,
+    lineHeight: PDF_LINE_HEIGHT,
+  });
+  context.y -= 8;
+}
+
+function drawTable(
+  context: PdfCreateRenderContext,
+  block: Extract<PdfCreateBlock, { type: "table" }>
+): void {
+  const rows = block.headers ? [block.headers, ...block.rows] : block.rows;
+  if (rows.length === 0) return;
+  const columnCount = Math.max(...rows.map((row) => row.length), 1);
+  const columnWidth = contentWidth() / columnCount;
+  for (const [rowIndex, row] of rows.entries()) {
+    ensureCreateSpace(context, PDF_TABLE_ROW_HEIGHT + 4);
+    const isHeader = block.headers !== undefined && rowIndex === 0;
+    context.page.drawRectangle({
+      x: PDF_MARGIN,
+      y: context.y - PDF_TABLE_ROW_HEIGHT + 5,
+      width: contentWidth(),
+      height: PDF_TABLE_ROW_HEIGHT,
+      color: isHeader ? rgb(0.91, 0.93, 0.95) : rgb(1, 1, 1),
+      borderColor: rgb(0.75, 0.75, 0.75),
+      borderWidth: 0.5,
+    });
+    row.forEach((cell, columnIndex) => {
+      const font = isHeader ? context.boldFont : context.regularFont;
+      const lines = wrapText(String(cell), font, 9, columnWidth - 10).slice(0, 2);
+      drawTextLines(context.page, lines, {
+        x: PDF_MARGIN + columnIndex * columnWidth + 5,
+        y: context.y - 7,
+        font,
+        size: 9,
+        lineHeight: 10,
+      });
+    });
+    context.y -= PDF_TABLE_ROW_HEIGHT;
+  }
+  context.y -= 10;
+}
+
+async function drawImage(
+  context: PdfCreateRenderContext,
+  block: Extract<PdfCreateBlock, { type: "image" }>
+): Promise<void> {
+  const bytes = await readFile(block.path);
+  const image =
+    extname(block.path).toLowerCase() === ".jpg" || extname(block.path).toLowerCase() === ".jpeg"
+      ? await context.document.embedJpg(bytes)
+      : await context.document.embedPng(bytes);
+  const maxWidth = contentWidth();
+  const requestedWidth = block.width ?? Math.min(image.width, maxWidth);
+  const width = Math.min(requestedWidth, maxWidth);
+  const height = block.height ?? (image.height * width) / image.width;
+  ensureCreateSpace(context, height + 12);
+  context.page.drawImage(image, {
+    x: PDF_MARGIN,
+    y: context.y - height,
+    width,
+    height,
+  });
+  context.y -= height + 12;
+}
+
+function ensureCreateSpace(context: PdfCreateRenderContext, requiredHeight: number): void {
+  if (context.y - requiredHeight >= PDF_MARGIN) return;
+  addCreatePage(context);
+}
+
+function addCreatePage(context: PdfCreateRenderContext): void {
+  context.page = context.document.addPage(PDF_PAGE_SIZE);
+  context.y = PDF_PAGE_SIZE[1] - PDF_MARGIN;
+}
+
+function drawWrappedText(
+  page: PDFPage,
+  text: string,
+  options: {
+    x: number;
+    y: number;
+    maxWidth: number;
+    font: PDFFont;
+    size: number;
+    lineHeight: number;
+  }
+): number {
+  return drawTextLines(page, wrapText(text, options.font, options.size, options.maxWidth), options);
+}
+
+function drawTextLines(
+  page: PDFPage,
+  lines: string[],
+  options: {
+    x: number;
+    y: number;
+    font: PDFFont;
+    size: number;
+    lineHeight: number;
+  }
+): number {
+  let y = options.y;
+  for (const line of lines.length > 0 ? lines : [""]) {
+    page.drawText(line, {
+      x: options.x,
+      y,
+      size: options.size,
+      font: options.font,
+      color: rgb(0.1, 0.1, 0.1),
+    });
+    y -= options.lineHeight;
+  }
+  return y;
+}
+
+function wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [""];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of normalized.split(" ")) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = word;
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function contentWidth(): number {
+  return PDF_PAGE_SIZE[0] - PDF_MARGIN * 2;
+}
+
+function sourcePathsForCreate(options: PdfCreateOptions): string[] {
+  const paths = [
+    ...(options.sourcePaths ?? []),
+    ...options.blocks.flatMap((block) =>
+      block.type === "image" ? [block.displayPath ?? basename(block.path)] : []
+    ),
+  ];
+  return uniqueInOrder(paths);
 }
 
 async function readPdfPages(document: PdfDocumentProxy): Promise<string[]> {
@@ -891,6 +1170,10 @@ function artifactPathsForResult(result: PdfManifestOperationResult): string[] {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function uniqueInOrder(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 async function readPngDimensions(path: string): Promise<PdfImageDimensions> {

@@ -5,7 +5,7 @@
 Tessera should add a first-class PDF Document Operations surface for business
 document packet workflows. The current `workspace_extract` tool is a bounded
 reader for common document formats. It should remain that way. PDF packet work
-needs stronger primitives: inspection, extraction, visual rendering,
+needs stronger primitives: inspection, extraction, visual rendering, creation,
 transformation, redaction, form handling, validation, and provenance.
 
 The design pairs a Tessera-native PDF tool family with the existing portable
@@ -24,7 +24,7 @@ to skills.
 ## Goals
 
 - Support end-to-end PDF document packet workflows: intake, inspect, extract,
-  review, transform, redact or fill, validate, and export.
+  review, create, transform, redact or fill, validate, and export.
 - Preserve originals. No PDF tool modifies a source file in place.
 - Give agents operation-specific PDF tools instead of overloading
   `workspace_extract`.
@@ -136,7 +136,8 @@ The current architecture uses bundled TypeScript libraries where they are
 reliable and keeps optional native binaries narrowly scoped:
 
 - `unpdf` handles inspect, extract, and validate.
-- `pdf-lib` handles split, merge, reorder, and rotate transforms.
+- `pdf-lib` handles simple PDF creation plus split, merge, reorder, and rotate
+  transforms.
 - `tessera-pdf-render` is an optional Tessera-managed binary for page rendering.
 
 Tessera does not depend on customer-installed PDF transform or render binaries
@@ -146,7 +147,7 @@ Potential engine responsibilities:
 
 - text and metadata extraction through bundled TypeScript libraries
 - page rendering through the optional managed render binary
-- page splitting, merging, reordering, and rotation through `pdf-lib`
+- simple business PDF creation and page transformations through `pdf-lib`
 - compression or linearization
 - form inspection and filling
 - redaction planning and application
@@ -301,6 +302,34 @@ Outputs:
 - warnings
 - provenance
 
+### `pdf_create`
+
+Create a new simple business PDF from structured content blocks.
+
+Supported blocks:
+
+- headings
+- paragraphs
+- simple tables
+- page breaks
+- embedded workspace images
+
+Inputs:
+
+- output path
+- optional title and author
+- optional source paths for provenance
+- ordered content blocks
+
+Outputs:
+
+- new output path
+- page count
+- source paths
+- engine metadata
+- warnings
+- provenance
+
 ### `pdf_redact`
 
 Create a new redacted PDF from an explicit plan.
@@ -432,6 +461,7 @@ Add schema tests for PDF tool inputs and results:
 - page ranges
 - output paths
 - operation names
+- created PDF source provenance
 - provenance
 - warnings
 - validation summaries
@@ -469,6 +499,8 @@ Verify:
 - `pdf_render` produces image files with expected dimensions.
 - `pdf_transform` can split, merge, reorder, or rotate via `pdf-lib` without
   touching originals.
+- `pdf_create` can write simple business PDFs with headings, text, tables, page
+  breaks, embedded images, and source provenance.
 - `pdf_validate` catches missing output, page-count mismatch, and extractable
   redacted text where supported.
 
@@ -502,6 +534,7 @@ by `skill_load`.
 
 - Add `pdf_render`.
 - Add `pdf_transform` for split, merge, reorder, and rotate.
+- Add `pdf_create` for simple business PDFs.
 - Add fixture coverage for generated outputs.
 
 ### Slice 3: Business Controls

@@ -35,7 +35,7 @@
 ## Current PDF Dependency Boundary
 
 - `pdf_inspect`, `pdf_extract`, and `pdf_validate` use bundled TypeScript extraction via `unpdf`.
-- `pdf_transform` uses bundled TypeScript transforms via `pdf-lib`; no native transform dependency is required.
+- `pdf_create` and `pdf_transform` use bundled TypeScript PDF generation/transforms via `pdf-lib`; no native transform dependency is required.
 - `pdf_render` uses optional managed `tessera-pdf-render` when visual page output is requested.
 - Skill-scoped Python helpers use `skill_run_python` and per-skill environments; Python packages are not global optional capabilities.
 

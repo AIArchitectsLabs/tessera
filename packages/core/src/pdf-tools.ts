@@ -10,7 +10,9 @@ import {
 import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 import {
   type BinaryRunner,
+  type PdfCreateBlock,
   type PdfImageDimensionsReader,
+  createPdfDocument,
   extractPdfText,
   getPdfCapabilities,
   inspectPdfDocument,
@@ -86,6 +88,40 @@ const transformSchema = Type.Object({
       ),
     })
   ),
+});
+
+const createBlockSchema = Type.Union([
+  Type.Object({
+    type: Type.Literal("heading"),
+    text: Type.String(),
+    level: Type.Optional(Type.Number()),
+  }),
+  Type.Object({
+    type: Type.Literal("text"),
+    text: Type.String(),
+  }),
+  Type.Object({
+    type: Type.Literal("table"),
+    headers: Type.Optional(Type.Array(Type.String())),
+    rows: Type.Array(Type.Array(Type.String())),
+  }),
+  Type.Object({
+    type: Type.Literal("image"),
+    path: Type.String(),
+    width: Type.Optional(Type.Number()),
+    height: Type.Optional(Type.Number()),
+  }),
+  Type.Object({
+    type: Type.Literal("pageBreak"),
+  }),
+]);
+
+const createSchema = Type.Object({
+  outputPath: Type.String(),
+  title: Type.Optional(Type.String()),
+  author: Type.Optional(Type.String()),
+  sourcePaths: Type.Optional(Type.Array(Type.String())),
+  blocks: Type.Array(createBlockSchema),
 });
 
 const manifestSchema = Type.Object({
@@ -247,6 +283,60 @@ function parseTransformOperation(operation: string): "split" | "merge" | "reorde
 function parseRotationDegrees(degrees: number): 90 | 180 | 270 {
   if (degrees === 90 || degrees === 180 || degrees === 270) return degrees;
   throw new Error("PDF rotation degrees must be 90, 180, or 270.");
+}
+
+function parseHeadingLevel(level: number | undefined): 1 | 2 | 3 | undefined {
+  if (level === undefined) return undefined;
+  if (level === 1 || level === 2 || level === 3) return level;
+  throw new Error("PDF heading level must be 1, 2, or 3.");
+}
+
+async function resolveCreateBlocks(
+  guard: WorkspaceGuard,
+  blocks: Static<typeof createBlockSchema>[],
+  options: {
+    onViolation: ((toolName: string) => void) | undefined;
+  }
+): Promise<PdfCreateBlock[]> {
+  return Promise.all(
+    blocks.map(async (block) => {
+      switch (block.type) {
+        case "heading": {
+          const heading: PdfCreateBlock = {
+            type: "heading",
+            text: block.text,
+          };
+          const level = parseHeadingLevel(block.level);
+          if (level !== undefined) heading.level = level;
+          return heading;
+        }
+        case "text":
+          return { type: "text", text: block.text };
+        case "table": {
+          const table: PdfCreateBlock = { type: "table", rows: block.rows };
+          if (block.headers !== undefined) table.headers = block.headers;
+          return table;
+        }
+        case "pageBreak":
+          return { type: "pageBreak" };
+        case "image": {
+          const image = await resolvePdfWorkspacePath(guard, block.path, {
+            mode: "mustExist",
+            onViolation: options.onViolation,
+            toolName: "pdf_create",
+          });
+          const imageBlock: PdfCreateBlock = {
+            type: "image",
+            path: image.absolute,
+            displayPath: image.displayPath,
+          };
+          if (block.width !== undefined) imageBlock.width = block.width;
+          if (block.height !== undefined) imageBlock.height = block.height;
+          return imageBlock;
+        }
+      }
+    })
+  );
 }
 
 export function createPdfToolDefinitions(
@@ -432,12 +522,40 @@ export function createPdfToolDefinitions(
     },
   }) satisfies PdfToolDefinition<typeof transformSchema>;
 
+  const createTool = defineTool({
+    name: "pdf_create",
+    label: "Create",
+    description: "Create a simple business PDF from structured content blocks.",
+    promptSnippet:
+      "pdf_create: create a new PDF from headings, text, simple tables, page breaks, and workspace images. Include sourcePaths for provenance and validate the result with pdf_validate.",
+    parameters: createSchema,
+    async execute(_toolCallId, params: Static<typeof createSchema>) {
+      const output = await resolvePdfWorkspaceOutputPath(guard, params.outputPath, {
+        onViolation: options?.onViolation,
+        toolName: "pdf_create",
+      });
+      const blocks = await resolveCreateBlocks(guard, params.blocks, {
+        onViolation: options?.onViolation,
+      });
+
+      const result = await createPdfDocument({
+        outputPath: output.absolute,
+        displayOutputPath: output.displayPath,
+        ...(params.title !== undefined ? { title: params.title } : {}),
+        ...(params.author !== undefined ? { author: params.author } : {}),
+        ...(params.sourcePaths !== undefined ? { sourcePaths: params.sourcePaths } : {}),
+        blocks,
+      });
+      return textResult(JSON.stringify(result), result);
+    },
+  }) satisfies PdfToolDefinition<typeof createSchema>;
+
   const manifestTool = defineTool({
     name: "pdf_manifest",
     label: "Manifest",
     description: "Write a PDF packet manifest JSON file for audit and handoff.",
     promptSnippet:
-      "pdf_manifest: write a JSON audit manifest for a multi-step PDF packet. Include material inspect, extract, render, transform, and validation results before handoff.",
+      "pdf_manifest: write a JSON audit manifest for a multi-step PDF packet. Include material inspect, extract, render, create, transform, and validation results before handoff.",
     parameters: manifestSchema,
     async execute(_toolCallId, params: Static<typeof manifestSchema>) {
       const output = await resolvePdfWorkspaceOutputPath(guard, params.outputPath, {
@@ -472,6 +590,7 @@ export function createPdfToolDefinitions(
     validateTool,
     renderTool,
     transformTool,
+    createTool,
     manifestTool,
   ];
 }

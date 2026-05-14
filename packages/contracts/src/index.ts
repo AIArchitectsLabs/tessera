@@ -2150,6 +2150,7 @@ export const PdfToolNameSchema = z.enum([
   "pdf_validate",
   "pdf_render",
   "pdf_transform",
+  "pdf_create",
   "pdf_manifest",
 ]);
 export type PdfToolName = z.infer<typeof PdfToolNameSchema>;
@@ -2351,12 +2352,27 @@ export const PdfTransformResultSchema = z
   .strict();
 export type PdfTransformResult = z.infer<typeof PdfTransformResultSchema>;
 
+export const PdfCreateResultSchema = z
+  .object({
+    outputPath: z.string().min(1),
+    fileType: z.literal("pdf"),
+    pageCount: z.number().int().positive(),
+    sourcePaths: z.array(z.string().min(1)).default([]),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfCreateResult = z.infer<typeof PdfCreateResultSchema>;
+
 export const PdfManifestOperationKindSchema = z.enum([
   "inspect",
   "extract",
   "validate",
   "render",
   "transform",
+  "create",
 ]);
 export type PdfManifestOperationKind = z.infer<typeof PdfManifestOperationKindSchema>;
 
@@ -2366,6 +2382,7 @@ export const PdfManifestOperationResultSchema = z.union([
   PdfValidateResultSchema,
   PdfRenderResultSchema,
   PdfTransformResultSchema,
+  PdfCreateResultSchema,
 ]);
 export type PdfManifestOperationResult = z.infer<typeof PdfManifestOperationResultSchema>;
 
@@ -2705,7 +2722,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, create, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2721,6 +2738,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_create",
       "pdf_manifest",
       "workspace_list",
       "workspace_search",
@@ -2739,7 +2757,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, create, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2758,6 +2776,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_create",
       "pdf_manifest",
       "workspace_list",
       "workspace_search",
@@ -2779,7 +2798,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, create, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2798,6 +2817,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_create",
       "pdf_manifest",
       "workspace_list",
       "workspace_search",

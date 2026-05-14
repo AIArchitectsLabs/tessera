@@ -69,6 +69,8 @@ describe("skill registry", () => {
     expect(pdfWorkflows.content).toContain("pdf_validate");
     expect(pdfWorkflows.content).toContain("pdf_render");
     expect(pdfWorkflows.content).toContain("pdf_transform");
+    expect(pdfWorkflows.content).toContain("pdf_create");
+    expect(pdfWorkflows.content).toContain("source provenance");
     expect(pdfWorkflows.content).toContain("pdf_manifest");
     expect(pdfWorkflows.content).toContain("packet manifest");
     expect(pdfWorkflows.content).toContain("handoff");

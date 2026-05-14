@@ -80,6 +80,7 @@ export {
   type PythonSkillRuntimeOptions,
 } from "./python-skill-runtime.js";
 export {
+  createPdfDocument,
   extractPdfText,
   getPdfCapabilities,
   inspectPdfDocument,
@@ -92,6 +93,8 @@ export {
   type BinaryRunnerInput,
   type BinaryRunnerResult,
   type PdfCapabilitiesOptions,
+  type PdfCreateBlock,
+  type PdfCreateOptions,
   type PdfDocumentOptions,
   type PdfExtractOptions,
   type PdfImageDimensions,

@@ -54,6 +54,7 @@ describe("createPdfToolDefinitions", () => {
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_create",
       "pdf_manifest",
     ]);
   });
@@ -85,6 +86,7 @@ describe("createPdfToolDefinitions", () => {
         { name: "pdf_validate", available: true },
         { name: "pdf_render", available: true },
         { name: "pdf_transform", available: true },
+        { name: "pdf_create", available: true },
         { name: "pdf_manifest", available: true },
       ],
     });
@@ -278,6 +280,43 @@ describe("createPdfToolDefinitions", () => {
     });
   });
 
+  test("creates a workspace PDF with text and table blocks", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const tools = createPdfToolDefinitions(guard);
+
+    const created = await tool(tools, "pdf_create").execute(
+      "call-create",
+      {
+        outputPath: "out/brief.pdf",
+        title: "Quarterly Brief",
+        sourcePaths: ["docs/source.md"],
+        blocks: [
+          { type: "heading", text: "Quarterly Brief", level: 1 },
+          { type: "text", text: "Revenue grew while expenses stayed flat." },
+          {
+            type: "table",
+            headers: ["Metric", "Value"],
+            rows: [["Revenue", "$1.2M"]],
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      undefined as never
+    );
+    const persisted = await readFile(join(root, "out", "brief.pdf"));
+
+    expect(JSON.parse(resultText(created))).toMatchObject({
+      outputPath: "out/brief.pdf",
+      pageCount: 1,
+      sourcePaths: ["docs/source.md"],
+      engine: "pdf-lib",
+      engineRuntime: "typescript",
+    });
+    expect(persisted.length).toBeGreaterThan(0);
+  });
+
   test("writes a PDF packet manifest to a workspace output path", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
@@ -383,6 +422,32 @@ describe("createPdfToolDefinitions", () => {
     ).rejects.toThrow(/outside.*workspace/i);
 
     expect(violations).toEqual(["pdf_transform"]);
+  });
+
+  test("denies create output paths outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_create").execute(
+        "call-denied",
+        {
+          outputPath: "/tmp/tessera-outside-created.pdf",
+          blocks: [{ type: "text", text: "Outside" }],
+        },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_create"]);
   });
 
   test("denies manifest output paths outside the workspace", async () => {

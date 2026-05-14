@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { PdfPageRange } from "@tessera/contracts";
 import { createOptionalCapabilityManager } from "./optional-capabilities.js";
 import {
+  createPdfDocument,
   extractPdfText,
   getPdfCapabilities,
   inspectPdfDocument,
@@ -32,6 +33,11 @@ trailer<< /Root 1 0 R /Info 6 0 R >>
 function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
 }
+
+const onePixelPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lWf8UwAAAABJRU5ErkJggg==",
+  "base64"
+);
 
 async function makeFixture() {
   const root = await mkdtemp("/tmp/tessera-pdf-service-");
@@ -91,6 +97,11 @@ describe("pdf service", () => {
         requiredEngines: ["pdf-lib"],
       },
       {
+        name: "pdf_create",
+        available: true,
+        requiredEngines: ["pdf-lib"],
+      },
+      {
         name: "pdf_manifest",
         available: true,
         requiredEngines: [],
@@ -108,8 +119,8 @@ describe("pdf service", () => {
       engine: "pdf-lib",
       engineRuntime: "typescript",
       available: true,
-      provides: ["pdf_transform"],
-      message: "TypeScript PDF transforms are bundled.",
+      provides: ["pdf_transform", "pdf_create"],
+      message: "TypeScript PDF transforms and creation are bundled.",
     });
     expect(result.warnings).toEqual([]);
   });
@@ -438,6 +449,53 @@ describe("pdf service", () => {
       provenance: { immutableSource: true },
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("creates a simple business PDF with text, tables, page breaks, images, and source provenance", async () => {
+    const { root } = await makeFixture();
+    const imagePath = join(root, "chart.png");
+    await writeFile(imagePath, onePixelPng);
+    const outputPath = join(root, "out", "brief.pdf");
+
+    const result = await createPdfDocument({
+      outputPath,
+      displayOutputPath: "out/brief.pdf",
+      title: "Quarterly Brief",
+      sourcePaths: ["docs/source.md", "chart.png"],
+      blocks: [
+        { type: "heading", text: "Quarterly Brief", level: 1 },
+        { type: "text", text: "Revenue grew while expenses stayed flat." },
+        {
+          type: "table",
+          headers: ["Metric", "Value"],
+          rows: [
+            ["Revenue", "$1.2M"],
+            ["Expenses", "$800K"],
+          ],
+        },
+        { type: "image", path: imagePath, displayPath: "chart.png", width: 48, height: 48 },
+        { type: "pageBreak" },
+        { type: "heading", text: "Source Notes", level: 2 },
+        { type: "text", text: "Prepared from finance workbook and chart export." },
+      ],
+    });
+    const inspected = await inspectPdfDocument(outputPath, { displayPath: "out/brief.pdf" });
+    const extracted = await extractPdfText(outputPath, { maxChars: 2000 });
+
+    expect(result).toMatchObject({
+      outputPath: "out/brief.pdf",
+      fileType: "pdf",
+      pageCount: 2,
+      sourcePaths: ["docs/source.md", "chart.png"],
+      engine: "pdf-lib",
+      engineRuntime: "typescript",
+      provenance: { immutableSource: true },
+    });
+    expect(result.provenance.createdAt).toEqual(expect.any(String));
+    expect(inspected.pageCount).toBe(2);
+    expect(extracted.text).toContain("Quarterly Brief");
+    expect(extracted.text).toContain("Revenue");
+    await expect(readFile(outputPath)).resolves.toEqual(expect.any(Buffer));
   });
 
   test("writes a packet manifest with summary counts", async () => {

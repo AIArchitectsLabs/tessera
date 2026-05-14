@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PdfCapabilitiesResultSchema,
+  PdfCreateResultSchema,
   PdfEngineRuntimeSchema,
   PdfExtractResultSchema,
   PdfInspectResultSchema,
@@ -180,6 +181,25 @@ describe("pdf tool contracts", () => {
     expect(result.pageMapping).toHaveLength(2);
   });
 
+  test("parses PDF create results with source provenance", () => {
+    const result = PdfCreateResultSchema.parse({
+      outputPath: "out/brief.pdf",
+      fileType: "pdf",
+      pageCount: 2,
+      sourcePaths: ["docs/source.md", "images/chart.png"],
+      engine: "pdf-lib",
+      engineRuntime: "typescript",
+      provenance: {
+        createdAt: "2026-05-14T00:00:00.000Z",
+        immutableSource: true,
+      },
+      warnings: [],
+    });
+
+    expect(result.outputPath).toBe("out/brief.pdf");
+    expect(result.sourcePaths).toEqual(["docs/source.md", "images/chart.png"]);
+  });
+
   test("parses PDF packet manifests with operation summaries", () => {
     const result = PdfPacketManifestSchema.parse({
       manifestVersion: 1,
@@ -286,7 +306,7 @@ describe("pdf tool contracts", () => {
       const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
       expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
       expect(
-        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 8)
+        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 9)
       ).toEqual([
         "pdf_capabilities",
         "pdf_inspect",
@@ -294,6 +314,7 @@ describe("pdf tool contracts", () => {
         "pdf_validate",
         "pdf_render",
         "pdf_transform",
+        "pdf_create",
         "pdf_manifest",
       ]);
     }

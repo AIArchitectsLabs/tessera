@@ -169,7 +169,7 @@ test("parses PDF packet manifests with operation summaries", () => {
 });
 ```
 
-Update the policy test so `pdf_manifest` appears after `pdf_transform` in every preset.
+Update the policy test so `pdf_manifest` appears after generated-output PDF tools in every preset.
 
 - [ ] **Step 2: Add schemas and policy entries**
 
@@ -180,7 +180,7 @@ Add:
 - `PdfPacketManifestSummarySchema`
 - `PdfPacketManifestSchema`
 
-Then add `pdf_manifest` after `pdf_transform` in all policy presets.
+Then add `pdf_manifest` after the generated-output PDF tools in all policy presets.
 
 - [ ] **Step 3: Run focused contract tests**
 
@@ -271,7 +271,7 @@ Export `writePdfPacketManifest` and its options type from `packages/core/src/ind
 - [ ] **Step 1: Add tool tests**
 
 Add tests proving:
-- tool order includes `pdf_manifest` after `pdf_transform`
+- tool order includes `pdf_manifest` after generated-output PDF tools
 - a manifest can be written to a workspace output path
 - an outside manifest output path is rejected and reports `pdf_manifest`
 
