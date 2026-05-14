@@ -18,7 +18,8 @@ function samplePdf(text: string): string {
 BT /F1 24 Tf 100 100 Td (${text}) Tj ET
 endstream endobj
 5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj
-trailer<< /Root 1 0 R >>
+6 0 obj<< /Title (Sample Report) /Author (Tessera) >>endobj
+trailer<< /Root 1 0 R /Info 6 0 R >>
 %%EOF`;
 }
 
@@ -71,6 +72,11 @@ describe("pdf service", () => {
       encrypted: false,
       hasTextLayer: true,
       pagesWithText: [1],
+      metadata: {
+        Author: "Tessera",
+        PDFFormatVersion: "1.1",
+        Title: "Sample Report",
+      },
       engine: "unpdf",
       engineRuntime: "typescript",
       provenance: {

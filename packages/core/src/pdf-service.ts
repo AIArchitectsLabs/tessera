@@ -10,7 +10,7 @@ import {
   PdfValidateResultSchema,
   type PdfWarning,
 } from "@tessera/contracts";
-import { extractText } from "unpdf";
+import { extractText, getDocumentProxy, getMeta } from "unpdf";
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_CHARS = 100_000;
@@ -22,6 +22,7 @@ const PAGE_RANGE_OUT_OF_BOUNDS_WARNING: PdfWarning = {
   code: "page_range_out_of_bounds",
   message: "Requested page range does not overlap the PDF.",
 };
+type PdfDocumentProxy = Awaited<ReturnType<typeof getDocumentProxy>>;
 
 export interface PdfDocumentOptions {
   displayPath?: string;
@@ -74,27 +75,36 @@ export async function inspectPdfDocument(
     );
   }
 
-  const pages = await readPdfPages(path);
-  const pagesWithText = pages
-    .map((text, index) => ({ pageNumber: index + 1, text: text.trim() }))
-    .filter((page) => page.text.length > 0)
-    .map((page) => page.pageNumber);
-  const hasTextLayer = pagesWithText.length > 0;
+  const buffer = await readFile(path);
+  const document = await getDocumentProxy(new Uint8Array(buffer));
+  try {
+    const [pages, documentMetadata] = await Promise.all([
+      readPdfPages(document),
+      readPdfMetadata(document),
+    ]);
+    const pagesWithText = pages
+      .map((text, index) => ({ pageNumber: index + 1, text: text.trim() }))
+      .filter((page) => page.text.length > 0)
+      .map((page) => page.pageNumber);
+    const hasTextLayer = pagesWithText.length > 0;
 
-  return PdfInspectResultSchema.parse({
-    path: options.displayPath ?? basename(path),
-    fileType: "pdf",
-    bytes: metadata.size,
-    pageCount: pages.length,
-    encrypted: false,
-    hasTextLayer,
-    pagesWithText,
-    metadata: {},
-    engine: "unpdf",
-    engineRuntime: "typescript",
-    provenance: createProvenance(),
-    warnings: hasTextLayer ? [] : [NO_TEXT_LAYER_WARNING],
-  });
+    return PdfInspectResultSchema.parse({
+      path: options.displayPath ?? basename(path),
+      fileType: "pdf",
+      bytes: metadata.size,
+      pageCount: pages.length,
+      encrypted: documentMetadata.encrypted,
+      hasTextLayer,
+      pagesWithText,
+      metadata: documentMetadata.metadata,
+      engine: "unpdf",
+      engineRuntime: "typescript",
+      provenance: createProvenance(),
+      warnings: hasTextLayer ? [] : [NO_TEXT_LAYER_WARNING],
+    });
+  } finally {
+    await document.destroy();
+  }
 }
 
 export async function extractPdfText(
@@ -110,7 +120,9 @@ export async function extractPdfText(
     );
   }
 
-  const pages = await readPdfPages(path);
+  const buffer = await readFile(path);
+  const document = await getDocumentProxy(new Uint8Array(buffer));
+  const pages = await readPdfPages(document).finally(() => document.destroy());
   const hasTextLayer = pages.some((text) => text.trim().length > 0);
   const documentWarnings = hasTextLayer ? [] : [NO_TEXT_LAYER_WARNING];
   const selectedPageNumbers = normalizePdfPageRange(options.pages, pages.length);
@@ -244,10 +256,53 @@ export async function validatePdfDocument(
   });
 }
 
-async function readPdfPages(path: string): Promise<string[]> {
-  const buffer = await readFile(path);
-  const result = await extractText(new Uint8Array(buffer), { mergePages: false });
+async function readPdfPages(document: PdfDocumentProxy): Promise<string[]> {
+  const result = await extractText(document, { mergePages: false });
   return result.text;
+}
+
+async function readPdfMetadata(document: PdfDocumentProxy): Promise<{
+  encrypted: boolean;
+  metadata: Record<string, string>;
+}> {
+  const meta = await getMeta(document);
+  const info = sanitizeMetadataRecord(meta.info);
+  const xmp = metadataObjectToRecord(meta.metadata);
+  return {
+    encrypted: info.EncryptFilterName !== undefined && info.EncryptFilterName.length > 0,
+    metadata: {
+      ...info,
+      ...xmp,
+    },
+  };
+}
+
+function metadataObjectToRecord(metadata: unknown): Record<string, string> {
+  if (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    "getAll" in metadata &&
+    typeof metadata.getAll === "function"
+  ) {
+    return sanitizeMetadataRecord(metadata.getAll());
+  }
+  return {};
+}
+
+function sanitizeMetadataRecord(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null) return {};
+  const entries = Object.entries(value)
+    .filter((entry): entry is [string, unknown] => entry[1] !== null && entry[1] !== undefined)
+    .map(([key, item]) => [key, metadataValueToString(item)] as const)
+    .filter((entry): entry is readonly [string, string] => entry[1] !== undefined);
+  return Object.fromEntries(entries);
+}
+
+function metadataValueToString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value instanceof Date) return value.toISOString();
+  return undefined;
 }
 
 function assertPdfInput(path: string): void {

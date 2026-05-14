@@ -200,7 +200,7 @@ export function createWorkspaceToolDefinitions(
     description:
       "Read a text file inside the selected workspace, or extract readable content from supported documents.",
     promptSnippet:
-      "workspace_read: read text files inside the selected workspace. It also auto-extracts supported documents, but use workspace_extract when you need PDF page ranges, spreadsheet sheets/rows, or output limits.",
+      "workspace_read: read text files inside the selected workspace. For PDF workflows, use pdf_inspect first, then pdf_extract for page-scoped text or pdf_validate for validation. Use workspace_extract for non-PDF document ranges, spreadsheet sheets/rows, output limits, or as a fallback when PDF-specific tools are unavailable.",
     parameters: readSchema,
     async execute(_toolCallId, params: Static<typeof readSchema>) {
       let absolute: string;
