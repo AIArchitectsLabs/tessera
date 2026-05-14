@@ -155,16 +155,16 @@ describe("createWorkspaceToolDefinitions", () => {
   test("registers workspace tools without bash", async () => {
     const { tools } = await makeTools();
 
-    expect(tools.map((item) => item.name).sort()).toEqual([
-      "pdf_extract",
-      "pdf_inspect",
-      "pdf_validate",
-      "workspace_edit",
-      "workspace_extract",
-      "workspace_list",
+    expect(tools.map((item) => item.name)).toEqual([
       "workspace_read",
+      "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
+      "workspace_list",
       "workspace_search",
       "workspace_write",
+      "workspace_edit",
     ]);
   });
 

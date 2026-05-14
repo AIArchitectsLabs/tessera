@@ -366,9 +366,9 @@ export function createWorkspaceToolDefinitions(
   }) satisfies WorkspaceToolDefinition<typeof editSchema, { path: string }>;
 
   return [
-    ...createPdfToolDefinitions(guard, options),
     readTool,
     extractTool,
+    ...createPdfToolDefinitions(guard, options),
     listTool,
     searchTool,
     writeTool,

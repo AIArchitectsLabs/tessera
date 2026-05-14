@@ -87,16 +87,16 @@ describe("runPiTaskTurn", () => {
 
     expect(result.text).toBe("Hello workspace");
     expect(seen.workspaceRoot).toBe(workspaceRoot);
-    expect(seen.customTools?.map((item) => item.name).sort()).toEqual([
-      "pdf_extract",
-      "pdf_inspect",
-      "pdf_validate",
-      "workspace_edit",
-      "workspace_extract",
-      "workspace_list",
+    expect(seen.customTools?.map((item) => item.name)).toEqual([
       "workspace_read",
+      "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
+      "workspace_list",
       "workspace_search",
       "workspace_write",
+      "workspace_edit",
     ]);
     expect(seen.model).toBeDefined();
     expect(seen.modelRegistry).toBeDefined();
@@ -340,7 +340,7 @@ describe("runPiTaskTurn", () => {
     const workspaceRoot = await makeWorkspace();
     const seen: { customToolNames?: string[]; promptText?: string } = {};
     const factory: PiSessionFactory = async (options) => {
-      seen.customToolNames = options.customTools.map((tool) => tool.name).sort();
+      seen.customToolNames = options.customTools.map((tool) => tool.name);
       return new FakeSession([]);
     };
 
@@ -366,15 +366,15 @@ describe("runPiTaskTurn", () => {
     });
 
     expect(seen.customToolNames).toEqual([
-      "pdf_extract",
-      "pdf_inspect",
-      "pdf_validate",
-      "workspace_edit",
-      "workspace_extract",
-      "workspace_list",
       "workspace_read",
+      "workspace_extract",
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
+      "workspace_list",
       "workspace_search",
       "workspace_write",
+      "workspace_edit",
     ]);
   });
 
