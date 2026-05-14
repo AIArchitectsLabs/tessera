@@ -22,63 +22,162 @@ describe("optional capability manager", () => {
         TESSERA_PDF_TRANSFORM_URL: "https://downloads.tessera.local/qpdf",
         TESSERA_PDF_TRANSFORM_SHA256: "def456",
         TESSERA_PDF_TRANSFORM_VERSION: "11.9.0",
-        TESSERA_GWS_CLI_URL: "https://downloads.tessera.local/gws",
-        TESSERA_GWS_CLI_SHA256: "789abc",
-        TESSERA_GWS_CLI_VERSION: "0.22.5",
-        TESSERA_GWS_CLI_SIZE_BYTES: "15371280",
       },
       { platform: "darwin", arch: "arm64" }
     );
 
-    expect(definitions).toEqual([
-      {
-        id: "pdf-render",
-        label: "PDF render engine",
-        version: "24.02.0",
-        binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
-        assets: [
-          {
-            platform: "darwin",
-            arch: "arm64",
-            url: "https://downloads.tessera.local/pdftoppm",
-            sha256: "abc123",
-            executableName: "pdftoppm",
-            sizeBytes: 42000000,
-          },
-        ],
-      },
-      {
-        id: "pdf-transform",
-        label: "PDF transform engine",
-        version: "11.9.0",
-        binaries: [{ name: "qpdf", relativePath: "qpdf" }],
-        assets: [
-          {
-            platform: "darwin",
-            arch: "arm64",
-            url: "https://downloads.tessera.local/qpdf",
-            sha256: "def456",
-            executableName: "qpdf",
-          },
-        ],
-      },
-      {
-        id: "google-workspace-cli",
-        label: "Google Workspace CLI",
-        version: "0.22.5",
-        binaries: [{ name: "gws", relativePath: "gws" }],
-        assets: [
-          {
-            platform: "darwin",
-            arch: "arm64",
-            url: "https://downloads.tessera.local/gws",
-            sha256: "789abc",
-            executableName: "gws",
-            sizeBytes: 15371280,
-          },
-        ],
-      },
-    ]);
+    const ids = definitions.map((d) => d.id);
+    expect(ids).toEqual(["pdf-render", "pdf-transform", "google-workspace-cli"]);
+
+    const render = definitions.find((d) => d.id === "pdf-render");
+    expect(render).toEqual({
+      id: "pdf-render",
+      label: "PDF render engine",
+      version: "24.02.0",
+      binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+      assets: [
+        {
+          platform: "darwin",
+          arch: "arm64",
+          url: "https://downloads.tessera.local/pdftoppm",
+          sha256: "abc123",
+          executableName: "pdftoppm",
+          sizeBytes: 42000000,
+        },
+      ],
+    });
+
+    const transform = definitions.find((d) => d.id === "pdf-transform");
+    expect(transform).toEqual({
+      id: "pdf-transform",
+      label: "PDF transform engine",
+      version: "11.9.0",
+      binaries: [{ name: "qpdf", relativePath: "qpdf" }],
+      assets: [
+        {
+          platform: "darwin",
+          arch: "arm64",
+          url: "https://downloads.tessera.local/qpdf",
+          sha256: "def456",
+          executableName: "qpdf",
+        },
+      ],
+    });
+  });
+
+  test("provides a builtin google-workspace-cli allowlist with all seven triples", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {},
+      { platform: "darwin", arch: "arm64" }
+    );
+
+    expect(definitions.map((d) => d.id)).toEqual(["google-workspace-cli"]);
+    const gws = definitions[0];
+    if (!gws) throw new Error("expected google-workspace-cli definition");
+    expect(gws.version).toBe("0.22.5");
+    expect(gws.binaries).toEqual([{ name: "gws", relativePath: "gws" }]);
+    expect(gws.assets).toHaveLength(7);
+
+    const base = "https://github.com/googleworkspace/cli/releases/download/v0.22.5";
+    for (const asset of gws.assets) {
+      expect(asset.url.startsWith(`${base}/google-workspace-cli-`)).toBe(true);
+      expect(asset.url.endsWith(asset.platform === "win32" ? ".zip" : ".tar.gz")).toBe(true);
+      expect(asset.archive).toBeDefined();
+      const expectedEntry = asset.platform === "win32" ? "gws.exe" : "gws";
+      expect(asset.archive).toEqual({
+        kind: asset.platform === "win32" ? "zip" : "tar.gz",
+        entry: expectedEntry,
+      });
+      expect(asset.executableName).toBe(expectedEntry);
+    }
+
+    const darwinArm64 = gws.assets.find((a) => a.platform === "darwin" && a.arch === "arm64");
+    expect(darwinArm64?.url).toBe(`${base}/google-workspace-cli-aarch64-apple-darwin.tar.gz`);
+    expect(darwinArm64?.sha256).toBe(
+      "1d2a9ffd5bc9b2c2c4b48630daf082fad13d9e57d741988a2c248eed562f7dac"
+    );
+
+    const linuxX64Assets = gws.assets.filter((a) => a.platform === "linux" && a.arch === "x64");
+    expect(linuxX64Assets).toHaveLength(2);
+    expect(linuxX64Assets[0]?.url).toBe(
+      `${base}/google-workspace-cli-x86_64-unknown-linux-gnu.tar.gz`
+    );
+    expect(linuxX64Assets[0]?.sha256).toBe(
+      "de78ecdbd2f1a84cca0063a7ecbc440240fc14b6ebccbb17f4646b792a8c5c1f"
+    );
+    expect(linuxX64Assets[1]?.url).toBe(
+      `${base}/google-workspace-cli-x86_64-unknown-linux-musl.tar.gz`
+    );
+
+    const linuxArm64Assets = gws.assets.filter((a) => a.platform === "linux" && a.arch === "arm64");
+    expect(linuxArm64Assets[0]?.url).toBe(
+      `${base}/google-workspace-cli-aarch64-unknown-linux-gnu.tar.gz`
+    );
+    expect(linuxArm64Assets[1]?.url).toBe(
+      `${base}/google-workspace-cli-aarch64-unknown-linux-musl.tar.gz`
+    );
+
+    const windows = gws.assets.find((a) => a.platform === "win32");
+    expect(windows?.url).toBe(`${base}/google-workspace-cli-x86_64-pc-windows-msvc.zip`);
+    expect(windows?.sha256).toBe(
+      "407705d695dc83d48b1c5f50d71b5aa64095bf6f17d5b439b2e9a373bbe67ec2"
+    );
+  });
+
+  test("uses gws.exe relativePath when host platform is win32", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {},
+      { platform: "win32", arch: "x64" }
+    );
+    const gws = definitions[0];
+    expect(gws?.binaries).toEqual([{ name: "gws", relativePath: "gws.exe" }]);
+  });
+
+  test("env override replaces only the host platform/arch asset within the builtin", () => {
+    const env = {
+      TESSERA_GWS_CLI_URL: "https://mirror.tessera.local/gws-host.tar.gz",
+      TESSERA_GWS_CLI_SHA256: "deadbeef",
+      TESSERA_GWS_CLI_VERSION: "0.22.5-staging",
+      TESSERA_GWS_CLI_SIZE_BYTES: "12345",
+    };
+    const hostPlatform = process.platform;
+    const hostArch = process.arch;
+
+    const hostDefs = optionalCapabilityDefinitionsFromEnv(env, {
+      platform: hostPlatform,
+      arch: hostArch,
+    });
+    const hostGws = hostDefs.find((d) => d.id === "google-workspace-cli");
+    expect(hostGws?.version).toBe("0.22.5-staging");
+    expect(hostGws?.assets).toHaveLength(7);
+    const overridden = hostGws?.assets.find(
+      (a) => a.platform === hostPlatform && a.arch === hostArch
+    );
+    expect(overridden?.url).toBe("https://mirror.tessera.local/gws-host.tar.gz");
+    expect(overridden?.sha256).toBe("deadbeef");
+    expect(overridden?.sizeBytes).toBe(12345);
+
+    const otherPlatform: NodeJS.Platform = hostPlatform === "linux" ? "darwin" : "linux";
+    const otherArch: NodeJS.Architecture = hostArch === "arm64" ? "x64" : "arm64";
+    const otherDefs = optionalCapabilityDefinitionsFromEnv(env, {
+      platform: otherPlatform,
+      arch: otherArch,
+    });
+    const otherGws = otherDefs.find((d) => d.id === "google-workspace-cli");
+    const otherAsset = otherGws?.assets.find(
+      (a) => a.platform === otherPlatform && a.arch === otherArch
+    );
+    expect(otherAsset?.url.startsWith("https://github.com/googleworkspace/cli/")).toBe(true);
+    expect(otherAsset?.url).not.toBe("https://mirror.tessera.local/gws-host.tar.gz");
+  });
+
+  test("omits pdf-render and pdf-transform when their env vars are not set", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {},
+      { platform: "darwin", arch: "arm64" }
+    );
+    expect(definitions.find((d) => d.id === "pdf-render")).toBeUndefined();
+    expect(definitions.find((d) => d.id === "pdf-transform")).toBeUndefined();
   });
 
   test("installs an allowlisted single-binary capability into the managed root", async () => {

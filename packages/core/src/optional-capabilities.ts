@@ -118,6 +118,107 @@ export interface OptionalCapabilityEnv {
   TESSERA_GWS_CLI_SIZE_BYTES?: string;
 }
 
+interface GwsTripleEntry {
+  triple: string;
+  platform: NodeJS.Platform;
+  arch: NodeJS.Architecture;
+  kind: OptionalCapabilityArchiveKind;
+  sha256: string;
+}
+
+const GWS_CLI_VERSION = "0.22.5";
+
+// Linux gnu variants intentionally precede musl so findAsset's linear search
+// returns the glibc build for desktop Linux.
+const GWS_CLI_TRIPLES: GwsTripleEntry[] = [
+  {
+    triple: "aarch64-apple-darwin",
+    platform: "darwin",
+    arch: "arm64",
+    kind: "tar.gz",
+    sha256: "1d2a9ffd5bc9b2c2c4b48630daf082fad13d9e57d741988a2c248eed562f7dac",
+  },
+  {
+    triple: "x86_64-apple-darwin",
+    platform: "darwin",
+    arch: "x64",
+    kind: "tar.gz",
+    sha256: "51f9bd731404d4bba26c36e2e30dd68c56dccd1f834c01252cb0b14d6a6544b2",
+  },
+  {
+    triple: "aarch64-unknown-linux-gnu",
+    platform: "linux",
+    arch: "arm64",
+    kind: "tar.gz",
+    sha256: "94490295d9580e1e88574e715a0a162991747d12d62f8c7b8dcc8268b6c1cea0",
+  },
+  {
+    triple: "aarch64-unknown-linux-musl",
+    platform: "linux",
+    arch: "arm64",
+    kind: "tar.gz",
+    sha256: "e700fe63524932b10ec2130b47ece90aa850e66005fe52ccfc4cf8767bf9919a",
+  },
+  {
+    triple: "x86_64-unknown-linux-gnu",
+    platform: "linux",
+    arch: "x64",
+    kind: "tar.gz",
+    sha256: "de78ecdbd2f1a84cca0063a7ecbc440240fc14b6ebccbb17f4646b792a8c5c1f",
+  },
+  {
+    triple: "x86_64-unknown-linux-musl",
+    platform: "linux",
+    arch: "x64",
+    kind: "tar.gz",
+    sha256: "4db473dde4b1ab872e4ff35d769b0d4af1f1a6441a605e79d5cf8ada9c87e920",
+  },
+  {
+    triple: "x86_64-pc-windows-msvc",
+    platform: "win32",
+    arch: "x64",
+    kind: "zip",
+    sha256: "407705d695dc83d48b1c5f50d71b5aa64095bf6f17d5b439b2e9a373bbe67ec2",
+  },
+];
+
+function gwsExecutableForPlatform(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "gws.exe" : "gws";
+}
+
+function builtinGwsDefinition(
+  version: string,
+  hostPlatform: NodeJS.Platform
+): OptionalCapabilityDefinition {
+  const relativePath = gwsExecutableForPlatform(hostPlatform);
+  const assets: OptionalCapabilityAsset[] = GWS_CLI_TRIPLES.map((entry) => {
+    const executableName = gwsExecutableForPlatform(entry.platform);
+    const extension = entry.kind === "tar.gz" ? "tar.gz" : "zip";
+    return {
+      platform: entry.platform,
+      arch: entry.arch,
+      url: `https://github.com/googleworkspace/cli/releases/download/v${GWS_CLI_VERSION}/google-workspace-cli-${entry.triple}.${extension}`,
+      sha256: entry.sha256,
+      executableName,
+      archive: { kind: entry.kind, entry: executableName },
+    };
+  });
+  return {
+    id: "google-workspace-cli",
+    label: "Google Workspace CLI",
+    version,
+    binaries: [{ name: "gws", relativePath }],
+    assets,
+  };
+}
+
+export function builtinCapabilityDefinitions(
+  options: { platform?: NodeJS.Platform } = {}
+): OptionalCapabilityDefinition[] {
+  const platform = options.platform ?? process.platform;
+  return [builtinGwsDefinition(GWS_CLI_VERSION, platform)];
+}
+
 export function optionalCapabilityDefinitionsFromEnv(
   env: OptionalCapabilityEnv,
   options: {
@@ -164,24 +265,25 @@ export function optionalCapabilityDefinitionsFromEnv(
     });
   }
 
-  const gwsExecutableName = platform === "win32" ? "gws.exe" : "gws";
-  const gwsAsset = assetFromEnv({
-    platform,
-    arch,
-    url: env.TESSERA_GWS_CLI_URL,
-    sha256: env.TESSERA_GWS_CLI_SHA256,
-    executableName: gwsExecutableName,
-    sizeBytes: env.TESSERA_GWS_CLI_SIZE_BYTES,
-  });
-  if (gwsAsset) {
-    definitions.push({
-      id: "google-workspace-cli",
-      label: "Google Workspace CLI",
-      version: env.TESSERA_GWS_CLI_VERSION?.trim() || "managed",
-      binaries: [{ name: "gws", relativePath: gwsExecutableName }],
-      assets: [gwsAsset],
-    });
+  const gwsVersion = env.TESSERA_GWS_CLI_VERSION?.trim() || GWS_CLI_VERSION;
+  const gws = builtinGwsDefinition(gwsVersion, platform);
+  const envIsForHost = platform === process.platform && arch === process.arch;
+  const gwsOverride = envIsForHost
+    ? assetFromEnv({
+        platform,
+        arch,
+        url: env.TESSERA_GWS_CLI_URL,
+        sha256: env.TESSERA_GWS_CLI_SHA256,
+        executableName: gwsExecutableForPlatform(platform),
+        sizeBytes: env.TESSERA_GWS_CLI_SIZE_BYTES,
+      })
+    : undefined;
+  if (gwsOverride) {
+    gws.assets = gws.assets.map((asset) =>
+      asset.platform === platform && asset.arch === arch ? gwsOverride : asset
+    );
   }
+  definitions.push(gws);
 
   return definitions;
 }
