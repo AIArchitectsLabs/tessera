@@ -8,6 +8,7 @@ import {
   extractWorkspaceDocument,
   isExtractableDocumentPath,
 } from "./document-extraction.js";
+import { createPdfToolDefinitions } from "./pdf-tools.js";
 import { WorkspaceBoundaryError, type WorkspaceGuard } from "./workspace-guard.js";
 
 type WorkspaceToolDefinition<TParams extends TSchema, TDetails = unknown> = ToolDefinition<
@@ -364,5 +365,13 @@ export function createWorkspaceToolDefinitions(
     },
   }) satisfies WorkspaceToolDefinition<typeof editSchema, { path: string }>;
 
-  return [readTool, extractTool, listTool, searchTool, writeTool, editTool];
+  return [
+    ...createPdfToolDefinitions(guard, options),
+    readTool,
+    extractTool,
+    listTool,
+    searchTool,
+    writeTool,
+    editTool,
+  ];
 }

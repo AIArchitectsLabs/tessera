@@ -88,6 +88,9 @@ describe("runPiTaskTurn", () => {
     expect(result.text).toBe("Hello workspace");
     expect(seen.workspaceRoot).toBe(workspaceRoot);
     expect(seen.customTools?.map((item) => item.name).sort()).toEqual([
+      "pdf_extract",
+      "pdf_inspect",
+      "pdf_validate",
       "workspace_edit",
       "workspace_extract",
       "workspace_list",
@@ -363,6 +366,9 @@ describe("runPiTaskTurn", () => {
     });
 
     expect(seen.customToolNames).toEqual([
+      "pdf_extract",
+      "pdf_inspect",
+      "pdf_validate",
       "workspace_edit",
       "workspace_extract",
       "workspace_list",

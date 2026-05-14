@@ -52,6 +52,16 @@ export {
   WorkspaceBoundaryError,
   type WorkspaceGuard,
 } from "./workspace-guard.js";
+export { createPdfToolDefinitions } from "./pdf-tools.js";
+export {
+  extractPdfText,
+  inspectPdfDocument,
+  normalizePdfPageRange,
+  validatePdfDocument,
+  type PdfDocumentOptions,
+  type PdfExtractOptions,
+  type PdfValidateOptions,
+} from "./pdf-service.js";
 export { createWorkspaceToolDefinitions } from "./workspace-tools.js";
 export {
   classifyMemoryContent,

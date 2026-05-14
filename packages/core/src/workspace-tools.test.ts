@@ -156,6 +156,9 @@ describe("createWorkspaceToolDefinitions", () => {
     const { tools } = await makeTools();
 
     expect(tools.map((item) => item.name).sort()).toEqual([
+      "pdf_extract",
+      "pdf_inspect",
+      "pdf_validate",
       "workspace_edit",
       "workspace_extract",
       "workspace_list",
