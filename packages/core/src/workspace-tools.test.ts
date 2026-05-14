@@ -158,6 +158,7 @@ describe("createWorkspaceToolDefinitions", () => {
     expect(tools.map((item) => item.name)).toEqual([
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",

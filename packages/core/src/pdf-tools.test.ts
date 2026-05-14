@@ -48,6 +48,7 @@ describe("createPdfToolDefinitions", () => {
     const tools = createPdfToolDefinitions(guard);
 
     expect(tools.map((item) => item.name)).toEqual([
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
@@ -55,6 +56,37 @@ describe("createPdfToolDefinitions", () => {
       "pdf_transform",
       "pdf_manifest",
     ]);
+  });
+
+  test("reports PDF capabilities without requiring a workspace PDF", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const tools = createPdfToolDefinitions(guard, {
+      binaryRunner: async ({ command }) => {
+        if (command === "pdftoppm") return { stdout: "", stderr: "pdftoppm version 24.02.0" };
+        if (command === "qpdf") return { stdout: "qpdf version 11.9.0", stderr: "" };
+        throw new Error(`unexpected command ${command}`);
+      },
+    });
+
+    const capabilities = await tool(tools, "pdf_capabilities").execute(
+      "call-capabilities",
+      {},
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(JSON.parse(resultText(capabilities))).toMatchObject({
+      tools: [
+        { name: "pdf_inspect", available: true },
+        { name: "pdf_extract", available: true },
+        { name: "pdf_validate", available: true },
+        { name: "pdf_render", available: true },
+        { name: "pdf_transform", available: true },
+        { name: "pdf_manifest", available: true },
+      ],
+    });
   });
 
   test("inspects, extracts, and validates a workspace PDF", async () => {

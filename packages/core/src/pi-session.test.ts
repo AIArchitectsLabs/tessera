@@ -90,6 +90,7 @@ describe("runPiTaskTurn", () => {
     expect(seen.customTools?.map((item) => item.name)).toEqual([
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
@@ -371,6 +372,7 @@ describe("runPiTaskTurn", () => {
     expect(seen.customToolNames).toEqual([
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",

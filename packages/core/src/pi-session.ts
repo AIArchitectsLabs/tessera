@@ -22,6 +22,7 @@ import type {
 } from "@tessera/contracts";
 import { BrowserActionInputSchema, compileAgentRuntimeContext } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
+import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 import { createTaskToolDefinitions } from "./task-tools.js";
 import type { BrowserExecutor, ShellExecutor } from "./tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
@@ -76,6 +77,7 @@ export interface RunPiTaskTurnOptions {
   provider: AgentProviderConfig;
   runtime?: AgentRuntimeContext;
   browser?: BrowserExecutor;
+  capabilityManager?: OptionalCapabilityManager;
   shell?: ShellExecutor;
   skillRuntime?: {
     activeSkills?: TaskSkillActivation[];
@@ -670,6 +672,9 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     onViolation: (_toolName) => {
       boundaryViolations++;
     },
+    ...(options.capabilityManager !== undefined
+      ? { capabilityManager: options.capabilityManager }
+      : {}),
   });
   const taskTools = createTaskToolDefinitions(options.taskRuntime);
   const browserTools = createBrowserToolDefinition(options.browser);

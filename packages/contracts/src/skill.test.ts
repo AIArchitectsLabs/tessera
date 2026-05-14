@@ -104,6 +104,7 @@ describe("skill contracts", () => {
     for (const details of Object.values(TOOL_POLICY_PRESET_DETAILS)) {
       expect(details.allowedTools).toContain("skill_list");
       expect(details.allowedTools).toContain("skill_load");
+      expect(details.allowedTools).toContain("pdf_capabilities");
       expect(details.allowedTools).toContain("pdf_inspect");
       expect(details.allowedTools).toContain("pdf_extract");
       expect(details.allowedTools).toContain("pdf_validate");

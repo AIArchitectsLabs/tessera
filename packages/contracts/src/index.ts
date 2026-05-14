@@ -2144,6 +2144,60 @@ export const PdfWarningSchema = z
   .strict();
 export type PdfWarning = z.infer<typeof PdfWarningSchema>;
 
+export const PdfToolNameSchema = z.enum([
+  "pdf_inspect",
+  "pdf_extract",
+  "pdf_validate",
+  "pdf_render",
+  "pdf_transform",
+  "pdf_manifest",
+]);
+export type PdfToolName = z.infer<typeof PdfToolNameSchema>;
+
+export const PdfCapabilityInstallHintSchema = z
+  .object({
+    capabilityId: z.string().min(1),
+    available: z.boolean(),
+    installed: z.boolean(),
+    version: z.string().min(1),
+    sizeBytes: z.number().int().positive().optional(),
+  })
+  .strict();
+export type PdfCapabilityInstallHint = z.infer<typeof PdfCapabilityInstallHintSchema>;
+
+export const PdfEngineCapabilitySchema = z
+  .object({
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    available: z.boolean(),
+    command: z.string().min(1).optional(),
+    version: z.string().min(1).optional(),
+    provides: z.array(PdfToolNameSchema),
+    message: z.string().min(1).optional(),
+    install: PdfCapabilityInstallHintSchema.optional(),
+  })
+  .strict();
+export type PdfEngineCapability = z.infer<typeof PdfEngineCapabilitySchema>;
+
+export const PdfToolCapabilitySchema = z
+  .object({
+    name: PdfToolNameSchema,
+    available: z.boolean(),
+    requiredEngines: z.array(z.string().min(1)),
+    message: z.string().min(1).optional(),
+  })
+  .strict();
+export type PdfToolCapability = z.infer<typeof PdfToolCapabilitySchema>;
+
+export const PdfCapabilitiesResultSchema = z
+  .object({
+    engines: z.array(PdfEngineCapabilitySchema),
+    tools: z.array(PdfToolCapabilitySchema),
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfCapabilitiesResult = z.infer<typeof PdfCapabilitiesResultSchema>;
+
 export const PdfPageRangeSchema = z
   .object({
     start: z.number().int().positive().optional(),
@@ -2651,7 +2705,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2661,6 +2715,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
@@ -2684,7 +2739,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2696,6 +2751,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
@@ -2721,7 +2777,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, transform, and manifest PDFs",
+      "Check PDF engine readiness; inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2733,6 +2789,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     allowedTools: [
       "workspace_read",
       "workspace_extract",
+      "pdf_capabilities",
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",

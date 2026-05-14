@@ -8,6 +8,7 @@ import {
   extractWorkspaceDocument,
   isExtractableDocumentPath,
 } from "./document-extraction.js";
+import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 import { createPdfToolDefinitions } from "./pdf-tools.js";
 import { WorkspaceBoundaryError, type WorkspaceGuard } from "./workspace-guard.js";
 
@@ -198,7 +199,10 @@ async function readBoundedTextFile(options: {
 
 export function createWorkspaceToolDefinitions(
   guard: WorkspaceGuard,
-  options?: { onViolation?: (toolName: string) => void }
+  options?: {
+    onViolation?: (toolName: string) => void;
+    capabilityManager?: OptionalCapabilityManager;
+  }
 ): ToolDefinition[] {
   const readTool = defineTool<typeof readSchema, WorkspaceReadDetails>({
     name: "workspace_read",

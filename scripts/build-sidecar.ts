@@ -44,14 +44,6 @@ function capture(cmd: string, args: string[]): string {
   return proc.stdout.toString();
 }
 
-function verifyExecutable(path: string, args: string[], expected: string): void {
-  const proc = Bun.spawnSync([path, ...args], { stdout: "pipe", stderr: "pipe" });
-  const output = `${proc.stdout.toString()}\n${proc.stderr.toString()}`;
-  if (proc.exitCode !== 0 || !output.includes(expected)) {
-    throw new Error(`Expected ${path} ${args.join(" ")} to include ${expected}, got:\n${output}`);
-  }
-}
-
 function requireFile(path: string): string {
   if (!existsSync(path) || statSync(path).size === 0) {
     throw new Error(`Required file is missing or empty: ${path}`);
@@ -64,14 +56,6 @@ function requireDirectory(path: string): string {
     throw new Error(`Required directory is missing: ${path}`);
   }
   return path;
-}
-
-function ensureGwsBinary(path: string): void {
-  if (existsSync(path) && statSync(path).size > 0) {
-    return;
-  }
-  console.log("[build-sidecar] installing pinned Google Workspace CLI binary...");
-  run("node", [join(repoRoot, "node_modules/@googleworkspace/cli/install.js")]);
 }
 
 function writeGoogleWorkspaceOAuthClient(): void {
@@ -180,15 +164,8 @@ copyFileSync(cliSrc, cliDst);
 if (!isWindows) chmodSync(cliDst, 0o755);
 console.log(`[build-sidecar] copied CLI    → ${cliDst}`);
 
-const gwsSrc = join(repoRoot, `node_modules/@googleworkspace/cli/bin/gws${ext}`);
-ensureGwsBinary(gwsSrc);
-requireFile(gwsSrc);
-verifyExecutable(gwsSrc, ["--version"], "gws 0.22.5");
-const gwsDst = join(binDir, `gws-${triple}${ext}`);
-copyFileSync(gwsSrc, gwsDst);
-if (!isWindows) chmodSync(gwsDst, 0o755);
-verifyExecutable(gwsDst, ["--version"], "gws 0.22.5");
-console.log(`[build-sidecar] copied gws    → ${gwsDst}`);
+rmSync(join(binDir, `gws-${triple}${ext}`), { force: true });
+console.log("[build-sidecar] Google Workspace CLI is managed as an optional capability.");
 writeGoogleWorkspaceOAuthClient();
 maybeCopyPlaywrightBrowsers();
 

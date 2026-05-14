@@ -62,6 +62,9 @@ describe("skill registry", () => {
     expect(pdfWorkflows.content).toContain(
       "Always inspect PDFs before extracting or changing them."
     );
+    expect(pdfWorkflows.content).toContain("pdf_capabilities");
+    expect(pdfWorkflows.content).toContain("pdftoppm");
+    expect(pdfWorkflows.content).toContain("qpdf");
     expect(pdfWorkflows.content).toContain("pdf_inspect");
     expect(pdfWorkflows.content).toContain("pdf_validate");
     expect(pdfWorkflows.content).toContain("pdf_render");

@@ -7,10 +7,12 @@ import {
   PdfValidateResultSchema,
   PdfWarningSchema,
 } from "@tessera/contracts";
+import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 import {
   type BinaryRunner,
   type PdfImageDimensionsReader,
   extractPdfText,
+  getPdfCapabilities,
   inspectPdfDocument,
   renderPdfPages,
   transformPdfDocument,
@@ -27,6 +29,8 @@ type PdfToolDefinition<TParams extends TSchema, TDetails = unknown> = ToolDefini
 const inspectSchema = Type.Object({
   path: Type.String(),
 });
+
+const capabilitiesSchema = Type.Object({});
 
 const extractSchema = Type.Object({
   path: Type.String(),
@@ -250,9 +254,28 @@ export function createPdfToolDefinitions(
   options?: {
     onViolation?: (toolName: string) => void;
     binaryRunner?: BinaryRunner;
+    capabilityManager?: OptionalCapabilityManager;
     dimensionsReader?: PdfImageDimensionsReader;
   }
 ): ToolDefinition[] {
+  const capabilitiesTool = defineTool({
+    name: "pdf_capabilities",
+    label: "PDF Capabilities",
+    description: "Report PDF engine readiness before render or transform work.",
+    promptSnippet:
+      "pdf_capabilities: check whether bundled PDF text extraction and optional PDF binaries are available before render or transform work.",
+    parameters: capabilitiesSchema,
+    async execute(_toolCallId, _params: Static<typeof capabilitiesSchema>) {
+      const result = await getPdfCapabilities({
+        ...(options?.binaryRunner !== undefined ? { binaryRunner: options.binaryRunner } : {}),
+        ...(options?.capabilityManager !== undefined
+          ? { capabilityManager: options.capabilityManager }
+          : {}),
+      });
+      return textResult(JSON.stringify(result), result);
+    },
+  }) satisfies PdfToolDefinition<typeof capabilitiesSchema>;
+
   const inspectTool = defineTool({
     name: "pdf_inspect",
     label: "Inspect",
@@ -348,6 +371,9 @@ export function createPdfToolDefinitions(
         ...(params.pages !== undefined ? { pages: params.pages } : {}),
         ...(params.dpi !== undefined ? { dpi: params.dpi } : {}),
         ...(options?.binaryRunner !== undefined ? { binaryRunner: options.binaryRunner } : {}),
+        ...(options?.capabilityManager !== undefined
+          ? { capabilityManager: options.capabilityManager }
+          : {}),
         ...(options?.dimensionsReader !== undefined
           ? { dimensionsReader: options.dimensionsReader }
           : {}),
@@ -398,6 +424,9 @@ export function createPdfToolDefinitions(
         displayOutputPath: output.displayPath,
         ...(rotation !== undefined ? { rotation } : {}),
         ...(options?.binaryRunner !== undefined ? { binaryRunner: options.binaryRunner } : {}),
+        ...(options?.capabilityManager !== undefined
+          ? { capabilityManager: options.capabilityManager }
+          : {}),
       });
       return textResult(JSON.stringify(result), result);
     },
@@ -436,5 +465,13 @@ export function createPdfToolDefinitions(
     },
   }) satisfies PdfToolDefinition<typeof manifestSchema>;
 
-  return [inspectTool, extractTool, validateTool, renderTool, transformTool, manifestTool];
+  return [
+    capabilitiesTool,
+    inspectTool,
+    extractTool,
+    validateTool,
+    renderTool,
+    transformTool,
+    manifestTool,
+  ];
 }

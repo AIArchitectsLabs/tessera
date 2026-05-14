@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  PdfCapabilitiesResultSchema,
   PdfEngineRuntimeSchema,
   PdfExtractResultSchema,
   PdfInspectResultSchema,
@@ -12,6 +13,52 @@ import {
 } from "./index.js";
 
 describe("pdf tool contracts", () => {
+  test("parses PDF capability readiness results", () => {
+    const result = PdfCapabilitiesResultSchema.parse({
+      engines: [
+        {
+          engine: "unpdf",
+          engineRuntime: "typescript",
+          available: true,
+          provides: ["pdf_inspect", "pdf_extract", "pdf_validate"],
+          message: "TypeScript PDF text extraction is bundled.",
+        },
+        {
+          engine: "pdftoppm",
+          engineRuntime: "binary",
+          available: false,
+          command: "pdftoppm",
+          provides: ["pdf_render"],
+          message: "PDF engine unavailable: pdftoppm",
+          install: {
+            capabilityId: "pdf-render",
+            available: true,
+            installed: false,
+            version: "1.0.0",
+            sizeBytes: 42_000_000,
+          },
+        },
+      ],
+      tools: [
+        {
+          name: "pdf_render",
+          available: false,
+          requiredEngines: ["pdftoppm"],
+          message: "Install pdftoppm before rendering PDF pages.",
+        },
+      ],
+      warnings: [
+        {
+          code: "engine_unavailable",
+          message: "pdftoppm is unavailable; pdf_render cannot run.",
+        },
+      ],
+    });
+
+    expect(result.tools[0]?.available).toBe(false);
+    expect(result.engines[0]?.engineRuntime).toBe("typescript");
+  });
+
   test("parses PDF inspect results with engine provenance", () => {
     const result = PdfInspectResultSchema.parse({
       path: "contracts/master.pdf",
@@ -239,8 +286,9 @@ describe("pdf tool contracts", () => {
       const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
       expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
       expect(
-        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 7)
+        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 8)
       ).toEqual([
+        "pdf_capabilities",
         "pdf_inspect",
         "pdf_extract",
         "pdf_validate",

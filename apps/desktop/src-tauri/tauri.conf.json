@@ -33,7 +33,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/tessera-sidecar", "binaries/tessera-cli", "binaries/gws"]
+    "externalBin": ["binaries/tessera-sidecar", "binaries/tessera-cli"]
   },
   "plugins": {
     "shell": {

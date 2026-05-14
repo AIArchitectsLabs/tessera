@@ -66,6 +66,7 @@ describe("agent profile contracts", () => {
     expect(readOnly.approvalMode).toBe("never");
     expect(readOnly.allowedTools).toContain("workspace_read");
     expect(readOnly.allowedTools).toContain("workspace_extract");
+    expect(readOnly.allowedTools).toContain("pdf_capabilities");
     expect(readOnly.allowedTools).toContain("pdf_inspect");
     expect(readOnly.allowedTools).toContain("pdf_extract");
     expect(readOnly.allowedTools).toContain("pdf_validate");
@@ -101,6 +102,7 @@ describe("agent profile contracts", () => {
     expect(runtime.templateLabel).toBe("Business Operator");
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_write");
     expect(runtime.toolPolicy.allowedTools).toContain("workspace_extract");
+    expect(runtime.toolPolicy.allowedTools).toContain("pdf_capabilities");
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_inspect");
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_extract");
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_validate");

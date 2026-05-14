@@ -54,7 +54,23 @@ export {
 } from "./workspace-guard.js";
 export { createPdfToolDefinitions } from "./pdf-tools.js";
 export {
+  createOptionalCapabilityManager,
+  optionalCapabilityDefinitionsFromEnv,
+  type OptionalCapabilityAsset,
+  type OptionalCapabilityBinary,
+  type OptionalCapabilityDefinition,
+  type OptionalCapabilityEnv,
+  type OptionalCapabilityInstallOptions,
+  type OptionalCapabilityInstallPhase,
+  type OptionalCapabilityInstallProgress,
+  type OptionalCapabilityInstallResult,
+  type OptionalCapabilityManager,
+  type OptionalCapabilityManagerOptions,
+  type OptionalCapabilityStatus,
+} from "./optional-capabilities.js";
+export {
   extractPdfText,
+  getPdfCapabilities,
   inspectPdfDocument,
   normalizePdfPageRange,
   renderPdfPages,
@@ -64,6 +80,7 @@ export {
   type BinaryRunner,
   type BinaryRunnerInput,
   type BinaryRunnerResult,
+  type PdfCapabilitiesOptions,
   type PdfDocumentOptions,
   type PdfExtractOptions,
   type PdfImageDimensions,

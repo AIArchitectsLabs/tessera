@@ -14,6 +14,7 @@ import type {
 import { BrowserRecipeProposalSchema, BrowserToolResultSchema } from "@tessera/contracts";
 import {
   type BrowserExecutor,
+  type OptionalCapabilityManager,
   type PiTaskTurnResult,
   type WorkspaceCliExecutor,
   createSpawnShellExecutor,
@@ -38,6 +39,7 @@ export interface RunTaskTurnOptions {
     provider: AgentProviderConfig;
     runtime?: AgentRuntimeContext;
     browser?: BrowserExecutor;
+    capabilityManager?: OptionalCapabilityManager;
     shell?: {
       executeShell(call: {
         command: "web-search" | "web-fetch" | "gcal" | "mail" | "drive" | "contacts";
@@ -57,6 +59,7 @@ export interface RunTaskTurnOptions {
     workspaceRoot: string;
   }) => Promise<PiTaskTurnResult>;
   browser?: BrowserExecutor;
+  capabilityManager?: OptionalCapabilityManager;
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   promptOverride?: string;
@@ -395,6 +398,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       prompt,
       provider,
       ...(opts.browser ? { browser: opts.browser } : {}),
+      ...(opts.capabilityManager ? { capabilityManager: opts.capabilityManager } : {}),
       ...(shell ? { shell } : {}),
       skillRuntime: {
         activeSkills,

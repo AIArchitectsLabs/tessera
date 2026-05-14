@@ -3,6 +3,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import {
+  type PdfCapabilitiesResult,
+  PdfCapabilitiesResultSchema,
   type PdfExtractResult,
   PdfExtractResultSchema,
   type PdfInspectResult,
@@ -22,6 +24,7 @@ import {
   type PdfWarning,
 } from "@tessera/contracts";
 import { extractText, getDocumentProxy, getMeta } from "unpdf";
+import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -76,6 +79,7 @@ export interface PdfRenderOptions extends PdfDocumentOptions {
   displayOutputDir?: string;
   dpi?: number;
   binaryRunner?: BinaryRunner;
+  capabilityManager?: OptionalCapabilityManager;
   dimensionsReader?: PdfImageDimensionsReader;
 }
 
@@ -95,6 +99,7 @@ export interface PdfTransformOptions {
     pages?: PdfPageRange;
   };
   binaryRunner?: BinaryRunner;
+  capabilityManager?: OptionalCapabilityManager;
 }
 
 export interface PdfPacketManifestOptions {
@@ -105,6 +110,109 @@ export interface PdfPacketManifestOptions {
   operations: PdfPacketManifestOperation[];
   validations?: PdfValidateResult[];
   warnings?: PdfWarning[];
+}
+
+export interface PdfCapabilitiesOptions {
+  binaryRunner?: BinaryRunner;
+  capabilityManager?: OptionalCapabilityManager;
+}
+
+export async function getPdfCapabilities(
+  options: PdfCapabilitiesOptions = {}
+): Promise<PdfCapabilitiesResult> {
+  const runner = options.binaryRunner ?? defaultBinaryRunner;
+  const [renderEngine, transformEngine] = await Promise.all([
+    checkPdfEngine({
+      capabilityId: "pdf-render",
+      binaryName: "pdftoppm",
+      args: ["-v"],
+      provides: ["pdf_render"],
+      runner,
+      ...(options.capabilityManager !== undefined
+        ? { capabilityManager: options.capabilityManager }
+        : {}),
+    }),
+    checkPdfEngine({
+      capabilityId: "pdf-transform",
+      binaryName: "qpdf",
+      args: ["--version"],
+      provides: ["pdf_transform"],
+      runner,
+      ...(options.capabilityManager !== undefined
+        ? { capabilityManager: options.capabilityManager }
+        : {}),
+    }),
+  ]);
+  const engines = [
+    {
+      engine: "unpdf",
+      engineRuntime: "typescript" as const,
+      available: true,
+      provides: ["pdf_inspect", "pdf_extract", "pdf_validate"],
+      message: "TypeScript PDF text extraction is bundled.",
+    },
+    renderEngine,
+    transformEngine,
+  ];
+  const unavailableMessage = (engine: string) => `PDF engine unavailable: ${engine}`;
+  const tools = [
+    {
+      name: "pdf_inspect" as const,
+      available: true,
+      requiredEngines: ["unpdf"],
+    },
+    {
+      name: "pdf_extract" as const,
+      available: true,
+      requiredEngines: ["unpdf"],
+    },
+    {
+      name: "pdf_validate" as const,
+      available: true,
+      requiredEngines: ["unpdf"],
+    },
+    {
+      name: "pdf_render" as const,
+      available: renderEngine.available,
+      requiredEngines: ["pdftoppm"],
+      ...(!renderEngine.available ? { message: unavailableMessage("pdftoppm") } : {}),
+    },
+    {
+      name: "pdf_transform" as const,
+      available: transformEngine.available,
+      requiredEngines: ["qpdf"],
+      ...(!transformEngine.available ? { message: unavailableMessage("qpdf") } : {}),
+    },
+    {
+      name: "pdf_manifest" as const,
+      available: true,
+      requiredEngines: [],
+    },
+  ];
+  const warnings = [
+    ...(!renderEngine.available
+      ? [
+          {
+            code: "engine_unavailable",
+            message: "pdftoppm is unavailable; pdf_render cannot run.",
+          },
+        ]
+      : []),
+    ...(!transformEngine.available
+      ? [
+          {
+            code: "engine_unavailable",
+            message: "qpdf is unavailable; pdf_transform cannot run.",
+          },
+        ]
+      : []),
+  ];
+
+  return PdfCapabilitiesResultSchema.parse({
+    engines,
+    tools,
+    warnings,
+  });
 }
 
 export function normalizePdfPageRange(
@@ -260,8 +368,13 @@ export async function renderPdfPages(
   const outputPrefix = join(options.outputDir, `${basename(path, extname(path))}-page`);
   const firstPage = selectedPages[0] ?? 1;
   const lastPage = selectedPages.at(-1) ?? firstPage;
-  await runPdfBinary(options.binaryRunner ?? defaultBinaryRunner, {
+  await runPdfCapabilityBinary(options.binaryRunner ?? defaultBinaryRunner, {
     command: "pdftoppm",
+    capabilityId: "pdf-render",
+    binaryName: "pdftoppm",
+    ...(options.capabilityManager !== undefined
+      ? { capabilityManager: options.capabilityManager }
+      : {}),
     args: [
       "-png",
       "-f",
@@ -328,8 +441,13 @@ export async function transformPdfDocument(
     options.rotation?.pages
   );
   const args = buildQpdfArgs(options, inspectedSources);
-  await runPdfBinary(options.binaryRunner ?? defaultBinaryRunner, {
+  await runPdfCapabilityBinary(options.binaryRunner ?? defaultBinaryRunner, {
     command: "qpdf",
+    capabilityId: "pdf-transform",
+    binaryName: "qpdf",
+    ...(options.capabilityManager !== undefined
+      ? { capabilityManager: options.capabilityManager }
+      : {}),
     args,
   });
 
@@ -542,6 +660,107 @@ async function runPdfBinary(runner: BinaryRunner, input: BinaryRunnerInput): Pro
     }
     throw error;
   }
+}
+
+async function runPdfCapabilityBinary(
+  runner: BinaryRunner,
+  input: BinaryRunnerInput & {
+    capabilityId: string;
+    binaryName: string;
+    capabilityManager?: OptionalCapabilityManager;
+  }
+): Promise<void> {
+  const resolvedCommand =
+    (await input.capabilityManager?.resolveBinary(input.capabilityId, input.binaryName)) ??
+    input.command;
+  try {
+    await runner({
+      command: resolvedCommand,
+      args: input.args,
+      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    });
+  } catch (error) {
+    if (!isCommandNotFoundError(error) || !input.capabilityManager) {
+      if (isCommandNotFoundError(error)) {
+        throw new Error(`PDF engine unavailable: ${resolvedCommand}`);
+      }
+      throw error;
+    }
+    await input.capabilityManager.install(input.capabilityId).catch(() => {
+      throw new Error(`PDF engine unavailable: ${input.binaryName}`);
+    });
+    const installedCommand = await input.capabilityManager.resolveBinary(
+      input.capabilityId,
+      input.binaryName
+    );
+    if (!installedCommand) throw error;
+    await runPdfBinary(runner, {
+      command: installedCommand,
+      args: input.args,
+      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    });
+  }
+}
+
+async function checkPdfEngine(options: {
+  capabilityId: string;
+  binaryName: string;
+  args: string[];
+  provides: Array<"pdf_render" | "pdf_transform">;
+  runner: BinaryRunner;
+  capabilityManager?: OptionalCapabilityManager;
+}) {
+  const status = await options.capabilityManager?.status(options.capabilityId).catch(() => null);
+  const managedCommand = await options.capabilityManager
+    ?.resolveBinary(options.capabilityId, options.binaryName)
+    .catch(() => undefined);
+  const command = managedCommand ?? options.binaryName;
+  try {
+    const result = await options.runner({
+      command,
+      args: options.args,
+    });
+    const version = versionFromOutput(result);
+    return {
+      engine: options.binaryName,
+      engineRuntime: "binary" as const,
+      available: true,
+      command,
+      ...(version !== undefined ? { version } : {}),
+      provides: options.provides,
+    };
+  } catch (error) {
+    const message = isCommandNotFoundError(error)
+      ? `PDF engine unavailable: ${options.binaryName}`
+      : `PDF engine check failed: ${options.binaryName}`;
+    return {
+      engine: options.binaryName,
+      engineRuntime: "binary" as const,
+      available: false,
+      command,
+      provides: options.provides,
+      message,
+      ...(status
+        ? {
+            install: {
+              capabilityId: status.id,
+              available: status.installAvailable,
+              installed: status.installed,
+              version: status.version,
+              ...(status.sizeBytes !== undefined ? { sizeBytes: status.sizeBytes } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+}
+
+function versionFromOutput(result: BinaryRunnerResult): string | undefined {
+  const output = `${result.stdout}\n${result.stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return output;
 }
 
 function buildQpdfArgs(

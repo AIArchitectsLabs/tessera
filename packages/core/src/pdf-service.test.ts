@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PdfPageRange } from "@tessera/contracts";
+import { createOptionalCapabilityManager } from "./optional-capabilities.js";
 import {
   extractPdfText,
+  getPdfCapabilities,
   inspectPdfDocument,
   normalizePdfPageRange,
   renderPdfPages,
@@ -24,6 +27,10 @@ endstream endobj
 6 0 obj<< /Title (Sample Report) /Author (Tessera) >>endobj
 trailer<< /Root 1 0 R /Info 6 0 R >>
 %%EOF`;
+}
+
+function sha256(data: Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
 }
 
 async function makeFixture() {
@@ -47,6 +54,82 @@ async function makeFixture() {
 }
 
 describe("pdf service", () => {
+  test("reports bundled and binary PDF capability readiness", async () => {
+    const result = await getPdfCapabilities({
+      binaryRunner: async ({ command }) => {
+        if (command === "pdftoppm") return { stdout: "", stderr: "pdftoppm version 24.02.0" };
+        if (command === "qpdf") return { stdout: "qpdf version 11.9.0", stderr: "" };
+        throw new Error(`unexpected command ${command}`);
+      },
+    });
+
+    expect(result.tools).toEqual([
+      {
+        name: "pdf_inspect",
+        available: true,
+        requiredEngines: ["unpdf"],
+      },
+      {
+        name: "pdf_extract",
+        available: true,
+        requiredEngines: ["unpdf"],
+      },
+      {
+        name: "pdf_validate",
+        available: true,
+        requiredEngines: ["unpdf"],
+      },
+      {
+        name: "pdf_render",
+        available: true,
+        requiredEngines: ["pdftoppm"],
+      },
+      {
+        name: "pdf_transform",
+        available: true,
+        requiredEngines: ["qpdf"],
+      },
+      {
+        name: "pdf_manifest",
+        available: true,
+        requiredEngines: [],
+      },
+    ]);
+    expect(result.engines).toContainEqual({
+      engine: "pdftoppm",
+      engineRuntime: "binary",
+      available: true,
+      command: "pdftoppm",
+      version: "pdftoppm version 24.02.0",
+      provides: ["pdf_render"],
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("reports missing binary PDF engines without throwing", async () => {
+    const result = await getPdfCapabilities({
+      binaryRunner: async ({ command }) => {
+        if (command === "pdftoppm") {
+          const error = new Error("missing");
+          (error as NodeJS.ErrnoException).code = "ENOENT";
+          throw error;
+        }
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(result.tools).toContainEqual({
+      name: "pdf_render",
+      available: false,
+      requiredEngines: ["pdftoppm"],
+      message: "PDF engine unavailable: pdftoppm",
+    });
+    expect(result.warnings).toContainEqual({
+      code: "engine_unavailable",
+      message: "pdftoppm is unavailable; pdf_render cannot run.",
+    });
+  });
+
   test("normalizes undefined page ranges to all pages", () => {
     expect(normalizePdfPageRange(undefined, 3)).toEqual([1, 2, 3]);
   });
@@ -214,6 +297,60 @@ describe("pdf service", () => {
       provenance: { immutableSource: true },
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("installs a managed render engine on first use when the path binary is missing", async () => {
+    const { root, pdfPath } = await makeFixture();
+    const payload = Buffer.from("#!/bin/sh\necho pdftoppm\n");
+    const capabilityManager = createOptionalCapabilityManager({
+      rootDir: join(root, "capabilities"),
+      platform: "darwin",
+      arch: "arm64",
+      definitions: [
+        {
+          id: "pdf-render",
+          label: "PDF render engine",
+          version: "1.0.0",
+          binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+          assets: [
+            {
+              platform: "darwin",
+              arch: "arm64",
+              url: "https://downloads.tessera.local/pdftoppm",
+              sha256: sha256(payload),
+              executableName: "pdftoppm",
+            },
+          ],
+        },
+      ],
+      download: async () => payload,
+    });
+    const commands: string[] = [];
+
+    const result = await renderPdfPages(pdfPath, {
+      outputDir: join(root, "renders"),
+      pages: { start: 1, end: 1 },
+      capabilityManager,
+      binaryRunner: async ({ command, args }) => {
+        commands.push(command);
+        if (command === "pdftoppm") {
+          const error = new Error("missing");
+          (error as NodeJS.ErrnoException).code = "ENOENT";
+          throw error;
+        }
+        const outputPrefix = args.at(-1);
+        if (typeof outputPrefix !== "string") throw new Error("missing output prefix");
+        await writeFile(`${outputPrefix}-1.png`, Buffer.from("png"));
+        return { stdout: "", stderr: "" };
+      },
+      dimensionsReader: async () => ({ width: 612, height: 792 }),
+    });
+
+    expect(commands).toEqual([
+      "pdftoppm",
+      join(root, "capabilities", "pdf-render", "1.0.0", "pdftoppm"),
+    ]);
+    expect(result.outputs[0]?.path).toBe("sample-page-1.png");
   });
 
   test("creates a rotated PDF output with an injected qpdf runner", async () => {

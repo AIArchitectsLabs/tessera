@@ -46,6 +46,7 @@ import {
   Box,
   Check,
   Database,
+  Download,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -78,6 +79,33 @@ interface GoogleWorkspaceServiceHealth {
 interface GoogleWorkspaceOAuthClientStatus {
   hasClient: boolean;
   source: "build" | "bundled" | "missing" | "saved";
+}
+
+type GoogleWorkspaceCapabilityProgressPhase =
+  | "available"
+  | "downloading"
+  | "failed"
+  | "installed"
+  | "installing"
+  | "verifying";
+
+interface GoogleWorkspaceCapabilityProgress {
+  phase: GoogleWorkspaceCapabilityProgressPhase;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+}
+
+interface GoogleWorkspaceCapabilityStatus {
+  capabilityId: string;
+  binaryName: string;
+  path?: string;
+  installed: boolean;
+  installAvailable: boolean;
+  version: string;
+  sizeBytes?: number;
+  message?: string;
+  progress?: GoogleWorkspaceCapabilityProgress;
 }
 
 interface CodexDeviceCode {
@@ -143,6 +171,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   const [googleWorkspaceHealth, setGoogleWorkspaceHealth] = useState<
     GoogleWorkspaceServiceHealth[]
   >([]);
+  const [googleWorkspaceCapability, setGoogleWorkspaceCapability] =
+    useState<GoogleWorkspaceCapabilityStatus | null>(null);
+  const [googleWorkspaceInstallConsent, setGoogleWorkspaceInstallConsent] = useState(false);
   const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [memoryLoading, setMemoryLoading] = useState(true);
@@ -151,7 +182,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     "codexSignIn" | "remove" | "save" | "test" | null
   >(null);
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
-    "connect" | "disconnect" | "remove" | "save" | "saveOAuthClient" | "test" | null
+    "connect" | "disconnect" | "installGws" | "remove" | "save" | "saveOAuthClient" | "test" | null
   >(null);
   const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
     null
@@ -185,6 +216,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         const memoryReviewResult = invokeWithTimeout<MemoryReviewListResult>("memory_review_list")
           .then((loadedMemoryReview) => ({ loadedMemoryReview }))
           .catch((error: unknown) => ({ error }));
+        const googleWorkspaceCapabilityResult = invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+          "google_workspace_capability_status"
+        )
+          .then((loadedGoogleWorkspaceCapability) => ({ loadedGoogleWorkspaceCapability }))
+          .catch((error: unknown) => ({ error }));
         const [loaded, loadedIntegrations, loadedGoogleWorkspaceOAuthClientStatus] =
           await Promise.all([
             invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
@@ -199,6 +235,15 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         hydrateFromSettings(loaded);
         hydrateFromIntegrations(loadedIntegrations);
         setGoogleWorkspaceOAuthClientStatus(loadedGoogleWorkspaceOAuthClientStatus);
+        const loadedGoogleWorkspaceCapabilityResult = await googleWorkspaceCapabilityResult;
+        if (!active) {
+          return;
+        }
+        if ("loadedGoogleWorkspaceCapability" in loadedGoogleWorkspaceCapabilityResult) {
+          setGoogleWorkspaceCapability(
+            loadedGoogleWorkspaceCapabilityResult.loadedGoogleWorkspaceCapability
+          );
+        }
         const loadedMemoryResult = await memoryStatusResult;
         if (!active) {
           return;
@@ -274,6 +319,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     draft.model.trim().length > 0 && (!requiresBaseUrl || draft.baseUrl.trim().length > 0);
   const isCodexProvider = selectedProvider === "openai-codex";
   const canRemoveGoogleWorkspaceOAuthClient = googleWorkspaceOAuthClientStatus.source === "saved";
+  const googleWorkspaceManagedInstallRequired = Boolean(
+    selectedIntegration === "google-workspace" &&
+      googleWorkspaceCapability?.installAvailable &&
+      !googleWorkspaceCapability.installed
+  );
+  const googleWorkspaceProgressPercent = capabilityProgressPercent(
+    googleWorkspaceCapability?.progress
+  );
 
   function hydrateFromSettings(
     loaded: ModelSettingsRead,
@@ -298,6 +351,16 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     );
     setIntegrationApiKey("");
     setSearchApiKey("");
+  }
+
+  async function refreshGoogleWorkspaceCapability() {
+    const status = await invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+      "google_workspace_capability_status"
+    );
+    if (mountedRef.current) {
+      setGoogleWorkspaceCapability(status);
+    }
+    return status;
   }
 
   async function refreshGoogleWorkspaceHealth(requestId: number) {
@@ -489,6 +552,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setSelectedIntegration(provider);
     setIntegrationApiKey("");
     setIntegrationStatus(null);
+    setGoogleWorkspaceInstallConsent(false);
   }
 
   function handleSearchProviderSelect(provider: SearchProvider) {
@@ -731,6 +795,15 @@ export function SettingsView({ onClose }: SettingsViewProps) {
   }
 
   async function handleIntegrationTestConnection() {
+    if (selectedIntegration === "google-workspace" && googleWorkspaceManagedInstallRequired) {
+      setGoogleWorkspaceInstallConsent(true);
+      setIntegrationStatus({
+        message: "Download the Google Workspace connector before testing.",
+        tone: "info",
+      });
+      return;
+    }
+
     const requestId = ++integrationRequestIdRef.current;
     setActiveIntegrationAction("test");
     setIntegrationStatus(null);
@@ -750,8 +823,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "info" });
-      if (result.ok && !integrationAllowsCredentials) {
-        await refreshGoogleWorkspaceHealth(requestId);
+      if (selectedIntegration === "google-workspace" && !integrationAllowsCredentials) {
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+          hydrateFromIntegrations(next);
+        }
+        if (result.ok) {
+          await refreshGoogleWorkspaceHealth(requestId);
+        }
       }
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -768,8 +847,75 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     }
   }
 
+  async function handleInstallGoogleWorkspaceCapability() {
+    if (integrationBusy || !googleWorkspaceCapability?.installAvailable) return;
+    if (googleWorkspaceCapability.installed) return;
+    if (!googleWorkspaceInstallConsent) {
+      setGoogleWorkspaceInstallConsent(true);
+      setIntegrationStatus({
+        message: "Confirm download to install the Google Workspace connector.",
+        tone: "info",
+      });
+      return;
+    }
+
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("installGws");
+    setIntegrationStatus(null);
+    let polling = true;
+    const pollStatus = async () => {
+      while (polling) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+          return;
+        }
+        try {
+          await refreshGoogleWorkspaceCapability();
+        } catch {
+          // The install request below owns the user-facing error.
+        }
+      }
+    };
+    void pollStatus();
+
+    try {
+      const next = await invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+        "google_workspace_capability_install",
+        undefined,
+        120_000
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setGoogleWorkspaceCapability(next);
+      setGoogleWorkspaceInstallConsent(false);
+      setIntegrationStatus({ message: "Google Workspace connector installed.", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      polling = false;
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
   async function handleConnectGoogleWorkspace() {
     if (integrationBusy || !googleWorkspaceOAuthClientStatus.hasClient) return;
+    if (googleWorkspaceManagedInstallRequired) {
+      setGoogleWorkspaceInstallConsent(true);
+      setIntegrationStatus({
+        message: "Download the Google Workspace connector before connecting.",
+        tone: "info",
+      });
+      return;
+    }
     const requestId = ++integrationRequestIdRef.current;
     setActiveIntegrationAction("connect");
     setIntegrationStatus({ message: "Opening Google sign-in...", tone: "info" });
@@ -1624,6 +1770,103 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                   </div>
                 )}
 
+                {!integrationAllowsCredentials && googleWorkspaceCapability && (
+                  <div className="rounded-xl border border-border bg-background px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">
+                          Google Workspace CLI
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {googleWorkspaceCapabilityDescription(googleWorkspaceCapability)}
+                        </div>
+                      </div>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                          googleWorkspaceCapability.installed
+                            ? "bg-emerald-50 text-emerald-800"
+                            : googleWorkspaceCapability.installAvailable
+                              ? "bg-amber-50 text-amber-800"
+                              : "bg-secondary text-muted-foreground"
+                        )}
+                      >
+                        {googleWorkspaceCapabilityStatusLabel(googleWorkspaceCapability)}
+                      </span>
+                    </div>
+
+                    {googleWorkspaceCapability.progress &&
+                      activeIntegrationAction === "installGws" && (
+                        <div className="mt-4 space-y-2">
+                          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                            <span>
+                              {googleWorkspaceCapabilityProgressLabel(
+                                googleWorkspaceCapability.progress
+                              )}
+                            </span>
+                            <span>
+                              {googleWorkspaceProgressPercent !== null
+                                ? `${googleWorkspaceProgressPercent}%`
+                                : ""}
+                            </span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                            <div
+                              className={cn(
+                                "h-full rounded-full bg-primary transition-all",
+                                googleWorkspaceProgressPercent === null && "w-1/2 animate-pulse"
+                              )}
+                              style={
+                                googleWorkspaceProgressPercent === null
+                                  ? undefined
+                                  : { width: `${googleWorkspaceProgressPercent}%` }
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                    {!googleWorkspaceCapability.installed &&
+                      googleWorkspaceCapability.installAvailable && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant={googleWorkspaceInstallConsent ? "default" : "outline"}
+                            onClick={handleInstallGoogleWorkspaceCapability}
+                            disabled={integrationBusy}
+                          >
+                            {activeIntegrationAction === "installGws" ? (
+                              <Loader2 size={16} className="animate-spin" />
+                            ) : (
+                              <Download size={16} />
+                            )}
+                            {googleWorkspaceInstallConsent
+                              ? "Install connector"
+                              : "Download connector"}
+                          </Button>
+                          {googleWorkspaceInstallConsent && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => {
+                                setGoogleWorkspaceInstallConsent(false);
+                                setIntegrationStatus(null);
+                              }}
+                              disabled={integrationBusy}
+                            >
+                              Cancel
+                            </Button>
+                          )}
+                          {googleWorkspaceCapability.sizeBytes !== undefined && (
+                            <span className="text-xs text-muted-foreground">
+                              {formatCapabilityBytes(googleWorkspaceCapability.sizeBytes)}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                  </div>
+                )}
+
                 {!integrationAllowsCredentials && (
                   <div className="rounded-xl border border-border bg-background px-4 py-3">
                     <div className="mb-2 text-sm font-medium text-foreground">
@@ -1685,7 +1928,11 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     <Button
                       type="button"
                       onClick={handleConnectGoogleWorkspace}
-                      disabled={integrationBusy || !googleWorkspaceOAuthClientStatus.hasClient}
+                      disabled={
+                        integrationBusy ||
+                        !googleWorkspaceOAuthClientStatus.hasClient ||
+                        googleWorkspaceManagedInstallRequired
+                      }
                     >
                       {activeIntegrationAction === "connect" ? (
                         <Loader2 size={16} className="animate-spin" />
@@ -1728,7 +1975,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
                     type="button"
                     variant="outline"
                     onClick={handleIntegrationTestConnection}
-                    disabled={integrationBusy}
+                    disabled={integrationBusy || googleWorkspaceManagedInstallRequired}
                   >
                     {activeIntegrationAction === "test" ? (
                       <Loader2 size={16} className="animate-spin" />
@@ -2085,6 +2332,71 @@ function providerConfigFromSettings(
         baseUrl: settings.baseUrl ?? "http://127.0.0.1:11434/v1",
       };
   }
+}
+
+function googleWorkspaceCapabilityStatusLabel(status: GoogleWorkspaceCapabilityStatus): string {
+  if (status.installed) return "Connector ready";
+  if (status.installAvailable) return "Download required";
+  return "Manual install";
+}
+
+function googleWorkspaceCapabilityDescription(status: GoogleWorkspaceCapabilityStatus): string {
+  if (status.installed) {
+    return `Managed connector ${status.version} is installed.`;
+  }
+  if (status.installAvailable) {
+    const size = formatCapabilityBytes(status.sizeBytes);
+    return size
+      ? `Download managed connector ${status.version} (${size}).`
+      : `Download managed connector ${status.version}.`;
+  }
+  return status.message ?? "No managed connector is available for this system.";
+}
+
+function googleWorkspaceCapabilityProgressLabel(
+  progress: GoogleWorkspaceCapabilityProgress
+): string {
+  switch (progress.phase) {
+    case "downloading":
+      return "Downloading connector";
+    case "verifying":
+      return "Verifying download";
+    case "installing":
+      return "Installing connector";
+    case "installed":
+      return "Connector ready";
+    case "failed":
+      return progress.message ?? "Installation failed";
+    case "available":
+      return "Download ready";
+  }
+}
+
+function capabilityProgressPercent(progress?: GoogleWorkspaceCapabilityProgress): number | null {
+  if (
+    progress?.downloadedBytes === undefined ||
+    progress.totalBytes === undefined ||
+    progress.totalBytes <= 0
+  ) {
+    return null;
+  }
+  return Math.max(
+    0,
+    Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100))
+  );
+}
+
+function formatCapabilityBytes(bytes?: number): string | null {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes <= 0) return null;
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1);
+  return `${formatted} ${units[unitIndex]}`;
 }
 
 function memoryModeLabel(mode: MemoryRuntimeStatus["mode"]): string {

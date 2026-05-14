@@ -176,9 +176,42 @@ let googleWorkspaceOAuthClientStatus = {
   hasClient: false,
   source: "missing",
 };
+type GoogleWorkspaceCapabilityStatus = {
+  capabilityId: string;
+  binaryName: string;
+  path?: string;
+  installed: boolean;
+  installAvailable: boolean;
+  version: string;
+  sizeBytes?: number;
+  progress?: {
+    phase: string;
+    downloadedBytes?: number;
+    totalBytes?: number;
+  };
+};
+let googleWorkspaceCapabilityStatus: GoogleWorkspaceCapabilityStatus = {
+  capabilityId: "google-workspace-cli",
+  binaryName: "gws",
+  path: "/tmp/tessera-gws",
+  installed: true,
+  installAvailable: true,
+  version: "0.22.5",
+  sizeBytes: 15_371_280,
+  progress: {
+    phase: "installed",
+    downloadedBytes: 15_371_280,
+    totalBytes: 15_371_280,
+  },
+};
 let googleWorkspaceConnectResult: IntegrationConnectionTestResult = {
   ok: true,
   message: "Google Workspace connected.",
+  provider: "google-workspace",
+};
+let integrationConnectionTestResult: IntegrationConnectionTestResult = {
+  ok: true,
+  message: "Connection test succeeded",
   provider: "google-workspace",
 };
 let googleWorkspaceConnectionStatusResult: IntegrationConnectionTestResult = {
@@ -307,6 +340,24 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         source: "missing",
       };
       return googleWorkspaceOAuthClientStatus;
+    case "google_workspace_capability_status":
+      return googleWorkspaceCapabilityStatus;
+    case "google_workspace_capability_install":
+      googleWorkspaceCapabilityStatus = {
+        ...googleWorkspaceCapabilityStatus,
+        path: "/tmp/tessera-gws",
+        installed: true,
+        progress: {
+          phase: "installed",
+          ...(googleWorkspaceCapabilityStatus.sizeBytes !== undefined
+            ? {
+                downloadedBytes: googleWorkspaceCapabilityStatus.sizeBytes,
+                totalBytes: googleWorkspaceCapabilityStatus.sizeBytes,
+              }
+            : {}),
+        },
+      };
+      return googleWorkspaceCapabilityStatus;
     case "integration_settings_save": {
       const request = args?.request;
       const searchProvider = request?.searchProvider as SearchProvider | undefined;
@@ -327,6 +378,21 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
       return integrationSettings;
     }
     case "integration_connection_test":
+      if (args?.request?.provider === "google-workspace") {
+        if (!integrationConnectionTestResult.ok) {
+          integrationSettings = {
+            ...integrationSettings,
+            providers: {
+              ...integrationSettings.providers,
+              googleWorkspace: {
+                ...integrationSettings.providers.googleWorkspace,
+                hasCredential: false,
+              },
+            },
+          };
+        }
+        return integrationConnectionTestResult;
+      }
       return {
         ok: true,
         message: "Connection test succeeded",
@@ -454,9 +520,28 @@ beforeEach(() => {
     hasClient: false,
     source: "missing",
   };
+  googleWorkspaceCapabilityStatus = {
+    capabilityId: "google-workspace-cli",
+    binaryName: "gws",
+    path: "/tmp/tessera-gws",
+    installed: true,
+    installAvailable: true,
+    version: "0.22.5",
+    sizeBytes: 15_371_280,
+    progress: {
+      phase: "installed",
+      downloadedBytes: 15_371_280,
+      totalBytes: 15_371_280,
+    },
+  };
   googleWorkspaceConnectResult = {
     ok: true,
     message: "Google Workspace connected.",
+    provider: "google-workspace",
+  };
+  integrationConnectionTestResult = {
+    ok: true,
+    message: "Connection test succeeded",
     provider: "google-workspace",
   };
   googleWorkspaceConnectionStatusResult = {
@@ -805,6 +890,62 @@ describe("SettingsView workspace integration flow", () => {
     expect(within(section).getByRole("button", { name: "Test connection" })).toBeTruthy();
   });
 
+  test("Google Workspace asks before installing the managed CLI", async () => {
+    googleWorkspaceOAuthClientStatus = {
+      hasClient: true,
+      source: "saved",
+    };
+    googleWorkspaceCapabilityStatus = {
+      capabilityId: "google-workspace-cli",
+      binaryName: "gws",
+      installed: false,
+      installAvailable: true,
+      version: "0.22.5",
+      sizeBytes: 15_371_280,
+      progress: {
+        phase: "available",
+        totalBytes: 15_371_280,
+      },
+    };
+
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    expect(within(section).getByText("Google Workspace CLI")).toBeTruthy();
+    expect(within(section).getByText("Download required")).toBeTruthy();
+    expect(
+      within(section)
+        .getByRole("button", { name: "Connect Google Workspace" })
+        .hasAttribute("disabled")
+    ).toBe(true);
+
+    fireEvent.click(within(section).getByRole("button", { name: "Download connector" }));
+
+    expect(invokeCalls.some((call) => call.command === "google_workspace_capability_install")).toBe(
+      false
+    );
+    expect(within(section).getByRole("button", { name: "Install connector" })).toBeTruthy();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Install connector" }));
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some((call) => call.command === "google_workspace_capability_install")
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("Connector ready")).toBeTruthy();
+    });
+    expect(
+      within(section)
+        .getByRole("button", { name: "Connect Google Workspace" })
+        .hasAttribute("disabled")
+    ).toBe(false);
+  });
+
   test("testing Google Workspace sends no credential payload", async () => {
     const view = await renderIntegrationsView();
 
@@ -824,6 +965,47 @@ describe("SettingsView workspace integration flow", () => {
     await waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "google_workspace_health")).toBe(true);
     });
+  });
+
+  test("failed Google Workspace test clears stale connected state", async () => {
+    googleWorkspaceOAuthClientStatus = {
+      hasClient: true,
+      source: "saved",
+    };
+    integrationSettings = {
+      ...integrationSettings,
+      providers: {
+        ...integrationSettings.providers,
+        googleWorkspace: {
+          ...integrationSettings.providers.googleWorkspace,
+          hasCredential: true,
+        },
+      },
+    };
+    integrationConnectionTestResult = {
+      ok: false,
+      message: "Google Workspace is not connected. Connect Google Workspace in Settings.",
+      provider: "google-workspace",
+    };
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    expect(within(section).getByRole("button", { name: "Disconnect" })).toBeTruthy();
+
+    fireEvent.click(within(section).getByRole("button", { name: "Test connection" }));
+
+    await waitFor(() => {
+      expect(invokeCalls.some((call) => call.command === "integration_connection_test")).toBe(true);
+    });
+    await waitFor(() => {
+      expect(
+        within(section).getByRole("button", { name: "Connect Google Workspace" })
+      ).toBeTruthy();
+    });
+    expect(within(section).queryByRole("button", { name: "Disconnect" })).toBeNull();
   });
 
   test("connecting Google Workspace uses the dedicated auth command", async () => {
