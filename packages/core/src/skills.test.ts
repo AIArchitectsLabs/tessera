@@ -57,7 +57,7 @@ describe("skill registry", () => {
     });
     await expect(registry.loadSkill("pdf-workflows")).resolves.toMatchObject({
       source: "curated",
-      content: expect.stringContaining("Preserve page references"),
+      content: expect.stringContaining("Always inspect PDFs before extracting or changing them."),
     });
     await expect(registry.loadSkill("slide-decks")).resolves.toMatchObject({
       source: "curated",
