@@ -29,6 +29,18 @@ const GWS_CLI_URL_ENV: &str = "TESSERA_GWS_CLI_URL";
 const GWS_CLI_SHA256_ENV: &str = "TESSERA_GWS_CLI_SHA256";
 const GWS_CLI_VERSION_ENV: &str = "TESSERA_GWS_CLI_VERSION";
 const GWS_CLI_SIZE_BYTES_ENV: &str = "TESSERA_GWS_CLI_SIZE_BYTES";
+const PDF_RENDER_URL_ENV: &str = "TESSERA_PDF_RENDER_URL";
+const PDF_RENDER_SHA256_ENV: &str = "TESSERA_PDF_RENDER_SHA256";
+const PDF_RENDER_VERSION_ENV: &str = "TESSERA_PDF_RENDER_VERSION";
+const PDF_RENDER_SIZE_BYTES_ENV: &str = "TESSERA_PDF_RENDER_SIZE_BYTES";
+const PDF_RENDER_ARCHIVE_KIND_ENV: &str = "TESSERA_PDF_RENDER_ARCHIVE_KIND";
+const PDF_RENDER_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PDF_RENDER_ARCHIVE_ENTRY";
+const PDF_TRANSFORM_URL_ENV: &str = "TESSERA_PDF_TRANSFORM_URL";
+const PDF_TRANSFORM_SHA256_ENV: &str = "TESSERA_PDF_TRANSFORM_SHA256";
+const PDF_TRANSFORM_VERSION_ENV: &str = "TESSERA_PDF_TRANSFORM_VERSION";
+const PDF_TRANSFORM_SIZE_BYTES_ENV: &str = "TESSERA_PDF_TRANSFORM_SIZE_BYTES";
+const PDF_TRANSFORM_ARCHIVE_KIND_ENV: &str = "TESSERA_PDF_TRANSFORM_ARCHIVE_KIND";
+const PDF_TRANSFORM_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -635,6 +647,63 @@ fn extract_google_oauth_url(output: &str) -> Option<String> {
     })
 }
 
+fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 16] {
+    [
+        (GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")),
+        (GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256")),
+        (GWS_CLI_VERSION_ENV, option_env!("TESSERA_GWS_CLI_VERSION")),
+        (
+            GWS_CLI_SIZE_BYTES_ENV,
+            option_env!("TESSERA_GWS_CLI_SIZE_BYTES"),
+        ),
+        (PDF_RENDER_URL_ENV, option_env!("TESSERA_PDF_RENDER_URL")),
+        (
+            PDF_RENDER_SHA256_ENV,
+            option_env!("TESSERA_PDF_RENDER_SHA256"),
+        ),
+        (
+            PDF_RENDER_VERSION_ENV,
+            option_env!("TESSERA_PDF_RENDER_VERSION"),
+        ),
+        (
+            PDF_RENDER_SIZE_BYTES_ENV,
+            option_env!("TESSERA_PDF_RENDER_SIZE_BYTES"),
+        ),
+        (
+            PDF_RENDER_ARCHIVE_KIND_ENV,
+            option_env!("TESSERA_PDF_RENDER_ARCHIVE_KIND"),
+        ),
+        (
+            PDF_RENDER_ARCHIVE_ENTRY_ENV,
+            option_env!("TESSERA_PDF_RENDER_ARCHIVE_ENTRY"),
+        ),
+        (
+            PDF_TRANSFORM_URL_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_URL"),
+        ),
+        (
+            PDF_TRANSFORM_SHA256_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_SHA256"),
+        ),
+        (
+            PDF_TRANSFORM_VERSION_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_VERSION"),
+        ),
+        (
+            PDF_TRANSFORM_SIZE_BYTES_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_SIZE_BYTES"),
+        ),
+        (
+            PDF_TRANSFORM_ARCHIVE_KIND_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_ARCHIVE_KIND"),
+        ),
+        (
+            PDF_TRANSFORM_ARCHIVE_ENTRY_ENV,
+            option_env!("TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY"),
+        ),
+    ]
+}
+
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -1032,24 +1101,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // Point it at binaries/ where package.json is kept alongside the sources.
         .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
 
-    if let Some(value) = runtime_or_build_env(GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")) {
-        sidecar_command = sidecar_command.env(GWS_CLI_URL_ENV, value);
-    }
-    if let Some(value) =
-        runtime_or_build_env(GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256"))
-    {
-        sidecar_command = sidecar_command.env(GWS_CLI_SHA256_ENV, value);
-    }
-    if let Some(value) =
-        runtime_or_build_env(GWS_CLI_VERSION_ENV, option_env!("TESSERA_GWS_CLI_VERSION"))
-    {
-        sidecar_command = sidecar_command.env(GWS_CLI_VERSION_ENV, value);
-    }
-    if let Some(value) = runtime_or_build_env(
-        GWS_CLI_SIZE_BYTES_ENV,
-        option_env!("TESSERA_GWS_CLI_SIZE_BYTES"),
-    ) {
-        sidecar_command = sidecar_command.env(GWS_CLI_SIZE_BYTES_ENV, value);
+    for (name, build_value) in optional_capability_env_sources() {
+        if let Some(value) = runtime_or_build_env(name, build_value) {
+            sidecar_command = sidecar_command.env(name, value);
+        }
     }
 
     if playwright_browsers_dir.exists() {
@@ -3177,6 +3232,19 @@ mod tests {
             super::runtime_or_build_env("TESSERA_TEST_MISSING_ENV", Some(" build-value ")),
             Some("build-value".to_string())
         );
+    }
+
+    #[test]
+    fn optional_capability_env_sources_include_pdf_dependencies() {
+        let names: Vec<&str> = super::optional_capability_env_sources()
+            .iter()
+            .map(|(name, _value)| *name)
+            .collect();
+
+        assert!(names.contains(&"TESSERA_PDF_RENDER_URL"));
+        assert!(names.contains(&"TESSERA_PDF_RENDER_ARCHIVE_ENTRY"));
+        assert!(names.contains(&"TESSERA_PDF_TRANSFORM_URL"));
+        assert!(names.contains(&"TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY"));
     }
 
     #[test]

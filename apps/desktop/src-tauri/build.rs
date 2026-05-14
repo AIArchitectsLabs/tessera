@@ -9,5 +9,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TESSERA_GWS_CLI_SHA256");
     println!("cargo:rerun-if-env-changed=TESSERA_GWS_CLI_VERSION");
     println!("cargo:rerun-if-env-changed=TESSERA_GWS_CLI_SIZE_BYTES");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_URL");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_SHA256");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_VERSION");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_SIZE_BYTES");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_ARCHIVE_KIND");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_RENDER_ARCHIVE_ENTRY");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_URL");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_SHA256");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_VERSION");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_SIZE_BYTES");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_ARCHIVE_KIND");
+    println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY");
     tauri_build::build();
 }

@@ -19,9 +19,13 @@ describe("optional capability manager", () => {
         TESSERA_PDF_RENDER_SHA256: "abc123",
         TESSERA_PDF_RENDER_VERSION: "24.02.0",
         TESSERA_PDF_RENDER_SIZE_BYTES: "42000000",
+        TESSERA_PDF_RENDER_ARCHIVE_KIND: "tar.gz",
+        TESSERA_PDF_RENDER_ARCHIVE_ENTRY: "bin/pdftoppm",
         TESSERA_PDF_TRANSFORM_URL: "https://downloads.tessera.local/qpdf",
         TESSERA_PDF_TRANSFORM_SHA256: "def456",
         TESSERA_PDF_TRANSFORM_VERSION: "11.9.0",
+        TESSERA_PDF_TRANSFORM_ARCHIVE_KIND: "zip",
+        TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY: "bin/qpdf",
       },
       { platform: "darwin", arch: "arm64" }
     );
@@ -43,6 +47,7 @@ describe("optional capability manager", () => {
           sha256: "abc123",
           executableName: "pdftoppm",
           sizeBytes: 42000000,
+          archive: { kind: "tar.gz", entry: "bin/pdftoppm" },
         },
       ],
     });
@@ -60,6 +65,7 @@ describe("optional capability manager", () => {
           url: "https://downloads.tessera.local/qpdf",
           sha256: "def456",
           executableName: "qpdf",
+          archive: { kind: "zip", entry: "bin/qpdf" },
         },
       ],
     });

@@ -108,10 +108,14 @@ export interface OptionalCapabilityEnv {
   TESSERA_PDF_RENDER_SHA256?: string;
   TESSERA_PDF_RENDER_VERSION?: string;
   TESSERA_PDF_RENDER_SIZE_BYTES?: string;
+  TESSERA_PDF_RENDER_ARCHIVE_KIND?: string;
+  TESSERA_PDF_RENDER_ARCHIVE_ENTRY?: string;
   TESSERA_PDF_TRANSFORM_URL?: string;
   TESSERA_PDF_TRANSFORM_SHA256?: string;
   TESSERA_PDF_TRANSFORM_VERSION?: string;
   TESSERA_PDF_TRANSFORM_SIZE_BYTES?: string;
+  TESSERA_PDF_TRANSFORM_ARCHIVE_KIND?: string;
+  TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY?: string;
   TESSERA_GWS_CLI_URL?: string;
   TESSERA_GWS_CLI_SHA256?: string;
   TESSERA_GWS_CLI_VERSION?: string;
@@ -233,6 +237,8 @@ export function optionalCapabilityDefinitionsFromEnv(
     sha256: env.TESSERA_PDF_RENDER_SHA256,
     executableName: "pdftoppm",
     sizeBytes: env.TESSERA_PDF_RENDER_SIZE_BYTES,
+    archiveKind: env.TESSERA_PDF_RENDER_ARCHIVE_KIND,
+    archiveEntry: env.TESSERA_PDF_RENDER_ARCHIVE_ENTRY,
   });
   if (renderAsset) {
     definitions.push({
@@ -251,6 +257,8 @@ export function optionalCapabilityDefinitionsFromEnv(
     sha256: env.TESSERA_PDF_TRANSFORM_SHA256,
     executableName: "qpdf",
     sizeBytes: env.TESSERA_PDF_TRANSFORM_SIZE_BYTES,
+    archiveKind: env.TESSERA_PDF_TRANSFORM_ARCHIVE_KIND,
+    archiveEntry: env.TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY,
   });
   if (transformAsset) {
     definitions.push({
@@ -599,10 +607,13 @@ function assetFromEnv(options: {
   sha256: string | undefined;
   executableName: string;
   sizeBytes: string | undefined;
+  archiveKind?: string | undefined;
+  archiveEntry?: string | undefined;
 }): OptionalCapabilityAsset | undefined {
   const url = options.url?.trim();
   const sha256 = options.sha256?.trim();
   if (!url || !sha256) return undefined;
+  const archive = archiveFromEnv(options.archiveKind, options.archiveEntry);
   const parsedSize =
     options.sizeBytes !== undefined && options.sizeBytes.trim().length > 0
       ? Number.parseInt(options.sizeBytes, 10)
@@ -616,7 +627,19 @@ function assetFromEnv(options: {
     ...(parsedSize !== undefined && Number.isFinite(parsedSize) && parsedSize > 0
       ? { sizeBytes: parsedSize }
       : {}),
+    ...(archive !== undefined ? { archive } : {}),
   };
+}
+
+function archiveFromEnv(
+  kindValue: string | undefined,
+  entryValue: string | undefined
+): OptionalCapabilityArchive | undefined {
+  const kind = kindValue?.trim();
+  const entry = entryValue?.trim();
+  if (!kind && !entry) return undefined;
+  if ((kind !== "tar.gz" && kind !== "zip") || !entry) return undefined;
+  return { kind, entry };
 }
 
 function binaryPath(
