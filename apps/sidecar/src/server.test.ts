@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   WorkflowCapabilityInventorySchema,
@@ -205,77 +206,81 @@ describe("playbook run preference save error mapping", () => {
     expect(handleCapabilityBinaryInstall).toBeDefined();
     const archivePayload = Buffer.from("fake-tar-gz-archive-bytes");
     const extractedBinary = Buffer.from("#!/bin/sh\necho gws-from-archive\n");
-    const rootDir = await mkdtemp("/tmp/tessera-sidecar-gws-archive-");
-    const extractCalls: { kind: string; archivePath: string; outputDir: string }[] = [];
-    const manager = createOptionalCapabilityManager({
-      rootDir,
-      platform: "darwin",
-      arch: "arm64",
-      definitions: [
-        {
-          id: "google-workspace-cli",
-          label: "Google Workspace CLI",
-          version: "0.22.5",
-          binaries: [{ name: "gws", relativePath: "gws" }],
-          assets: [
-            {
-              platform: "darwin",
-              arch: "arm64",
-              url: "https://downloads.tessera.local/gws.tar.gz",
-              sha256: sha256(archivePayload),
-              executableName: "gws",
-              archive: { kind: "tar.gz", entry: "gws" },
-            },
-          ],
+    const rootDir = await mkdtemp(join(tmpdir(), "tessera-sidecar-gws-archive-"));
+    try {
+      const extractCalls: { kind: string; archivePath: string; outputDir: string }[] = [];
+      const manager = createOptionalCapabilityManager({
+        rootDir,
+        platform: "darwin",
+        arch: "arm64",
+        definitions: [
+          {
+            id: "google-workspace-cli",
+            label: "Google Workspace CLI",
+            version: "0.22.5",
+            binaries: [{ name: "gws", relativePath: "gws" }],
+            assets: [
+              {
+                platform: "darwin",
+                arch: "arm64",
+                url: "https://downloads.tessera.local/gws.tar.gz",
+                sha256: sha256(archivePayload),
+                executableName: "gws",
+                archive: { kind: "tar.gz", entry: "gws" },
+              },
+            ],
+          },
+        ],
+        download: async () => archivePayload,
+        extract: async ({ archivePath, outputDir, kind }) => {
+          extractCalls.push({ kind, archivePath, outputDir });
+          await writeFile(join(outputDir, "gws"), extractedBinary);
         },
-      ],
-      download: async () => archivePayload,
-      extract: async ({ archivePath, outputDir, kind }) => {
-        extractCalls.push({ kind, archivePath, outputDir });
-        await writeFile(join(outputDir, "gws"), extractedBinary);
-      },
-    });
+      });
 
-    const installResponse = await handleCapabilityBinaryInstall?.(
-      new Request("http://localhost/capabilities/google-workspace-cli/binaries/gws/install", {
-        method: "POST",
-      }),
-      "google-workspace-cli",
-      "gws",
-      manager
-    );
+      const installResponse = await handleCapabilityBinaryInstall?.(
+        new Request("http://localhost/capabilities/google-workspace-cli/binaries/gws/install", {
+          method: "POST",
+        }),
+        "google-workspace-cli",
+        "gws",
+        manager
+      );
 
-    expect(installResponse?.status).toBe(200);
-    await expect(installResponse?.json()).resolves.toMatchObject({
-      capabilityId: "google-workspace-cli",
-      binaryName: "gws",
-      path: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
-      installed: true,
-      installAvailable: true,
-      version: "0.22.5",
-      progress: { phase: "installed" },
-    });
-    expect(extractCalls).toHaveLength(1);
-    expect(extractCalls[0]?.kind).toBe("tar.gz");
+      expect(installResponse?.status).toBe(200);
+      await expect(installResponse?.json()).resolves.toMatchObject({
+        capabilityId: "google-workspace-cli",
+        binaryName: "gws",
+        path: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+        installed: true,
+        installAvailable: true,
+        version: "0.22.5",
+        progress: { phase: "installed" },
+      });
+      expect(extractCalls).toHaveLength(1);
+      expect(extractCalls[0]?.kind).toBe("tar.gz");
 
-    const statusResponse = await handleCapabilityBinary?.(
-      new Request("http://localhost/capabilities/google-workspace-cli/binaries/gws", {
-        method: "GET",
-      }),
-      "google-workspace-cli",
-      "gws",
-      manager
-    );
+      const statusResponse = await handleCapabilityBinary?.(
+        new Request("http://localhost/capabilities/google-workspace-cli/binaries/gws", {
+          method: "GET",
+        }),
+        "google-workspace-cli",
+        "gws",
+        manager
+      );
 
-    expect(statusResponse?.status).toBe(200);
-    await expect(statusResponse?.json()).resolves.toMatchObject({
-      capabilityId: "google-workspace-cli",
-      binaryName: "gws",
-      path: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
-      installed: true,
-      installAvailable: true,
-      version: "0.22.5",
-    });
+      expect(statusResponse?.status).toBe(200);
+      await expect(statusResponse?.json()).resolves.toMatchObject({
+        capabilityId: "google-workspace-cli",
+        binaryName: "gws",
+        path: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+        installed: true,
+        installAvailable: true,
+        version: "0.22.5",
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("reports active memory runtime status", async () => {
