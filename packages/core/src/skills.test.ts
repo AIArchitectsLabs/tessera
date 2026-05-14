@@ -55,10 +55,16 @@ describe("skill registry", () => {
       source: "curated",
       content: expect.stringContaining("DOCX-style business writing"),
     });
-    await expect(registry.loadSkill("pdf-workflows")).resolves.toMatchObject({
+    const pdfWorkflows = await registry.loadSkill("pdf-workflows");
+    expect(pdfWorkflows).toMatchObject({
       source: "curated",
-      content: expect.stringContaining("Always inspect PDFs before extracting or changing them."),
     });
+    expect(pdfWorkflows.content).toContain(
+      "Always inspect PDFs before extracting or changing them."
+    );
+    expect(pdfWorkflows.content).toContain("pdf_inspect");
+    expect(pdfWorkflows.content).toContain("pdf_validate");
+    expect(pdfWorkflows.content).toContain("Preserve originals");
     await expect(registry.loadSkill("slide-decks")).resolves.toMatchObject({
       source: "curated",
       content: expect.stringContaining("slide-by-slide outline"),

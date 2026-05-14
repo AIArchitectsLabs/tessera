@@ -22,7 +22,7 @@ Use this skill when the source or requested output is a PDF: contracts, reports,
 
 - `pdf_inspect`: first call for any PDF-specific workflow.
 - `pdf_extract`: page-scoped extraction with page markers.
-- `pdf_validate`: existence, page count, text-layer expectation, and output confidence checks.
+- `pdf_validate`: existence, page count, text-layer expectation, pass/fail checks, provenance, and warnings.
 - `workspace_extract`: fallback reader for general document extraction when PDF-specific tools are unavailable.
 
 ## Delivery
