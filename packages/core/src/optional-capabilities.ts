@@ -434,14 +434,18 @@ async function defaultDownload(
 
 async function defaultExtract(input: OptionalCapabilityExtractInput): Promise<void> {
   if (input.kind === "tar.gz") {
-    await runCommand("tar", ["xf", input.archivePath, "-C", input.outputDir]);
+    await runCommand("tar", ["-xzf", input.archivePath, "-C", input.outputDir]);
     return;
   }
   if (process.platform === "win32") {
     await runCommand("powershell.exe", [
       "-NoProfile",
+      "-NonInteractive",
       "-Command",
-      `Expand-Archive -LiteralPath '${input.archivePath.replace(/'/g, "''")}' -DestinationPath '${input.outputDir.replace(/'/g, "''")}' -Force`,
+      "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+      "--",
+      input.archivePath,
+      input.outputDir,
     ]);
     return;
   }
