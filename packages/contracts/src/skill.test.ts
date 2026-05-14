@@ -107,6 +107,8 @@ describe("skill contracts", () => {
       expect(details.allowedTools).toContain("pdf_inspect");
       expect(details.allowedTools).toContain("pdf_extract");
       expect(details.allowedTools).toContain("pdf_validate");
+      expect(details.allowedTools).toContain("pdf_render");
+      expect(details.allowedTools).toContain("pdf_transform");
     }
   });
 });

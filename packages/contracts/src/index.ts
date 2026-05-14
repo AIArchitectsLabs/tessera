@@ -2246,6 +2246,57 @@ export const PdfValidateResultSchema = z
   .strict();
 export type PdfValidateResult = z.infer<typeof PdfValidateResultSchema>;
 
+export const PdfRenderOutputSchema = z
+  .object({
+    pageNumber: z.number().int().positive(),
+    path: z.string().min(1),
+    format: z.enum(["png"]),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+  })
+  .strict();
+export type PdfRenderOutput = z.infer<typeof PdfRenderOutputSchema>;
+
+export const PdfRenderResultSchema = z
+  .object({
+    path: z.string().min(1),
+    fileType: z.literal("pdf"),
+    outputs: z.array(PdfRenderOutputSchema),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfRenderResult = z.infer<typeof PdfRenderResultSchema>;
+
+export const PdfTransformOperationSchema = z.enum(["split", "merge", "reorder", "rotate"]);
+export type PdfTransformOperation = z.infer<typeof PdfTransformOperationSchema>;
+
+export const PdfPageMappingSchema = z
+  .object({
+    sourcePath: z.string().min(1),
+    sourcePage: z.number().int().positive(),
+    outputPage: z.number().int().positive(),
+  })
+  .strict();
+export type PdfPageMapping = z.infer<typeof PdfPageMappingSchema>;
+
+export const PdfTransformResultSchema = z
+  .object({
+    outputPath: z.string().min(1),
+    fileType: z.literal("pdf"),
+    operation: PdfTransformOperationSchema,
+    sourcePaths: z.array(z.string().min(1)).min(1),
+    pageMapping: z.array(PdfPageMappingSchema),
+    engine: z.string().min(1),
+    engineRuntime: PdfEngineRuntimeSchema,
+    provenance: PdfOperationProvenanceSchema,
+    warnings: z.array(PdfWarningSchema).default([]),
+  })
+  .strict();
+export type PdfTransformResult = z.infer<typeof PdfTransformResultSchema>;
+
 export const TaskSummarySchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1),
@@ -2546,7 +2597,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect and validate PDFs",
+      "Inspect, render, validate, and transform PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2559,6 +2610,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
+      "pdf_render",
+      "pdf_transform",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2576,7 +2629,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect and validate PDFs",
+      "Inspect, render, validate, and transform PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2591,6 +2644,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
+      "pdf_render",
+      "pdf_transform",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2610,7 +2665,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect and validate PDFs",
+      "Inspect, render, validate, and transform PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2625,6 +2680,8 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
+      "pdf_render",
+      "pdf_transform",
       "workspace_list",
       "workspace_search",
       "shell",

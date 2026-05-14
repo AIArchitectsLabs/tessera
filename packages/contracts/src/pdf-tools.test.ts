@@ -4,6 +4,8 @@ import {
   PdfExtractResultSchema,
   PdfInspectResultSchema,
   PdfPageRangeSchema,
+  PdfRenderResultSchema,
+  PdfTransformResultSchema,
   PdfValidateResultSchema,
   TOOL_POLICY_PRESET_DETAILS,
 } from "./index.js";
@@ -81,6 +83,55 @@ describe("pdf tool contracts", () => {
     expect(result.passed).toBe(true);
   });
 
+  test("parses PDF render results with generated page images", () => {
+    const result = PdfRenderResultSchema.parse({
+      path: "contracts/master.pdf",
+      fileType: "pdf",
+      outputs: [
+        {
+          pageNumber: 1,
+          path: "renders/master-page-1.png",
+          format: "png",
+          width: 612,
+          height: 792,
+        },
+      ],
+      engine: "pdftoppm",
+      engineRuntime: "binary",
+      provenance: {
+        createdAt: "2026-05-14T00:00:00.000Z",
+        immutableSource: true,
+      },
+      warnings: [],
+    });
+
+    expect(result.outputs[0]?.path).toBe("renders/master-page-1.png");
+    expect(result.engineRuntime).toBe("binary");
+  });
+
+  test("parses PDF transform results with source mapping", () => {
+    const result = PdfTransformResultSchema.parse({
+      outputPath: "out/packet.pdf",
+      fileType: "pdf",
+      operation: "merge",
+      sourcePaths: ["a.pdf", "b.pdf"],
+      pageMapping: [
+        { sourcePath: "a.pdf", sourcePage: 1, outputPage: 1 },
+        { sourcePath: "b.pdf", sourcePage: 1, outputPage: 2 },
+      ],
+      engine: "qpdf",
+      engineRuntime: "binary",
+      provenance: {
+        createdAt: "2026-05-14T00:00:00.000Z",
+        immutableSource: true,
+      },
+      warnings: [],
+    });
+
+    expect(result.operation).toBe("merge");
+    expect(result.pageMapping).toHaveLength(2);
+  });
+
   test("rejects invalid page ranges", () => {
     expect(PdfPageRangeSchema.safeParse({}).success).toBe(false);
     expect(PdfPageRangeSchema.safeParse({ start: 5, end: 1 }).success).toBe(false);
@@ -115,13 +166,13 @@ describe("pdf tool contracts", () => {
     expect(PdfEngineRuntimeSchema.parse("python")).toBe("python");
   });
 
-  test("exposes read-only PDF tools in every policy preset", () => {
+  test("exposes PDF tools in every policy preset", () => {
     for (const details of Object.values(TOOL_POLICY_PRESET_DETAILS)) {
       const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
       expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
       expect(
-        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 4)
-      ).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate"]);
+        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 6)
+      ).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate", "pdf_render", "pdf_transform"]);
     }
   });
 });
