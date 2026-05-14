@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PdfPageRange } from "@tessera/contracts";
 import {
   extractPdfText,
   inspectPdfDocument,
   normalizePdfPageRange,
+  renderPdfPages,
+  transformPdfDocument,
   validatePdfDocument,
 } from "./pdf-service.js";
 
@@ -175,6 +177,71 @@ describe("pdf service", () => {
     ]);
     expect(result.provenance).toMatchObject({
       immutableSource: true,
+    });
+    expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("renders selected pages with an injected binary runner", async () => {
+    const { root, pdfPath } = await makeFixture();
+
+    const result = await renderPdfPages(pdfPath, {
+      outputDir: join(root, "renders"),
+      pages: { start: 1, end: 1 },
+      binaryRunner: async ({ args }) => {
+        const outputPrefix = args.at(-1);
+        if (typeof outputPrefix !== "string") throw new Error("missing output prefix");
+        await writeFile(`${outputPrefix}-1.png`, Buffer.from("png"));
+        return { stdout: "", stderr: "" };
+      },
+      dimensionsReader: async () => ({ width: 612, height: 792 }),
+    });
+
+    expect(result).toMatchObject({
+      path: "sample.pdf",
+      fileType: "pdf",
+      outputs: [
+        {
+          pageNumber: 1,
+          path: "sample-page-1.png",
+          format: "png",
+          width: 612,
+          height: 792,
+        },
+      ],
+      engine: "pdftoppm",
+      engineRuntime: "binary",
+      provenance: { immutableSource: true },
+    });
+    expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("creates a rotated PDF output with an injected qpdf runner", async () => {
+    const { root, pdfPath } = await makeFixture();
+    await mkdir(join(root, "out"), { recursive: true });
+    const outputPath = join(root, "out", "rotated.pdf");
+
+    const result = await transformPdfDocument({
+      operation: "rotate",
+      sources: [{ path: pdfPath }],
+      outputPath,
+      rotation: { degrees: 90, pages: { start: 1, end: 1 } },
+      binaryRunner: async ({ args }) => {
+        const destination = args.at(-1);
+        if (typeof destination !== "string") throw new Error("missing destination");
+        await writeFile(destination, samplePdf("Rotated"));
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(result).toMatchObject({
+      outputPath: "rotated.pdf",
+      fileType: "pdf",
+      operation: "rotate",
+      sourcePaths: ["sample.pdf"],
+      pageMapping: [{ sourcePath: "sample.pdf", sourcePage: 1, outputPage: 1 }],
+      engine: "qpdf",
+      engineRuntime: "binary",
+      provenance: { immutableSource: true },
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
   });
