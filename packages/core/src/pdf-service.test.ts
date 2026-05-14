@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { PdfPageRange } from "@tessera/contracts";
 import {
   extractPdfText,
   inspectPdfDocument,
@@ -25,9 +26,20 @@ async function makeFixture() {
   const root = await mkdtemp("/tmp/tessera-pdf-service-");
   const pdfPath = join(root, "sample.pdf");
   await writeFile(pdfPath, samplePdf("Hello PDF"));
+  const blankPdfPath = join(root, "blank.pdf");
+  await writeFile(blankPdfPath, samplePdf(""));
+  const longPdfPath = join(root, "long.pdf");
+  await writeFile(longPdfPath, samplePdf("Hello PDF ".repeat(50)));
   const textPath = join(root, "notes.txt");
   await writeFile(textPath, "plain text");
-  return { root, pdfPath, textPath, missingPath: join(root, "missing.pdf") };
+  return {
+    root,
+    pdfPath,
+    blankPdfPath,
+    longPdfPath,
+    textPath,
+    missingPath: join(root, "missing.pdf"),
+  };
 }
 
 describe("pdf service", () => {
@@ -39,6 +51,12 @@ describe("pdf service", () => {
     expect(normalizePdfPageRange({ start: 2 }, 3)).toEqual([2, 3]);
     expect(normalizePdfPageRange({ end: 2 }, 3)).toEqual([1, 2]);
     expect(normalizePdfPageRange({ start: 4, end: 6 }, 3)).toEqual([]);
+  });
+
+  test("floors fractional page bounds", () => {
+    const fractionalRange = { start: 1.2, end: 2.8 } as unknown as PdfPageRange;
+
+    expect(normalizePdfPageRange(fractionalRange, 3)).toEqual([1, 2]);
   });
 
   test("inspects a simple text-layer PDF", async () => {
@@ -62,6 +80,16 @@ describe("pdf service", () => {
     expect(result.provenance.createdAt).toEqual(expect.any(String));
   });
 
+  test("honors displayPath when inspecting and extracting", async () => {
+    const { pdfPath } = await makeFixture();
+
+    const inspected = await inspectPdfDocument(pdfPath, { displayPath: "reports/sample.pdf" });
+    const extracted = await extractPdfText(pdfPath, { displayPath: "reports/sample.pdf" });
+
+    expect(inspected.path).toBe("reports/sample.pdf");
+    expect(extracted.path).toBe("reports/sample.pdf");
+  });
+
   test("extracts page-scoped text with page metadata", async () => {
     const { pdfPath } = await makeFixture();
 
@@ -80,6 +108,49 @@ describe("pdf service", () => {
       immutableSource: true,
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("extracts header-only text with an out-of-range page selection", async () => {
+    const { pdfPath } = await makeFixture();
+
+    const result = await extractPdfText(pdfPath, { pages: { start: 4, end: 6 } });
+
+    expect(result.pages).toEqual([]);
+    expect(result.text).toBe("Extracted from: sample.pdf\nType: PDF\n\n");
+    expect(result.warnings).toEqual([
+      {
+        code: "page_range_out_of_bounds",
+        message: "Requested page range does not overlap the PDF.",
+      },
+    ]);
+  });
+
+  test("truncates extracted text when maxChars is low", async () => {
+    const { longPdfPath } = await makeFixture();
+
+    const result = await extractPdfText(longPdfPath, { maxChars: 32 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text.length).toBe(32);
+    expect(result.warnings).toContainEqual({
+      code: "output_truncated",
+      message: "Output truncated to 32 characters.",
+    });
+  });
+
+  test("reports no_text_layer for a blank synthetic PDF", async () => {
+    const { blankPdfPath } = await makeFixture();
+
+    const result = await inspectPdfDocument(blankPdfPath);
+
+    expect(result.hasTextLayer).toBe(false);
+    expect(result.pagesWithText).toEqual([]);
+    expect(result.warnings).toEqual([
+      {
+        code: "no_text_layer",
+        message: "No extractable text layer was found. OCR may be required for scanned pages.",
+      },
+    ]);
   });
 
   test("validates a PDF with expected page and text checks", async () => {

@@ -8,15 +8,20 @@ import {
   type PdfPageRange,
   type PdfValidateResult,
   PdfValidateResultSchema,
+  type PdfWarning,
 } from "@tessera/contracts";
 import { extractText } from "unpdf";
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_CHARS = 100_000;
-const NO_TEXT_LAYER_WARNING = {
+const NO_TEXT_LAYER_WARNING: PdfWarning = {
   code: "no_text_layer",
   message: "No extractable text layer was found. OCR may be required for scanned pages.",
-} as const;
+};
+const PAGE_RANGE_OUT_OF_BOUNDS_WARNING: PdfWarning = {
+  code: "page_range_out_of_bounds",
+  message: "Requested page range does not overlap the PDF.",
+};
 
 export interface PdfDocumentOptions {
   displayPath?: string;
@@ -41,11 +46,19 @@ export function normalizePdfPageRange(
     return Array.from({ length: pageCount }, (_value, index) => index + 1);
   }
 
-  const start = Math.max(1, range.start ?? 1);
-  const end = Math.min(pageCount, range.end ?? pageCount);
+  const start = coercePageBound(range.start, 1);
+  const end = coercePageBound(range.end, pageCount);
+  if (start > pageCount || end < 1) return [];
   if (start > end) return [];
 
-  return Array.from({ length: end - start + 1 }, (_value, index) => start + index);
+  const normalizedStart = Math.max(1, start);
+  const normalizedEnd = Math.min(pageCount, end);
+  if (normalizedStart > normalizedEnd) return [];
+
+  return Array.from(
+    { length: normalizedEnd - normalizedStart + 1 },
+    (_value, index) => normalizedStart + index
+  );
 }
 
 export async function inspectPdfDocument(
@@ -98,6 +111,8 @@ export async function extractPdfText(
   }
 
   const pages = await readPdfPages(path);
+  const hasTextLayer = pages.some((text) => text.trim().length > 0);
+  const documentWarnings = hasTextLayer ? [] : [NO_TEXT_LAYER_WARNING];
   const selectedPageNumbers = normalizePdfPageRange(options.pages, pages.length);
   const selectedPages = selectedPageNumbers.map((pageNumber) => {
     const text = (pages[pageNumber - 1] ?? "").trim();
@@ -114,17 +129,16 @@ export async function extractPdfText(
   const maxChars = positiveInteger(options.maxChars, DEFAULT_MAX_CHARS);
   const truncated = formatted.length > maxChars;
   const text = truncated ? formatted.slice(0, maxChars) : formatted;
-  const hasTextLayer = selectedPages.some((page) => page.text.length > 0);
-
-  const warnings = truncated
-    ? [
-        {
-          code: "output_truncated",
-          message: `Output truncated to ${maxChars} characters.`,
-        },
-      ]
-    : [];
-  if (!hasTextLayer) warnings.push(NO_TEXT_LAYER_WARNING);
+  const warnings: PdfWarning[] = [...documentWarnings];
+  if (selectedPageNumbers.length === 0 && pages.length > 0) {
+    warnings.push(PAGE_RANGE_OUT_OF_BOUNDS_WARNING);
+  }
+  if (truncated) {
+    warnings.push({
+      code: "output_truncated",
+      message: `Output truncated to ${maxChars} characters.`,
+    });
+  }
 
   return PdfExtractResultSchema.parse({
     path: options.displayPath ?? basename(path),
@@ -182,8 +196,10 @@ export async function validatePdfDocument(
     );
   }
 
-  const pages = await readPdfPages(path);
-  const hasTextLayer = pages.some((text) => text.trim().length > 0);
+  const inspected =
+    options.displayPath === undefined
+      ? await inspectPdfDocument(path)
+      : await inspectPdfDocument(path, { displayPath: options.displayPath });
   const checks = [
     {
       name: "file_exists",
@@ -195,8 +211,8 @@ export async function validatePdfDocument(
       : [
           {
             name: "page_count",
-            passed: pages.length === options.expectedPageCount,
-            message: `Expected ${options.expectedPageCount} pages, found ${pages.length}.`,
+            passed: inspected.pageCount === options.expectedPageCount,
+            message: `Expected ${options.expectedPageCount} pages, found ${inspected.pageCount}.`,
           },
         ]),
     ...(options.expectedTextPresent === undefined
@@ -204,7 +220,7 @@ export async function validatePdfDocument(
       : [
           {
             name: "text_present",
-            passed: hasTextLayer === options.expectedTextPresent,
+            passed: inspected.hasTextLayer === options.expectedTextPresent,
             message: options.expectedTextPresent
               ? "Expected extractable text to be present."
               : "Expected extractable text to be absent.",
@@ -213,18 +229,18 @@ export async function validatePdfDocument(
   ];
 
   return PdfValidateResultSchema.parse({
-    path: options.displayPath ?? basename(path),
+    path: inspected.path,
     exists: true,
     fileType: "pdf",
-    bytes: metadata.size,
-    pageCount: pages.length,
-    hasTextLayer,
+    bytes: inspected.bytes,
+    pageCount: inspected.pageCount,
+    hasTextLayer: inspected.hasTextLayer,
     passed: checks.every((check) => check.passed),
     checks,
-    engine: "unpdf",
-    engineRuntime: "typescript",
-    provenance: createProvenance(),
-    warnings: hasTextLayer ? [] : [NO_TEXT_LAYER_WARNING],
+    engine: inspected.engine,
+    engineRuntime: inspected.engineRuntime,
+    provenance: inspected.provenance,
+    warnings: inspected.warnings,
   });
 }
 
@@ -245,6 +261,11 @@ function createProvenance() {
     createdAt: new Date().toISOString(),
     immutableSource: true as const,
   };
+}
+
+function coercePageBound(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return positiveInteger(value, fallback);
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
