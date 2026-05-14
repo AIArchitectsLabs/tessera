@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
 import { type ToolDefinition, defineTool } from "@mariozechner/pi-coding-agent";
@@ -42,7 +42,15 @@ function isWorkspaceBoundaryError(error: unknown): error is WorkspaceBoundaryErr
   return error instanceof WorkspaceBoundaryError;
 }
 
+function isSameOrChild(root: string, target: string): boolean {
+  return target === root || target.startsWith(`${root}${sep}`);
+}
+
 type PdfPathResolutionMode = "mustExist" | "allowMissingInsideWorkspace";
+
+function resolveLexicalWorkspaceTarget(guard: WorkspaceGuard, path: string): string {
+  return isAbsolute(path) ? resolve(path) : resolve(guard.root, path);
+}
 
 async function resolvePdfWorkspacePath(
   guard: WorkspaceGuard,
@@ -53,6 +61,8 @@ async function resolvePdfWorkspacePath(
     toolName: string;
   }
 ): Promise<{ absolute: string; displayPath: string }> {
+  const lexicalTarget = resolveLexicalWorkspaceTarget(guard, path);
+
   try {
     const absolute = await guard.resolveInsideWorkspace(path);
     return {
@@ -63,6 +73,12 @@ async function resolvePdfWorkspacePath(
     if (isWorkspaceBoundaryError(error)) {
       options.onViolation?.(options.toolName);
       throw error;
+    }
+
+    if (!isSameOrChild(guard.root, lexicalTarget)) {
+      const boundaryError = new WorkspaceBoundaryError(`Path is outside the workspace: ${path}`);
+      options.onViolation?.(options.toolName);
+      throw boundaryError;
     }
 
     try {

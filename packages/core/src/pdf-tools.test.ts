@@ -24,6 +24,8 @@ async function makeFixture() {
   return { root };
 }
 
+const outsideMissingParentPath = join("/tmp", "tessera-pdf-tools-missing-parent", "outside.pdf");
+
 function tool(tools: ReturnType<typeof createPdfToolDefinitions>, name: string) {
   const found = tools.find((item) => item.name === name);
   if (!found) throw new Error(`Missing tool: ${name}`);
@@ -87,7 +89,7 @@ describe("createPdfToolDefinitions", () => {
     });
   });
 
-  test("denies inspection outside the workspace", async () => {
+  test("denies inspection for an outside path with a missing parent directory", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
     const violations: string[] = [];
@@ -100,7 +102,7 @@ describe("createPdfToolDefinitions", () => {
     await expect(
       tool(tools, "pdf_inspect").execute(
         "call-denied",
-        { path: join("/tmp", "outside.pdf") },
+        { path: outsideMissingParentPath },
         undefined,
         undefined,
         undefined as never
@@ -110,7 +112,7 @@ describe("createPdfToolDefinitions", () => {
     expect(violations).toEqual(["pdf_inspect"]);
   });
 
-  test("denies extraction outside the workspace", async () => {
+  test("denies extraction for an outside path with a missing parent directory", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
     const violations: string[] = [];
@@ -123,7 +125,7 @@ describe("createPdfToolDefinitions", () => {
     await expect(
       tool(tools, "pdf_extract").execute(
         "call-denied",
-        { path: join("/tmp", "outside.pdf") },
+        { path: outsideMissingParentPath },
         undefined,
         undefined,
         undefined as never
@@ -133,7 +135,7 @@ describe("createPdfToolDefinitions", () => {
     expect(violations).toEqual(["pdf_extract"]);
   });
 
-  test("denies validation outside the workspace", async () => {
+  test("denies validation for an outside path with a missing parent directory", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
     const violations: string[] = [];
@@ -146,7 +148,7 @@ describe("createPdfToolDefinitions", () => {
     await expect(
       tool(tools, "pdf_validate").execute(
         "call-denied",
-        { path: join("/tmp", "outside.pdf") },
+        { path: outsideMissingParentPath },
         undefined,
         undefined,
         undefined as never
