@@ -66,6 +66,9 @@ describe("skill registry", () => {
     expect(pdfWorkflows.content).toContain("pdf_validate");
     expect(pdfWorkflows.content).toContain("pdf_render");
     expect(pdfWorkflows.content).toContain("pdf_transform");
+    expect(pdfWorkflows.content).toContain("pdf_manifest");
+    expect(pdfWorkflows.content).toContain("packet manifest");
+    expect(pdfWorkflows.content).toContain("handoff");
     expect(pdfWorkflows.content).toContain("split, merge, reorder, and rotate");
     expect(pdfWorkflows.content).toContain("Preserve originals");
     await expect(registry.loadSkill("slide-decks")).resolves.toMatchObject({
