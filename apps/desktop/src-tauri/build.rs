@@ -21,5 +21,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_SIZE_BYTES");
     println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_ARCHIVE_KIND");
     println!("cargo:rerun-if-env-changed=TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_URL");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_SHA256");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_VERSION");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_SIZE_BYTES");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_ARCHIVE_KIND");
+    println!("cargo:rerun-if-env-changed=TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY");
     tauri_build::build();
 }

@@ -101,9 +101,13 @@ describe("skill contracts", () => {
       }).skills
     ).toHaveLength(1);
 
-    for (const details of Object.values(TOOL_POLICY_PRESET_DETAILS)) {
+    expect(TOOL_POLICY_PRESET_DETAILS.read_only.allowedTools).not.toContain("skill_run_python");
+    for (const [preset, details] of Object.entries(TOOL_POLICY_PRESET_DETAILS)) {
       expect(details.allowedTools).toContain("skill_list");
       expect(details.allowedTools).toContain("skill_load");
+      if (preset !== "read_only") {
+        expect(details.allowedTools).toContain("skill_run_python");
+      }
       expect(details.allowedTools).toContain("pdf_capabilities");
       expect(details.allowedTools).toContain("pdf_inspect");
       expect(details.allowedTools).toContain("pdf_extract");

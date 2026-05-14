@@ -1855,6 +1855,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         memory: memoryManager,
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
+        pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });
@@ -1993,6 +1994,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         memory: memoryManager,
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
+        pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
         publish: (e) => taskEventBus.publish(taskId, e),
       });
     });

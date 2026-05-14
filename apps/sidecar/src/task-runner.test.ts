@@ -476,12 +476,44 @@ describe("task runner", () => {
 
     const notifications = events.filter((event) => event.type === "task.notification");
     expect(notifications).toHaveLength(3);
+    expect(notifications.map((event) => event.notification.title)).toEqual([
+      "Capability setup",
+      "Capability setup",
+      "Capability setup",
+    ]);
     expect(notifications.map((event) => event.notification.body)).toEqual([
       "Downloading PDF render engine... 50%",
       "Verifying PDF render engine...",
       "PDF render engine is ready.",
     ]);
     expect(store.getTask(task.id)?.latestActivity).toBe("Completed");
+  });
+
+  test("provides a Python skill runner when a skill cache root is configured", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Use a Python skill helper",
+    });
+    const userTurn = store.createUserTurn(task.id, "Use a Python skill helper");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    let hasPythonRunner = false;
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      pythonSkillRoot: "/tmp/tessera-python-skills-test",
+      piRunner: async ({ skillRuntime }) => {
+        hasPythonRunner = typeof skillRuntime?.runPython === "function";
+        return { text: "Ready.", boundaryViolations: 0 };
+      },
+      publish: () => {},
+      delayMs: 0,
+    });
+
+    expect(hasPythonRunner).toBe(true);
   });
 
   test("records browser screenshot and recipe proposal artifacts", async () => {

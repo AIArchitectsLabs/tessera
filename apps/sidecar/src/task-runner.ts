@@ -18,7 +18,10 @@ import {
   type OptionalCapabilityInstallProgress,
   type OptionalCapabilityManager,
   type PiTaskTurnResult,
+  type PythonSkillRunInput,
+  type PythonSkillRunResult,
   type WorkspaceCliExecutor,
+  createPythonSkillRuntime,
   createSpawnShellExecutor,
   runPiTaskTurn,
 } from "@tessera/core";
@@ -54,6 +57,7 @@ export interface RunTaskTurnOptions {
       allowedSkillIds?: string[];
       listSkills(): Promise<unknown[]>;
       loadSkill(skillId: string): Promise<unknown>;
+      runPython?(input: PythonSkillRunInput): Promise<PythonSkillRunResult>;
     };
     taskRuntime?: {
       applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
@@ -65,6 +69,7 @@ export interface RunTaskTurnOptions {
   cli?: WorkspaceCliExecutor;
   provider?: AgentProviderConfig;
   promptOverride?: string;
+  pythonSkillRoot?: string;
   memory?: Pick<TesseraMemoryManager, "recordTaskTurn" | "recallForTask"> &
     Partial<Pick<TesseraMemoryManager, "proposeCandidates">>;
   store: TaskStore;
@@ -147,7 +152,7 @@ function createTaskCapabilityManager(options: {
     if (lastProgressBody.get(progress.id) === body) return;
     lastProgressBody.set(progress.id, body);
     const notification: NotifyRequest = {
-      title: "PDF tool setup",
+      title: "Capability setup",
       body,
       taskId,
     };
@@ -407,6 +412,16 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
           taskId,
         })
       : undefined;
+    const pythonSkillRuntime = opts.pythonSkillRoot
+      ? createPythonSkillRuntime({
+          rootDir: opts.pythonSkillRoot,
+          workspaceRoot: task.workspaceRoot,
+          ...(capabilityManager ? { capabilityManager } : {}),
+          loadSkill(skillId) {
+            return registry.loadSkill(skillId, { allowedSkillIds });
+          },
+        })
+      : undefined;
 
     const result = await piRunner({
       ...(opts.execution?.agent !== undefined ? { agent: opts.execution.agent } : {}),
@@ -490,6 +505,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
         loadSkill(skillId) {
           return registry.loadSkill(skillId, { allowedSkillIds });
         },
+        ...(pythonSkillRuntime ? { runPython: pythonSkillRuntime.runPython } : {}),
       },
       taskRuntime: {
         async applyTodo(operation) {

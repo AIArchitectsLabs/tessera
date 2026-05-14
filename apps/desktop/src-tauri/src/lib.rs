@@ -41,6 +41,12 @@ const PDF_TRANSFORM_VERSION_ENV: &str = "TESSERA_PDF_TRANSFORM_VERSION";
 const PDF_TRANSFORM_SIZE_BYTES_ENV: &str = "TESSERA_PDF_TRANSFORM_SIZE_BYTES";
 const PDF_TRANSFORM_ARCHIVE_KIND_ENV: &str = "TESSERA_PDF_TRANSFORM_ARCHIVE_KIND";
 const PDF_TRANSFORM_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY";
+const PYTHON_RUNNER_URL_ENV: &str = "TESSERA_PYTHON_RUNNER_URL";
+const PYTHON_RUNNER_SHA256_ENV: &str = "TESSERA_PYTHON_RUNNER_SHA256";
+const PYTHON_RUNNER_VERSION_ENV: &str = "TESSERA_PYTHON_RUNNER_VERSION";
+const PYTHON_RUNNER_SIZE_BYTES_ENV: &str = "TESSERA_PYTHON_RUNNER_SIZE_BYTES";
+const PYTHON_RUNNER_ARCHIVE_KIND_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_KIND";
+const PYTHON_RUNNER_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -647,7 +653,7 @@ fn extract_google_oauth_url(output: &str) -> Option<String> {
     })
 }
 
-fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 16] {
+fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 22] {
     [
         (GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")),
         (GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256")),
@@ -700,6 +706,30 @@ fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 1
         (
             PDF_TRANSFORM_ARCHIVE_ENTRY_ENV,
             option_env!("TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY"),
+        ),
+        (
+            PYTHON_RUNNER_URL_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_URL"),
+        ),
+        (
+            PYTHON_RUNNER_SHA256_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_SHA256"),
+        ),
+        (
+            PYTHON_RUNNER_VERSION_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_VERSION"),
+        ),
+        (
+            PYTHON_RUNNER_SIZE_BYTES_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_SIZE_BYTES"),
+        ),
+        (
+            PYTHON_RUNNER_ARCHIVE_KIND_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_ARCHIVE_KIND"),
+        ),
+        (
+            PYTHON_RUNNER_ARCHIVE_ENTRY_ENV,
+            option_env!("TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY"),
         ),
     ]
 }
@@ -814,16 +844,16 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "label": "Elevated with approval",
             "approvalMode": "ask",
             "summary": "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
-            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load"]
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist", "Run declared skill Python helpers"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load", "skill_run_python"]
         }),
         _ => serde_json::json!({
             "preset": "workspace_editor",
             "label": "Workspace editor",
             "approvalMode": "never",
             "summary": "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
-            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load"]
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist", "Run declared skill Python helpers"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load", "skill_run_python"]
         }),
     }
 }
@@ -3245,6 +3275,8 @@ mod tests {
         assert!(names.contains(&"TESSERA_PDF_RENDER_ARCHIVE_ENTRY"));
         assert!(names.contains(&"TESSERA_PDF_TRANSFORM_URL"));
         assert!(names.contains(&"TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY"));
+        assert!(names.contains(&"TESSERA_PYTHON_RUNNER_URL"));
+        assert!(names.contains(&"TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY"));
     }
 
     #[test]

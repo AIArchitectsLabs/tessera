@@ -116,6 +116,12 @@ export interface OptionalCapabilityEnv {
   TESSERA_PDF_TRANSFORM_SIZE_BYTES?: string;
   TESSERA_PDF_TRANSFORM_ARCHIVE_KIND?: string;
   TESSERA_PDF_TRANSFORM_ARCHIVE_ENTRY?: string;
+  TESSERA_PYTHON_RUNNER_URL?: string;
+  TESSERA_PYTHON_RUNNER_SHA256?: string;
+  TESSERA_PYTHON_RUNNER_VERSION?: string;
+  TESSERA_PYTHON_RUNNER_SIZE_BYTES?: string;
+  TESSERA_PYTHON_RUNNER_ARCHIVE_KIND?: string;
+  TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY?: string;
   TESSERA_GWS_CLI_URL?: string;
   TESSERA_GWS_CLI_SHA256?: string;
   TESSERA_GWS_CLI_VERSION?: string;
@@ -188,6 +194,10 @@ const GWS_CLI_TRIPLES: GwsTripleEntry[] = [
 
 function gwsExecutableForPlatform(platform: NodeJS.Platform): string {
   return platform === "win32" ? "gws.exe" : "gws";
+}
+
+function uvExecutableForPlatform(platform: NodeJS.Platform): string {
+  return platform === "win32" ? "uv.exe" : "uv";
 }
 
 function builtinGwsDefinition(hostPlatform: NodeJS.Platform): OptionalCapabilityDefinition {
@@ -267,6 +277,27 @@ export function optionalCapabilityDefinitionsFromEnv(
       version: env.TESSERA_PDF_TRANSFORM_VERSION?.trim() || "managed",
       binaries: [{ name: "qpdf", relativePath: "qpdf" }],
       assets: [transformAsset],
+    });
+  }
+
+  const pythonRunnerAsset = assetFromEnv({
+    platform,
+    arch,
+    url: env.TESSERA_PYTHON_RUNNER_URL,
+    sha256: env.TESSERA_PYTHON_RUNNER_SHA256,
+    executableName: uvExecutableForPlatform(platform),
+    sizeBytes: env.TESSERA_PYTHON_RUNNER_SIZE_BYTES,
+    archiveKind: env.TESSERA_PYTHON_RUNNER_ARCHIVE_KIND,
+    archiveEntry: env.TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY,
+  });
+  if (pythonRunnerAsset) {
+    const executableName = uvExecutableForPlatform(platform);
+    definitions.push({
+      id: "python-runner",
+      label: "Python skill runner",
+      version: env.TESSERA_PYTHON_RUNNER_VERSION?.trim() || "managed",
+      binaries: [{ name: "uv", relativePath: executableName }],
+      assets: [pythonRunnerAsset],
     });
   }
 

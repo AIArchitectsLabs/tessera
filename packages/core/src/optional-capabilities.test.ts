@@ -219,6 +219,38 @@ describe("optional capability manager", () => {
     expect(definitions.find((d) => d.id === "pdf-transform")).toBeUndefined();
   });
 
+  test("builds a Python skill runner capability from release metadata env", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {
+        TESSERA_PYTHON_RUNNER_URL: "https://downloads.tessera.local/uv.tar.gz",
+        TESSERA_PYTHON_RUNNER_SHA256: "abc123",
+        TESSERA_PYTHON_RUNNER_VERSION: "0.9.13",
+        TESSERA_PYTHON_RUNNER_SIZE_BYTES: "15000000",
+        TESSERA_PYTHON_RUNNER_ARCHIVE_KIND: "tar.gz",
+        TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY: "uv",
+      },
+      { platform: "darwin", arch: "arm64" }
+    );
+
+    expect(definitions.find((d) => d.id === "python-runner")).toEqual({
+      id: "python-runner",
+      label: "Python skill runner",
+      version: "0.9.13",
+      binaries: [{ name: "uv", relativePath: "uv" }],
+      assets: [
+        {
+          platform: "darwin",
+          arch: "arm64",
+          url: "https://downloads.tessera.local/uv.tar.gz",
+          sha256: "abc123",
+          executableName: "uv",
+          sizeBytes: 15000000,
+          archive: { kind: "tar.gz", entry: "uv" },
+        },
+      ],
+    });
+  });
+
   test("installs an allowlisted single-binary capability into the managed root", async () => {
     const rootDir = await mkdtemp("/tmp/tessera-capabilities-");
     const payload = Buffer.from("#!/bin/sh\necho qpdf\n");

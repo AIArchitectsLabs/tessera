@@ -2747,6 +2747,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Write files",
       "Edit files",
       "Manage task checklist",
+      "Run declared skill Python helpers",
     ],
     allowedTools: [
       "workspace_read",
@@ -2767,6 +2768,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "todo",
       "skill_list",
       "skill_load",
+      "skill_run_python",
     ],
   },
   elevated_with_approval: {
@@ -2785,6 +2787,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "Write files",
       "Edit files",
       "Manage task checklist",
+      "Run declared skill Python helpers",
     ],
     allowedTools: [
       "workspace_read",
@@ -2805,6 +2808,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "todo",
       "skill_list",
       "skill_load",
+      "skill_run_python",
     ],
   },
 };

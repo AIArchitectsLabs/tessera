@@ -23,6 +23,7 @@ import type {
 import { BrowserActionInputSchema, compileAgentRuntimeContext } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 import type { OptionalCapabilityManager } from "./optional-capabilities.js";
+import type { PythonSkillRunInput, PythonSkillRunResult } from "./python-skill-runtime.js";
 import { createTaskToolDefinitions } from "./task-tools.js";
 import type { BrowserExecutor, ShellExecutor } from "./tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
@@ -84,6 +85,7 @@ export interface RunPiTaskTurnOptions {
     allowedSkillIds?: string[];
     listSkills(): Promise<SkillSummary[]>;
     loadSkill(skillId: string): Promise<SkillDetail>;
+    runPython?(input: PythonSkillRunInput): Promise<PythonSkillRunResult>;
   };
   taskRuntime?: {
     applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
@@ -523,7 +525,7 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Web research guidance:\nWhen the user asks you to search the web, check current online information, or fetch the contents of a public URL, use the shell tool early. Prefer `web-search search ...` for research queries and `web-fetch fetch <url>` for specific pages."
       : "",
-    "Skill guidance:\nUse skill_list to discover enabled procedural skills and skill_load to load a specific skill when it would materially improve the work. Active task skills are already included in this prompt and should be followed when relevant.",
+    "Skill guidance:\nUse skill_list to discover enabled procedural skills and skill_load to load a specific skill when it would materially improve the work. Active task skills are already included in this prompt and should be followed when relevant. If a loaded skill explicitly declares a Python helper, use skill_run_python instead of shelling out.",
   ].filter(Boolean);
 
   return sections.length > 0 ? sections.join("\n\n") : undefined;
@@ -534,7 +536,7 @@ function createSkillToolDefinitions(
 ): ToolDefinition[] {
   if (!skillRuntime) return [];
 
-  return [
+  const tools = [
     defineTool({
       name: "skill_list",
       label: "List Skills",
@@ -578,6 +580,44 @@ function createSkillToolDefinitions(
       },
     }),
   ];
+
+  if (skillRuntime.runPython) {
+    tools.push(
+      defineTool({
+        name: "skill_run_python",
+        label: "Run Skill Python",
+        description: "Run a declared Python entrypoint from an enabled skill.",
+        promptSnippet:
+          "skill_run_python: run a declared Python entrypoint from an enabled skill. Use only when the loaded skill explicitly calls for its Python helper.",
+        parameters: Type.Object({
+          skillId: Type.String(),
+          entrypoint: Type.String(),
+          args: Type.Optional(Type.Array(Type.String())),
+        }),
+        async execute(_toolCallId, params) {
+          const input = params as { skillId?: string; entrypoint?: string; args?: string[] };
+          if (!input.skillId) throw new Error("skillId is required");
+          if (!input.entrypoint) throw new Error("entrypoint is required");
+          const result = await skillRuntime.runPython?.({
+            skillId: input.skillId,
+            entrypoint: input.entrypoint,
+            ...(input.args !== undefined ? { args: input.args } : {}),
+          });
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(result),
+              },
+            ],
+            details: result,
+          };
+        },
+      })
+    );
+  }
+
+  return tools;
 }
 
 async function activeSkillContent(

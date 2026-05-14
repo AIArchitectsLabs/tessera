@@ -793,6 +793,67 @@ describe("runPiTaskTurn", () => {
     expect(capturedSession?.capturedPrompts[0]).toContain("Break work into verifiable steps.");
   });
 
+  test("exposes Python skill execution only when the skill runtime provides it", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { toolNames?: string[]; result?: unknown } = {};
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const pythonTool = factoryOpts.customTools.find((tool) => tool.name === "skill_run_python");
+      seen.result = await pythonTool?.execute(
+        "call-1",
+        { skillId: "pdf", entrypoint: "tables", args: ["docs/source.pdf"] },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Extract tables",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      workspaceRoot,
+      agent: {
+        id: "default",
+        name: "Tessera",
+        model: { mode: "default" },
+        instructions: "",
+        soul: "",
+        userContext: "",
+        skills: ["pdf"],
+        toolPolicyPreset: "workspace_editor",
+        memoryDefaults: "",
+        createdAt: "2026-05-05T00:00:00.000Z",
+        updatedAt: "2026-05-05T00:00:00.000Z",
+      },
+      skillRuntime: {
+        async listSkills() {
+          return [];
+        },
+        async loadSkill() {
+          throw new Error("not used");
+        },
+        async runPython(input) {
+          return {
+            ...input,
+            stdout: "tables\n",
+            stderr: "",
+            scriptPath: "/skills/pdf/scripts/tables.py",
+            environmentDir: "/env/pdf/hash",
+          };
+        },
+      },
+    });
+
+    expect(seen.toolNames).toContain("skill_run_python");
+    expect(seen.result).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("tables") }],
+      details: { stdout: "tables\n" },
+    });
+  });
+
   test("does not allow approval-gated shell subcommands in task mode", async () => {
     const workspaceRoot = await makeWorkspace();
     const factory: PiSessionFactory = async (factoryOpts) => {
