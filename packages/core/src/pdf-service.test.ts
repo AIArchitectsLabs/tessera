@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PdfPageRange } from "@tessera/contracts";
 import {
@@ -9,6 +9,7 @@ import {
   renderPdfPages,
   transformPdfDocument,
   validatePdfDocument,
+  writePdfPacketManifest,
 } from "./pdf-service.js";
 
 function samplePdf(text: string): string {
@@ -244,6 +245,52 @@ describe("pdf service", () => {
       provenance: { immutableSource: true },
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("writes a packet manifest with summary counts", async () => {
+    const { root, pdfPath } = await makeFixture();
+    const outputPath = join(root, "out", "packet-manifest.json");
+
+    const manifest = await writePdfPacketManifest({
+      packetId: "packet-1",
+      title: "Packet 1",
+      outputPath,
+      displayOutputPath: "out/packet-manifest.json",
+      operations: [
+        {
+          operationId: "inspect-1",
+          kind: "inspect",
+          result: await inspectPdfDocument(pdfPath, {
+            displayPath: "sample.pdf",
+          }),
+        },
+      ],
+      validations: [
+        await validatePdfDocument(pdfPath, {
+          displayPath: "sample.pdf",
+          expectedPageCount: 1,
+        }),
+      ],
+      warnings: [{ code: "manual_review", message: "Review terms manually." }],
+    });
+    const persisted = JSON.parse(await readFile(outputPath, "utf8"));
+
+    expect(manifest).toMatchObject({
+      manifestVersion: 1,
+      packetId: "packet-1",
+      outputPath: "out/packet-manifest.json",
+      title: "Packet 1",
+      sourcePaths: ["sample.pdf"],
+      artifactPaths: [],
+      summary: {
+        operationCount: 1,
+        validationCount: 1,
+        failedValidationCount: 0,
+        warningCount: 1,
+      },
+    });
+    expect(persisted).toEqual(manifest);
+    expect(manifest.provenance.createdAt).toEqual(expect.any(String));
   });
 
   test("returns a missing-file validation result without throwing", async () => {

@@ -3,6 +3,11 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
 import { type ToolDefinition, defineTool } from "@mariozechner/pi-coding-agent";
 import {
+  PdfPacketManifestOperationSchema,
+  PdfValidateResultSchema,
+  PdfWarningSchema,
+} from "@tessera/contracts";
+import {
   type BinaryRunner,
   type PdfImageDimensionsReader,
   extractPdfText,
@@ -10,6 +15,7 @@ import {
   renderPdfPages,
   transformPdfDocument,
   validatePdfDocument,
+  writePdfPacketManifest,
 } from "./pdf-service.js";
 import { WorkspaceBoundaryError, type WorkspaceGuard } from "./workspace-guard.js";
 
@@ -76,6 +82,15 @@ const transformSchema = Type.Object({
       ),
     })
   ),
+});
+
+const manifestSchema = Type.Object({
+  packetId: Type.String(),
+  outputPath: Type.String(),
+  title: Type.Optional(Type.String()),
+  operations: Type.Array(Type.Any()),
+  validations: Type.Optional(Type.Array(Type.Any())),
+  warnings: Type.Optional(Type.Array(Type.Any())),
 });
 
 function textResult<TDetails>(text: string, details: TDetails): AgentToolResult<TDetails> {
@@ -388,5 +403,38 @@ export function createPdfToolDefinitions(
     },
   }) satisfies PdfToolDefinition<typeof transformSchema>;
 
-  return [inspectTool, extractTool, validateTool, renderTool, transformTool];
+  const manifestTool = defineTool({
+    name: "pdf_manifest",
+    label: "Manifest",
+    description: "Write a PDF packet manifest JSON file for audit and handoff.",
+    promptSnippet:
+      "pdf_manifest: write a JSON audit manifest for a multi-step PDF packet. Include material inspect, extract, render, transform, and validation results before handoff.",
+    parameters: manifestSchema,
+    async execute(_toolCallId, params: Static<typeof manifestSchema>) {
+      const output = await resolvePdfWorkspaceOutputPath(guard, params.outputPath, {
+        onViolation: options?.onViolation,
+        toolName: "pdf_manifest",
+      });
+      const operations = params.operations.map((operation) =>
+        PdfPacketManifestOperationSchema.parse(operation)
+      );
+      const validations = (params.validations ?? []).map((validation) =>
+        PdfValidateResultSchema.parse(validation)
+      );
+      const warnings = (params.warnings ?? []).map((warning) => PdfWarningSchema.parse(warning));
+
+      const result = await writePdfPacketManifest({
+        packetId: params.packetId,
+        outputPath: output.absolute,
+        displayOutputPath: output.displayPath,
+        ...(params.title !== undefined ? { title: params.title } : {}),
+        operations,
+        validations,
+        warnings,
+      });
+      return textResult(JSON.stringify(result), result);
+    },
+  }) satisfies PdfToolDefinition<typeof manifestSchema>;
+
+  return [inspectTool, extractTool, validateTool, renderTool, transformTool, manifestTool];
 }

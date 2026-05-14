@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -7,6 +7,10 @@ import {
   PdfExtractResultSchema,
   type PdfInspectResult,
   PdfInspectResultSchema,
+  type PdfManifestOperationResult,
+  type PdfPacketManifest,
+  type PdfPacketManifestOperation,
+  PdfPacketManifestSchema,
   type PdfPageRange,
   type PdfRenderResult,
   PdfRenderResultSchema,
@@ -91,6 +95,16 @@ export interface PdfTransformOptions {
     pages?: PdfPageRange;
   };
   binaryRunner?: BinaryRunner;
+}
+
+export interface PdfPacketManifestOptions {
+  packetId: string;
+  outputPath: string;
+  displayOutputPath?: string;
+  title?: string;
+  operations: PdfPacketManifestOperation[];
+  validations?: PdfValidateResult[];
+  warnings?: PdfWarning[];
 }
 
 export function normalizePdfPageRange(
@@ -422,6 +436,43 @@ export async function validatePdfDocument(
   });
 }
 
+export async function writePdfPacketManifest(
+  options: PdfPacketManifestOptions
+): Promise<PdfPacketManifest> {
+  await mkdir(dirname(options.outputPath), { recursive: true });
+  const validations = options.validations ?? [];
+  const warnings = collectManifestWarnings(
+    options.operations.map((operation) => operation.result),
+    validations,
+    options.warnings ?? []
+  );
+  const manifest = PdfPacketManifestSchema.parse({
+    manifestVersion: 1,
+    packetId: options.packetId,
+    outputPath: options.displayOutputPath ?? basename(options.outputPath),
+    ...(options.title !== undefined ? { title: options.title } : {}),
+    sourcePaths: uniqueSorted(
+      options.operations.flatMap((operation) => sourcePathsForResult(operation.result))
+    ),
+    artifactPaths: uniqueSorted(
+      options.operations.flatMap((operation) => artifactPathsForResult(operation.result))
+    ),
+    operations: options.operations,
+    validations,
+    warnings,
+    summary: {
+      operationCount: options.operations.length,
+      validationCount: validations.length,
+      failedValidationCount: validations.filter((validation) => !validation.passed).length,
+      warningCount: warnings.length,
+    },
+    provenance: createProvenance(),
+  });
+
+  await writeFile(options.outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
+}
+
 async function readPdfPages(document: PdfDocumentProxy): Promise<string[]> {
   const result = await extractText(document, { mergePages: false });
   return result.text;
@@ -555,6 +606,33 @@ function buildPageMapping(
     if (operation === "split" || operation === "reorder" || operation === "rotate") break;
   }
   return mappings;
+}
+
+function collectManifestWarnings(
+  operationResults: PdfManifestOperationResult[],
+  validations: PdfValidateResult[],
+  explicitWarnings: PdfWarning[]
+): PdfWarning[] {
+  return [
+    ...explicitWarnings,
+    ...operationResults.flatMap((result) => result.warnings),
+    ...validations.flatMap((result) => result.warnings),
+  ];
+}
+
+function sourcePathsForResult(result: PdfManifestOperationResult): string[] {
+  if ("sourcePaths" in result) return result.sourcePaths;
+  return [result.path];
+}
+
+function artifactPathsForResult(result: PdfManifestOperationResult): string[] {
+  if ("outputPath" in result) return [result.outputPath];
+  if ("outputs" in result) return result.outputs.map((output) => output.path);
+  return [];
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 function qpdfRange(range: PdfPageRange | undefined, pageCount: number): string {

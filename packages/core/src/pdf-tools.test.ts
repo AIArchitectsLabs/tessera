@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createPdfToolDefinitions } from "./pdf-tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
@@ -53,6 +53,7 @@ describe("createPdfToolDefinitions", () => {
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_manifest",
     ]);
   });
 
@@ -244,6 +245,62 @@ describe("createPdfToolDefinitions", () => {
     });
   });
 
+  test("writes a PDF packet manifest to a workspace output path", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const tools = createPdfToolDefinitions(guard);
+    const inspected = await tool(tools, "pdf_inspect").execute(
+      "call-inspect",
+      { path: "docs/sample.pdf" },
+      undefined,
+      undefined,
+      undefined as never
+    );
+    const validated = await tool(tools, "pdf_validate").execute(
+      "call-validate",
+      { path: "docs/sample.pdf", expectedPageCount: 1 },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    const manifested = await tool(tools, "pdf_manifest").execute(
+      "call-manifest",
+      {
+        packetId: "packet-1",
+        title: "Sample packet",
+        outputPath: "out/packet-manifest.json",
+        operations: [
+          {
+            operationId: "inspect-1",
+            kind: "inspect",
+            result: JSON.parse(resultText(inspected)),
+          },
+        ],
+        validations: [JSON.parse(resultText(validated))],
+        warnings: [{ code: "manual_review", message: "Review the source PDF." }],
+      },
+      undefined,
+      undefined,
+      undefined as never
+    );
+    const persisted = JSON.parse(await readFile(join(root, "out", "packet-manifest.json"), "utf8"));
+
+    expect(JSON.parse(resultText(manifested))).toMatchObject({
+      packetId: "packet-1",
+      outputPath: "out/packet-manifest.json",
+      title: "Sample packet",
+      sourcePaths: ["docs/sample.pdf"],
+      summary: {
+        operationCount: 1,
+        validationCount: 1,
+        failedValidationCount: 0,
+        warningCount: 1,
+      },
+    });
+    expect(persisted.packetId).toBe("packet-1");
+  });
+
   test("denies render output directories outside the workspace", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
@@ -293,5 +350,32 @@ describe("createPdfToolDefinitions", () => {
     ).rejects.toThrow(/outside.*workspace/i);
 
     expect(violations).toEqual(["pdf_transform"]);
+  });
+
+  test("denies manifest output paths outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_manifest").execute(
+        "call-denied",
+        {
+          packetId: "packet-1",
+          outputPath: "/tmp/tessera-outside-manifest.json",
+          operations: [],
+        },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_manifest"]);
   });
 });
