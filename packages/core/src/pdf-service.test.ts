@@ -346,10 +346,56 @@ describe("pdf service", () => {
       dimensionsReader: async () => ({ width: 612, height: 792 }),
     });
 
-    expect(commands).toEqual([
-      "pdftoppm",
-      join(root, "capabilities", "pdf-render", "1.0.0", "pdftoppm"),
-    ]);
+    expect(commands).toEqual([join(root, "capabilities", "pdf-render", "1.0.0", "pdftoppm")]);
+    expect(result.outputs[0]?.path).toBe("sample-page-1.png");
+  });
+
+  test("installs an available managed render engine before falling back to PATH", async () => {
+    const { root, pdfPath } = await makeFixture();
+    const payload = Buffer.from("#!/bin/sh\necho pdftoppm\n");
+    const capabilityManager = createOptionalCapabilityManager({
+      rootDir: join(root, "capabilities"),
+      platform: "darwin",
+      arch: "arm64",
+      definitions: [
+        {
+          id: "pdf-render",
+          label: "PDF render engine",
+          version: "1.0.0",
+          binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+          assets: [
+            {
+              platform: "darwin",
+              arch: "arm64",
+              url: "https://downloads.tessera.local/pdftoppm",
+              sha256: sha256(payload),
+              executableName: "pdftoppm",
+            },
+          ],
+        },
+      ],
+      download: async () => payload,
+    });
+    const commands: string[] = [];
+
+    const result = await renderPdfPages(pdfPath, {
+      outputDir: join(root, "renders"),
+      pages: { start: 1, end: 1 },
+      capabilityManager,
+      binaryRunner: async ({ command, args }) => {
+        commands.push(command);
+        if (command === "pdftoppm") {
+          throw new Error("PATH fallback should not run when managed install is available");
+        }
+        const outputPrefix = args.at(-1);
+        if (typeof outputPrefix !== "string") throw new Error("missing output prefix");
+        await writeFile(`${outputPrefix}-1.png`, Buffer.from("png"));
+        return { stdout: "", stderr: "" };
+      },
+      dimensionsReader: async () => ({ width: 612, height: 792 }),
+    });
+
+    expect(commands).toEqual([join(root, "capabilities", "pdf-render", "1.0.0", "pdftoppm")]);
     expect(result.outputs[0]?.path).toBe("sample-page-1.png");
   });
 
@@ -382,6 +428,57 @@ describe("pdf service", () => {
       provenance: { immutableSource: true },
     });
     expect(result.provenance.createdAt).toEqual(expect.any(String));
+  });
+
+  test("installs an available managed transform engine before falling back to PATH", async () => {
+    const { root, pdfPath } = await makeFixture();
+    const outputPath = join(root, "out", "rotated.pdf");
+    const payload = Buffer.from("#!/bin/sh\necho qpdf\n");
+    const capabilityManager = createOptionalCapabilityManager({
+      rootDir: join(root, "capabilities"),
+      platform: "darwin",
+      arch: "arm64",
+      definitions: [
+        {
+          id: "pdf-transform",
+          label: "PDF transform engine",
+          version: "1.0.0",
+          binaries: [{ name: "qpdf", relativePath: "qpdf" }],
+          assets: [
+            {
+              platform: "darwin",
+              arch: "arm64",
+              url: "https://downloads.tessera.local/qpdf",
+              sha256: sha256(payload),
+              executableName: "qpdf",
+            },
+          ],
+        },
+      ],
+      download: async () => payload,
+    });
+    const commands: string[] = [];
+
+    const result = await transformPdfDocument({
+      operation: "rotate",
+      sources: [{ path: pdfPath }],
+      outputPath,
+      rotation: { degrees: 90, pages: { start: 1, end: 1 } },
+      capabilityManager,
+      binaryRunner: async ({ command, args }) => {
+        commands.push(command);
+        if (command === "qpdf") {
+          throw new Error("PATH fallback should not run when managed install is available");
+        }
+        const destination = args.at(-1);
+        if (typeof destination !== "string") throw new Error("missing destination");
+        await writeFile(destination, samplePdf("Rotated"));
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([join(root, "capabilities", "pdf-transform", "1.0.0", "qpdf")]);
+    expect(result.outputPath).toBe("rotated.pdf");
   });
 
   test("writes a packet manifest with summary counts", async () => {

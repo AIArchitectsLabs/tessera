@@ -670,9 +670,7 @@ async function runPdfCapabilityBinary(
     capabilityManager?: OptionalCapabilityManager;
   }
 ): Promise<void> {
-  const resolvedCommand =
-    (await input.capabilityManager?.resolveBinary(input.capabilityId, input.binaryName)) ??
-    input.command;
+  const resolvedCommand = await resolvePdfCapabilityCommand(input);
   try {
     await runner({
       command: resolvedCommand,
@@ -700,6 +698,32 @@ async function runPdfCapabilityBinary(
       ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     });
   }
+}
+
+async function resolvePdfCapabilityCommand(input: {
+  capabilityId: string;
+  binaryName: string;
+  command: string;
+  capabilityManager?: OptionalCapabilityManager;
+}): Promise<string> {
+  if (!input.capabilityManager) return input.command;
+
+  const managedCommand = await input.capabilityManager.resolveBinary(
+    input.capabilityId,
+    input.binaryName
+  );
+  if (managedCommand) return managedCommand;
+
+  const status = await input.capabilityManager.status(input.capabilityId).catch(() => null);
+  if (!status?.installAvailable) return input.command;
+
+  await input.capabilityManager.install(input.capabilityId).catch(() => {
+    throw new Error(`PDF engine unavailable: ${input.binaryName}`);
+  });
+  return (
+    (await input.capabilityManager.resolveBinary(input.capabilityId, input.binaryName)) ??
+    input.command
+  );
 }
 
 async function checkPdfEngine(options: {
