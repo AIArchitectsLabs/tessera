@@ -132,53 +132,69 @@ function maybeCopyPlaywrightBrowsers(): void {
   console.log(`[build-sidecar] copied Playwright browsers → ${playwrightBrowsersDir}`);
 }
 
-// Detect the host triple from rustc
-const rustcOut = capture("rustc", ["-vV"]);
-const tripleMatch = rustcOut.match(/^host:\s+(.+)$/m);
-if (!tripleMatch) throw new Error("Could not parse host triple from `rustc -vV`");
-const triple = tripleMatch[1].trim();
-const isWindows = triple.includes("windows");
-const ext = isWindows ? ".exe" : "";
+export function copyCuratedSkills(options: { repoRoot?: string; binDir?: string } = {}): void {
+  const sourceRoot = join(options.repoRoot ?? repoRoot, "packages/core/skills");
+  const destinationRoot = join(options.binDir ?? binDir, "skills");
+  requireDirectory(sourceRoot);
+  rmSync(destinationRoot, { recursive: true, force: true });
+  cpSync(sourceRoot, destinationRoot, { recursive: true });
+  console.log(`[build-sidecar] copied curated skills → ${destinationRoot}`);
+}
 
-console.log(`[build-sidecar] target triple: ${triple}`);
+export function buildSidecar(): void {
+  // Detect the host triple from rustc
+  const rustcOut = capture("rustc", ["-vV"]);
+  const tripleMatch = rustcOut.match(/^host:\s+(.+)$/m);
+  if (!tripleMatch) throw new Error("Could not parse host triple from `rustc -vV`");
+  const triple = tripleMatch[1].trim();
+  const isWindows = triple.includes("windows");
+  const ext = isWindows ? ".exe" : "";
 
-// Compile sidecar
-console.log("[build-sidecar] compiling sidecar...");
-run("bun", ["run", "--filter", "@tessera/sidecar", "build"]);
+  console.log(`[build-sidecar] target triple: ${triple}`);
 
-// Compile CLI
-console.log("[build-sidecar] compiling CLI...");
-run("bun", ["run", "--filter", "@tessera/cli", "build"]);
+  // Compile sidecar
+  console.log("[build-sidecar] compiling sidecar...");
+  run("bun", ["run", "--filter", "@tessera/sidecar", "build"]);
 
-mkdirSync(binDir, { recursive: true });
+  // Compile CLI
+  console.log("[build-sidecar] compiling CLI...");
+  run("bun", ["run", "--filter", "@tessera/cli", "build"]);
 
-const sidecarSrc = join(repoRoot, `apps/sidecar/dist/sidecar${ext}`);
-const sidecarDst = join(binDir, `tessera-sidecar-${triple}${ext}`);
-copyFileSync(sidecarSrc, sidecarDst);
-if (!isWindows) chmodSync(sidecarDst, 0o755);
-console.log(`[build-sidecar] copied sidecar → ${sidecarDst}`);
+  mkdirSync(binDir, { recursive: true });
+  copyCuratedSkills();
 
-const cliSrc = join(repoRoot, `apps/cli/dist/cli${ext}`);
-const cliDst = join(binDir, `tessera-cli-${triple}${ext}`);
-copyFileSync(cliSrc, cliDst);
-if (!isWindows) chmodSync(cliDst, 0o755);
-console.log(`[build-sidecar] copied CLI    → ${cliDst}`);
+  const sidecarSrc = join(repoRoot, `apps/sidecar/dist/sidecar${ext}`);
+  const sidecarDst = join(binDir, `tessera-sidecar-${triple}${ext}`);
+  copyFileSync(sidecarSrc, sidecarDst);
+  if (!isWindows) chmodSync(sidecarDst, 0o755);
+  console.log(`[build-sidecar] copied sidecar → ${sidecarDst}`);
 
-rmSync(join(binDir, `gws-${triple}${ext}`), { force: true });
-console.log("[build-sidecar] Google Workspace CLI is managed as an optional capability.");
-writeGoogleWorkspaceOAuthClient();
-maybeCopyPlaywrightBrowsers();
+  const cliSrc = join(repoRoot, `apps/cli/dist/cli${ext}`);
+  const cliDst = join(binDir, `tessera-cli-${triple}${ext}`);
+  copyFileSync(cliSrc, cliDst);
+  if (!isWindows) chmodSync(cliDst, 0o755);
+  console.log(`[build-sidecar] copied CLI    → ${cliDst}`);
 
-// pi-coding-agent reads its own package.json at module init time.
-// When running as a compiled Bun binary it resolves that path via
-// dirname(process.execPath), which is binDir. Copy the file there so
-// startup doesn't crash with ENOENT.
-const piPkgSrc = join(
-  repoRoot,
-  "packages/core/node_modules/@mariozechner/pi-coding-agent/package.json"
-);
-const piPkgDst = join(binDir, "package.json");
-copyFileSync(piPkgSrc, piPkgDst);
-console.log(`[build-sidecar] copied pi-coding-agent/package.json → ${piPkgDst}`);
+  rmSync(join(binDir, `gws-${triple}${ext}`), { force: true });
+  console.log("[build-sidecar] Google Workspace CLI is managed as an optional capability.");
+  writeGoogleWorkspaceOAuthClient();
+  maybeCopyPlaywrightBrowsers();
 
-console.log("[build-sidecar] done.");
+  // pi-coding-agent reads its own package.json at module init time.
+  // When running as a compiled Bun binary it resolves that path via
+  // dirname(process.execPath), which is binDir. Copy the file there so
+  // startup doesn't crash with ENOENT.
+  const piPkgSrc = join(
+    repoRoot,
+    "packages/core/node_modules/@mariozechner/pi-coding-agent/package.json"
+  );
+  const piPkgDst = join(binDir, "package.json");
+  copyFileSync(piPkgSrc, piPkgDst);
+  console.log(`[build-sidecar] copied pi-coding-agent/package.json → ${piPkgDst}`);
+
+  console.log("[build-sidecar] done.");
+}
+
+if (import.meta.main) {
+  buildSidecar();
+}
