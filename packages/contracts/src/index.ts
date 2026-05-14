@@ -2297,6 +2297,60 @@ export const PdfTransformResultSchema = z
   .strict();
 export type PdfTransformResult = z.infer<typeof PdfTransformResultSchema>;
 
+export const PdfManifestOperationKindSchema = z.enum([
+  "inspect",
+  "extract",
+  "validate",
+  "render",
+  "transform",
+]);
+export type PdfManifestOperationKind = z.infer<typeof PdfManifestOperationKindSchema>;
+
+export const PdfManifestOperationResultSchema = z.union([
+  PdfInspectResultSchema,
+  PdfExtractResultSchema,
+  PdfValidateResultSchema,
+  PdfRenderResultSchema,
+  PdfTransformResultSchema,
+]);
+export type PdfManifestOperationResult = z.infer<typeof PdfManifestOperationResultSchema>;
+
+export const PdfPacketManifestOperationSchema = z
+  .object({
+    operationId: z.string().min(1),
+    kind: PdfManifestOperationKindSchema,
+    result: PdfManifestOperationResultSchema,
+  })
+  .strict();
+export type PdfPacketManifestOperation = z.infer<typeof PdfPacketManifestOperationSchema>;
+
+export const PdfPacketManifestSummarySchema = z
+  .object({
+    operationCount: z.number().int().nonnegative(),
+    validationCount: z.number().int().nonnegative(),
+    failedValidationCount: z.number().int().nonnegative(),
+    warningCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type PdfPacketManifestSummary = z.infer<typeof PdfPacketManifestSummarySchema>;
+
+export const PdfPacketManifestSchema = z
+  .object({
+    manifestVersion: z.literal(1),
+    packetId: z.string().min(1),
+    outputPath: z.string().min(1),
+    title: z.string().min(1).optional(),
+    sourcePaths: z.array(z.string().min(1)),
+    artifactPaths: z.array(z.string().min(1)),
+    operations: z.array(PdfPacketManifestOperationSchema),
+    validations: z.array(PdfValidateResultSchema),
+    warnings: z.array(PdfWarningSchema),
+    summary: PdfPacketManifestSummarySchema,
+    provenance: PdfOperationProvenanceSchema,
+  })
+  .strict();
+export type PdfPacketManifest = z.infer<typeof PdfPacketManifestSchema>;
+
 export const TaskSummarySchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1),
@@ -2597,7 +2651,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, and transform PDFs",
+      "Inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2612,6 +2666,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_manifest",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2629,7 +2684,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, and transform PDFs",
+      "Inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2646,6 +2701,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_manifest",
       "workspace_list",
       "workspace_search",
       "shell",
@@ -2665,7 +2721,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
     capabilities: [
       "Read files",
       "Extract PDF, Word, Excel, and PowerPoint content",
-      "Inspect, render, validate, and transform PDFs",
+      "Inspect, render, validate, transform, and manifest PDFs",
       "List directories",
       "Search content",
       "Search and fetch public web pages",
@@ -2682,6 +2738,7 @@ export const TOOL_POLICY_PRESET_DETAILS: Record<
       "pdf_validate",
       "pdf_render",
       "pdf_transform",
+      "pdf_manifest",
       "workspace_list",
       "workspace_search",
       "shell",

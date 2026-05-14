@@ -3,6 +3,7 @@ import {
   PdfEngineRuntimeSchema,
   PdfExtractResultSchema,
   PdfInspectResultSchema,
+  PdfPacketManifestSchema,
   PdfPageRangeSchema,
   PdfRenderResultSchema,
   PdfTransformResultSchema,
@@ -132,6 +133,73 @@ describe("pdf tool contracts", () => {
     expect(result.pageMapping).toHaveLength(2);
   });
 
+  test("parses PDF packet manifests with operation summaries", () => {
+    const result = PdfPacketManifestSchema.parse({
+      manifestVersion: 1,
+      packetId: "packet-2026-05-14",
+      outputPath: "out/packet-manifest.json",
+      title: "Board packet assembly",
+      sourcePaths: ["docs/a.pdf", "docs/b.pdf"],
+      artifactPaths: ["out/packet.pdf"],
+      operations: [
+        {
+          operationId: "op-1",
+          kind: "transform",
+          result: {
+            outputPath: "out/packet.pdf",
+            fileType: "pdf",
+            operation: "merge",
+            sourcePaths: ["docs/a.pdf", "docs/b.pdf"],
+            pageMapping: [
+              { sourcePath: "docs/a.pdf", sourcePage: 1, outputPage: 1 },
+              { sourcePath: "docs/b.pdf", sourcePage: 1, outputPage: 2 },
+            ],
+            engine: "qpdf",
+            engineRuntime: "binary",
+            provenance: {
+              createdAt: "2026-05-14T00:00:00.000Z",
+              immutableSource: true,
+            },
+            warnings: [],
+          },
+        },
+      ],
+      validations: [
+        {
+          path: "out/packet.pdf",
+          exists: true,
+          fileType: "pdf",
+          bytes: 2048,
+          pageCount: 2,
+          hasTextLayer: true,
+          passed: true,
+          checks: [{ name: "file_exists", passed: true, message: "PDF file exists." }],
+          engine: "unpdf",
+          engineRuntime: "typescript",
+          provenance: {
+            createdAt: "2026-05-14T00:00:00.000Z",
+            immutableSource: true,
+          },
+          warnings: [],
+        },
+      ],
+      warnings: [{ code: "manual_review", message: "Signature page needs review." }],
+      summary: {
+        operationCount: 1,
+        validationCount: 1,
+        failedValidationCount: 0,
+        warningCount: 1,
+      },
+      provenance: {
+        createdAt: "2026-05-14T00:00:00.000Z",
+        immutableSource: true,
+      },
+    });
+
+    expect(result.summary.operationCount).toBe(1);
+    expect(result.artifactPaths).toEqual(["out/packet.pdf"]);
+  });
+
   test("rejects invalid page ranges", () => {
     expect(PdfPageRangeSchema.safeParse({}).success).toBe(false);
     expect(PdfPageRangeSchema.safeParse({ start: 5, end: 1 }).success).toBe(false);
@@ -171,8 +239,15 @@ describe("pdf tool contracts", () => {
       const workspaceExtractIndex = details.allowedTools.indexOf("workspace_extract");
       expect(workspaceExtractIndex).toBeGreaterThanOrEqual(0);
       expect(
-        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 6)
-      ).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate", "pdf_render", "pdf_transform"]);
+        details.allowedTools.slice(workspaceExtractIndex + 1, workspaceExtractIndex + 7)
+      ).toEqual([
+        "pdf_inspect",
+        "pdf_extract",
+        "pdf_validate",
+        "pdf_render",
+        "pdf_transform",
+        "pdf_manifest",
+      ]);
     }
   });
 });

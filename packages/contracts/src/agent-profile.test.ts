@@ -71,6 +71,7 @@ describe("agent profile contracts", () => {
     expect(readOnly.allowedTools).toContain("pdf_validate");
     expect(readOnly.allowedTools).toContain("pdf_render");
     expect(readOnly.allowedTools).toContain("pdf_transform");
+    expect(readOnly.allowedTools).toContain("pdf_manifest");
     expect(readOnly.allowedTools).toContain("browser");
     expect(readOnly.allowedTools).toContain("todo");
     expect(readOnly.allowedTools).toContain("skill_list");
@@ -105,6 +106,7 @@ describe("agent profile contracts", () => {
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_validate");
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_render");
     expect(runtime.toolPolicy.allowedTools).toContain("pdf_transform");
+    expect(runtime.toolPolicy.allowedTools).toContain("pdf_manifest");
     expect(runtime.toolPolicy.allowedTools).toContain("browser");
     expect(runtime.toolPolicy.allowedTools).toContain("todo");
     expect(runtime.sectionSummaries.instructions).toContain("Drive concrete next steps");
