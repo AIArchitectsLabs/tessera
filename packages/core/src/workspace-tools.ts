@@ -319,6 +319,7 @@ export function createWorkspaceToolDefinitions(
       const matches: string[] = [];
       for (const file of await walkFiles(guard.root, base)) {
         const absolute = await guard.resolveInsideWorkspace(file);
+        if (isPdfPath(absolute)) continue;
         const text = await readFile(absolute, "utf8").catch(() => "");
         if (text.includes(params.query)) matches.push(file);
       }

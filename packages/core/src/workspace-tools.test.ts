@@ -405,6 +405,21 @@ describe("createWorkspaceToolDefinitions", () => {
     expect(result.content[0]).toEqual({ type: "text", text: "src/index.ts" });
   });
 
+  test("workspace_search does not expose PDF text outside the PDF workflow", async () => {
+    const { tools } = await makeTools();
+
+    const result = await tool(tools, "workspace_search").execute(
+      "call-1",
+      { query: "Hello PDF", path: "." },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(result.content[0]).toEqual({ type: "text", text: "" });
+    expect(result.details).toEqual({ query: "Hello PDF", matches: [] });
+  });
+
   test("writes and edits files inside the workspace without extra approval", async () => {
     const { root, tools } = await makeTools();
 
