@@ -39,17 +39,13 @@ function resultText(result: { content: Array<{ type: string; text?: string }> })
 }
 
 describe("createPdfToolDefinitions", () => {
-  test("registers pdf tools in sorted order", async () => {
+  test("registers pdf tools in actual order", async () => {
     const { root } = await makeFixture();
     const guard = await createWorkspaceGuard(root);
 
     const tools = createPdfToolDefinitions(guard);
 
-    expect(tools.map((item) => item.name).sort()).toEqual([
-      "pdf_extract",
-      "pdf_inspect",
-      "pdf_validate",
-    ]);
+    expect(tools.map((item) => item.name)).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate"]);
   });
 
   test("inspects, extracts, and validates a workspace PDF", async () => {
@@ -109,9 +105,55 @@ describe("createPdfToolDefinitions", () => {
         undefined,
         undefined as never
       )
-    ).rejects.toThrow();
+    ).rejects.toThrow(/outside.*workspace/i);
 
     expect(violations).toEqual(["pdf_inspect"]);
+  });
+
+  test("denies extraction outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_extract").execute(
+        "call-denied",
+        { path: join("/tmp", "outside.pdf") },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_extract"]);
+  });
+
+  test("denies validation outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_validate").execute(
+        "call-denied",
+        { path: join("/tmp", "outside.pdf") },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_validate"]);
   });
 
   test("validates a missing workspace PDF without throwing", async () => {
