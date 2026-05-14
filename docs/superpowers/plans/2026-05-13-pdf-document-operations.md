@@ -4,7 +4,7 @@
 
 **Goal:** Build the first slice of Tessera's business-grade PDF operation surface: contracts, `pdf_inspect`, `pdf_extract`, `pdf_validate`, policy wiring, and the canonical `pdf-workflows` skill update.
 
-**Architecture:** Keep `workspace_extract` as the generic bounded document reader. Add a focused PDF service in `packages/core` and expose it through typed `pdf_*` tools registered with the existing workspace tool surface. Preserve `pdf-workflows` as the single curated PDF skill and use `engineRuntime` metadata so Python-backed adapters can be added behind the same tool boundary when needed.
+**Architecture:** Keep `workspace_extract` as the generic bounded document reader. Add a focused PDF service in `packages/core` and expose it through typed `pdf_*` tools registered with the existing workspace tool surface. Preserve `pdf-workflows` as the single curated PDF skill. Use `engineRuntime` metadata for observability, while keeping Python execution scoped to declared skill helper entrypoints through `skill_run_python`.
 
 **Tech Stack:** TypeScript, Bun test, Zod contracts, `@mariozechner/pi-ai` tool schemas, existing `unpdf` text extraction, Tessera workspace guard.
 
@@ -19,7 +19,7 @@ This plan implements Slice 1 from the approved spec:
 - `pdf_inspect`, `pdf_extract`, and `pdf_validate`.
 - No new package dependency.
 - No PDF mutation tools.
-- No Python package or script execution yet, only the contract/runtime shape for controlled Python engines.
+- No Python package or script execution in this first slice. Later Python support is scoped to declared skill helper entrypoints, not service-level engine adapters.
 - One canonical skill: `packages/core/skills/pdf-workflows/SKILL.md`.
 
 ## File Structure
@@ -1331,7 +1331,7 @@ Expected: if no fixes were needed, skip this commit and leave the tree clean.
 - Do not install Python packages in this slice.
 - Do not let `pdf-workflows` imply extra permissions; tool policy remains the authority.
 - Preserve `workspace_extract` behavior except for the policy capability wording.
-- Use `engineRuntime: "typescript"` for the first engine and reserve `"python"` for controlled adapters introduced through the PDF service.
+- Use `engineRuntime: "typescript"` for the first engine. Python remains a runtime metadata value, but execution is introduced through scoped skill helpers rather than arbitrary PDF service adapters.
 
 ## Self-Review
 
@@ -1340,12 +1340,12 @@ Spec coverage:
 - First-class PDF tool surface: covered by Tasks 1, 3, and 4.
 - Immutable originals: first slice is read-only; mutating tools are out of scope.
 - Structured metadata, warnings, and provenance-ready engine runtime: covered by Tasks 1 and 2.
-- Python as controlled engine runtime: covered by contract `PdfEngineRuntimeSchema` and implementation notes.
+- Python as a scoped helper runtime: covered by contract `PdfEngineRuntimeSchema` and later `skill_run_python` implementation notes.
 - One canonical skill: covered by Task 5.
 - `workspace_extract` remains focused: no plan step changes its extraction behavior.
 
 Known remaining work after this plan:
 
-- `pdf_render`, `pdf_transform`, `pdf_redact`, and `pdf_form`.
-- Real Python-backed engines and dependency discovery.
+- `pdf_redact` and `pdf_form`.
+- More Python helper scripts and dependency discovery for skill workflows.
 - OCR, table extraction, signature checks, archival checks, and packet manifests.

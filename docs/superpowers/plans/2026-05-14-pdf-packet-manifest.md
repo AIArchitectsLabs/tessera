@@ -123,8 +123,8 @@ test("parses PDF packet manifests with operation summaries", () => {
             { sourcePath: "docs/a.pdf", sourcePage: 1, outputPage: 1 },
             { sourcePath: "docs/b.pdf", sourcePage: 1, outputPage: 2 },
           ],
-          engine: "qpdf",
-          engineRuntime: "binary",
+          engine: "pdf-lib",
+          engineRuntime: "typescript",
           provenance: {
             createdAt: "2026-05-14T00:00:00.000Z",
             immutableSource: true,

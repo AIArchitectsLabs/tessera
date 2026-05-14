@@ -4,9 +4,9 @@
 
 **Goal:** Add Slice 2 of the PDF operations surface: page rendering plus safe immutable PDF split, merge, reorder, and rotate transforms.
 
-**Architecture:** Extend the existing typed PDF tool family with `pdf_render` and `pdf_transform`. Keep source PDFs immutable, resolve every input/output through `WorkspaceGuard`, and put binary execution behind a small core service adapter with injectable runners for tests. Use `pdftoppm` for rendering and `qpdf` for transformations when present; return clear engine-unavailable errors when a binary is missing.
+**Architecture:** Extend the existing typed PDF tool family with `pdf_render` and `pdf_transform`. Keep source PDFs immutable and resolve every input/output through `WorkspaceGuard`. Use the optional Tessera-managed `tessera-pdf-render` binary for page rendering, and use bundled `pdf-lib` TypeScript transforms for split, merge, reorder, and rotate. Tessera does not require customer-installed PDF binaries for transforms.
 
-**Tech Stack:** Bun, TypeScript, Zod contracts, Pi tool definitions, existing workspace guard, controlled `node:child_process` binary adapters, `unpdf` inspection/validation for output verification.
+**Tech Stack:** Bun, TypeScript, Zod contracts, Pi tool definitions, existing workspace guard, `pdf-lib` transforms, optional `tessera-pdf-render` binary adapter, `unpdf` inspection/validation for output verification.
 
 ---
 
@@ -19,7 +19,7 @@ Included:
 - `pdf_transform` for `split`, `merge`, `reorder`, and `rotate`.
 - Structured result contracts with engine metadata, warnings, output paths, and provenance.
 - Runtime tool registration and policy allowlist entries.
-- Tests that do not require real `qpdf` or `pdftoppm`.
+- Tests that do not require a real render binary.
 
 Excluded:
 - OCR, redaction, forms, stamping, watermarking, compression, linearization.
@@ -33,7 +33,7 @@ Excluded:
 - Modify `packages/contracts/src/pdf-tools.test.ts`
   - Add contract tests for `pdf_render` and `pdf_transform`.
 - Modify `packages/core/src/pdf-service.ts`
-  - Add binary runner type, render, transform, page mapping helpers, and engine-unavailable handling.
+  - Add render binary runner type, `pdf-lib` transform helpers, page mapping helpers, and engine-unavailable handling for render.
 - Modify `packages/core/src/pdf-service.test.ts`
   - Add fake-runner tests for render and transform outputs.
 - Modify `packages/core/src/pdf-tools.ts`
@@ -78,7 +78,7 @@ test("parses PDF render results with generated page images", () => {
           height: 792,
         },
       ],
-      engine: "pdftoppm",
+      engine: "tessera-pdf-render",
       engineRuntime: "binary",
       provenance: {
         createdAt: new Date().toISOString(),
@@ -100,8 +100,8 @@ test("parses PDF transform results with source mapping", () => {
         { sourcePath: "a.pdf", sourcePage: 1, outputPage: 1 },
         { sourcePath: "b.pdf", sourcePage: 1, outputPage: 2 },
       ],
-      engine: "qpdf",
-      engineRuntime: "binary",
+      engine: "pdf-lib",
+      engineRuntime: "typescript",
       provenance: {
         createdAt: new Date().toISOString(),
         immutableSource: true,
@@ -244,7 +244,7 @@ test("renders selected pages with an injected binary runner", async () => {
   expect(result.engineRuntime).toBe("binary");
 });
 
-test("creates a rotated PDF output with an injected qpdf runner", async () => {
+test("creates a rotated PDF output with pdf-lib", async () => {
   const { root, pdfPath } = await makeFixture();
   const outputPath = join(root, "out", "rotated.pdf");
   const result = await transformPdfDocument({
@@ -252,12 +252,6 @@ test("creates a rotated PDF output with an injected qpdf runner", async () => {
     sources: [{ path: pdfPath }],
     outputPath,
     rotation: { degrees: 90, pages: { start: 1, end: 1 } },
-    binaryRunner: async ({ args }) => {
-      const destination = args.at(-1);
-      if (typeof destination !== "string") throw new Error("missing destination");
-      await writeFile(destination, samplePdf("Rotated"));
-      return { stdout: "", stderr: "" };
-    },
   });
 
   expect(result).toMatchObject({
@@ -265,8 +259,8 @@ test("creates a rotated PDF output with an injected qpdf runner", async () => {
     operation: "rotate",
     sourcePaths: ["sample.pdf"],
     pageMapping: [{ sourcePath: "sample.pdf", sourcePage: 1, outputPage: 1 }],
-    engine: "qpdf",
-    engineRuntime: "binary",
+    engine: "pdf-lib",
+    engineRuntime: "typescript",
   });
 });
 ```
@@ -285,24 +279,22 @@ Expected: fails because `renderPdfPages` and `transformPdfDocument` are not impl
 
 In `packages/core/src/pdf-service.ts`:
 
-- Add `BinaryRunner` with `command`, `args`, `cwd` input.
+- Add `BinaryRunner` with `command`, `args`, `cwd` input for render only.
 - Add default runner using `node:child_process` `execFile`.
 - Add `renderPdfPages(path, options)`:
   - inspect source page count with existing PDF helpers.
   - normalize requested pages.
   - create output directory with `mkdir(..., { recursive: true })`.
-  - run `pdftoppm -png -f <first> -l <last> -r <dpi> <source> <prefix>`.
-  - return one output per page with relative display paths, `engine: "pdftoppm"`, `engineRuntime: "binary"`.
+  - run `tessera-pdf-render --input <source> --format png --first-page <first> --last-page <last> --dpi <dpi> --output-prefix <prefix>`.
+  - return one output per page with relative display paths, `engine: "tessera-pdf-render"`, `engineRuntime: "binary"`.
 - Add `transformPdfDocument(options)`:
   - validate all source inputs are PDFs.
   - create output parent directory.
-  - build qpdf args for:
-    - split/reorder: `qpdf <source> --pages <source> <ranges> -- <output>`.
-    - merge: `qpdf --empty --pages <source1> <range> <source2> <range> -- <output>`.
-    - rotate: `qpdf <source> --rotate=<degrees>:<range> -- <output>`.
+  - use `pdf-lib` to copy selected pages into a new PDF for split, merge, and reorder.
+  - use `pdf-lib` page rotation for rotate.
   - compute page mapping from inspected source page counts and normalized ranges.
-  - return structured result and provenance.
-- On missing binary (`ENOENT`), throw `PDF engine unavailable: <binary>`.
+  - return structured result with `engine: "pdf-lib"` and `engineRuntime: "typescript"`.
+- On missing render binary (`ENOENT`), throw `PDF engine unavailable: tessera-pdf-render`.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -318,7 +310,7 @@ Commit:
 
 ```bash
 git add packages/core/src/pdf-service.ts packages/core/src/pdf-service.test.ts packages/core/src/index.ts
-git commit -m "Add PDF render and transform service adapters" -m "Slice 2 needs generated page images and immutable PDF outputs behind typed service boundaries. Binary adapters are injectable for tests and fail clearly when qpdf or pdftoppm are unavailable." -m "Constraint: Source PDFs are never modified in place." -m "Rejected: Use arbitrary shell commands from skills | PDF binaries must stay behind typed tool APIs." -m "Confidence: high" -m "Scope-risk: moderate" -m "Tested: bun test packages/core/src/pdf-service.test.ts" -m "Tested: bun run --filter ./packages/core typecheck"
+git commit -m "Add PDF render and transform service adapters" -m "Slice 2 needs generated page images and immutable PDF outputs behind typed service boundaries. Rendering uses the optional Tessera-managed render binary while transforms use bundled pdf-lib." -m "Constraint: Source PDFs are never modified in place." -m "Rejected: Use a native transform binary | pdf-lib covers the supported v1 operations without an extra native dependency." -m "Rejected: Use arbitrary shell commands from skills | PDF binaries must stay behind typed tool APIs." -m "Confidence: high" -m "Scope-risk: moderate" -m "Tested: bun test packages/core/src/pdf-service.test.ts" -m "Tested: bun run --filter ./packages/core typecheck"
 ```
 
 ## Task 3: Tool Definitions And Workspace Boundaries
@@ -459,4 +451,3 @@ Expected:
 - no live `pdf-documents` skill.
 - no redaction/form/OCR overclaims.
 - no uncommitted files.
-

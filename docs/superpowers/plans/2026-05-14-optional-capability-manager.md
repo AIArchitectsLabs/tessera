@@ -4,7 +4,7 @@
 
 **Goal:** Add a global optional capability manager so Tessera can install allowlisted native capabilities on first use without requiring customer-managed system installs.
 
-**Architecture:** Create a core manager that installs only allowlisted single-binary assets into Tessera's app-managed data directory after SHA-256 verification. Wire the existing PDF tools to prefer managed binaries and to install a missing managed capability on first use before falling back to the development `PATH` behavior. Sidecar owns the app data install root and passes the manager into task execution.
+**Architecture:** Create a core manager that installs only allowlisted single-binary or archive assets into Tessera's app-managed data directory after SHA-256 verification. PDF rendering may use an optional managed `tessera-pdf-render` binary; PDF transforms are bundled TypeScript operations implemented with `pdf-lib` and do not use optional native binaries. Python support is scoped to skill helper execution: the manager may install the Python runner (`uv`), while skill package dependencies are installed into per-skill environments. Sidecar owns the app data install root and passes the manager into task execution.
 
 **Tech Stack:** Bun, TypeScript, Node `crypto`/`fs`, existing PDF service/tool runtime, no new dependencies.
 
@@ -14,7 +14,7 @@
 
 - Create `packages/core/src/optional-capabilities.ts`: allowlisted capability definitions, status checks, SHA-256 verification, single-binary install, binary path resolution.
 - Create `packages/core/src/optional-capabilities.test.ts`: manager install/status/checksum tests with injected downloader.
-- Modify `packages/core/src/pdf-service.ts`: accept a capability manager, use managed `pdftoppm`/`qpdf` first, and install once on missing binary.
+- Modify `packages/core/src/pdf-service.ts`: accept a capability manager for `pdf_render`, prefer managed `tessera-pdf-render`, and install once on missing render binary.
 - Modify `packages/core/src/pdf-service.test.ts`: prove render can install and retry a missing managed engine.
 - Modify `packages/core/src/pdf-tools.ts`, `workspace-tools.ts`, and `pi-session.ts`: thread the manager through the tool stack.
 - Modify `apps/sidecar/src/task-runner.ts` and `apps/sidecar/src/server.ts`: create and pass the app-data-backed manager.
@@ -26,11 +26,18 @@
 - [x] Implement `createOptionalCapabilityManager` in `packages/core/src/optional-capabilities.ts`.
 - [x] Run `bun test packages/core/src/optional-capabilities.test.ts` and verify pass.
 
-## Task 2: PDF First-Use Install
+## Task 2: PDF Render First-Use Install
 
-- [x] Write a failing `pdf-service.test.ts` case where `pdftoppm` is missing from `PATH`, the manager installs it, and render retries using the managed path.
-- [x] Add `capabilityManager` options to PDF capabilities, render, and transform paths.
+- [x] Write a failing `pdf-service.test.ts` case where `tessera-pdf-render` is missing from `PATH`, the manager installs it, and render retries using the managed path.
+- [x] Add `capabilityManager` options to PDF capabilities and render paths.
 - [x] Run `bun test packages/core/src/pdf-service.test.ts packages/core/src/pdf-tools.test.ts`.
+
+## Current PDF Dependency Boundary
+
+- `pdf_inspect`, `pdf_extract`, and `pdf_validate` use bundled TypeScript extraction via `unpdf`.
+- `pdf_transform` uses bundled TypeScript transforms via `pdf-lib`; no native transform dependency is required.
+- `pdf_render` uses optional managed `tessera-pdf-render` when visual page output is requested.
+- Skill-scoped Python helpers use `skill_run_python` and per-skill environments; Python packages are not global optional capabilities.
 
 ## Task 3: Runtime Wiring
 
