@@ -24,12 +24,12 @@ describe("pdf tool contracts", () => {
           message: "TypeScript PDF text extraction is bundled.",
         },
         {
-          engine: "pdftoppm",
+          engine: "tessera-pdf-render",
           engineRuntime: "binary",
           available: false,
-          command: "pdftoppm",
+          command: "tessera-pdf-render",
           provides: ["pdf_render"],
-          message: "PDF engine unavailable: pdftoppm",
+          message: "PDF engine unavailable: tessera-pdf-render",
           install: {
             capabilityId: "pdf-render",
             available: true,
@@ -43,14 +43,14 @@ describe("pdf tool contracts", () => {
         {
           name: "pdf_render",
           available: false,
-          requiredEngines: ["pdftoppm"],
-          message: "Install pdftoppm before rendering PDF pages.",
+          requiredEngines: ["tessera-pdf-render"],
+          message: "Install a PDF render engine before rendering PDF pages.",
         },
       ],
       warnings: [
         {
           code: "engine_unavailable",
-          message: "pdftoppm is unavailable; pdf_render cannot run.",
+          message: "A PDF render engine is unavailable; pdf_render cannot run.",
         },
       ],
     });
@@ -144,7 +144,7 @@ describe("pdf tool contracts", () => {
           height: 792,
         },
       ],
-      engine: "pdftoppm",
+      engine: "tessera-pdf-render",
       engineRuntime: "binary",
       provenance: {
         createdAt: "2026-05-14T00:00:00.000Z",
@@ -167,8 +167,8 @@ describe("pdf tool contracts", () => {
         { sourcePath: "a.pdf", sourcePage: 1, outputPage: 1 },
         { sourcePath: "b.pdf", sourcePage: 1, outputPage: 2 },
       ],
-      engine: "qpdf",
-      engineRuntime: "binary",
+      engine: "pdf-lib",
+      engineRuntime: "typescript",
       provenance: {
         createdAt: "2026-05-14T00:00:00.000Z",
         immutableSource: true,
@@ -201,8 +201,8 @@ describe("pdf tool contracts", () => {
               { sourcePath: "docs/a.pdf", sourcePage: 1, outputPage: 1 },
               { sourcePath: "docs/b.pdf", sourcePage: 1, outputPage: 2 },
             ],
-            engine: "qpdf",
-            engineRuntime: "binary",
+            engine: "pdf-lib",
+            engineRuntime: "typescript",
             provenance: {
               createdAt: "2026-05-14T00:00:00.000Z",
               immutableSource: true,

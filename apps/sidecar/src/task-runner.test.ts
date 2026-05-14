@@ -454,7 +454,7 @@ describe("task runner", () => {
           label: "PDF render engine",
           version: "1.0.0",
           status: "installed",
-          binaryPaths: { pdftoppm: "/managed/pdftoppm" },
+          binaryPaths: { "tessera-pdf-render": "/managed/tessera-pdf-render" },
         };
       },
     };

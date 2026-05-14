@@ -15,12 +15,12 @@ describe("optional capability manager", () => {
   test("builds PDF capability definitions from release metadata env", () => {
     const definitions = optionalCapabilityDefinitionsFromEnv(
       {
-        TESSERA_PDF_RENDER_URL: "https://downloads.tessera.local/pdftoppm",
+        TESSERA_PDF_RENDER_URL: "https://downloads.tessera.local/tessera-pdf-render",
         TESSERA_PDF_RENDER_SHA256: "abc123",
         TESSERA_PDF_RENDER_VERSION: "24.02.0",
         TESSERA_PDF_RENDER_SIZE_BYTES: "42000000",
         TESSERA_PDF_RENDER_ARCHIVE_KIND: "tar.gz",
-        TESSERA_PDF_RENDER_ARCHIVE_ENTRY: "bin/pdftoppm",
+        TESSERA_PDF_RENDER_ARCHIVE_ENTRY: "bin/tessera-pdf-render",
         TESSERA_PDF_TRANSFORM_URL: "https://downloads.tessera.local/qpdf",
         TESSERA_PDF_TRANSFORM_SHA256: "def456",
         TESSERA_PDF_TRANSFORM_VERSION: "11.9.0",
@@ -38,16 +38,16 @@ describe("optional capability manager", () => {
       id: "pdf-render",
       label: "PDF render engine",
       version: "24.02.0",
-      binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+      binaries: [{ name: "tessera-pdf-render", relativePath: "tessera-pdf-render" }],
       assets: [
         {
           platform: "darwin",
           arch: "arm64",
-          url: "https://downloads.tessera.local/pdftoppm",
+          url: "https://downloads.tessera.local/tessera-pdf-render",
           sha256: "abc123",
-          executableName: "pdftoppm",
+          executableName: "tessera-pdf-render",
           sizeBytes: 42000000,
-          archive: { kind: "tar.gz", entry: "bin/pdftoppm" },
+          archive: { kind: "tar.gz", entry: "bin/tessera-pdf-render" },
         },
       ],
     });
@@ -349,14 +349,14 @@ describe("optional capability manager", () => {
           id: "pdf-render",
           label: "PDF render engine",
           version: "1.0.0",
-          binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+          binaries: [{ name: "tessera-pdf-render", relativePath: "tessera-pdf-render" }],
           assets: [
             {
               platform: "darwin",
               arch: "arm64",
-              url: "https://downloads.tessera.local/pdftoppm",
+              url: "https://downloads.tessera.local/tessera-pdf-render",
               sha256: sha256(Buffer.from("expected")),
-              executableName: "pdftoppm",
+              executableName: "tessera-pdf-render",
             },
           ],
         },
@@ -365,7 +365,9 @@ describe("optional capability manager", () => {
     });
 
     await expect(manager.install("pdf-render")).rejects.toThrow(/checksum/i);
-    await expect(manager.resolveBinary("pdf-render", "pdftoppm")).resolves.toBeUndefined();
+    await expect(
+      manager.resolveBinary("pdf-render", "tessera-pdf-render")
+    ).resolves.toBeUndefined();
   });
 
   test("installs a tar.gz archive capability via the injected extractor", async () => {

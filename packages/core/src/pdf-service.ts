@@ -23,6 +23,7 @@ import {
   PdfValidateResultSchema,
   type PdfWarning,
 } from "@tessera/contracts";
+import { PDFDocument, degrees } from "pdf-lib";
 import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 
@@ -121,28 +122,23 @@ export async function getPdfCapabilities(
   options: PdfCapabilitiesOptions = {}
 ): Promise<PdfCapabilitiesResult> {
   const runner = options.binaryRunner ?? defaultBinaryRunner;
-  const [renderEngine, transformEngine] = await Promise.all([
-    checkPdfEngine({
-      capabilityId: "pdf-render",
-      binaryName: "pdftoppm",
-      args: ["-v"],
-      provides: ["pdf_render"],
-      runner,
-      ...(options.capabilityManager !== undefined
-        ? { capabilityManager: options.capabilityManager }
-        : {}),
-    }),
-    checkPdfEngine({
-      capabilityId: "pdf-transform",
-      binaryName: "qpdf",
-      args: ["--version"],
-      provides: ["pdf_transform"],
-      runner,
-      ...(options.capabilityManager !== undefined
-        ? { capabilityManager: options.capabilityManager }
-        : {}),
-    }),
-  ]);
+  const renderEngine = await checkPdfEngine({
+    capabilityId: "pdf-render",
+    binaryName: "tessera-pdf-render",
+    args: ["--version"],
+    provides: ["pdf_render"],
+    runner,
+    ...(options.capabilityManager !== undefined
+      ? { capabilityManager: options.capabilityManager }
+      : {}),
+  });
+  const transformEngine = {
+    engine: "pdf-lib",
+    engineRuntime: "typescript" as const,
+    available: true,
+    provides: ["pdf_transform" as const],
+    message: "TypeScript PDF transforms are bundled.",
+  };
   const engines = [
     {
       engine: "unpdf",
@@ -174,14 +170,13 @@ export async function getPdfCapabilities(
     {
       name: "pdf_render" as const,
       available: renderEngine.available,
-      requiredEngines: ["pdftoppm"],
-      ...(!renderEngine.available ? { message: unavailableMessage("pdftoppm") } : {}),
+      requiredEngines: ["tessera-pdf-render"],
+      ...(!renderEngine.available ? { message: unavailableMessage("tessera-pdf-render") } : {}),
     },
     {
       name: "pdf_transform" as const,
       available: transformEngine.available,
-      requiredEngines: ["qpdf"],
-      ...(!transformEngine.available ? { message: unavailableMessage("qpdf") } : {}),
+      requiredEngines: ["pdf-lib"],
     },
     {
       name: "pdf_manifest" as const,
@@ -194,15 +189,7 @@ export async function getPdfCapabilities(
       ? [
           {
             code: "engine_unavailable",
-            message: "pdftoppm is unavailable; pdf_render cannot run.",
-          },
-        ]
-      : []),
-    ...(!transformEngine.available
-      ? [
-          {
-            code: "engine_unavailable",
-            message: "qpdf is unavailable; pdf_transform cannot run.",
+            message: "A PDF render engine is unavailable; pdf_render cannot run.",
           },
         ]
       : []),
@@ -357,7 +344,7 @@ export async function renderPdfPages(
       path: inspected.path,
       fileType: "pdf",
       outputs: [],
-      engine: "pdftoppm",
+      engine: "tessera-pdf-render",
       engineRuntime: "binary",
       provenance: createProvenance(),
       warnings: [PAGE_RANGE_OUT_OF_BOUNDS_WARNING],
@@ -369,21 +356,24 @@ export async function renderPdfPages(
   const firstPage = selectedPages[0] ?? 1;
   const lastPage = selectedPages.at(-1) ?? firstPage;
   await runPdfCapabilityBinary(options.binaryRunner ?? defaultBinaryRunner, {
-    command: "pdftoppm",
+    command: "tessera-pdf-render",
     capabilityId: "pdf-render",
-    binaryName: "pdftoppm",
+    binaryName: "tessera-pdf-render",
     ...(options.capabilityManager !== undefined
       ? { capabilityManager: options.capabilityManager }
       : {}),
     args: [
-      "-png",
-      "-f",
-      String(firstPage),
-      "-l",
-      String(lastPage),
-      "-r",
-      String(positiveInteger(options.dpi, 144)),
+      "--input",
       path,
+      "--format",
+      "png",
+      "--first-page",
+      String(firstPage),
+      "--last-page",
+      String(lastPage),
+      "--dpi",
+      String(positiveInteger(options.dpi, 144)),
+      "--output-prefix",
       outputPrefix,
     ],
   });
@@ -410,7 +400,7 @@ export async function renderPdfPages(
     path: inspected.path,
     fileType: "pdf",
     outputs,
-    engine: "pdftoppm",
+    engine: "tessera-pdf-render",
     engineRuntime: "binary",
     provenance: createProvenance(),
     warnings: [],
@@ -440,16 +430,7 @@ export async function transformPdfDocument(
     inspectedSources,
     options.rotation?.pages
   );
-  const args = buildQpdfArgs(options, inspectedSources);
-  await runPdfCapabilityBinary(options.binaryRunner ?? defaultBinaryRunner, {
-    command: "qpdf",
-    capabilityId: "pdf-transform",
-    binaryName: "qpdf",
-    ...(options.capabilityManager !== undefined
-      ? { capabilityManager: options.capabilityManager }
-      : {}),
-    args,
-  });
+  await writeTransformedPdf(options, inspectedSources);
 
   return PdfTransformResultSchema.parse({
     outputPath: options.displayOutputPath ?? basename(options.outputPath),
@@ -457,8 +438,8 @@ export async function transformPdfDocument(
     operation: options.operation,
     sourcePaths: inspectedSources.map((item) => item.inspected.path),
     pageMapping,
-    engine: "qpdf",
-    engineRuntime: "binary",
+    engine: "pdf-lib",
+    engineRuntime: "typescript",
     provenance: createProvenance(),
     warnings: [],
   });
@@ -787,45 +768,79 @@ function versionFromOutput(result: BinaryRunnerResult): string | undefined {
   return output;
 }
 
-function buildQpdfArgs(
+async function writeTransformedPdf(
   options: PdfTransformOptions,
   inspectedSources: Array<{ source: PdfTransformSource; inspected: PdfInspectResult }>
-): string[] {
+): Promise<void> {
   switch (options.operation) {
     case "merge":
-      return [
-        "--empty",
-        "--pages",
-        ...inspectedSources.flatMap((item) => [
-          item.source.path,
-          qpdfRange(item.source.pages, item.inspected.pageCount),
-        ]),
-        "--",
-        options.outputPath,
-      ];
+      await writeSelectedPagesPdf(options.outputPath, inspectedSources);
+      return;
     case "split":
     case "reorder": {
       const first = inspectedSources[0];
       if (!first) throw new Error("At least one PDF source is required.");
-      return [
-        first.source.path,
-        "--pages",
-        first.source.path,
-        qpdfRange(first.source.pages, first.inspected.pageCount),
-        "--",
-        options.outputPath,
-      ];
+      await writeSelectedPagesPdf(options.outputPath, [first]);
+      return;
     }
-    case "rotate": {
-      const first = inspectedSources[0];
-      if (!first) throw new Error("At least one PDF source is required.");
-      if (inspectedSources.length !== 1) throw new Error("Rotate expects exactly one PDF source.");
-      const degrees = options.rotation?.degrees;
-      if (degrees === undefined) throw new Error("Rotate requires rotation degrees.");
-      const pages = qpdfRange(options.rotation?.pages, first.inspected.pageCount);
-      return [first.source.path, `--rotate=+${degrees}:${pages}`, options.outputPath];
+    case "rotate":
+      await writeRotatedPdf(options, inspectedSources);
+      return;
+  }
+}
+
+async function writeSelectedPagesPdf(
+  outputPath: string,
+  inspectedSources: Array<{ source: PdfTransformSource; inspected: PdfInspectResult }>
+): Promise<void> {
+  const output = await PDFDocument.create();
+  for (const item of inspectedSources) {
+    const document = await PDFDocument.load(await readFile(item.source.path));
+    const pageIndexes = normalizePdfPageRange(item.source.pages, item.inspected.pageCount).map(
+      (pageNumber) => pageNumber - 1
+    );
+    if (pageIndexes.length === 0) {
+      throw new Error("PDF page range does not overlap the source document.");
+    }
+    const copiedPages = await output.copyPages(document, pageIndexes);
+    for (const page of copiedPages) {
+      output.addPage(page);
     }
   }
+  await writeFile(outputPath, await output.save());
+}
+
+async function writeRotatedPdf(
+  options: PdfTransformOptions,
+  inspectedSources: Array<{ source: PdfTransformSource; inspected: PdfInspectResult }>
+): Promise<void> {
+  const first = inspectedSources[0];
+  if (!first) throw new Error("At least one PDF source is required.");
+  if (inspectedSources.length !== 1) throw new Error("Rotate expects exactly one PDF source.");
+  const rotationDegrees = options.rotation?.degrees;
+  if (rotationDegrees === undefined) throw new Error("Rotate requires rotation degrees.");
+
+  const source = await PDFDocument.load(await readFile(first.source.path));
+  const output = await PDFDocument.create();
+  const allPageNumbers = normalizePdfPageRange(undefined, first.inspected.pageCount);
+  const selectedPageNumbers = new Set(
+    normalizePdfPageRange(options.rotation?.pages, first.inspected.pageCount)
+  );
+  if (selectedPageNumbers.size === 0) {
+    throw new Error("PDF page range does not overlap the source document.");
+  }
+  const copiedPages = await output.copyPages(
+    source,
+    allPageNumbers.map((pageNumber) => pageNumber - 1)
+  );
+  copiedPages.forEach((page, index) => {
+    const pageNumber = index + 1;
+    if (selectedPageNumbers.has(pageNumber)) {
+      page.setRotation(degrees(page.getRotation().angle + rotationDegrees));
+    }
+    output.addPage(page);
+  });
+  await writeFile(options.outputPath, await output.save());
 }
 
 function buildPageMapping(
@@ -876,19 +891,6 @@ function artifactPathsForResult(result: PdfManifestOperationResult): string[] {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
-}
-
-function qpdfRange(range: PdfPageRange | undefined, pageCount: number): string {
-  const pages = normalizePdfPageRange(range, pageCount);
-  if (pages.length === 0) throw new Error("PDF page range does not overlap the source document.");
-  return pagesToRange(pages);
-}
-
-function pagesToRange(pages: number[]): string {
-  const first = pages[0];
-  const last = pages.at(-1);
-  if (first === undefined || last === undefined) throw new Error("PDF page range is empty.");
-  return first === last ? String(first) : `${first}-${last}`;
 }
 
 async function readPngDimensions(path: string): Promise<PdfImageDimensions> {

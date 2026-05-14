@@ -63,8 +63,9 @@ describe("createPdfToolDefinitions", () => {
     const guard = await createWorkspaceGuard(root);
     const tools = createPdfToolDefinitions(guard, {
       binaryRunner: async ({ command }) => {
-        if (command === "pdftoppm") return { stdout: "", stderr: "pdftoppm version 24.02.0" };
-        if (command === "qpdf") return { stdout: "qpdf version 11.9.0", stderr: "" };
+        if (command === "tessera-pdf-render") {
+          return { stdout: "tessera-pdf-render 1.0.0", stderr: "" };
+        }
         throw new Error(`unexpected command ${command}`);
       },
     });

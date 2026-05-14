@@ -235,7 +235,7 @@ export function optionalCapabilityDefinitionsFromEnv(
     arch,
     url: env.TESSERA_PDF_RENDER_URL,
     sha256: env.TESSERA_PDF_RENDER_SHA256,
-    executableName: "pdftoppm",
+    executableName: "tessera-pdf-render",
     sizeBytes: env.TESSERA_PDF_RENDER_SIZE_BYTES,
     archiveKind: env.TESSERA_PDF_RENDER_ARCHIVE_KIND,
     archiveEntry: env.TESSERA_PDF_RENDER_ARCHIVE_ENTRY,
@@ -245,7 +245,7 @@ export function optionalCapabilityDefinitionsFromEnv(
       id: "pdf-render",
       label: "PDF render engine",
       version: env.TESSERA_PDF_RENDER_VERSION?.trim() || "managed",
-      binaries: [{ name: "pdftoppm", relativePath: "pdftoppm" }],
+      binaries: [{ name: "tessera-pdf-render", relativePath: "tessera-pdf-render" }],
       assets: [renderAsset],
     });
   }
