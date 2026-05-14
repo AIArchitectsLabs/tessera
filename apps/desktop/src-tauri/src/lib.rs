@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -24,6 +25,10 @@ const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_O
 const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
 const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
 const GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID: &str = "tessera";
+const GWS_CLI_URL_ENV: &str = "TESSERA_GWS_CLI_URL";
+const GWS_CLI_SHA256_ENV: &str = "TESSERA_GWS_CLI_SHA256";
+const GWS_CLI_VERSION_ENV: &str = "TESSERA_GWS_CLI_VERSION";
+const GWS_CLI_SIZE_BYTES_ENV: &str = "TESSERA_GWS_CLI_SIZE_BYTES";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -264,6 +269,88 @@ fn bundled_gws_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(binaries_dir(app)?.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}")))
 }
 
+async fn managed_capability_binary_status(
+    state: &SidecarHandle,
+    capability_id: &str,
+    binary_name: &str,
+) -> anyhow::Result<CapabilityBinaryResult> {
+    let path = format!(
+        "/capabilities/{}/binaries/{}",
+        percent_encode(capability_id),
+        percent_encode(binary_name)
+    );
+    let json = state.get(&path).await?;
+    serde_json::from_str(&json).map_err(Into::into)
+}
+
+async fn managed_capability_binary_install(
+    state: &SidecarHandle,
+    capability_id: &str,
+    binary_name: &str,
+) -> anyhow::Result<CapabilityBinaryResult> {
+    let path = format!(
+        "/capabilities/{}/binaries/{}/install",
+        percent_encode(capability_id),
+        percent_encode(binary_name)
+    );
+    let json = state.post(&path, "{}").await?;
+    serde_json::from_str(&json).map_err(Into::into)
+}
+
+async fn managed_capability_binary_path(
+    state: &SidecarHandle,
+    capability_id: &str,
+    binary_name: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let result = managed_capability_binary_status(state, capability_id, binary_name).await?;
+    Ok(result.path.map(PathBuf::from))
+}
+
+async fn google_workspace_cli_path(
+    app: &AppHandle,
+    state: &SidecarHandle,
+) -> Result<PathBuf, String> {
+    let bundled = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    resolve_google_workspace_cli_path(
+        Some(&bundled),
+        || async { managed_capability_binary_path(state, "google-workspace-cli", "gws").await },
+        || async { managed_capability_binary_install(state, "google-workspace-cli", "gws").await },
+    )
+    .await
+}
+
+async fn resolve_google_workspace_cli_path<S, I, SFut, IFut>(
+    bundled: Option<&Path>,
+    sidecar_get: S,
+    sidecar_install: I,
+) -> Result<PathBuf, String>
+where
+    S: FnOnce() -> SFut,
+    SFut: Future<Output = anyhow::Result<Option<PathBuf>>>,
+    I: FnOnce() -> IFut,
+    IFut: Future<Output = anyhow::Result<CapabilityBinaryResult>>,
+{
+    if let Ok(Some(path)) = sidecar_get().await {
+        return Ok(path);
+    }
+
+    if let Some(bundled) = bundled {
+        if bundled.exists() {
+            return Ok(bundled.to_path_buf());
+        }
+    }
+
+    if let Some(path) = sidecar_install()
+        .await
+        .map_err(|error| error.to_string())?
+        .path
+    {
+        return Ok(PathBuf::from(path));
+    }
+
+    Ok(PathBuf::from(if cfg!(windows) { "gws.exe" } else { "gws" }))
+}
+
 fn bundled_google_workspace_oauth_client_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(binaries_dir(app)?.join(GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE))
 }
@@ -460,6 +547,19 @@ fn apply_google_workspace_env(
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", client_secret);
     }
+}
+
+fn workspace_cli_uses_google_workspace(args: &[&str]) -> bool {
+    matches!(
+        args.first().copied(),
+        Some("calendar")
+            | Some("contacts")
+            | Some("drive")
+            | Some("gcal")
+            | Some("gmail")
+            | Some("mail")
+            | Some("people")
+    )
 }
 
 fn first_useful_process_line(result: &SpawnResult) -> String {
@@ -884,7 +984,6 @@ async fn attach_default_workflow_execution(
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let bin_dir = binaries_dir(app.handle()).context("Could not resolve binaries dir")?;
     let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
-    let gws_path = bin_dir.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}"));
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -920,7 +1019,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_APP_CONFIG_DIR",
             app_config_dir.to_string_lossy().as_ref(),
         )
-        .env("TESSERA_GWS_CLI_PATH", gws_path.to_string_lossy().as_ref())
         .env(
             "TESSERA_GWS_CONFIG_DIR",
             google_workspace_config_dir.to_string_lossy().as_ref(),
@@ -933,6 +1031,26 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
         // Point it at binaries/ where package.json is kept alongside the sources.
         .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
+
+    if let Some(value) = runtime_or_build_env(GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")) {
+        sidecar_command = sidecar_command.env(GWS_CLI_URL_ENV, value);
+    }
+    if let Some(value) =
+        runtime_or_build_env(GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256"))
+    {
+        sidecar_command = sidecar_command.env(GWS_CLI_SHA256_ENV, value);
+    }
+    if let Some(value) =
+        runtime_or_build_env(GWS_CLI_VERSION_ENV, option_env!("TESSERA_GWS_CLI_VERSION"))
+    {
+        sidecar_command = sidecar_command.env(GWS_CLI_VERSION_ENV, value);
+    }
+    if let Some(value) = runtime_or_build_env(
+        GWS_CLI_SIZE_BYTES_ENV,
+        option_env!("TESSERA_GWS_CLI_SIZE_BYTES"),
+    ) {
+        sidecar_command = sidecar_command.env(GWS_CLI_SIZE_BYTES_ENV, value);
+    }
 
     if playwright_browsers_dir.exists() {
         sidecar_command = sidecar_command.env(
@@ -989,6 +1107,29 @@ struct SpawnResult {
     exit_code: i32,
     signal: Option<String>,
     duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilityBinaryResult {
+    capability_id: String,
+    binary_name: String,
+    path: Option<String>,
+    installed: bool,
+    install_available: bool,
+    version: String,
+    size_bytes: Option<u64>,
+    message: Option<String>,
+    progress: Option<CapabilityInstallProgress>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilityInstallProgress {
+    phase: String,
+    downloaded_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1069,6 +1210,7 @@ async fn memory_forget(
 
 async fn run_workspace_cli_command(
     app: &AppHandle,
+    state: &SidecarHandle,
     args: &[&str],
     credential_env: Option<(String, String)>,
 ) -> Result<SpawnResult, String> {
@@ -1078,11 +1220,7 @@ async fn run_workspace_cli_command(
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
-    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
     let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
-    fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
-    install_google_workspace_oauth_client_file(app, &google_workspace_config_dir)
-        .map_err(|error| error.to_string())?;
     let start = std::time::Instant::now();
     let mut command = std::process::Command::new(cli_path);
     command.args(args);
@@ -1090,7 +1228,13 @@ async fn run_workspace_cli_command(
         "TESSERA_APP_CONFIG_DIR",
         app_config_dir.to_string_lossy().as_ref(),
     );
-    apply_google_workspace_env(&mut command, &gws_path, &google_workspace_config_dir);
+    if workspace_cli_uses_google_workspace(args) {
+        fs::create_dir_all(&google_workspace_config_dir).map_err(|error| error.to_string())?;
+        install_google_workspace_oauth_client_file(app, &google_workspace_config_dir)
+            .map_err(|error| error.to_string())?;
+        let gws_path = google_workspace_cli_path(app, state).await?;
+        apply_google_workspace_env(&mut command, &gws_path, &google_workspace_config_dir);
+    }
     if let Some((env_name, credential)) = credential_env {
         command.env(env_name, credential);
     }
@@ -1107,9 +1251,10 @@ async fn run_workspace_cli_command(
 
 async fn run_google_workspace_cli_command(
     app: &AppHandle,
+    state: &SidecarHandle,
     args: &[&str],
 ) -> Result<SpawnResult, String> {
-    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    let gws_path = google_workspace_cli_path(app, state).await?;
     let app_config_dir = app
         .path()
         .app_config_dir()
@@ -1136,9 +1281,10 @@ async fn run_google_workspace_cli_command(
 
 async fn start_google_workspace_login_command(
     app: &AppHandle,
+    state: &SidecarHandle,
     args: &[&str],
 ) -> Result<SpawnResult, String> {
-    let gws_path = bundled_gws_path(app).map_err(|error| error.to_string())?;
+    let gws_path = google_workspace_cli_path(app, state).await?;
     let app_config_dir = app
         .path()
         .app_config_dir()
@@ -1219,8 +1365,11 @@ async fn start_google_workspace_login_command(
     })
 }
 
-async fn google_workspace_auth_status(app: &AppHandle) -> Result<SpawnResult, String> {
-    run_google_workspace_cli_command(app, &["auth", "status"]).await
+async fn google_workspace_auth_status(
+    app: &AppHandle,
+    state: &SidecarHandle,
+) -> Result<SpawnResult, String> {
+    run_google_workspace_cli_command(app, state, &["auth", "status"]).await
 }
 
 fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
@@ -1317,6 +1466,24 @@ async fn google_workspace_oauth_client_status(
     app: AppHandle,
 ) -> Result<GoogleWorkspaceOAuthClientStatus, String> {
     google_workspace_oauth_client_status_result(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn google_workspace_capability_status(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_status(state.inner(), "google-workspace-cli", "gws")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn google_workspace_capability_install(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_install(state.inner(), "google-workspace-cli", "gws")
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2022,6 +2189,7 @@ async fn integration_credential_delete(
 #[tauri::command]
 async fn integration_connection_test(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
     request: integration_settings::IntegrationConnectionTestRequest,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
     let target = request.target().map_err(|error| error.to_string())?;
@@ -2032,8 +2200,10 @@ async fn integration_connection_test(
                     search_connection_command(integration_settings::SearchProvider::BraveSearch)
                 }
                 integration_settings::IntegrationProvider::GoogleWorkspace => {
-                    let status = google_workspace_auth_status(&app).await?;
+                    let status = google_workspace_auth_status(&app, state.inner()).await?;
                     if status.exit_code != 0 || !google_workspace_auth_status_connected(&status) {
+                        integration_settings::set_google_workspace_connected(&app, false)
+                            .map_err(|error| error.to_string())?;
                         return Ok(integration_settings::IntegrationConnectionTestResult {
                             ok: false,
                             message: first_useful_process_line(&status),
@@ -2092,7 +2262,8 @@ async fn integration_connection_test(
         }
     };
 
-    let result = run_workspace_cli_command(&app, &command_args, credential_env).await?;
+    let result =
+        run_workspace_cli_command(&app, state.inner(), &command_args, credential_env).await?;
     let ok = result.exit_code == 0;
     let message = if ok {
         "Connection test succeeded".to_string()
@@ -2105,6 +2276,10 @@ async fn integration_connection_test(
             .unwrap_or("Connection test failed")
             .to_string()
     };
+    if provider == Some(integration_settings::IntegrationProvider::GoogleWorkspace) {
+        integration_settings::set_google_workspace_connected(&app, ok)
+            .map_err(|error| error.to_string())?;
+    }
 
     Ok(connection_test_result(
         ok,
@@ -2117,8 +2292,9 @@ async fn integration_connection_test(
 #[tauri::command]
 async fn google_workspace_connection_status(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
-    let status = google_workspace_auth_status(&app).await?;
+    let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
     if ok {
         integration_settings::set_google_workspace_connected(&app, true)
@@ -2140,6 +2316,7 @@ async fn google_workspace_connection_status(
 #[tauri::command]
 async fn google_workspace_connect(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
     let app_config_dir = app
         .path()
@@ -2158,8 +2335,12 @@ async fn google_workspace_connect(
         });
     }
 
-    let login =
-        start_google_workspace_login_command(&app, &google_workspace_readonly_auth_args()).await?;
+    let login = start_google_workspace_login_command(
+        &app,
+        state.inner(),
+        &google_workspace_readonly_auth_args(),
+    )
+    .await?;
     if login.exit_code == 124 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
@@ -2177,7 +2358,7 @@ async fn google_workspace_connect(
         });
     }
 
-    let status = google_workspace_auth_status(&app).await?;
+    let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
     if ok {
         integration_settings::set_google_workspace_connected(&app, true)
@@ -2199,8 +2380,9 @@ async fn google_workspace_connect(
 #[tauri::command]
 async fn google_identity_connection_status(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
-    let status = google_workspace_auth_status(&app).await?;
+    let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2218,6 +2400,7 @@ async fn google_identity_connection_status(
 #[tauri::command]
 async fn google_identity_connect(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
     let app_config_dir = app
         .path()
@@ -2236,7 +2419,9 @@ async fn google_identity_connect(
         });
     }
 
-    let login = start_google_workspace_login_command(&app, &google_identity_auth_args()).await?;
+    let login =
+        start_google_workspace_login_command(&app, state.inner(), &google_identity_auth_args())
+            .await?;
     if login.exit_code == 124 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
@@ -2254,7 +2439,7 @@ async fn google_identity_connect(
         });
     }
 
-    let status = google_workspace_auth_status(&app).await?;
+    let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2272,8 +2457,9 @@ async fn google_identity_connect(
 #[tauri::command]
 async fn google_workspace_disconnect(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
-    let logout = run_google_workspace_cli_command(&app, &["auth", "logout"]).await?;
+    let logout = run_google_workspace_cli_command(&app, state.inner(), &["auth", "logout"]).await?;
     if logout.exit_code != 0 {
         return Err(first_useful_process_line(&logout));
     }
@@ -2284,6 +2470,7 @@ async fn google_workspace_disconnect(
 #[tauri::command]
 async fn google_workspace_health(
     app: AppHandle,
+    state: State<'_, SidecarHandle>,
 ) -> Result<Vec<GoogleWorkspaceServiceHealth>, String> {
     let checks: [(&str, Vec<&str>); 4] = [
         (
@@ -2333,7 +2520,7 @@ async fn google_workspace_health(
     let mut drive_ok = false;
 
     for (service, args) in checks {
-        let result = run_workspace_cli_command(&app, &args, None).await?;
+        let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
         let ok = result.exit_code == 0;
         let message = if ok {
             "Ready".to_string()
@@ -2590,6 +2777,8 @@ pub fn run() {
             inbox_snooze,
             google_identity_connect,
             google_identity_connection_status,
+            google_workspace_capability_install,
+            google_workspace_capability_status,
             google_workspace_connect,
             google_workspace_connection_status,
             google_workspace_disconnect,
@@ -2672,10 +2861,26 @@ mod tests {
         google_workspace_config_dir, google_workspace_gws_client_secret_path,
         google_workspace_oauth_client_json, google_workspace_oauth_missing_message,
         google_workspace_readonly_auth_args, normalize_google_workspace_oauth_client_file,
-        search_connection_command, tool_policy_runtime_json, SpawnResult,
+        resolve_google_workspace_cli_path, search_connection_command, tool_policy_runtime_json,
+        workspace_cli_uses_google_workspace, CapabilityBinaryResult, SpawnResult,
         GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
+    use std::path::PathBuf;
+
+    fn capability_binary_result(path: Option<&str>) -> CapabilityBinaryResult {
+        CapabilityBinaryResult {
+            capability_id: "google-workspace-cli".to_string(),
+            binary_name: "gws".to_string(),
+            path: path.map(str::to_string),
+            installed: path.is_some(),
+            install_available: true,
+            version: "0.22.5".to_string(),
+            size_bytes: None,
+            message: None,
+            progress: None,
+        }
+    }
 
     #[test]
     fn default_task_tool_policies_include_shell_access() {
@@ -2742,6 +2947,65 @@ mod tests {
         let (args, env_name) = search_connection_command(SearchProvider::DuckDuckGo);
         assert_eq!(args, vec!["web-search", "search", "tessera"]);
         assert_eq!(env_name, None);
+    }
+
+    #[test]
+    fn workspace_cli_google_detection_skips_non_workspace_commands() {
+        assert!(workspace_cli_uses_google_workspace(&["gcal", "list"]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "mail", "read", "msg-1"
+        ]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "calendar",
+            "calendarList",
+            "list"
+        ]));
+        assert!(!workspace_cli_uses_google_workspace(&[
+            "web-search",
+            "search",
+            "tessera"
+        ]));
+        assert!(!workspace_cli_uses_google_workspace(&[
+            "web-fetch",
+            "fetch",
+            "https://example.com"
+        ]));
+    }
+
+    #[tokio::test]
+    async fn google_workspace_cli_path_installs_when_managed_and_bundled_missing() {
+        let installed_path = PathBuf::from("/managed/google-workspace-cli/gws");
+        let result = resolve_google_workspace_cli_path(
+            None,
+            || async { Ok::<Option<PathBuf>, anyhow::Error>(None) },
+            || async {
+                Ok::<CapabilityBinaryResult, anyhow::Error>(capability_binary_result(Some(
+                    "/managed/google-workspace-cli/gws",
+                )))
+            },
+        )
+        .await
+        .expect("resolve gws path");
+
+        assert_eq!(result, installed_path);
+    }
+
+    #[tokio::test]
+    async fn google_workspace_cli_path_falls_back_to_path_when_install_returns_no_path() {
+        let result = resolve_google_workspace_cli_path(
+            None,
+            || async { Ok::<Option<PathBuf>, anyhow::Error>(None) },
+            || async {
+                Ok::<CapabilityBinaryResult, anyhow::Error>(capability_binary_result(None))
+            },
+        )
+        .await
+        .expect("resolve gws path");
+
+        assert_eq!(
+            result,
+            PathBuf::from(if cfg!(windows) { "gws.exe" } else { "gws" })
+        );
     }
 
     #[test]
