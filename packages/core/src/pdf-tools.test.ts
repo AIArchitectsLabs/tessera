@@ -47,7 +47,13 @@ describe("createPdfToolDefinitions", () => {
 
     const tools = createPdfToolDefinitions(guard);
 
-    expect(tools.map((item) => item.name)).toEqual(["pdf_inspect", "pdf_extract", "pdf_validate"]);
+    expect(tools.map((item) => item.name)).toEqual([
+      "pdf_inspect",
+      "pdf_extract",
+      "pdf_validate",
+      "pdf_render",
+      "pdf_transform",
+    ]);
   });
 
   test("inspects, extracts, and validates a workspace PDF", async () => {
@@ -176,5 +182,116 @@ describe("createPdfToolDefinitions", () => {
       exists: false,
       passed: false,
     });
+  });
+
+  test("renders a workspace PDF to a workspace output directory", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const tools = createPdfToolDefinitions(guard, {
+      binaryRunner: async ({ args }) => {
+        const outputPrefix = args.at(-1);
+        if (typeof outputPrefix !== "string") throw new Error("missing output prefix");
+        await writeFile(`${outputPrefix}-1.png`, Buffer.from("png"));
+        return { stdout: "", stderr: "" };
+      },
+      dimensionsReader: async () => ({ width: 612, height: 792 }),
+    });
+
+    const rendered = await tool(tools, "pdf_render").execute(
+      "call-render",
+      { path: "docs/sample.pdf", outputDir: "renders", pages: { start: 1, end: 1 } },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(JSON.parse(resultText(rendered))).toMatchObject({
+      path: "docs/sample.pdf",
+      outputs: [{ pageNumber: 1, path: "renders/sample-page-1.png", width: 612, height: 792 }],
+    });
+  });
+
+  test("transforms a workspace PDF to a workspace output path", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const tools = createPdfToolDefinitions(guard, {
+      binaryRunner: async ({ args }) => {
+        const outputPath = args.at(-1);
+        if (typeof outputPath !== "string") throw new Error("missing output path");
+        await writeFile(outputPath, samplePdf("Rotated"));
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    const transformed = await tool(tools, "pdf_transform").execute(
+      "call-transform",
+      {
+        operation: "rotate",
+        sources: [{ path: "docs/sample.pdf" }],
+        outputPath: "out/rotated.pdf",
+        rotation: { degrees: 90, pages: { start: 1, end: 1 } },
+      },
+      undefined,
+      undefined,
+      undefined as never
+    );
+
+    expect(JSON.parse(resultText(transformed))).toMatchObject({
+      outputPath: "out/rotated.pdf",
+      operation: "rotate",
+      sourcePaths: ["docs/sample.pdf"],
+      pageMapping: [{ sourcePath: "docs/sample.pdf", sourcePage: 1, outputPage: 1 }],
+    });
+  });
+
+  test("denies render output directories outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_render").execute(
+        "call-denied",
+        { path: "docs/sample.pdf", outputDir: "/tmp/tessera-outside-render" },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_render"]);
+  });
+
+  test("denies transform output paths outside the workspace", async () => {
+    const { root } = await makeFixture();
+    const guard = await createWorkspaceGuard(root);
+    const violations: string[] = [];
+    const tools = createPdfToolDefinitions(guard, {
+      onViolation(toolName) {
+        violations.push(toolName);
+      },
+    });
+
+    await expect(
+      tool(tools, "pdf_transform").execute(
+        "call-denied",
+        {
+          operation: "rotate",
+          sources: [{ path: "docs/sample.pdf" }],
+          outputPath: "/tmp/tessera-outside-transform.pdf",
+          rotation: { degrees: 90 },
+        },
+        undefined,
+        undefined,
+        undefined as never
+      )
+    ).rejects.toThrow(/outside.*workspace/i);
+
+    expect(violations).toEqual(["pdf_transform"]);
   });
 });

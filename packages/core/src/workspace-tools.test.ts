@@ -161,6 +161,8 @@ describe("createWorkspaceToolDefinitions", () => {
       "pdf_inspect",
       "pdf_extract",
       "pdf_validate",
+      "pdf_render",
+      "pdf_transform",
       "workspace_list",
       "workspace_search",
       "workspace_write",
