@@ -63,6 +63,7 @@ import {
 import {
   ACTIVITY_SNAPSHOT_WORKFLOW,
   BUILTIN_PLAYBOOK_ROOTS,
+  CORE_VERSION,
   CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
   DEMO_WORKFLOW,
@@ -73,6 +74,7 @@ import {
   WEEKLY_UPDATE_WORKFLOW,
   createOptionalCapabilityManager,
   executeAgentTurn,
+  installGraphPlaybookPackage,
   optionalCapabilityDefinitionsFromEnv,
   resolveSlashSkillInvocation,
   resumeWorkflowRun,
@@ -84,6 +86,10 @@ import {
   resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
+import {
+  type GraphPlaybookRegistryEntry,
+  loadInstalledGraphPlaybookRegistry,
+} from "./graph-playbook-registry.js";
 import { createInboxStore } from "./inbox-store.js";
 import { generateDashboardLayout } from "./layout-runner.js";
 import {
@@ -119,6 +125,12 @@ const MEMORY_DB_PATH =
 const MEMORY_DISABLED = process.env.TESSERA_MEMORY_DISABLED === "1";
 const LOCAL_MEMORY_OWNER_ID = "local-owner";
 const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
+const GRAPH_PLAYBOOK_INSTALL_ROOT =
+  process.env.TESSERA_GRAPH_PLAYBOOK_INSTALL_ROOT ??
+  join(TESSERA_DATA_DIR, "graph-playbooks", "installed");
+const GRAPH_PLAYBOOK_CACHE_ROOT =
+  process.env.TESSERA_GRAPH_PLAYBOOK_CACHE_ROOT ??
+  join(TESSERA_DATA_DIR, "graph-playbooks", "cache");
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_ISSUER = "https://auth.openai.com";
 const CODEX_OAUTH_TOKEN_URL = `${CODEX_OAUTH_ISSUER}/oauth/token`;
@@ -278,6 +290,37 @@ const workflowRegistry = new Map<string, WorkflowRegistryEntry>([
     },
   ],
 ]);
+
+interface GraphPlaybookRegistryState {
+  entries: GraphPlaybookRegistryEntry[];
+}
+
+const installedGraphPlaybookRegistryState: GraphPlaybookRegistryState = { entries: [] };
+
+export async function refreshInstalledGraphPlaybookRegistry(
+  options: {
+    installRoot?: string;
+    cacheRoot?: string;
+    state?: GraphPlaybookRegistryState;
+  } = {}
+): Promise<GraphPlaybookRegistryEntry[]> {
+  const state = options.state ?? installedGraphPlaybookRegistryState;
+  const entries = await loadInstalledGraphPlaybookRegistry({
+    installRoot: options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT,
+    cacheRoot: options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT,
+  });
+  state.entries = entries;
+  return entries;
+}
+
+void refreshInstalledGraphPlaybookRegistry().catch((error) => {
+  console.warn(
+    JSON.stringify({
+      type: "tessera.graph_playbook_registry.startup_failed",
+      message: error instanceof Error ? error.message : String(error),
+    })
+  );
+});
 
 function profileForAgentId(agentId: string): AgentProfile {
   if (agentId === "default") return defaultAgentProfile();
@@ -1121,6 +1164,108 @@ async function handleCodexOauthRefresh(req: Request): Promise<Response> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: 502 });
+  }
+}
+
+interface GraphPlaybookInstallHandlerOptions {
+  installRoot?: string;
+  cacheRoot?: string;
+  state?: GraphPlaybookRegistryState;
+  compilerVersion?: string;
+  scriptSdkVersion?: string;
+}
+
+function graphPlaybookInstallErrorStatus(error: unknown): number {
+  const message = error instanceof Error ? error.message : String(error);
+  const errorCode =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : undefined;
+  if (message.startsWith("Graph playbook package conflict")) {
+    return 409;
+  }
+  if (error instanceof SyntaxError || errorCode === "ENOENT" || errorCode === "ENOTDIR") {
+    return 400;
+  }
+  if (
+    message.startsWith("CommonJS require() imports are not allowed") ||
+    message.startsWith("Dangerous imports are not allowed") ||
+    message.startsWith("Directory symlinks are not allowed") ||
+    message.startsWith("Dynamic import() is not allowed") ||
+    message.startsWith("Executable hook directories are not allowed") ||
+    message.startsWith("Graph playbook default export must be") ||
+    message.startsWith("Graph playbook entrypoint must default-export") ||
+    message.startsWith("Graph playbook literals") ||
+    message.startsWith("Invalid graph playbook package") ||
+    message.startsWith("Invalid TypeScript in graph playbook package source") ||
+    message.startsWith("Lockfiles are not allowed") ||
+    message.startsWith("Graph playbook package") ||
+    message.startsWith("Manifest and compiled graph") ||
+    message.startsWith("Manifest entrypoint resolves outside") ||
+    message.startsWith("Missing graph playbook package") ||
+    message.startsWith("Only package-relative imports") ||
+    message.startsWith("Package file escapes root") ||
+    message.startsWith("Package-relative imports") ||
+    message.startsWith("Package-relative paths") ||
+    message.startsWith("package.json") ||
+    message.startsWith("Playbook graph references missing") ||
+    message.startsWith("Symlink resolves outside") ||
+    error instanceof TypeError ||
+    (error instanceof Error && error.name === "ZodError")
+  ) {
+    return 400;
+  }
+  return 500;
+}
+
+export async function handleGraphPlaybookInstall(
+  req: Request,
+  options: GraphPlaybookInstallHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const sourceRoot = typeof input.sourceRoot === "string" ? input.sourceRoot.trim() : "";
+  if (!sourceRoot) {
+    return Response.json({ error: "sourceRoot is required" }, { status: 400 });
+  }
+
+  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
+  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
+
+  try {
+    const installed = await installGraphPlaybookPackage({
+      sourceRoot,
+      installRoot,
+      cacheRoot,
+      compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+      scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+    });
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot,
+      cacheRoot,
+      ...(options.state ? { state: options.state } : {}),
+    });
+
+    return Response.json({
+      id: installed.compiled.metadata.playbookId,
+      version: installed.compiled.metadata.packageVersion,
+      graphHash: installed.compiled.metadata.graphHash,
+      sourceHash: installed.compiled.metadata.sourceHash,
+      ...(installed.warnings?.length ? { warnings: installed.warnings } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: graphPlaybookInstallErrorStatus(error) });
   }
 }
 
@@ -2589,6 +2734,10 @@ const server = Bun.serve({
 
     if (pathname === "/model/codex-oauth/refresh") {
       return handleCodexOauthRefresh(req);
+    }
+
+    if (pathname === "/graph-playbooks/install") {
+      return handleGraphPlaybookInstall(req);
     }
 
     if (pathname === "/workflows/run") {

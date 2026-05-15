@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
 } from "@tessera/contracts";
 import { createOptionalCapabilityManager } from "@tessera/core";
+import type { GraphPlaybookRegistryEntry } from "./graph-playbook-registry.js";
 
 type RecordedFetchCall = {
   url: string;
@@ -33,6 +34,7 @@ let handleCapabilityBinary: typeof import("./server.js").handleCapabilityBinary 
 let handleCapabilityBinaryInstall:
   | typeof import("./server.js").handleCapabilityBinaryInstall
   | undefined;
+let handleGraphPlaybookInstall: typeof import("./server.js").handleGraphPlaybookInstall | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let resolveGoogleWorkspaceCliEnv:
   | typeof import("./server.js").resolveGoogleWorkspaceCliEnv
@@ -61,6 +63,7 @@ beforeAll(async () => {
     handleMemoryStatus = serverModule.handleMemoryStatus;
     handleCapabilityBinary = serverModule.handleCapabilityBinary;
     handleCapabilityBinaryInstall = serverModule.handleCapabilityBinaryInstall;
+    handleGraphPlaybookInstall = serverModule.handleGraphPlaybookInstall;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -76,6 +79,90 @@ function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+async function writeGraphPackageFile(
+  root: string,
+  relativePath: string,
+  content: string
+): Promise<void> {
+  const absolutePath = join(root, relativePath);
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, content, "utf8");
+}
+
+async function writeGraphPackage(root: string, version: string, scriptBody = ""): Promise<void> {
+  const graph = {
+    schemaVersion: 1,
+    id: "content.seo-blog",
+    version,
+    name: "SEO Blog Article",
+    start: "score",
+    artifacts: {
+      scorecard: { schema: "./schemas/scorecard.schema.json" },
+    },
+    nodes: [
+      {
+        id: "score",
+        kind: "script",
+        run: "./scripts/score.ts",
+        inputs: {},
+        outputArtifact: "scorecard",
+        onSuccess: "completed",
+      },
+    ],
+  };
+
+  await writeGraphPackageFile(
+    root,
+    "manifest.json",
+    JSON.stringify({
+      schemaVersion: 1,
+      id: graph.id,
+      version: graph.version,
+      name: graph.name,
+      entrypoint: "playbook.ts",
+    })
+  );
+  await writeGraphPackageFile(
+    root,
+    "playbook.ts",
+    `import { definePlaybook } from "@tessera/plugin-sdk";
+export default definePlaybook(${JSON.stringify(graph, null, 2)});
+`
+  );
+  await writeGraphPackageFile(
+    root,
+    "scripts/score.ts",
+    scriptBody || "export default async function score() {}\n"
+  );
+  await writeGraphPackageFile(root, "schemas/scorecard.schema.json", '{"type":"object"}\n');
+}
+
+async function expectGraphPackageInstallBadRequest(sourceRoot: string): Promise<string> {
+  const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+  const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+  try {
+    const response = await handleGraphPlaybookInstall?.(
+      new Request("http://localhost/graph-playbooks/install", {
+        method: "POST",
+        body: JSON.stringify({ sourceRoot }),
+      }),
+      {
+        installRoot,
+        cacheRoot,
+        compilerVersion: "server-test",
+        scriptSdkVersion: "server-test",
+      }
+    );
+    expect(response?.status).toBe(400);
+    const payload = (await response?.json()) as Record<string, unknown>;
+    return String(payload.error);
+  } finally {
+    await Promise.all(
+      [installRoot, cacheRoot].map((root) => rm(root, { recursive: true, force: true }))
+    );
+  }
+}
+
 afterAll(() => {
   (Bun as typeof Bun & { serve: typeof Bun.serve }).serve = originalServe;
   if (originalMemoryDisabled === undefined) {
@@ -83,6 +170,194 @@ afterAll(() => {
   } else {
     process.env.TESSERA_MEMORY_DISABLED = originalMemoryDisabled;
   }
+});
+
+describe("graph playbook install endpoint", () => {
+  test("installs a valid package and rebuilds the registry", async () => {
+    expect(handleGraphPlaybookInstall).toBeDefined();
+    const sourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      await writeGraphPackage(sourceRoot, "0.1.0");
+
+      const response = await handleGraphPlaybookInstall?.(
+        new Request("http://localhost/graph-playbooks/install", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const payload = (await response?.json()) as Record<string, unknown>;
+      expect(payload).toMatchObject({
+        id: "content.seo-blog",
+        version: "0.1.0",
+      });
+      expect(typeof payload.graphHash).toBe("string");
+      expect(typeof payload.sourceHash).toBe("string");
+      const graphHash = String(payload.graphHash);
+      expect(state.entries).toEqual([
+        {
+          id: "content.seo-blog",
+          version: "0.1.0",
+          name: "SEO Blog Article",
+          graphHash,
+          installedRoot: join(
+            installRoot,
+            `v-${Buffer.from("content.seo-blog", "utf8").toString("base64url")}`,
+            `v-${Buffer.from("0.1.0", "utf8").toString("base64url")}`
+          ),
+        },
+      ]);
+    } finally {
+      await Promise.all(
+        [sourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("returns 400 for invalid install requests", async () => {
+    expect(handleGraphPlaybookInstall).toBeDefined();
+
+    const response = await handleGraphPlaybookInstall?.(
+      new Request("http://localhost/graph-playbooks/install", {
+        method: "POST",
+        body: JSON.stringify({ sourceRoot: "" }),
+      })
+    );
+
+    expect(response?.status).toBe(400);
+    await expect(response?.json()).resolves.toEqual({ error: "sourceRoot is required" });
+  });
+
+  test("returns 400 for invalid package and compile failures", async () => {
+    expect(handleGraphPlaybookInstall).toBeDefined();
+    const missingManifestRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const invalidJsonRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const invalidManifestRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const dangerousImportRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const invalidTypeScriptRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const symlinkEscapeRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const symlinkTargetRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-target-"));
+    const nonexistentRoot = join(tmpdir(), `tessera-sidecar-missing-${Date.now()}`);
+    try {
+      await writeGraphPackageFile(invalidJsonRoot, "manifest.json", "{broken");
+      await writeGraphPackageFile(
+        invalidManifestRoot,
+        "manifest.json",
+        JSON.stringify({ schemaVersion: 1, id: "", version: "0.1.0", name: "Broken" })
+      );
+      await writeGraphPackage(dangerousImportRoot, "0.1.0");
+      await writeGraphPackageFile(
+        dangerousImportRoot,
+        "playbook.ts",
+        `import { readFileSync } from "node:fs";
+import { definePlaybook } from "@tessera/plugin-sdk";
+readFileSync;
+export default definePlaybook({
+  schemaVersion: 1,
+  id: "content.seo-blog",
+  version: "0.1.0",
+  name: "SEO Blog Article",
+  start: "score",
+  artifacts: { scorecard: { schema: "./schemas/scorecard.schema.json" } },
+  nodes: [{ id: "score", kind: "script", run: "./scripts/score.ts", inputs: {}, outputArtifact: "scorecard", onSuccess: "completed" }],
+});
+`
+      );
+      await writeGraphPackage(invalidTypeScriptRoot, "0.1.0");
+      await writeGraphPackageFile(invalidTypeScriptRoot, "playbook.ts", "export default {\n");
+      await writeGraphPackage(symlinkEscapeRoot, "0.1.0");
+      await writeGraphPackageFile(symlinkTargetRoot, "outside.ts", "export default 1;\n");
+      await symlink(join(symlinkTargetRoot, "outside.ts"), join(symlinkEscapeRoot, "outside.ts"));
+
+      await expectGraphPackageInstallBadRequest(missingManifestRoot);
+      await expectGraphPackageInstallBadRequest(invalidJsonRoot);
+      await expectGraphPackageInstallBadRequest(invalidManifestRoot);
+      await expectGraphPackageInstallBadRequest(dangerousImportRoot);
+      await expectGraphPackageInstallBadRequest(invalidTypeScriptRoot);
+      await expectGraphPackageInstallBadRequest(symlinkEscapeRoot);
+      await expectGraphPackageInstallBadRequest(nonexistentRoot);
+    } finally {
+      await Promise.all(
+        [
+          missingManifestRoot,
+          invalidJsonRoot,
+          invalidManifestRoot,
+          dangerousImportRoot,
+          invalidTypeScriptRoot,
+          symlinkEscapeRoot,
+          symlinkTargetRoot,
+        ].map((root) => rm(root, { recursive: true, force: true }))
+      );
+    }
+  });
+
+  test("returns 409 for same-version source conflicts", async () => {
+    expect(handleGraphPlaybookInstall).toBeDefined();
+    const firstSourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const secondSourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      await writeGraphPackage(firstSourceRoot, "0.1.0");
+      await writeGraphPackage(
+        secondSourceRoot,
+        "0.1.0",
+        "export default async function score() { return 'changed'; }\n"
+      );
+
+      await handleGraphPlaybookInstall?.(
+        new Request("http://localhost/graph-playbooks/install", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot: firstSourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      const response = await handleGraphPlaybookInstall?.(
+        new Request("http://localhost/graph-playbooks/install", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot: secondSourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      expect(response?.status).toBe(409);
+      const payload = (await response?.json()) as Record<string, unknown>;
+      expect(String(payload.error)).toContain("Graph playbook package conflict");
+    } finally {
+      await Promise.all(
+        [firstSourceRoot, secondSourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
 });
 
 describe("playbook run preference save error mapping", () => {
