@@ -159,3 +159,18 @@ export {
   createPlaybookGraphCache,
   type PlaybookGraphCache,
 } from "./playbook-graph-cache.js";
+export {
+  assertPackageRelativePath,
+  readPlaybookGraphPackage,
+  type PlaybookGraphPackageFiles,
+} from "./playbook-graph-package.js";
+export {
+  loadGraphPlaybookPackage,
+  type LoadGraphPlaybookPackageOptions,
+  type LoadedGraphPlaybookPackage,
+} from "./playbook-graph-package-loader.js";
+export {
+  installGraphPlaybookPackage,
+  type InstallGraphPlaybookPackageOptions,
+  type InstalledGraphPlaybookPackage,
+} from "./playbook-graph-package-installer.js";
