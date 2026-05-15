@@ -29,6 +29,7 @@ apps/desktop/src-tauri/binaries/
 *.swo
 .omx/
 .superpowers/
+.codex/
 
 # Git worktrees
 .worktrees/
