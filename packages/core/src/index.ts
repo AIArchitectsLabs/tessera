@@ -145,3 +145,17 @@ export {
 } from "./workflow.js";
 export { loadPlaybookManifest } from "./playbook-loader.js";
 export type { LoadPlaybookManifestOptions } from "./playbook-loader.js";
+export {
+  hashPlaybookGraph,
+  hashPlaybookSourceFiles,
+  stableJsonStringify,
+  validatePlaybookGraph,
+} from "./playbook-graph.js";
+export {
+  compilePlaybookGraph,
+  type CompilePlaybookGraphOptions,
+} from "./playbook-graph-compiler.js";
+export {
+  createPlaybookGraphCache,
+  type PlaybookGraphCache,
+} from "./playbook-graph-cache.js";
