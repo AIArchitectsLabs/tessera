@@ -1528,6 +1528,333 @@ export const PlaybookManifestSchema = z.object({
 });
 export type PlaybookManifest = z.infer<typeof PlaybookManifestSchema>;
 
+const PLAYBOOK_ID_RE = /^[A-Za-z0-9._:-]+$/;
+const ABSOLUTE_PATH_RE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+
+function isPackageRelativeRef(value: string): boolean {
+  if (!value || ABSOLUTE_PATH_RE.test(value)) return false;
+
+  return value
+    .split(/[\\/]/)
+    .every((segment) => segment !== ".." && segment.length > 0);
+}
+
+const SafePlaybookIdSchema = z.string().min(1).regex(PLAYBOOK_ID_RE, {
+  message: "Playbook ids may only contain letters, numbers, dot, underscore, colon, and dash",
+});
+
+const PlaybookGraphOutputPathSchema = z
+  .string()
+  .min(1)
+  .refine(isPackageRelativeRef, {
+    message: "Output paths must be package-relative and may not contain .. segments",
+  });
+
+export const PlaybookGraphSourceRefSchema = z
+  .string()
+  .min(1)
+  .refine(isPackageRelativeRef, {
+    message: "Source refs must be package-relative and may not contain .. segments",
+  });
+export type PlaybookGraphSourceRef = z.infer<typeof PlaybookGraphSourceRefSchema>;
+
+export const PlaybookGraphArtifactPathRefSchema = z
+  .object({
+    artifact: z.string().min(1),
+    path: z.string().min(1).default("$"),
+  })
+  .strict();
+export type PlaybookGraphArtifactPathRef = z.infer<typeof PlaybookGraphArtifactPathRefSchema>;
+
+export const PlaybookGraphArtifactSchema = z
+  .object({
+    schema: PlaybookGraphSourceRefSchema,
+    materialize: PlaybookGraphOutputPathSchema.optional(),
+  })
+  .strict();
+export type PlaybookGraphArtifact = z.infer<typeof PlaybookGraphArtifactSchema>;
+
+export type PlaybookGraphCondition = {
+  artifact: string;
+  path: string;
+  equals: unknown;
+};
+
+export const PlaybookGraphConditionSchema = z
+  .object({
+    artifact: z.string().min(1),
+    path: z.string().min(1),
+    equals: z.unknown(),
+  })
+  .strict();
+
+export const PlaybookGraphLimitsSchema = z
+  .object({
+    maxGeneratedItems: z.number().int().positive().optional(),
+    maxConcurrentBranches: z.number().int().positive().optional(),
+    maxTotalBranches: z.number().int().positive().optional(),
+    maxTotalAgentSteps: z.number().int().positive().optional(),
+    maxRuntimeMs: z.number().int().positive().optional(),
+    maxTokens: z.number().int().positive().optional(),
+    maxExternalToolCalls: z.number().int().positive().optional(),
+    maxFetches: z.number().int().positive().optional(),
+  })
+  .strict()
+  .default({});
+export type PlaybookGraphLimits = z.infer<typeof PlaybookGraphLimitsSchema>;
+
+const PlaybookGraphInputSchema = WorkflowInputDefinitionSchema;
+export type PlaybookGraphInput = WorkflowInputDefinition;
+
+export type PlaybookGraphBranch = {
+  start: string;
+  nodes: PlaybookGraphNode[];
+};
+
+export type PlaybookGraphNodeBase = {
+  id: string;
+  label?: string;
+  onSuccess?: string;
+  onFailure?: string;
+};
+
+export type PlaybookGraphNodeOutput =
+  | {
+      artifact: string;
+      schema?: string;
+    }
+  | {
+      artifact?: string;
+      schema: string;
+    };
+
+export type PlaybookGraphJoinNode = PlaybookGraphNodeBase & {
+  kind: "join";
+  inputs: string[];
+  outputArtifact?: string;
+};
+
+export type PlaybookGraphScriptNode = PlaybookGraphNodeBase & {
+  kind: "script";
+  run: string;
+  inputs: Record<string, unknown>;
+  outputArtifact?: string;
+};
+
+export type PlaybookGraphToolNode = PlaybookGraphNodeBase & {
+  kind: "tool";
+  capability: string;
+  args: Record<string, unknown>;
+  outputArtifact?: string;
+};
+
+export type PlaybookGraphHumanReviewNode = PlaybookGraphNodeBase & {
+  kind: "humanReview";
+  artifact: string;
+  actions: string[];
+  onApprove?: string;
+  onRequestChanges?: string;
+};
+
+export type PlaybookGraphParallelMapNode = PlaybookGraphNodeBase & {
+  kind: "parallelMap";
+  items: PlaybookGraphArtifactPathRef;
+  branch: PlaybookGraphBranch;
+  outputArtifact?: string;
+};
+
+export type PlaybookGraphAgentNode = PlaybookGraphNodeBase & {
+  kind: "agent";
+  prompt: string;
+  inputs: Record<string, unknown>;
+  tools: string[];
+  output?: PlaybookGraphNodeOutput;
+};
+
+export type PlaybookGraphConditionNode = PlaybookGraphNodeBase & {
+  kind: "condition";
+  when: PlaybookGraphCondition;
+  onTrue: string;
+  onFalse: string;
+};
+
+export type PlaybookGraphArtifactWriteNode = PlaybookGraphNodeBase & {
+  kind: "artifactWrite";
+  artifact: string;
+  path: string;
+};
+
+export type PlaybookGraphNode =
+  | PlaybookGraphJoinNode
+  | PlaybookGraphScriptNode
+  | PlaybookGraphToolNode
+  | PlaybookGraphHumanReviewNode
+  | PlaybookGraphParallelMapNode
+  | PlaybookGraphAgentNode
+  | PlaybookGraphConditionNode
+  | PlaybookGraphArtifactWriteNode;
+
+const PlaybookGraphNodeBaseSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1).optional(),
+    onSuccess: z.string().min(1).optional(),
+    onFailure: z.string().min(1).optional(),
+  })
+  .strict();
+
+const PlaybookGraphNodeOutputSchema = z
+  .object({
+    artifact: z.string().min(1).optional(),
+    schema: PlaybookGraphSourceRefSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.artifact === undefined && value.schema === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Agent output must include artifact or schema",
+      });
+    }
+  });
+
+const PlaybookGraphBranchSchema: z.ZodType<PlaybookGraphBranch> = z
+  .object({
+    start: z.string().min(1),
+    nodes: z.array(z.lazy(() => PlaybookGraphNodeSchema)).min(1),
+  })
+  .strict();
+
+const PlaybookGraphScriptRunSchema = PlaybookGraphSourceRefSchema.refine(
+  (value) => value.endsWith(".ts"),
+  {
+    message: "Phase 1 playbook scripts must be TypeScript files",
+  }
+);
+
+const PlaybookGraphJoinNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("join"),
+  inputs: z.array(z.string().min(1)).default([]),
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
+const PlaybookGraphScriptNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("script"),
+  run: PlaybookGraphScriptRunSchema,
+  inputs: z.record(z.unknown()).default({}),
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
+const PlaybookGraphToolNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("tool"),
+  capability: z.string().min(1),
+  args: z.record(z.unknown()).default({}),
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
+const PlaybookGraphHumanReviewNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("humanReview"),
+  artifact: z.string().min(1),
+  actions: z.array(z.string().min(1)).min(1),
+  onApprove: z.string().min(1).optional(),
+  onRequestChanges: z.string().min(1).optional(),
+}).strict();
+
+const PlaybookGraphParallelMapNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("parallelMap"),
+  items: PlaybookGraphArtifactPathRefSchema,
+  branch: PlaybookGraphBranchSchema,
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
+const PlaybookGraphAgentNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("agent"),
+  prompt: PlaybookGraphSourceRefSchema,
+  inputs: z.record(z.unknown()).default({}),
+  tools: z.array(z.string().min(1)).default([]),
+  output: PlaybookGraphNodeOutputSchema.optional(),
+}).strict();
+
+const PlaybookGraphConditionNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("condition"),
+  when: PlaybookGraphConditionSchema,
+  onTrue: z.string().min(1),
+  onFalse: z.string().min(1),
+}).strict();
+
+const PlaybookGraphArtifactWriteNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("artifactWrite"),
+  artifact: z.string().min(1),
+  path: PlaybookGraphOutputPathSchema,
+}).strict();
+
+// Zod v3 recursive discriminated unions require a lazy/cast boundary here.
+export const PlaybookGraphNodeSchema = z.lazy(() =>
+  z.discriminatedUnion("kind", [
+    PlaybookGraphJoinNodeSchema,
+    PlaybookGraphScriptNodeSchema,
+    PlaybookGraphToolNodeSchema,
+    PlaybookGraphHumanReviewNodeSchema,
+    PlaybookGraphParallelMapNodeSchema,
+    PlaybookGraphAgentNodeSchema,
+    PlaybookGraphConditionNodeSchema,
+    PlaybookGraphArtifactWriteNodeSchema,
+  ])
+) as unknown as z.ZodType<PlaybookGraphNode>;
+
+export type PlaybookGraph = {
+  schemaVersion: 1;
+  id: string;
+  version: string;
+  name: string;
+  description?: string;
+  inputs: Record<string, PlaybookGraphInput>;
+  artifacts: Record<string, PlaybookGraphArtifact>;
+  capabilities: string[];
+  limits: PlaybookGraphLimits;
+  start: string;
+  nodes: PlaybookGraphNode[];
+};
+
+export const PlaybookGraphSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: SafePlaybookIdSchema,
+    version: z.string().min(1),
+    name: z.string().min(1),
+    description: z.string().min(1).optional(),
+    inputs: z.record(PlaybookGraphInputSchema).default({}),
+    artifacts: z.record(PlaybookGraphArtifactSchema).default({}),
+    capabilities: z.array(z.string().min(1)).default([]),
+    limits: PlaybookGraphLimitsSchema,
+    start: z.string().min(1),
+    nodes: z.array(PlaybookGraphNodeSchema).min(1),
+  })
+  .strict();
+
+export const PlaybookGraphCompileMetadataSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    playbookId: SafePlaybookIdSchema,
+    packageVersion: z.string().min(1),
+    compilerVersion: z.string().min(1),
+    graphSchemaVersion: z.literal(1),
+    scriptSdkVersion: z.string().min(1),
+    sourceHash: z.string().min(1).regex(/^sha256:/),
+    graphHash: z.string().min(1).regex(/^sha256:/),
+    compiledAt: z.string().datetime(),
+  })
+  .strict();
+export type PlaybookGraphCompileMetadata = z.infer<typeof PlaybookGraphCompileMetadataSchema>;
+
+export const CompiledPlaybookGraphSchema = z
+  .object({
+    graph: PlaybookGraphSchema,
+    metadata: PlaybookGraphCompileMetadataSchema,
+  })
+  .strict();
+export type CompiledPlaybookGraph = z.infer<typeof CompiledPlaybookGraphSchema>;
+
 export const PlaybookSummarySchema = z.object({
   id: z.string().min(1),
   version: z.number().int().positive(),
