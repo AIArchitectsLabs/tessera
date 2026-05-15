@@ -13,6 +13,24 @@ prompts, scoring rubrics, score thresholds, branch planning, artifact schemas,
 review forms, and TypeScript or Python scripts that implement domain-specific
 analysis.
 
+## Non-Goals
+
+The following are explicitly out of scope for this design. Anything here that
+later needs to change requires a separate spec.
+
+- Native SEO/GEO concepts in the platform. Scoring, rubrics, intent
+  classification, and content heuristics are playbook-owned.
+- Inter-agent messaging or addressable agent identity. Nodes run prompts; work
+  items are values, not actors.
+- Arbitrary playbook dependencies (`node_modules`, lockfiles, virtualenvs,
+  postinstall scripts). Phase 3 may revisit.
+- Python script execution in Phase 1. Cross-platform interpreter assumptions are
+  unsafe in a Tauri-distributed app; see *Script Execution And Dependencies*.
+- Auto-committing intermediate revisions to the user's active git branch.
+- A playbook marketplace, signing/trust model, or update channel in Phase 1.
+- Mutating browser automation. Phase 1 research is read-only via web search and
+  web fetch.
+
 ## Platform Boundary
 
 Tessera should provide generic primitives:
@@ -83,9 +101,92 @@ Initial graph node types:
   threshold, loop count, or error state.
 - `artifactWrite`: materializes an artifact to a workspace file.
 
-Scoring should not be a native runtime node. The DSL may expose a `score()`
-helper, but it should compile to a script node with a declared scorecard output
-schema.
+Scoring should not be a native runtime node, because rubric semantics belong to
+the playbook and should not leak into the platform. The DSL may expose a
+`score()` helper, but it should compile to a script node with a declared
+scorecard output schema.
+
+### DSL Example
+
+The authoring layer is a thin TypeScript DSL whose only job is to emit a
+normalized `PlaybookGraph`. A minimal article-style playbook should look like:
+
+```ts
+import { definePlaybook, agent, script, parallelMap, humanReview, condition, artifactWrite } from "@tessera/playbook-sdk";
+
+export default definePlaybook({
+  id: "content.seo-blog",
+  version: "0.1.0",
+  inputs: {
+    focusKeywords: { type: "string[]", required: true },
+    audience: { type: "string", required: true },
+  },
+  artifacts: {
+    researchPlan: { schema: "./schemas/research-plan.schema.json" },
+    brief: { schema: "./schemas/content-brief.schema.json", materialize: "brief.md" },
+    article: { schema: "./schemas/article.schema.json", materialize: "article.md" },
+    scorecard: { schema: "./schemas/article-scorecard.schema.json" },
+  },
+  capabilities: ["web.search", "web.fetch"],
+  limits: { maxBranches: 24, maxConcurrent: 6, maxTokens: 2_000_000 },
+  flow: ({ step }) => {
+    const plan = step.script("build-research-plan", {
+      run: "./scripts/build-research-plan.ts",
+      out: "researchPlan",
+    });
+
+    const findings = step.parallelMap("research", {
+      items: plan.workItems,
+      branch: (item) =>
+        step.agent("research-one", {
+          prompt: "./prompts/research-serp.md",
+          inputs: { item },
+          tools: ["web.search", "web.fetch"],
+          output: { schema: "./schemas/research-item.schema.json" },
+        }),
+    });
+
+    const brief = step.agent("synthesize-brief", {
+      prompt: "./prompts/synthesize-brief.md",
+      inputs: { findings },
+      output: "brief",
+    });
+
+    const briefScore = step.score("score-brief", {
+      run: "./scripts/score-brief.ts",
+      inputs: { brief },
+      out: "scorecard",
+    });
+
+    const approvedBrief = step.humanReview("approve-brief", {
+      artifact: "brief",
+      scorecard: briefScore,
+      actions: ["approve", "requestChanges", "editArtifact"],
+      loopUntil: "approve",
+    });
+
+    const article = step.loop("write-and-review", {
+      maxIterations: 3,
+      body: (prev) =>
+        step.agent("write-article", {
+          prompt: "./prompts/write-article.md",
+          inputs: { brief: approvedBrief, prev },
+          output: "article",
+        }),
+      until: (out) => step.score("score-article", { run: "./scripts/score-article.ts", inputs: { article: out }, out: "scorecard" }).pass,
+    });
+
+    return step.humanReview("final-review", {
+      artifact: "article",
+      actions: ["approve", "requestChanges", "editArtifact"],
+      loopUntil: "approve",
+    });
+  },
+});
+```
+
+The DSL is sugar. Every call above lowers to a node in the compiled graph; the
+graph, not the DSL, is the source of truth at runtime.
 
 ## Dynamic Parallel Work
 
@@ -122,12 +223,23 @@ can cite which keyword, competitor, source, or region produced each finding.
 
 ## Script Execution And Dependencies
 
-Playbook scripts may be written in TypeScript or Python. Scripts are for domain
-logic and artifact transformation, not for owning orchestration state.
+Playbook scripts in Phase 1 are TypeScript only, executed by the bundled Bun
+runtime inside a constrained worker (`Worker` with no network, no FS, no
+`process` access; only the script SDK and tool API are exposed). This avoids
+shipping or assuming a Python interpreter on user machines — a hard
+cross-platform constraint for a Tauri-distributed app.
+
+Python is not supported in Phase 1. Phase 3 may introduce a sandboxed Python
+runtime (likely Pyodide in a worker, or a vendored interpreter behind a
+capability gate) once the trust and distribution story is designed.
+
+Scripts are for domain logic and artifact transformation, not for owning
+orchestration state.
 
 In v1, scripts may use:
 
-- Standard language libraries.
+- Standard TypeScript and Bun standard library APIs that the worker sandbox
+  allows (pure computation, structured data, regex, text processing).
 - Tessera's curated script SDK.
 - Tessera-approved tools through the explicit script API.
 
@@ -135,11 +247,11 @@ In v1, scripts may not use:
 
 - Arbitrary `node_modules`.
 - Lockfiles or dependency install steps.
-- Python virtualenvs.
 - Vendored packages.
 - Postinstall scripts.
 - Direct network access.
 - Arbitrary workspace filesystem access.
+- `eval`, dynamic `import()` of user-provided paths, or worker spawn.
 
 The script SDK should stay generic. Useful SDK utilities include markdown
 parsing, heading extraction, link extraction, text statistics, schema
@@ -177,12 +289,19 @@ Compile metadata should include:
   "compilerVersion": "0.1.0",
   "graphSchemaVersion": 1,
   "sourceHash": "sha256:...",
+  "graphHash": "sha256:...",
   "compiledAt": "2026-05-15T00:00:00.000Z"
 }
 ```
 
 Tessera should recompile when the source hash, compiler version, graph schema
 version, or package version changes.
+
+The compiled graph cache is an install/startup optimization, not the only copy
+of runtime truth. When a run starts, Tessera stores an immutable compiled graph
+snapshot or a content-addressed graph blob reference under the run record. A
+cache eviction or playbook reinstall must not make an in-flight run
+unresumable.
 
 ## Durable Execution
 
@@ -212,6 +331,90 @@ approved plan and budget. Tessera should pause before continuing if resume would
 require new external calls beyond the approved plan, workspace mutation, changed
 credentials or providers, higher budget, or ambiguous error recovery. Human
 review gates always pause.
+
+### Resume Semantics
+
+LLM and tool calls are non-deterministic, so durable execution must be
+memoization, not replay.
+
+There are two separate caches:
+
+1. **Compiled graph cache.** Keyed by playbook source hash, compiler version,
+   graph schema version, script SDK version, and package version. It speeds up
+   import/startup.
+2. **Run memo cache.** Scoped to a single run and keyed by deterministic node
+   execution identity. It prevents duplicate LLM/tool/script work on resume.
+
+The run memo key should be explicit, not a vague `resolvedInputsHash`. It should
+be a stable hash over:
+
+- `runId` and pinned `graphHash`.
+- `nodePath`, including branch id and loop iteration.
+- Node spec hash: prompt text, script source, output schema, retry policy,
+  declared tool allowlist, and declared capability requirements.
+- Resolved execution context: selected agent profile fingerprint, provider,
+  model id, model settings fingerprint, script SDK version, tool adapter
+  versions, and non-secret integration/account fingerprints.
+- Resolved input snapshot: primitive input values, branch item payload, artifact
+  version ids and content hashes, review event ids, and materialized file hashes
+  for artifacts the node consumes.
+- Tool request shape for tool nodes: capability id, provider adapter, query or
+  URL, region/language options, headers policy, and fetch/search options.
+
+The first successful execution of a node persists the memo entry:
+`nodeMemoKey → output, outputArtifactVersions, provenance, tokenUsage,
+toolCalls, startedAt, completedAt`.
+
+On resume, Tessera looks up `nodeMemoKey`. If a successful memo entry exists,
+the output is reused verbatim and the node is not re-prompted, re-fetched, or
+re-run. If the entry is absent, failed, schema-invalid, or marked
+`interrupted`, the node follows its retry policy.
+
+A run is pinned at start to an immutable compiled graph snapshot. If the
+playbook is upgraded mid-run, the in-flight run continues against the pinned
+snapshot; subsequent runs use the new compile. If the pinned graph snapshot is
+missing or fails its hash check, Tessera must pause the run as `needs_repair`
+instead of silently falling back to the latest installed playbook.
+
+Invalidation is downstream and version-based:
+
+- Editing a reviewable artifact creates a new artifact version and invalidates
+  only downstream memo keys that consume that artifact version.
+- Changing user input after a review gate creates a new input snapshot and
+  invalidates only downstream consumers.
+- Changing prompts, scripts, schemas, capability declarations, or tool allowlist
+  creates a new compiled graph hash and affects new runs only; existing runs keep
+  their pinned graph unless the user explicitly restarts or migrates the run.
+- Changing model/provider/account settings during a run pauses before the next
+  affected node. If the user approves continuation, the new fingerprint becomes
+  part of future node memo keys; completed memoized outputs are not recomputed.
+- Budget changes do not invalidate completed outputs. They only control whether
+  queued work may continue.
+
+Script nodes are assumed pure over their declared inputs and are always
+memoized. Tool calls such as web search and web fetch are memoized by full
+request shape within a single run so retries do not double-charge; across runs
+they re-execute unless the playbook explicitly opts into cross-run caching with
+a TTL. Cross-run cached web results must include retrieval time and source URL
+metadata so scorecards can disclose freshness.
+
+`agent` nodes whose output failed schema validation are not cached as
+successful outputs; the retry-with-feedback loop (see *Schema Validation
+Failures*) re-runs them. Failed attempts may still be stored as diagnostic
+events for traceability.
+
+### Schema Validation Failures
+
+When an `agent` node's structured output fails its declared schema:
+
+1. The runtime retries with the validation error appended to the prompt,
+   up to a per-node `maxSchemaRetries` (default 2).
+2. If retries are exhausted, the node transitions to `failed`. A `condition`
+   node on the failure edge may route to a recovery branch; otherwise the run
+   pauses for human review with the offending output attached.
+
+Scripts that fail schema validation are a hard fail with no retry — script
+output is deterministic, so the playbook is buggy.
 
 ## Human Review And Artifact Revisions
 
@@ -286,7 +489,7 @@ seo-blog-playbook/
     build-research-plan.ts
     normalize-keywords.ts
     score-brief.ts
-    score-article.py
+    score-article.ts
   schemas/
     research-item.schema.json
     content-brief.schema.json
@@ -353,7 +556,7 @@ Platform:
 - Core graph nodes: `agent`, `script`, `tool`, `humanReview`, `parallelMap`,
   `join`, `condition`, and `artifactWrite`.
 - TypeScript DSL compiler.
-- TypeScript and Python constrained script steps.
+- TypeScript constrained script steps (Bun worker sandbox).
 - Standard libraries plus Tessera script SDK only.
 - Dynamic fan-out with auto-batched waves.
 - Typed artifacts and artifact version events.
@@ -428,11 +631,33 @@ reproducibility, and support burden are larger risks than raw capability.
 - **DSL/runtime drift.** Mitigate by compiling to a versioned graph schema and
   caching source hash plus compiler metadata.
 
-## Spec Self-Review
+## Open Questions
 
-This spec intentionally avoids SEO-specific platform primitives. It defines
-scoring as playbook-owned script output, preserves Tessera as the generic
-orchestrator, and keeps arbitrary dependencies out of v1. The main open design
-work is implementation sequencing across contracts, core runtime, sidecar
-persistence, desktop review UI, script SDK, and the external reference playbook
-repo.
+These need answers before implementation begins. Listed in roughly the order
+that blocks others.
+
+1. **`manifest.json` schema.** Fields: id, semver, compiler version range,
+   declared capabilities, declared inputs, entrypoint, asset map. Needs a
+   concrete draft.
+2. **Capability grant flow.** Install-time prompt listing declared capabilities,
+   then per-run reaffirmation if the budget or scope materially exceeds prior
+   approvals? Or per-tool first-use prompt? Pick one.
+3. **"Auto-batched wave" semantics.** Semaphore with `maxConcurrent` (preferred)
+   vs barrier-synchronized batches. Branch-failure policy: fail-fast,
+   continue-on-error, or quorum.
+4. **Cancellation model.** User cancel → drain to next checkpoint, hard-abort
+   in-flight model calls, or both with a soft/hard distinction in the UI.
+5. **Mid-run budget breach.** Pause for re-approval (preferred for tokens/cost),
+   hard-fail (preferred for runtime), or graceful finalize. Probably differs per
+   limit type — enumerate.
+6. **Retry/idempotency policy per node type.** Default attempts, backoff, which
+   failures are retryable, which tool calls are considered idempotent.
+7. **Review during `parallelMap`.** Can a single branch raise a review, or only
+   the join? Affects UI substantially.
+8. **Reviewer/writer loop state.** How feedback accumulates across iterations
+   (rolling summary vs full transcript), where the prior scorecard enters the
+   writer prompt, and how partial approvals interact with `loopUntil`.
+9. **Script SDK distribution.** Imported as `@tessera/script-sdk`? Types shipped
+   alongside the playbook compiler? How are SDK versions pinned per playbook?
+10. **Cross-run tool-call caching.** Off by default — confirm, and design the
+    opt-in surface (per-capability TTL?).
