@@ -10,8 +10,9 @@ Tessera.
 Tessera owns orchestration, safety, durability, permissions, review surfaces,
 artifact revision tracking, and transparency. Playbooks own domain logic:
 prompts, scoring rubrics, score thresholds, branch planning, artifact schemas,
-review forms, and TypeScript or Python scripts that implement domain-specific
-analysis.
+review forms, and constrained scripts that implement domain-specific analysis.
+Phase 1 supports TypeScript scripts only; Python remains a later-phase
+capability.
 
 ## Non-Goals
 
@@ -56,7 +57,8 @@ Playbook packages should provide:
 
 - DSL source that compiles into the graph.
 - Prompts.
-- TypeScript and Python scripts.
+- TypeScript scripts in Phase 1, with Python reserved for a later sandboxed
+  runtime.
 - Scoring rubrics and thresholds.
 - Artifact schemas.
 - Review forms and structured actions.
@@ -90,7 +92,7 @@ Initial graph node types:
 
 - `agent`: runs a prompt against declared inputs and artifacts, producing typed
   output.
-- `script`: runs constrained TypeScript or Python domain logic.
+- `script`: runs constrained TypeScript domain logic in Phase 1.
 - `tool`: calls an approved Tessera tool such as web search or web fetch.
 - `humanReview`: blocks for user approval, structured feedback, or direct
   artifact edits.
@@ -112,7 +114,7 @@ The authoring layer is a thin TypeScript DSL whose only job is to emit a
 normalized `PlaybookGraph`. A minimal article-style playbook should look like:
 
 ```ts
-import { definePlaybook, agent, script, parallelMap, humanReview, condition, artifactWrite } from "@tessera/playbook-sdk";
+import { definePlaybook } from "@tessera/playbook-sdk";
 
 export default definePlaybook({
   id: "content.seo-blog",
@@ -125,7 +127,8 @@ export default definePlaybook({
     researchPlan: { schema: "./schemas/research-plan.schema.json" },
     brief: { schema: "./schemas/content-brief.schema.json", materialize: "brief.md" },
     article: { schema: "./schemas/article.schema.json", materialize: "article.md" },
-    scorecard: { schema: "./schemas/article-scorecard.schema.json" },
+    briefScorecard: { schema: "./schemas/brief-scorecard.schema.json" },
+    articleScorecard: { schema: "./schemas/article-scorecard.schema.json" },
   },
   capabilities: ["web.search", "web.fetch"],
   limits: { maxBranches: 24, maxConcurrent: 6, maxTokens: 2_000_000 },
@@ -136,7 +139,7 @@ export default definePlaybook({
     });
 
     const findings = step.parallelMap("research", {
-      items: plan.workItems,
+      items: { artifact: "researchPlan", path: "$.workItems" },
       branch: (item) =>
         step.agent("research-one", {
           prompt: "./prompts/research-serp.md",
@@ -155,7 +158,7 @@ export default definePlaybook({
     const briefScore = step.score("score-brief", {
       run: "./scripts/score-brief.ts",
       inputs: { brief },
-      out: "scorecard",
+      out: "briefScorecard",
     });
 
     const approvedBrief = step.humanReview("approve-brief", {
@@ -173,7 +176,13 @@ export default definePlaybook({
           inputs: { brief: approvedBrief, prev },
           output: "article",
         }),
-      until: (out) => step.score("score-article", { run: "./scripts/score-article.ts", inputs: { article: out }, out: "scorecard" }).pass,
+      evaluate: (draft) =>
+        step.score("score-article", {
+          run: "./scripts/score-article.ts",
+          inputs: { article: draft },
+          out: "articleScorecard",
+        }),
+      until: { artifact: "articleScorecard", path: "$.pass", equals: true },
     });
 
     return step.humanReview("final-review", {
@@ -185,8 +194,13 @@ export default definePlaybook({
 });
 ```
 
-The DSL is sugar. Every call above lowers to a node in the compiled graph; the
-graph, not the DSL, is the source of truth at runtime.
+The DSL is sugar. Every call above lowers to nodes and transitions in the
+compiled graph; the graph, not the DSL, is the source of truth at runtime. DSL
+helpers such as `score()` and `loop()` must not become runtime primitives:
+`score()` lowers to a script node, and `loop()` lowers to ordinary nodes,
+conditions, transition edges, and loop counters. Runtime decisions are expressed
+as declarative conditions over artifact paths, not arbitrary TypeScript
+callbacks.
 
 ## Dynamic Parallel Work
 
@@ -223,11 +237,13 @@ can cite which keyword, competitor, source, or region produced each finding.
 
 ## Script Execution And Dependencies
 
-Playbook scripts in Phase 1 are TypeScript only, executed by the bundled Bun
-runtime inside a constrained worker (`Worker` with no network, no FS, no
-`process` access; only the script SDK and tool API are exposed). This avoids
-shipping or assuming a Python interpreter on user machines — a hard
-cross-platform constraint for a Tauri-distributed app.
+Playbook scripts in Phase 1 are TypeScript only, executed by Tessera's bundled
+Bun runtime through a constrained script runner. The runner must expose only the
+script SDK and tool API, with no direct network, arbitrary filesystem, process,
+dynamic import, or worker-spawn capability. Do not rely on Bun `Worker` alone as
+a security boundary unless the implementation verifies those restrictions across
+supported platforms. This avoids shipping or assuming a Python interpreter on
+user machines — a hard cross-platform constraint for a Tauri-distributed app.
 
 Python is not supported in Phase 1. Phase 3 may introduce a sandboxed Python
 runtime (likely Pyodide in a worker, or a vendored interpreter behind a
@@ -238,7 +254,7 @@ orchestration state.
 
 In v1, scripts may use:
 
-- Standard TypeScript and Bun standard library APIs that the worker sandbox
+- Standard TypeScript and Bun standard library APIs that the constrained runner
   allows (pure computation, structured data, regex, text processing).
 - Tessera's curated script SDK.
 - Tessera-approved tools through the explicit script API.
@@ -285,9 +301,10 @@ Compile metadata should include:
 {
   "schemaVersion": 1,
   "playbookId": "content.seo-blog",
-  "sourceVersion": 1,
+  "packageVersion": "0.1.0",
   "compilerVersion": "0.1.0",
   "graphSchemaVersion": 1,
+  "scriptSdkVersion": "0.1.0",
   "sourceHash": "sha256:...",
   "graphHash": "sha256:...",
   "compiledAt": "2026-05-15T00:00:00.000Z"
@@ -295,7 +312,7 @@ Compile metadata should include:
 ```
 
 Tessera should recompile when the source hash, compiler version, graph schema
-version, or package version changes.
+version, script SDK version, or package version changes.
 
 The compiled graph cache is an install/startup optimization, not the only copy
 of runtime truth. When a run starts, Tessera stores an immutable compiled graph
@@ -415,6 +432,14 @@ When an `agent` node's structured output fails its declared schema:
 
 Scripts that fail schema validation are a hard fail with no retry — script
 output is deterministic, so the playbook is buggy.
+
+If an agent node can call tools during execution, each approved tool call should
+also be recorded as a child event with its own deterministic request key. A fully
+completed agent node is memoized as a single output, but interrupted agent nodes
+may reuse completed child tool-call results during retry where the adapter can
+prove the request shape is identical. This prevents resume from duplicating web
+search/fetch cost while avoiding partial LLM transcript replay as a correctness
+requirement.
 
 ## Human Review And Artifact Revisions
 
@@ -556,7 +581,7 @@ Platform:
 - Core graph nodes: `agent`, `script`, `tool`, `humanReview`, `parallelMap`,
   `join`, `condition`, and `artifactWrite`.
 - TypeScript DSL compiler.
-- TypeScript constrained script steps (Bun worker sandbox).
+- TypeScript constrained script steps.
 - Standard libraries plus Tessera script SDK only.
 - Dynamic fan-out with auto-batched waves.
 - Typed artifacts and artifact version events.
@@ -661,3 +686,8 @@ that blocks others.
    alongside the playbook compiler? How are SDK versions pinned per playbook?
 10. **Cross-run tool-call caching.** Off by default — confirm, and design the
     opt-in surface (per-capability TTL?).
+11. **Script runner enforcement.** Verify whether Bun worker/subprocess
+    isolation can actually remove FS/network/process/dynamic-import access on
+    macOS, Windows, and Linux. If not, Phase 1 needs an explicit interpreter
+    wrapper or allowlisted host-function model before importing third-party
+    playbooks.
