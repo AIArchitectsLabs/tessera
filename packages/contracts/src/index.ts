@@ -1534,28 +1534,20 @@ const ABSOLUTE_PATH_RE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
 function isPackageRelativeRef(value: string): boolean {
   if (!value || ABSOLUTE_PATH_RE.test(value)) return false;
 
-  return value
-    .split(/[\\/]/)
-    .every((segment) => segment !== ".." && segment.length > 0);
+  return value.split(/[\\/]/).every((segment) => segment !== ".." && segment.length > 0);
 }
 
 const SafePlaybookIdSchema = z.string().min(1).regex(PLAYBOOK_ID_RE, {
   message: "Playbook ids may only contain letters, numbers, dot, underscore, colon, and dash",
 });
 
-const PlaybookGraphOutputPathSchema = z
-  .string()
-  .min(1)
-  .refine(isPackageRelativeRef, {
-    message: "Output paths must be package-relative and may not contain .. segments",
-  });
+const PlaybookGraphOutputPathSchema = z.string().min(1).refine(isPackageRelativeRef, {
+  message: "Output paths must be package-relative and may not contain .. segments",
+});
 
-export const PlaybookGraphSourceRefSchema = z
-  .string()
-  .min(1)
-  .refine(isPackageRelativeRef, {
-    message: "Source refs must be package-relative and may not contain .. segments",
-  });
+export const PlaybookGraphSourceRefSchema = z.string().min(1).refine(isPackageRelativeRef, {
+  message: "Source refs must be package-relative and may not contain .. segments",
+});
 export type PlaybookGraphSourceRef = z.infer<typeof PlaybookGraphSourceRefSchema>;
 
 export const PlaybookGraphArtifactPathRefSchema = z
@@ -1840,8 +1832,14 @@ export const PlaybookGraphCompileMetadataSchema = z
     compilerVersion: z.string().min(1),
     graphSchemaVersion: z.literal(1),
     scriptSdkVersion: z.string().min(1),
-    sourceHash: z.string().min(1).regex(/^sha256:/),
-    graphHash: z.string().min(1).regex(/^sha256:/),
+    sourceHash: z
+      .string()
+      .min(1)
+      .regex(/^sha256:/),
+    graphHash: z
+      .string()
+      .min(1)
+      .regex(/^sha256:/),
     compiledAt: z.string().datetime(),
   })
   .strict();

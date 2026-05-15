@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { compilePlaybookGraph, type CompilePlaybookGraphOptions } from "./playbook-graph-compiler.js";
+import {
+  type CompilePlaybookGraphOptions,
+  compilePlaybookGraph,
+} from "./playbook-graph-compiler.js";
 import { hashPlaybookGraph, hashPlaybookSourceFiles } from "./playbook-graph.js";
 
 const baseGraph = {
@@ -50,7 +53,9 @@ const baseOptions = {
   compiledAt: "2026-01-01T00:00:00.000Z",
 };
 
-function compileGraph(options: Partial<CompilePlaybookGraphOptions> = {}): ReturnType<typeof compilePlaybookGraph> {
+function compileGraph(
+  options: Partial<CompilePlaybookGraphOptions> = {}
+): ReturnType<typeof compilePlaybookGraph> {
   return compilePlaybookGraph({
     graph: options.graph ?? baseGraph,
     ...baseOptions,

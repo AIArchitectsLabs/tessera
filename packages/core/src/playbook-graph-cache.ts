@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
-  CompiledPlaybookGraphSchema,
   type CompiledPlaybookGraph,
+  CompiledPlaybookGraphSchema,
   PlaybookGraphCompileMetadataSchema,
 } from "@tessera/contracts";
 
@@ -60,9 +60,7 @@ export interface PlaybookGraphCache {
 export function createPlaybookGraphCache(root: string): PlaybookGraphCache {
   const cache: PlaybookGraphCache = {
     async get(playbookId, graphHash) {
-      const artifact = await readJsonFile<unknown>(
-        artifactPath(root, playbookId, graphHash)
-      );
+      const artifact = await readJsonFile<unknown>(artifactPath(root, playbookId, graphHash));
       if (!artifact) {
         return undefined;
       }

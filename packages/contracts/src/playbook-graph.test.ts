@@ -170,7 +170,12 @@ describe("PlaybookGraphSchema", () => {
   });
 
   test("rejects output paths that escape the package or are absolute", () => {
-    const invalidPaths = ["../outside.md", "/tmp/out.md", "C:\\temp\\out.md", "\\\\server\\share\\out.md"];
+    const invalidPaths = [
+      "../outside.md",
+      "/tmp/out.md",
+      "C:\\temp\\out.md",
+      "\\\\server\\share\\out.md",
+    ];
 
     for (const materialize of invalidPaths) {
       expect(() =>

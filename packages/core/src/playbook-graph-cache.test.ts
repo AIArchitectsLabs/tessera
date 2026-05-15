@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
 import { createPlaybookGraphCache } from "./playbook-graph-cache.js";
+import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
 
 const graph = {
   schemaVersion: 1,
@@ -81,9 +81,12 @@ describe("createPlaybookGraphCache", () => {
 
     const savedPath = await cache.save(artifact);
     const savedText = await readFile(savedPath, "utf8");
-    const latestText = await readFile(join(root, cacheSegment(artifact.metadata.playbookId), "latest.json"), "utf8");
+    const latestText = await readFile(
+      join(root, cacheSegment(artifact.metadata.playbookId), "latest.json"),
+      "utf8"
+    );
 
-    expect(savedText.startsWith("{\n  \"graph\":")).toBe(true);
+    expect(savedText.startsWith('{\n  "graph":')).toBe(true);
     expect(savedText.endsWith("\n")).toBe(true);
     expect(latestText.endsWith("\n")).toBe(true);
     expect(JSON.parse(savedText).metadata.graphHash).toBe(artifact.metadata.graphHash);
@@ -119,9 +122,7 @@ describe("createPlaybookGraphCache", () => {
 
     expect(cacheSegment(playbookId)).toMatch(/^v-[A-Za-z0-9_-]+$/);
     expect(cacheSegment(graphHash)).toMatch(/^v-[A-Za-z0-9_-]+$/);
-    expect(savedPath).toBe(
-      join(root, cacheSegment(playbookId), `${cacheSegment(graphHash)}.json`)
-    );
+    expect(savedPath).toBe(join(root, cacheSegment(playbookId), `${cacheSegment(graphHash)}.json`));
     expect(await cache.get(playbookId, graphHash)).toBeDefined();
     expect(await cache.getLatest(playbookId)).toBeDefined();
 
@@ -180,11 +181,15 @@ describe("createPlaybookGraphCache", () => {
     await cache.save(artifact);
     await writeFile(artifactPath, "{", "utf8");
 
-    expect(await cache.get(artifact.metadata.playbookId, artifact.metadata.graphHash)).toBeUndefined();
+    expect(
+      await cache.get(artifact.metadata.playbookId, artifact.metadata.graphHash)
+    ).toBeUndefined();
 
     await writeFile(artifactPath, "{}", "utf8");
 
-    expect(await cache.get(artifact.metadata.playbookId, artifact.metadata.graphHash)).toBeUndefined();
+    expect(
+      await cache.get(artifact.metadata.playbookId, artifact.metadata.graphHash)
+    ).toBeUndefined();
   });
 
   test("treats malformed latest files as cache misses", async () => {

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   type PlaybookGraph,
-  PlaybookGraphSchema,
   type PlaybookGraphNode,
+  PlaybookGraphSchema,
 } from "@tessera/contracts";
 
 const TERMINAL_GRAPH_STEPS = new Set(["completed", "failed", "denied"]);
@@ -38,8 +38,8 @@ export function hashPlaybookSourceFiles(files: Record<string, string>): string {
 }
 
 function transitionTargets(node: PlaybookGraphNode): string[] {
-  const targets = [node.onSuccess, node.onFailure].filter((value): value is string =>
-    typeof value === "string"
+  const targets = [node.onSuccess, node.onFailure].filter(
+    (value): value is string => typeof value === "string"
   );
 
   if (node.kind === "condition") {

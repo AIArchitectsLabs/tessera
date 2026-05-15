@@ -1,6 +1,10 @@
 import type { CompiledPlaybookGraph } from "@tessera/contracts";
 import { CompiledPlaybookGraphSchema } from "@tessera/contracts";
-import { hashPlaybookGraph, hashPlaybookSourceFiles, validatePlaybookGraph } from "./playbook-graph.js";
+import {
+  hashPlaybookGraph,
+  hashPlaybookSourceFiles,
+  validatePlaybookGraph,
+} from "./playbook-graph.js";
 
 export interface CompilePlaybookGraphOptions {
   graph: unknown;
@@ -10,9 +14,7 @@ export interface CompilePlaybookGraphOptions {
   compiledAt?: string;
 }
 
-export function compilePlaybookGraph(
-  options: CompilePlaybookGraphOptions
-): CompiledPlaybookGraph {
+export function compilePlaybookGraph(options: CompilePlaybookGraphOptions): CompiledPlaybookGraph {
   const graph = validatePlaybookGraph(options.graph);
 
   return CompiledPlaybookGraphSchema.parse({
