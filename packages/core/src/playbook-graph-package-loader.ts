@@ -411,7 +411,10 @@ function graphExpressionFromDefaultExport(expression: ts.Expression): ts.Express
   return expression;
 }
 
-function extractDefaultGraph(sourceFiles: Record<string, string>, entrypoint: string): unknown {
+export function extractGraphPlaybookPackageGraph(
+  sourceFiles: Record<string, string>,
+  entrypoint: string
+): unknown {
   const source = sourceFiles[entrypoint];
   if (source === undefined) {
     throw new Error(`Missing collected source file: ${entrypoint}`);
@@ -452,13 +455,25 @@ function assertManifestMatchesCompiledGraph(
   }
 }
 
+export function validateGraphPlaybookPackageCompilation(options: {
+  sourceFiles: Record<string, string>;
+  manifest: PlaybookGraphPackageManifest;
+  compiled: CompiledPlaybookGraph;
+}): void {
+  validatePackageSources(options.sourceFiles, options.manifest.entrypoint);
+  validateGraphSourceRefs(options.sourceFiles, options.compiled.graph);
+  assertManifestMatchesCompiledGraph(options.manifest, options.compiled);
+}
+
 export async function loadGraphPlaybookPackage(
   options: LoadGraphPlaybookPackageOptions
 ): Promise<LoadedGraphPlaybookPackage> {
   const packageFiles = await readPlaybookGraphPackage(options.root);
-  validatePackageSources(packageFiles.sourceFiles, packageFiles.manifest.entrypoint);
 
-  const graph = extractDefaultGraph(packageFiles.sourceFiles, packageFiles.manifest.entrypoint);
+  const graph = extractGraphPlaybookPackageGraph(
+    packageFiles.sourceFiles,
+    packageFiles.manifest.entrypoint
+  );
 
   if (typeof graph !== "object" || graph === null || Array.isArray(graph)) {
     throw new Error(
@@ -476,8 +491,11 @@ export async function loadGraphPlaybookPackage(
 
   const compiled = compilePlaybookGraph(compileOptions);
 
-  validateGraphSourceRefs(packageFiles.sourceFiles, compiled.graph);
-  assertManifestMatchesCompiledGraph(packageFiles.manifest, compiled);
+  validateGraphPlaybookPackageCompilation({
+    sourceFiles: packageFiles.sourceFiles,
+    manifest: packageFiles.manifest,
+    compiled,
+  });
 
   return {
     root: packageFiles.root,
