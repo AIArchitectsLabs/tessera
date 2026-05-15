@@ -1824,6 +1824,18 @@ export const PlaybookGraphSchema = z
   })
   .strict();
 
+export const PlaybookGraphPackageManifestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: SafePlaybookIdSchema,
+    version: z.string().min(1),
+    name: z.string().min(1),
+    description: z.string().min(1).optional(),
+    entrypoint: PlaybookGraphSourceRefSchema.default("playbook.ts"),
+  })
+  .strict();
+export type PlaybookGraphPackageManifest = z.infer<typeof PlaybookGraphPackageManifestSchema>;
+
 export const PlaybookGraphCompileMetadataSchema = z
   .object({
     schemaVersion: z.literal(1),
