@@ -945,6 +945,41 @@ mod tests {
         }
 
         #[test]
+        fn load_settings_file_migrates_legacy_google_pro_default_to_flash() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(SETTINGS_FILE);
+            fs::write(
+                &path,
+                r#"{
+                  "selectedProvider": "google",
+                  "providers": {
+                    "openai": { "provider": "openai", "model": "gpt-5.4" },
+                    "openai-codex": { "provider": "openai-codex", "model": "gpt-5.4" },
+                    "anthropic": { "provider": "anthropic", "model": "claude-sonnet-4-6" },
+                    "google": { "provider": "google", "model": "gemini-2.5-pro" },
+                    "openrouter": { "provider": "openrouter", "model": "openai/gpt-5.4" },
+                    "local": {
+                      "provider": "local",
+                      "model": "llama3.2",
+                      "baseUrl": "http://127.0.0.1:11434/v1"
+                    }
+                  }
+                }"#,
+            )
+            .expect("write legacy settings");
+
+            let settings = load_settings_file(&path).expect("load");
+
+            assert_eq!(
+                settings
+                    .providers
+                    .get(&ModelProvider::Google)
+                    .map(|provider| provider.model.as_str()),
+                Some("gemini-2.5-flash")
+            );
+        }
+
+        #[test]
         fn file_round_trip_preserves_non_secret_settings() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join(SETTINGS_FILE);
