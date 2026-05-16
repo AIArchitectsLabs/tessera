@@ -980,6 +980,36 @@ mod tests {
         }
 
         #[test]
+        fn load_settings_file_accepts_utf8_bom() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(SETTINGS_FILE);
+            fs::write(
+                &path,
+                concat!(
+                    "\u{feff}",
+                    r#"{
+                      "selectedProvider": "google",
+                      "providers": {
+                        "google": { "provider": "google", "model": "gemini-2.5-flash" }
+                      }
+                    }"#
+                ),
+            )
+            .expect("write bom settings");
+
+            let settings = load_settings_file(&path).expect("load");
+
+            assert_eq!(settings.selected_provider, ModelProvider::Google);
+            assert_eq!(
+                settings
+                    .providers
+                    .get(&ModelProvider::Google)
+                    .map(|provider| provider.model.as_str()),
+                Some("gemini-2.5-flash")
+            );
+        }
+
+        #[test]
         fn file_round_trip_preserves_non_secret_settings() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join(SETTINGS_FILE);
