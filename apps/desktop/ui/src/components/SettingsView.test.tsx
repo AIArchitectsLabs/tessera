@@ -81,7 +81,7 @@ let modelSettings: ModelSettingsRead = {
     },
     google: {
       provider: "google",
-      model: "gemini-2.5-pro",
+      model: "gemini-2.5-flash",
       hasCredential: false,
     },
     openrouter: {
@@ -521,7 +521,7 @@ beforeEach(() => {
       },
       google: {
         provider: "google",
-        model: "gemini-2.5-pro",
+        model: "gemini-2.5-flash",
         hasCredential: false,
       },
       openrouter: {
@@ -874,7 +874,7 @@ describe("SettingsView search flow", () => {
     fireEvent.click(view.getByRole("button", { name: /google ai studio/i }));
 
     await waitFor(() => {
-      expect(view.getByDisplayValue("gemini-2.5-pro")).toBeTruthy();
+      expect(view.getByDisplayValue("gemini-2.5-flash")).toBeTruthy();
     });
   });
 

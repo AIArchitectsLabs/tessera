@@ -24,7 +24,7 @@ describe("model settings UI helpers", () => {
   test("returns model placeholders", () => {
     expect(modelPlaceholderForProvider("openai")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("openai-codex")).toBe("gpt-5.4");
-    expect(modelPlaceholderForProvider("google")).toBe("gemini-2.5-pro");
+    expect(modelPlaceholderForProvider("google")).toBe("gemini-2.5-flash");
     expect(modelPlaceholderForProvider("local")).toBe("llama3.2");
   });
 
@@ -87,7 +87,7 @@ describe("model settings UI helpers", () => {
       },
       google: {
         provider: "google",
-        model: "gemini-2.5-pro",
+        model: "gemini-2.5-flash",
         apiKeyEnv: "GEMINI_API_KEY",
       },
       openrouter: {

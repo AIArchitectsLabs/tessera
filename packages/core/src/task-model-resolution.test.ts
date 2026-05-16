@@ -9,7 +9,7 @@ const settings: ModelSettingsRead = {
   providers: {
     openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
-    google: { provider: "google", model: "gemini-2.5-pro", hasCredential: false },
+    google: { provider: "google", model: "gemini-2.5-flash", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     local: {
@@ -152,7 +152,7 @@ describe("resolveTaskExecutionConfig", () => {
 
     expect(result.provider).toEqual({
       provider: "google",
-      model: "gemini-2.5-pro",
+      model: "gemini-2.5-flash",
       apiKeyEnv: "GEMINI_API_KEY",
     });
   });

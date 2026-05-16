@@ -938,7 +938,7 @@ mod tests {
                 settings.providers.get(&ModelProvider::Google),
                 Some(&ProviderConfig {
                     provider: ModelProvider::Google,
-                    model: "gemini-2.5-pro".to_string(),
+                    model: "gemini-2.5-flash".to_string(),
                     base_url: None,
                 })
             );
