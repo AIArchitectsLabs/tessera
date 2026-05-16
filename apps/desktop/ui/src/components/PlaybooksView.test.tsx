@@ -6,6 +6,9 @@ import type {
   IntegrationSettingsRead,
   ModelSettingsRead,
   PlaybookDetail,
+  PlaybookGraphRunDetail,
+  PlaybookGraphRunListResult,
+  PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
   WorkflowRunListResult,
@@ -114,6 +117,178 @@ const completedRun = {
   events: [],
   steps: [],
 } as unknown as PlaybookRunDetail;
+
+const graphRunDetail = {
+  run: {
+    schemaVersion: 1,
+    runId: "graph-run-1",
+    playbookId: playbook.id,
+    status: "blocked",
+    input: {},
+    snapshot: {
+      schemaVersion: 1,
+      snapshotJson: "{}",
+      snapshotHash: "sha256:snapshot",
+      graphHash: "sha256:graph",
+      sourceHash: "sha256:source",
+      sourceFileHashes: {},
+      playbookId: playbook.id,
+      packageVersion: "0.1.0",
+      compilerVersion: "test",
+      graphSchemaVersion: 1,
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    },
+    currentQueueEntryId: "queue-review",
+    blockedReason: "human review required",
+    materialization: {
+      schemaVersion: 1,
+      kind: "workspace",
+      workspaceRoot: "/tmp/workspace",
+    },
+    startedAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-15T00:01:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-review",
+      runId: "graph-run-1",
+      nodeId: "review",
+      nodePath: "draft/review",
+      nodeKind: "humanReview",
+      status: "blocked",
+      dependsOn: [],
+      producesArtifacts: [],
+      consumesArtifacts: [],
+      recoveryPolicy: "block_for_review",
+      attempt: 0,
+      createdAt: "2026-05-15T00:00:00.000Z",
+      updatedAt: "2026-05-15T00:01:00.000Z",
+      blockedReason: "human review required",
+    },
+  ],
+  branchItems: [],
+  artifacts: [],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const graphRunSurface = {
+  schemaVersion: 1,
+  detail: graphRunDetail,
+  activeArtifacts: [
+    {
+      schemaVersion: 1,
+      artifactId: "brief",
+      versionId: "brief-v2",
+      producerQueueEntryId: "queue-review",
+      producerStatus: "blocked",
+      nodePath: "draft/review",
+      contentHash: "sha256:brief",
+      value: { title: "Active brief" },
+      createdAt: "2026-05-15T00:01:00.000Z",
+    },
+  ],
+  artifactTimeline: [
+    {
+      schemaVersion: 1,
+      artifactId: "brief",
+      versionId: "brief-v1",
+      producerQueueEntryId: "queue-draft",
+      producerStatus: "skipped",
+      nodePath: "draft",
+      contentHash: "sha256:brief-old",
+      active: false,
+      value: { title: "Stale brief" },
+      createdAt: "2026-05-15T00:00:00.000Z",
+    },
+    {
+      schemaVersion: 1,
+      artifactId: "brief",
+      versionId: "brief-v2",
+      producerQueueEntryId: "queue-review",
+      producerStatus: "blocked",
+      nodePath: "draft/review",
+      contentHash: "sha256:brief",
+      active: true,
+      value: { title: "Active brief" },
+      createdAt: "2026-05-15T00:01:00.000Z",
+    },
+  ],
+  timeline: [
+    {
+      schemaVersion: 1,
+      timelineRowId: "graph-run-1:queue-review:synthetic_requested",
+      kind: "synthetic_requested",
+      createdAt: "2026-05-15T00:01:00.000Z",
+      synthetic: true,
+      queueEntryId: "queue-review",
+      nodePath: "draft/review",
+      artifactId: "brief",
+      decision: "requested",
+      message: "human review required",
+      payload: {},
+    },
+  ],
+  branches: [],
+  actions: [
+    {
+      schemaVersion: 1,
+      actionId: "queue-review:approve",
+      decision: "approve",
+      label: "Approve",
+      queueEntryId: "queue-review",
+      nodePath: "draft/review",
+      nodeKind: "humanReview",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [],
+      sideEffect: "resume",
+      destructive: false,
+      invalidatesDownstream: false,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+    {
+      schemaVersion: 1,
+      actionId: "queue-review:request_changes",
+      decision: "request_changes",
+      label: "Request changes",
+      queueEntryId: "queue-review",
+      nodePath: "draft/review",
+      nodeKind: "humanReview",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [{ path: "notes", label: "Notes", kind: "string", required: false }],
+      sideEffect: "invalidate_downstream",
+      destructive: false,
+      invalidatesDownstream: true,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+    {
+      schemaVersion: 1,
+      actionId: "graph-run-1:edit_input",
+      decision: "edit_input",
+      label: "Edit input",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: [],
+      requiredPayloadFields: [{ path: "input", label: "Input", kind: "object", required: true }],
+      sideEffect: "invalidate_downstream",
+      destructive: false,
+      invalidatesDownstream: true,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+  ],
+} satisfies PlaybookGraphRunReviewSurface;
 
 const dashboardRun = {
   runId: "run-dashboard",
@@ -278,6 +453,35 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
       return { runs: [dashboardRun, completedRun] } satisfies WorkflowRunListResult;
     case "playbook_run_get":
       return args?.runId === dashboardRun.runId ? dashboardRun : completedRun;
+    case "graph_run_list":
+      return {
+        runs: args?.playbookId === playbook.id ? [graphRunDetail.run] : [],
+      } satisfies PlaybookGraphRunListResult;
+    case "graph_run_review_surface":
+      return graphRunSurface;
+    case "graph_run_git_milestone_preview":
+      return {
+        schemaVersion: 1,
+        available: true,
+        workspaceRoot: "/tmp/workspace",
+        gitRoot: "/tmp/workspace",
+        branch: "main",
+        changedFiles: [{ path: "out/draft.json", status: "M", allowed: true }],
+        proposedMessage: "Record graph run milestone",
+        dirtyPolicy: "allow_selected_paths",
+        unsupportedFeatures: ["push"],
+      };
+    case "graph_run_resume": {
+      const { blockedReason: _blockedReason, ...run } = graphRunDetail.run;
+      return {
+        ...graphRunDetail,
+        run: {
+          ...run,
+          status: "running",
+          updatedAt: "2026-05-15T00:02:00.000Z",
+        },
+      } satisfies PlaybookGraphRunDetail;
+    }
     case "playbook_run_create":
       return {
         ...completedRun,
@@ -503,6 +707,128 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(view.getByText("Usage")).toBeTruthy();
       expect(view.getByText(/Total 1\.5k tokens/i)).toBeTruthy();
+    });
+  });
+
+  test("renders graph review surface actions and submits action payloads", async () => {
+    const view = renderPlaybooksView();
+
+    let playbookButton: HTMLElement | null | undefined = null;
+    await waitFor(() => {
+      playbookButton = view.getAllByText("Sales Meeting Brief")[0]?.closest("button");
+      expect(playbookButton).toBeTruthy();
+    });
+    if (!playbookButton) throw new Error("Expected playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 9/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByRole("button", { name: "View details" })).toBeTruthy();
+    });
+    fireEvent.click(view.getByRole("button", { name: "View details" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Graph runtime")).toBeTruthy();
+      expect(view.getAllByText("Blocked").length).toBeGreaterThan(0);
+    });
+    const blockedLabels = view.getAllByText("Blocked");
+    const graphRunButton = blockedLabels[blockedLabels.length - 1]?.closest("button");
+    if (graphRunButton) fireEvent.click(graphRunButton);
+
+    await waitFor(() => {
+      expect(invoke.mock.calls.some(([command]) => command === "graph_run_review_surface")).toBe(
+        true
+      );
+    });
+
+    await waitFor(() => {
+      expect(view.getByText(/Active brief/)).toBeTruthy();
+      expect(view.getByText("Artifact timeline: 2 versions · 1 active")).toBeTruthy();
+      expect(view.getAllByText("human review required").length).toBeGreaterThan(0);
+    });
+
+    const inputPayload = view.getByPlaceholderText("{ }") as HTMLTextAreaElement;
+    fireEvent.change(inputPayload, { target: { value: "not-json" } });
+    fireEvent.click(view.getByRole("button", { name: "Edit input" }));
+    await waitFor(() => {
+      expect(view.getByText("Input must be valid JSON")).toBeTruthy();
+    });
+
+    expect(view.queryByPlaceholderText(/JSON payload/i)).toBeNull();
+    const payloadTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
+    fireEvent.change(payloadTextarea, {
+      target: { value: "Revise tone" },
+    });
+    await waitFor(() => {
+      expect(payloadTextarea.value).toBe("Revise tone");
+    });
+    fireEvent.click(view.getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(([command]) => command === "graph_run_resume");
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        runId: "graph-run-1",
+        request: {
+          runId: "graph-run-1",
+          decision: "request_changes",
+          queueEntryId: "queue-review",
+          payload: { notes: "Revise tone" },
+        },
+      });
+    });
+  });
+
+  test("previews Git milestones through the explicit Tauri command", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Sales Meeting Brief")[0]).toBeTruthy();
+    });
+    fireEvent.click(view.getAllByText("Sales Meeting Brief")[0]?.closest("button") as HTMLElement);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 9/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByRole("button", { name: "View details" })).toBeTruthy();
+    });
+    fireEvent.click(view.getByRole("button", { name: "View details" }));
+
+    await waitFor(() => {
+      expect(view.getByRole("button", { name: "Preview Git milestone" })).toBeTruthy();
+    });
+    expect(
+      invoke.mock.calls.some(([command]) => command === "graph_run_git_milestone_preview")
+    ).toBe(false);
+    fireEvent.click(view.getByRole("button", { name: "Preview Git milestone" }));
+
+    await waitFor(() => {
+      const previewCall = invoke.mock.calls.find(
+        ([command]) => command === "graph_run_git_milestone_preview"
+      );
+      expect(previewCall).toBeTruthy();
+      expect(previewCall?.[1]).toMatchObject({
+        runId: "graph-run-1",
+        request: {
+          runId: "graph-run-1",
+          actionSpecId: "graph-run-1:git_milestone",
+          workspaceRoot: "/tmp/workspace",
+        },
+      });
+      expect(view.getByText(/Ready · 1 changed file/)).toBeTruthy();
     });
   });
 

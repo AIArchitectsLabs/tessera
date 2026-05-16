@@ -6,10 +6,13 @@ import {
   PlaybookGraphMaterializationTargetSchema,
   PlaybookGraphMemoKeyPartsSchema,
   PlaybookGraphNodeMemoSchema,
+  PlaybookGraphOperationRecordSchema,
   PlaybookGraphQueueEntrySchema,
+  PlaybookGraphResumeActionSpecSchema,
   PlaybookGraphResumeDecisionSchema,
   PlaybookGraphRunCreateRequestSchema,
   PlaybookGraphRunRecordSchema,
+  PlaybookGraphRunReviewSurfaceSchema,
   PlaybookGraphSnapshotSchema,
 } from "./index.js";
 
@@ -375,6 +378,329 @@ describe("PlaybookGraphResumeDecisionSchema", () => {
         credential: { apiKey: "sk-test" },
       }).payload
     ).toEqual({ artifactId: "brief", value: { title: "Edited" } });
+  });
+});
+
+describe("PlaybookGraphRunReviewSurfaceSchema", () => {
+  const run = {
+    schemaVersion: 1,
+    runId: "run-1",
+    playbookId: "content.seo-blog",
+    status: "blocked",
+    input: { topic: "durable UX" },
+    snapshot,
+    currentQueueEntryId: "queue-review",
+    blockedReason: "human review required",
+    startedAt: now,
+    updatedAt: later,
+  };
+  const planQueue = {
+    schemaVersion: 1,
+    queueEntryId: "queue-plan",
+    runId: "run-1",
+    nodeId: "plan",
+    nodePath: "plan",
+    nodeKind: "script",
+    status: "skipped",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const reviewQueue = {
+    schemaVersion: 1,
+    queueEntryId: "queue-review",
+    runId: "run-1",
+    nodeId: "review",
+    nodePath: "plan/review",
+    nodeKind: "humanReview",
+    status: "blocked",
+    dependsOn: ["queue-plan"],
+    createdAt: now,
+    updatedAt: later,
+    blockedReason: "human review required",
+  };
+  const skippedArtifact = {
+    schemaVersion: 1,
+    runId: "run-1",
+    artifactId: "brief",
+    versionId: "artifact-skipped",
+    producerQueueEntryId: "queue-plan",
+    nodePath: "plan",
+    contentHash: "sha256:skipped",
+    value: { title: "Stale" },
+    createdAt: now,
+  };
+  const activeArtifact = {
+    schemaVersion: 1,
+    runId: "run-1",
+    artifactId: "brief",
+    versionId: "artifact-active",
+    producerQueueEntryId: "queue-review",
+    nodePath: "plan/review",
+    contentHash: "sha256:active",
+    value: { title: "Active" },
+    createdAt: later,
+  };
+
+  test("accepts active artifacts, full history, timelines, branches, actions, and git preview", () => {
+    const parsed = PlaybookGraphRunReviewSurfaceSchema.parse({
+      schemaVersion: 1,
+      detail: {
+        run,
+        queue: [planQueue, reviewQueue],
+        branchItems: [],
+        artifacts: [skippedArtifact, activeArtifact],
+        reviews: [],
+      },
+      activeArtifacts: [
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-active",
+          producerQueueEntryId: "queue-review",
+          producerStatus: "blocked",
+          nodePath: "plan/review",
+          contentHash: "sha256:active",
+          value: { title: "Active" },
+          createdAt: later,
+        },
+      ],
+      artifactTimeline: [
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-active",
+          producerQueueEntryId: "queue-review",
+          producerStatus: "blocked",
+          nodePath: "plan/review",
+          contentHash: "sha256:active",
+          active: true,
+          value: { title: "Active" },
+          createdAt: later,
+        },
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-skipped",
+          producerQueueEntryId: "queue-plan",
+          producerStatus: "skipped",
+          nodePath: "plan",
+          contentHash: "sha256:skipped",
+          active: false,
+          value: { title: "Stale" },
+          createdAt: now,
+        },
+      ],
+      timeline: [
+        {
+          schemaVersion: 1,
+          timelineRowId: "run-1:queue-review:synthetic_requested",
+          kind: "synthetic_requested",
+          createdAt: later,
+          synthetic: true,
+          queueEntryId: "queue-review",
+          nodePath: "plan/review",
+          artifactId: "brief",
+          decision: "requested",
+          message: "human review required",
+        },
+      ],
+      branches: [],
+      actions: [
+        {
+          schemaVersion: 1,
+          actionId: "queue-review:approve",
+          decision: "approve",
+          label: "Approve",
+          queueEntryId: "queue-review",
+          nodePath: "plan/review",
+          nodeKind: "humanReview",
+          allowedRunStatuses: ["blocked"],
+          allowedQueueStatuses: ["blocked"],
+          sideEffect: "resume",
+        },
+      ],
+      gitMilestone: {
+        schemaVersion: 1,
+        available: false,
+        unavailableReason: "Git Service unavailable",
+        changedFiles: [],
+        unsupportedFeatures: ["branch rollback"],
+      },
+    });
+
+    expect(parsed.activeArtifacts.map((artifact) => artifact.versionId)).toEqual([
+      "artifact-active",
+    ]);
+    expect(parsed.artifactTimeline.map((artifact) => artifact.versionId)).toEqual([
+      "artifact-active",
+      "artifact-skipped",
+    ]);
+    expect(parsed.timeline[0]?.synthetic).toBe(true);
+    expect(parsed.actions[0]?.decision).toBe("approve");
+  });
+
+  test("keeps skipped producer versions out of active artifacts while preserving history", () => {
+    const surface = PlaybookGraphRunReviewSurfaceSchema.parse({
+      schemaVersion: 1,
+      detail: {
+        run,
+        queue: [planQueue, reviewQueue],
+        branchItems: [],
+        artifacts: [skippedArtifact, activeArtifact],
+        reviews: [],
+      },
+      activeArtifacts: [
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-active",
+          producerQueueEntryId: "queue-review",
+          producerStatus: "blocked",
+          nodePath: "plan/review",
+          contentHash: "sha256:active",
+          value: { title: "Active" },
+          createdAt: later,
+        },
+      ],
+      artifactTimeline: [
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-skipped",
+          producerQueueEntryId: "queue-plan",
+          producerStatus: "skipped",
+          nodePath: "plan",
+          contentHash: "sha256:skipped",
+          active: false,
+          value: { title: "Stale" },
+          createdAt: now,
+        },
+        {
+          schemaVersion: 1,
+          artifactId: "brief",
+          versionId: "artifact-active",
+          producerQueueEntryId: "queue-review",
+          producerStatus: "blocked",
+          nodePath: "plan/review",
+          contentHash: "sha256:active",
+          active: true,
+          value: { title: "Active" },
+          createdAt: later,
+        },
+      ],
+    });
+
+    expect(surface.activeArtifacts.some((artifact) => artifact.producerStatus === "skipped")).toBe(
+      false
+    );
+    expect(surface.artifactTimeline.some((artifact) => artifact.producerStatus === "skipped")).toBe(
+      true
+    );
+  });
+});
+
+describe("PlaybookGraphOperationRecordSchema", () => {
+  test("accepts a complete operation record", () => {
+    expect(
+      PlaybookGraphOperationRecordSchema.parse({
+        schemaVersion: 1,
+        operationRecordId: "operation-record-1",
+        operationAttemptId: "operation-attempt-1",
+        runId: "run-1",
+        actionSpecId: "queue-review:approve",
+        kind: "resume",
+        status: "succeeded",
+        operatorIntent: "Approve review",
+        queueEntryId: "queue-review",
+        affectedArtifactIds: ["plan"],
+        affectedReviewEventIds: ["review-1"],
+        affectedQueueEntryIds: ["queue-review"],
+        redactedPayloadSummary: "notes: 12 chars",
+        createdAt: now,
+        completedAt: now,
+      })
+    ).toMatchObject({
+      operationRecordId: "operation-record-1",
+      status: "succeeded",
+      affectedArtifactIds: ["plan"],
+    });
+  });
+
+  test("rejects malformed or secret-bearing payload summaries", () => {
+    expect(() =>
+      PlaybookGraphOperationRecordSchema.parse({
+        schemaVersion: 1,
+        operationRecordId: "operation-record-1",
+        operationAttemptId: "operation-attempt-1",
+        runId: "run-1",
+        actionSpecId: "queue-review:approve",
+        kind: "resume",
+        status: "succeeded",
+        operatorIntent: "Approve review",
+        affectedArtifactIds: [],
+        affectedReviewEventIds: [],
+        affectedQueueEntryIds: [],
+        redactedPayloadSummary: "apiKey: sk-secret",
+        createdAt: now,
+      })
+    ).toThrow(/secret-bearing/);
+    expect(() =>
+      PlaybookGraphOperationRecordSchema.parse({
+        schemaVersion: 1,
+        operationRecordId: "operation-record-1",
+        operationAttemptId: "operation-attempt-1",
+        runId: "run-1",
+        actionSpecId: "queue-review:approve",
+        kind: "unknown",
+        status: "succeeded",
+        operatorIntent: "Approve review",
+        affectedArtifactIds: [],
+        affectedReviewEventIds: [],
+        affectedQueueEntryIds: [],
+        createdAt: now,
+      })
+    ).toThrow();
+  });
+});
+
+describe("PlaybookGraphResumeActionSpecSchema", () => {
+  test("accepts decision-specific structured action metadata", () => {
+    const action = PlaybookGraphResumeActionSpecSchema.parse({
+      schemaVersion: 1,
+      actionId: "queue-1:edit_artifact",
+      decision: "edit_artifact",
+      label: "Edit artifact",
+      queueEntryId: "queue-1",
+      nodePath: "score",
+      nodeKind: "humanReview",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [
+        { path: "artifactId", label: "Artifact", kind: "string" },
+        { path: "value", label: "Value", kind: "json" },
+      ],
+      sideEffect: "invalidate_downstream",
+      invalidatesDownstream: true,
+    });
+
+    expect(action.requiredPayloadFields.map((field) => field.path)).toEqual([
+      "artifactId",
+      "value",
+    ]);
+    expect(action.invalidatesDownstream).toBe(true);
+  });
+
+  test("rejects action specs without allowed run statuses", () => {
+    expect(() =>
+      PlaybookGraphResumeActionSpecSchema.parse({
+        schemaVersion: 1,
+        actionId: "queue-1:approve",
+        decision: "approve",
+        label: "Approve",
+        allowedRunStatuses: [],
+        sideEffect: "resume",
+      })
+    ).toThrow();
   });
 });
 

@@ -31,14 +31,21 @@ import {
   PlaybookDetailSchema,
   type PlaybookGraphArtifactVersion,
   type PlaybookGraphBranchItem,
+  PlaybookGraphGitMilestoneCommitRequestSchema,
+  PlaybookGraphGitMilestonePreviewRequestSchema,
   type PlaybookGraphNode,
+  type PlaybookGraphOperationKind,
+  type PlaybookGraphOperationRecord,
   type PlaybookGraphQueueEntry,
+  PlaybookGraphResumeActionSpecSchema,
   PlaybookGraphResumeDecisionSchema,
+  type PlaybookGraphReviewEvent,
   PlaybookGraphRunCreateRequestSchema,
   PlaybookGraphRunDetailSchema,
   PlaybookGraphRunListFilterSchema,
   PlaybookGraphRunListResultSchema,
   type PlaybookGraphRunRecord,
+  PlaybookGraphRunReviewSurfaceSchema,
   PlaybookListResultSchema,
   PlaybookRunDetailSchema,
   type PlaybookRunPreference,
@@ -95,6 +102,7 @@ import {
   WEEKLY_STATUS_DIGEST_WORKFLOW,
   WEEKLY_UPDATE_WORKFLOW,
   childPlaybookGraphNodePath,
+  createGraphGitMilestoneService,
   createOptionalCapabilityManager,
   createPlaybookGraphCache,
   createPlaybookGraphExecutionContextPin,
@@ -1352,6 +1360,7 @@ export interface GraphRunHandlerOptions {
   artifactWriteAdapter?: (
     input: PlaybookGraphArtifactWriteAdapterInput
   ) => Promise<unknown> | unknown;
+  gitMilestoneService?: ReturnType<typeof createGraphGitMilestoneService>;
 }
 
 export interface GraphRunInterruptedRecoveryResult {
@@ -1407,6 +1416,100 @@ function sidecarGraphRunRuntimeId(label: string): string {
 
 function graphRunNow(options: GraphRunHandlerOptions): string {
   return options.now ? options.now() : new Date().toISOString();
+}
+
+function graphRunOperationKind(decision: string): PlaybookGraphOperationKind {
+  switch (decision) {
+    case "edit_input":
+      return "edit_input";
+    case "edit_artifact":
+      return "edit_artifact";
+    case "edit_review":
+      return "edit_review";
+    case "retry_interrupted":
+      return "retry_interrupted";
+    case "approve_repair":
+    case "retry_repair":
+      return "repair";
+    default:
+      return "resume";
+  }
+}
+
+function graphRunOperationFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(
+      /(api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|secret|password|credential|authorization)\s*[:=]\s*\S+/gi,
+      "$1: [redacted]"
+    )
+    .slice(0, 1_000);
+}
+
+function graphRunPayloadSummary(payload: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(payload)) {
+    if (
+      /api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|secret|password|credential|authorization/i.test(
+        key
+      )
+    ) {
+      continue;
+    }
+    if (typeof value === "string") {
+      parts.push(`${key}: ${value.length} chars`);
+    } else if (value && typeof value === "object") {
+      parts.push(`${key}: object`);
+    } else if (value !== undefined) {
+      parts.push(`${key}: ${typeof value}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(", ").slice(0, 500) : undefined;
+}
+
+function graphRunOperationRecord(input: {
+  runId: string;
+  actionSpecId: string;
+  kind: PlaybookGraphOperationKind;
+  status: PlaybookGraphOperationRecord["status"];
+  operatorIntent: string;
+  createdAt: string;
+  operationAttemptId?: string;
+  queueEntryId?: string;
+  affectedArtifactIds?: string[];
+  affectedReviewEventIds?: string[];
+  affectedQueueEntryIds?: string[];
+  gitEvidenceId?: string;
+  redactedPayloadSummary?: string;
+  failureReason?: string;
+}): PlaybookGraphOperationRecord {
+  return {
+    schemaVersion: 1,
+    operationRecordId: randomUUID(),
+    operationAttemptId: input.operationAttemptId ?? randomUUID(),
+    runId: input.runId,
+    actionSpecId: input.actionSpecId,
+    kind: input.kind,
+    status: input.status,
+    operatorIntent: input.operatorIntent,
+    ...(input.queueEntryId ? { queueEntryId: input.queueEntryId } : {}),
+    affectedArtifactIds: input.affectedArtifactIds ?? [],
+    affectedReviewEventIds: input.affectedReviewEventIds ?? [],
+    affectedQueueEntryIds: input.affectedQueueEntryIds ?? [],
+    ...(input.gitEvidenceId ? { gitEvidenceId: input.gitEvidenceId } : {}),
+    ...(input.redactedPayloadSummary
+      ? { redactedPayloadSummary: input.redactedPayloadSummary }
+      : {}),
+    createdAt: input.createdAt,
+    ...(input.status === "started" ? {} : { completedAt: input.createdAt }),
+    ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+  };
+}
+
+function graphRunOperationTerminalTime(startedAt: string, options: GraphRunHandlerOptions): string {
+  const terminalAt = graphRunNow(options);
+  if (terminalAt > startedAt) return terminalAt;
+  return new Date(Date.parse(startedAt) + 1).toISOString();
 }
 
 function graphRunPayloadWorkspaceRoot(payload: Record<string, unknown>): string | undefined {
@@ -1752,7 +1855,478 @@ async function graphRunDetail(
     branchItems: await store.listBranchItems(runId),
     artifacts: await store.listArtifactVersions(runId),
     reviews: await store.listReviewEvents(runId),
+    operations: await store.listOperationRecords(runId),
   });
+}
+
+type GraphRunDetail = ReturnType<typeof PlaybookGraphRunDetailSchema.parse>;
+type GraphRunReviewSurface = ReturnType<typeof PlaybookGraphRunReviewSurfaceSchema.parse>;
+
+function graphQueueById(detail: GraphRunDetail): Map<string, PlaybookGraphQueueEntry> {
+  return new Map(detail.queue.map((entry) => [entry.queueEntryId, entry]));
+}
+
+function graphArtifactSortKey(version: PlaybookGraphArtifactVersion): string {
+  return [
+    version.createdAt,
+    version.artifactId,
+    version.versionId,
+    version.producerQueueEntryId,
+  ].join("\u0000");
+}
+
+function graphTimelineSortKey(row: {
+  createdAt: string;
+  queueEntryId?: string | undefined;
+  reviewEventId?: string | undefined;
+  artifactId?: string | undefined;
+  timelineRowId: string;
+}): string {
+  return [
+    row.createdAt,
+    row.queueEntryId ?? "",
+    row.reviewEventId ?? "",
+    row.artifactId ?? "",
+    row.timelineRowId,
+  ].join("\u0000");
+}
+
+function graphRunNodeForQueueEntry(
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry
+): PlaybookGraphNode | undefined {
+  try {
+    return findGraphRunNode(
+      parsePinnedCompiledGraph(detail.run.snapshot).graph.nodes,
+      entry.nodeId
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function graphRunActiveArtifactRows(
+  detail: GraphRunDetail
+): GraphRunReviewSurface["activeArtifacts"] {
+  const queueById = graphQueueById(detail);
+  const activeVersions = detail.artifacts.filter(
+    (version) => queueById.get(version.producerQueueEntryId)?.status !== "skipped"
+  );
+  const latestByArtifact = new Map<string, PlaybookGraphArtifactVersion>();
+  for (const version of [...activeVersions].sort((left, right) =>
+    graphArtifactSortKey(left).localeCompare(graphArtifactSortKey(right))
+  )) {
+    latestByArtifact.set(version.artifactId, version);
+  }
+  return [...latestByArtifact.values()]
+    .sort((left, right) => graphArtifactSortKey(right).localeCompare(graphArtifactSortKey(left)))
+    .map((version) => ({
+      schemaVersion: 1 as const,
+      artifactId: version.artifactId,
+      versionId: version.versionId,
+      producerQueueEntryId: version.producerQueueEntryId,
+      producerStatus: queueById.get(version.producerQueueEntryId)?.status,
+      nodePath: version.nodePath,
+      contentHash: version.contentHash,
+      value: version.value,
+      createdAt: version.createdAt,
+    }));
+}
+
+function graphRunArtifactTimelineRows(
+  detail: GraphRunDetail,
+  activeArtifacts: GraphRunReviewSurface["activeArtifacts"]
+): GraphRunReviewSurface["artifactTimeline"] {
+  const queueById = graphQueueById(detail);
+  const activeVersionIds = new Set(
+    activeArtifacts.map((artifact) => `${artifact.artifactId}:${artifact.versionId}`)
+  );
+  return [...detail.artifacts]
+    .sort((left, right) => graphArtifactSortKey(right).localeCompare(graphArtifactSortKey(left)))
+    .map((version) => ({
+      schemaVersion: 1 as const,
+      artifactId: version.artifactId,
+      versionId: version.versionId,
+      producerQueueEntryId: version.producerQueueEntryId,
+      producerStatus: queueById.get(version.producerQueueEntryId)?.status,
+      nodePath: version.nodePath,
+      contentHash: version.contentHash,
+      active: activeVersionIds.has(`${version.artifactId}:${version.versionId}`),
+      value: version.value,
+      createdAt: version.createdAt,
+    }));
+}
+
+function graphRunTimelineRows(detail: GraphRunDetail): GraphRunReviewSurface["timeline"] {
+  const persisted: GraphRunReviewSurface["timeline"] = detail.reviews.map((event) => ({
+    schemaVersion: 1 as const,
+    timelineRowId: `review:${event.reviewEventId}`,
+    kind: "review_event" as const,
+    createdAt: event.createdAt,
+    synthetic: false,
+    queueEntryId: event.queueEntryId,
+    nodePath: event.nodePath,
+    artifactId: event.artifactId,
+    reviewEventId: event.reviewEventId,
+    decision: event.decision,
+    message: `Review ${event.decision.replace("_", " ")}`,
+    payload: event.payload,
+  }));
+  const operations: GraphRunReviewSurface["timeline"] = detail.operations.map((record) => ({
+    schemaVersion: 1 as const,
+    timelineRowId: `operation:${record.operationRecordId}`,
+    kind: "operation_record" as const,
+    createdAt: record.createdAt,
+    synthetic: false,
+    queueEntryId: record.queueEntryId,
+    message: `${record.operatorIntent} ${record.status}`,
+    payload: {
+      operationRecordId: record.operationRecordId,
+      operationAttemptId: record.operationAttemptId,
+      kind: record.kind,
+      status: record.status,
+      ...(record.gitEvidenceId ? { gitEvidenceId: record.gitEvidenceId } : {}),
+      ...(record.failureReason ? { failureReason: record.failureReason } : {}),
+    },
+  }));
+  const requestedEventKeys = new Set(
+    detail.reviews
+      .filter((event) => event.decision === "requested")
+      .map((event) => `${event.queueEntryId}:${event.artifactId}`)
+  );
+  const synthetic: GraphRunReviewSurface["timeline"] = [];
+  for (const entry of detail.queue) {
+    if (entry.status === "blocked" && entry.nodeKind === "humanReview") {
+      const node = graphRunNodeForQueueEntry(detail, entry);
+      const artifactId =
+        detail.reviews.find((event) => event.queueEntryId === entry.queueEntryId)?.artifactId ??
+        (node?.kind === "humanReview" ? node.artifact : undefined) ??
+        "review";
+      if (requestedEventKeys.has(`${entry.queueEntryId}:${artifactId}`)) continue;
+      synthetic.push({
+        schemaVersion: 1 as const,
+        timelineRowId: `${detail.run.runId}:${entry.queueEntryId}:synthetic_requested`,
+        kind: "synthetic_requested" as const,
+        createdAt: entry.updatedAt,
+        synthetic: true,
+        queueEntryId: entry.queueEntryId,
+        nodePath: entry.nodePath,
+        artifactId,
+        decision: "requested" as const,
+        message: entry.blockedReason ?? "human review required",
+        payload: {},
+      });
+      continue;
+    }
+    if (entry.status === "interrupted") {
+      synthetic.push({
+        schemaVersion: 1 as const,
+        timelineRowId: `${detail.run.runId}:${entry.queueEntryId}:synthetic_interrupted`,
+        kind: "synthetic_interrupted" as const,
+        createdAt: entry.updatedAt,
+        synthetic: true,
+        queueEntryId: entry.queueEntryId,
+        nodePath: entry.nodePath,
+        message: entry.blockedReason ?? "queue entry interrupted",
+        payload: {},
+      });
+    }
+  }
+  const repair: GraphRunReviewSurface["timeline"] =
+    detail.run.status === "needs_repair"
+      ? [
+          {
+            schemaVersion: 1 as const,
+            timelineRowId: `${detail.run.runId}:synthetic_repair`,
+            kind: "synthetic_repair" as const,
+            createdAt: detail.run.updatedAt,
+            synthetic: true,
+            message: detail.run.repairReason ?? "graph run needs repair",
+            payload: {},
+          },
+        ]
+      : [];
+  return [...persisted, ...operations, ...synthetic, ...repair].sort((left, right) =>
+    graphTimelineSortKey(left).localeCompare(graphTimelineSortKey(right))
+  );
+}
+
+function graphRunBranchGroups(
+  detail: GraphRunDetail,
+  activeArtifacts: GraphRunReviewSurface["activeArtifacts"]
+): GraphRunReviewSurface["branches"] {
+  const queueByParent = new Map<string, PlaybookGraphQueueEntry[]>();
+  for (const entry of detail.queue) {
+    const branchItem = detail.branchItems
+      .filter(
+        (item) => entry.nodePath === item.nodePath || entry.nodePath.startsWith(`${item.nodePath}/`)
+      )
+      .sort((left, right) => right.nodePath.length - left.nodePath.length)[0];
+    if (!branchItem) continue;
+    const entries = queueByParent.get(branchItem.branchItemId) ?? [];
+    entries.push(entry);
+    queueByParent.set(branchItem.branchItemId, entries);
+  }
+  return detail.queue
+    .filter((entry) => entry.nodeKind === "parallelMap")
+    .sort((left, right) => left.nodePath.localeCompare(right.nodePath))
+    .map((parent) => {
+      const items = detail.branchItems
+        .filter((item) => item.parentQueueEntryId === parent.queueEntryId)
+        .sort(
+          (left, right) =>
+            left.index - right.index || left.branchItemId.localeCompare(right.branchItemId)
+        )
+        .map((item) => {
+          const queue = [...(queueByParent.get(item.branchItemId) ?? [])].sort((left, right) =>
+            left.nodePath.localeCompare(right.nodePath)
+          );
+          const queueIds = new Set(queue.map((entry) => entry.queueEntryId));
+          return {
+            schemaVersion: 1 as const,
+            branchItem: item,
+            queue,
+            activeArtifacts: activeArtifacts.filter((artifact) =>
+              queueIds.has(artifact.producerQueueEntryId)
+            ),
+            stale: item.status === "skipped" || queue.some((entry) => entry.status === "skipped"),
+            error: queue.find((entry) => entry.error)?.error,
+          };
+        });
+      return {
+        schemaVersion: 1 as const,
+        parentQueueEntryId: parent.queueEntryId,
+        parentNodePath: parent.nodePath,
+        parentStatus: parent.status,
+        items,
+      };
+    });
+}
+
+function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["actions"] {
+  const actions: GraphRunReviewSurface["actions"] = [];
+  const actionSpec = (input: unknown): GraphRunReviewSurface["actions"][number] =>
+    PlaybookGraphResumeActionSpecSchema.parse(input);
+  const blocked = detail.queue.filter((entry) => entry.status === "blocked");
+  for (const entry of blocked) {
+    if (entry.nodeKind === "humanReview") {
+      const node = graphRunNodeForQueueEntry(detail, entry);
+      actions.push(
+        actionSpec({
+          schemaVersion: 1,
+          actionId: `${entry.queueEntryId}:approve`,
+          decision: "approve",
+          label: "Approve",
+          queueEntryId: entry.queueEntryId,
+          nodePath: entry.nodePath,
+          nodeKind: entry.nodeKind,
+          allowedRunStatuses: ["blocked"],
+          allowedQueueStatuses: ["blocked"],
+          sideEffect: "resume",
+        })
+      );
+      if (node?.kind === "humanReview" && node.onRequestChanges) {
+        actions.push(
+          actionSpec({
+            schemaVersion: 1,
+            actionId: `${entry.queueEntryId}:request_changes`,
+            decision: "request_changes",
+            label: "Request changes",
+            queueEntryId: entry.queueEntryId,
+            nodePath: entry.nodePath,
+            nodeKind: entry.nodeKind,
+            allowedRunStatuses: ["blocked"],
+            allowedQueueStatuses: ["blocked"],
+            requiredPayloadFields: [
+              { path: "notes", label: "Notes", kind: "string", required: false },
+            ],
+            sideEffect: "invalidate_downstream",
+            invalidatesDownstream: true,
+          })
+        );
+      }
+      actions.push(
+        actionSpec({
+          schemaVersion: 1,
+          actionId: `${entry.queueEntryId}:deny`,
+          decision: "deny",
+          label: "Stop run",
+          queueEntryId: entry.queueEntryId,
+          nodePath: entry.nodePath,
+          nodeKind: entry.nodeKind,
+          allowedRunStatuses: ["blocked"],
+          allowedQueueStatuses: ["blocked"],
+          sideEffect: "terminal",
+          destructive: true,
+        }),
+        actionSpec({
+          schemaVersion: 1,
+          actionId: `${entry.queueEntryId}:edit_artifact`,
+          decision: "edit_artifact",
+          label: "Edit artifact",
+          queueEntryId: entry.queueEntryId,
+          nodePath: entry.nodePath,
+          nodeKind: entry.nodeKind,
+          allowedRunStatuses: ["blocked"],
+          allowedQueueStatuses: ["blocked"],
+          requiredPayloadFields: [
+            { path: "artifactId", label: "Artifact", kind: "string" },
+            { path: "value", label: "Value", kind: "json" },
+          ],
+          sideEffect: "invalidate_downstream",
+          invalidatesDownstream: true,
+        }),
+        actionSpec({
+          schemaVersion: 1,
+          actionId: `${entry.queueEntryId}:edit_review`,
+          decision: "edit_review",
+          label: "Edit review",
+          queueEntryId: entry.queueEntryId,
+          nodePath: entry.nodePath,
+          nodeKind: entry.nodeKind,
+          allowedRunStatuses: ["blocked"],
+          allowedQueueStatuses: ["blocked"],
+          requiredPayloadFields: [
+            { path: "artifactId", label: "Artifact", kind: "string", required: false },
+            { path: "notes", label: "Notes", kind: "string", required: false },
+          ],
+          sideEffect: "invalidate_downstream",
+          invalidatesDownstream: true,
+        })
+      );
+    }
+  }
+  for (const entry of detail.queue.filter((entry) => entry.status === "interrupted")) {
+    actions.push(
+      actionSpec({
+        schemaVersion: 1,
+        actionId: `${entry.queueEntryId}:retry_interrupted`,
+        decision: "retry_interrupted",
+        label: "Retry interrupted work",
+        queueEntryId: entry.queueEntryId,
+        nodePath: entry.nodePath,
+        nodeKind: entry.nodeKind,
+        allowedRunStatuses: ["interrupted", "running", "blocked"],
+        allowedQueueStatuses: ["interrupted"],
+        sideEffect: "resume",
+        requiresWorkspace: entry.nodeKind === "artifactWrite",
+      })
+    );
+  }
+  if (
+    detail.run.status === "blocked" &&
+    detail.run.blockedReason?.includes("execution context changed")
+  ) {
+    actions.push(
+      actionSpec({
+        schemaVersion: 1,
+        actionId: `${detail.run.runId}:approve_context_change`,
+        decision: "approve_context_change",
+        label: "Approve context change",
+        allowedRunStatuses: ["blocked"],
+        allowedQueueStatuses: [],
+        sideEffect: "resume",
+        requiresExecutionContext: true,
+        requiresProvider: true,
+      })
+    );
+  }
+  if (detail.run.status === "needs_repair") {
+    actions.push(
+      actionSpec({
+        schemaVersion: 1,
+        actionId: `${detail.run.runId}:approve_repair`,
+        decision: "approve_repair",
+        label: "Approve repair",
+        allowedRunStatuses: ["needs_repair"],
+        allowedQueueStatuses: [],
+        requiredPayloadFields: [
+          {
+            path: "compiledGraph",
+            label: "Compiled graph",
+            kind: "compiledGraph",
+            required: false,
+          },
+          { path: "sourceFiles", label: "Source files", kind: "sourceFiles", required: false },
+        ],
+        sideEffect: "resume",
+      })
+    );
+  }
+  actions.push(
+    actionSpec({
+      schemaVersion: 1,
+      actionId: `${detail.run.runId}:edit_input`,
+      decision: "edit_input",
+      label: "Edit input",
+      allowedRunStatuses: [
+        "queued",
+        "running",
+        "blocked",
+        "interrupted",
+        "completed",
+        "failed",
+        "needs_repair",
+      ],
+      allowedQueueStatuses: [],
+      requiredPayloadFields: [{ path: "input", label: "Input", kind: "object" }],
+      sideEffect: "invalidate_downstream",
+      invalidatesDownstream: true,
+    })
+  );
+  return actions.sort((left, right) => left.actionId.localeCompare(right.actionId));
+}
+
+async function graphRunGitMilestonePreview(
+  detail: GraphRunDetail,
+  options: GraphRunHandlerOptions
+): Promise<GraphRunReviewSurface["gitMilestone"]> {
+  const workspaceRoot =
+    detail.run.materialization?.kind === "workspace"
+      ? detail.run.materialization.workspaceRoot
+      : options.workspaceRoot;
+  if (!workspaceRoot) {
+    return {
+      schemaVersion: 1,
+      available: false,
+      unavailableReason: "Git milestone service requires a workspace-backed graph run",
+      changedFiles: [],
+      dirtyPolicy: "allow_selected_paths",
+      unsupportedFeatures: ["run branches", "rollback", "promotion"],
+    };
+  }
+  const service = options.gitMilestoneService ?? createGraphGitMilestoneService();
+  return service.preview({
+    runId: detail.run.runId,
+    actionSpecId: `${detail.run.runId}:git_milestone`,
+    workspaceRoot,
+  });
+}
+
+async function graphRunReviewSurfaceFromDetail(
+  detail: GraphRunDetail,
+  _options: GraphRunHandlerOptions
+): Promise<GraphRunReviewSurface> {
+  const activeArtifacts = graphRunActiveArtifactRows(detail);
+  return PlaybookGraphRunReviewSurfaceSchema.parse({
+    schemaVersion: 1,
+    detail,
+    activeArtifacts,
+    artifactTimeline: graphRunArtifactTimelineRows(detail, activeArtifacts),
+    timeline: graphRunTimelineRows(detail),
+    branches: graphRunBranchGroups(detail, activeArtifacts),
+    actions: graphRunActionSpecs(detail),
+  });
+}
+
+async function graphRunReviewSurface(
+  runId: string,
+  store: GraphRunStore,
+  options: GraphRunHandlerOptions
+): Promise<GraphRunReviewSurface | undefined> {
+  const detail = await graphRunDetail(runId, store);
+  if (!detail) return undefined;
+  return graphRunReviewSurfaceFromDetail(detail, options);
 }
 
 async function maybeDrainGraphRun(
@@ -2167,6 +2741,163 @@ export async function handleGraphRunGet(
   const detail = await graphRunDetail(runId, options.store ?? graphRunStore);
   if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
   return Response.json(detail);
+}
+
+export async function handleGraphRunReviewSurface(
+  req: Request,
+  runId: string,
+  options: GraphRunHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const surface = await graphRunReviewSurface(runId, options.store ?? graphRunStore, options);
+  if (!surface) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+  return Response.json(surface);
+}
+
+export async function handleGraphRunGitMilestonePreview(
+  req: Request,
+  runId: string,
+  options: GraphRunHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const parsed = PlaybookGraphGitMilestonePreviewRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+  if (parsed.data.runId !== runId) {
+    return Response.json({ error: "Git milestone body runId does not match URL" }, { status: 400 });
+  }
+  const store = options.store ?? graphRunStore;
+  const detail = await graphRunDetail(runId, store);
+  if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+  const workspaceRoot =
+    detail.run.materialization?.kind === "workspace"
+      ? detail.run.materialization.workspaceRoot
+      : options.workspaceRoot;
+  if (
+    !workspaceRoot ||
+    (parsed.data.workspaceRoot && workspaceRoot !== parsed.data.workspaceRoot)
+  ) {
+    return Response.json(
+      { error: "Git milestone workspaceRoot must match the graph run workspace" },
+      { status: 409 }
+    );
+  }
+  const service = options.gitMilestoneService ?? createGraphGitMilestoneService();
+  const preview = await service.preview({
+    runId,
+    actionSpecId: parsed.data.actionSpecId,
+    workspaceRoot,
+    affectedPaths: parsed.data.affectedPaths,
+    dirtyPolicy: parsed.data.dirtyPolicy,
+    ...(parsed.data.message ? { message: parsed.data.message } : {}),
+  });
+  return Response.json(preview);
+}
+
+export async function handleGraphRunGitMilestoneCommit(
+  req: Request,
+  runId: string,
+  options: GraphRunHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const parsed = PlaybookGraphGitMilestoneCommitRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+  if (parsed.data.runId !== runId) {
+    return Response.json({ error: "Git milestone body runId does not match URL" }, { status: 400 });
+  }
+  const store = options.store ?? graphRunStore;
+  const detail = await graphRunDetail(runId, store);
+  if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+  const workspaceRoot =
+    detail.run.materialization?.kind === "workspace"
+      ? detail.run.materialization.workspaceRoot
+      : options.workspaceRoot;
+  if (!workspaceRoot || workspaceRoot !== parsed.data.workspaceRoot) {
+    return Response.json(
+      { error: "Git milestone workspaceRoot must match the graph run workspace" },
+      { status: 409 }
+    );
+  }
+  const operationAttemptId = randomUUID();
+  const startedAt = graphRunNow(options);
+  await store.addOperationRecord(
+    graphRunOperationRecord({
+      runId,
+      actionSpecId: parsed.data.actionSpecId,
+      kind: "git_milestone",
+      status: "started",
+      operatorIntent: "Record Git milestone",
+      createdAt: startedAt,
+      operationAttemptId,
+      affectedArtifactIds: [],
+      affectedQueueEntryIds: [],
+      redactedPayloadSummary: `paths: ${parsed.data.affectedPaths.length}`,
+    })
+  );
+  try {
+    const service = options.gitMilestoneService ?? createGraphGitMilestoneService();
+    const result = await service.commit(parsed.data);
+    const completedAt = graphRunOperationTerminalTime(startedAt, options);
+    await store.addOperationRecord(
+      graphRunOperationRecord({
+        runId,
+        actionSpecId: parsed.data.actionSpecId,
+        kind: "git_milestone",
+        status: "succeeded",
+        operatorIntent: "Record Git milestone",
+        createdAt: completedAt,
+        operationAttemptId,
+        affectedArtifactIds: [],
+        affectedQueueEntryIds: [],
+        gitEvidenceId: result.evidence.commitHash,
+        redactedPayloadSummary: `paths: ${result.evidence.affectedPaths.length}`,
+      })
+    );
+    return Response.json(result);
+  } catch (error) {
+    const failedAt = graphRunOperationTerminalTime(startedAt, options);
+    await store.addOperationRecord(
+      graphRunOperationRecord({
+        runId,
+        actionSpecId: parsed.data.actionSpecId,
+        kind: "git_milestone",
+        status: "failed",
+        operatorIntent: "Record Git milestone",
+        createdAt: failedAt,
+        operationAttemptId,
+        affectedArtifactIds: [],
+        affectedQueueEntryIds: [],
+        redactedPayloadSummary: `paths: ${parsed.data.affectedPaths.length}`,
+        failureReason: graphRunOperationFailureReason(error),
+      })
+    );
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 409 }
+    );
+  }
 }
 
 function queueSuccessPatch(entry: PlaybookGraphQueueEntry, now: string): PlaybookGraphQueueEntry {
@@ -2824,6 +3555,25 @@ export async function handleGraphRunResume(
     } else {
       return Response.json({ error: "Unsupported graph resume decision" }, { status: 400 });
     }
+
+    const redactedPayloadSummary = graphRunPayloadSummary(parsed.data.payload);
+    await store.addOperationRecord(
+      graphRunOperationRecord({
+        runId,
+        actionSpecId: `${parsed.data.queueEntryId ?? runId}:${parsed.data.decision}`,
+        kind: graphRunOperationKind(parsed.data.decision),
+        status: "succeeded",
+        operatorIntent: parsed.data.decision.replaceAll("_", " "),
+        createdAt: graphRunNow(options),
+        affectedArtifactIds:
+          typeof parsed.data.payload.artifactId === "string"
+            ? [parsed.data.payload.artifactId]
+            : [],
+        affectedQueueEntryIds: parsed.data.queueEntryId ? [parsed.data.queueEntryId] : [],
+        ...(parsed.data.queueEntryId ? { queueEntryId: parsed.data.queueEntryId } : {}),
+        ...(redactedPayloadSummary ? { redactedPayloadSummary } : {}),
+      })
+    );
 
     const detail = await graphRunDetail(runId, store);
     if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
@@ -4322,6 +5072,34 @@ const server = Bun.serve({
     const graphRunResumeId = graphRunResumeMatch?.[1];
     if (graphRunResumeId) {
       return handleGraphRunResume(req, decodeURIComponent(graphRunResumeId));
+    }
+
+    const graphRunGitMilestonePreviewMatch = pathname.match(
+      /^\/graph-runs\/([^/]+)\/git-milestone\/preview$/
+    );
+    const graphRunGitMilestonePreviewId = graphRunGitMilestonePreviewMatch?.[1];
+    if (graphRunGitMilestonePreviewId) {
+      return handleGraphRunGitMilestonePreview(
+        req,
+        decodeURIComponent(graphRunGitMilestonePreviewId)
+      );
+    }
+
+    const graphRunGitMilestoneCommitMatch = pathname.match(
+      /^\/graph-runs\/([^/]+)\/git-milestone$/
+    );
+    const graphRunGitMilestoneCommitId = graphRunGitMilestoneCommitMatch?.[1];
+    if (graphRunGitMilestoneCommitId) {
+      return handleGraphRunGitMilestoneCommit(
+        req,
+        decodeURIComponent(graphRunGitMilestoneCommitId)
+      );
+    }
+
+    const graphRunReviewSurfaceMatch = pathname.match(/^\/graph-runs\/([^/]+)\/review-surface$/);
+    const graphRunReviewSurfaceId = graphRunReviewSurfaceMatch?.[1];
+    if (graphRunReviewSurfaceId) {
+      return handleGraphRunReviewSurface(req, decodeURIComponent(graphRunReviewSurfaceId));
     }
 
     const graphRunMatch = pathname.match(/^\/graph-runs\/([^/]+)$/);

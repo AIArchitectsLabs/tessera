@@ -9,6 +9,7 @@ import type {
   PlaybookGraphMemoKeyParts,
   PlaybookGraphNode,
   PlaybookGraphNodeMemo,
+  PlaybookGraphOperationRecord,
   PlaybookGraphQueueEntry,
   PlaybookGraphReviewEvent,
   PlaybookGraphRunListFilter,
@@ -77,6 +78,16 @@ export interface GraphRunStore {
 
   listReviewEvents(runId: string): Promise<PlaybookGraphReviewEvent[]>;
   addReviewEvent(event: PlaybookGraphReviewEvent): Promise<void>;
+  listOperationRecords(runId: string): Promise<PlaybookGraphOperationRecord[]>;
+  addOperationRecord(record: PlaybookGraphOperationRecord): Promise<void>;
+  applyGraphMutationWithOperationRecord(input: {
+    run?: PlaybookGraphRunRecord;
+    queueEntries?: PlaybookGraphQueueEntry[];
+    branchItems?: PlaybookGraphBranchItem[];
+    artifactVersions?: PlaybookGraphArtifactVersion[];
+    reviewEvents?: PlaybookGraphReviewEvent[];
+    operationRecord: PlaybookGraphOperationRecord;
+  }): Promise<void>;
 
   getMemo(runId: string, nodeMemoKey: string): Promise<PlaybookGraphNodeMemo | undefined>;
   putMemo(memo: PlaybookGraphNodeMemo): Promise<void>;

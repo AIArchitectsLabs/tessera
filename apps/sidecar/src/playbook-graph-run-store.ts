@@ -5,6 +5,7 @@ import type {
   PlaybookGraphArtifactVersion,
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
+  PlaybookGraphOperationRecord,
   PlaybookGraphQueueEntry,
   PlaybookGraphReviewEvent,
   PlaybookGraphRunListFilter,
@@ -14,6 +15,7 @@ import {
   PlaybookGraphArtifactVersionSchema,
   PlaybookGraphBranchItemSchema,
   PlaybookGraphNodeMemoSchema,
+  PlaybookGraphOperationRecordSchema,
   PlaybookGraphQueueEntrySchema,
   PlaybookGraphReviewEventSchema,
   PlaybookGraphRunRecordSchema,
@@ -121,6 +123,22 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS playbook_graph_operation_records (
+      operation_record_id TEXT PRIMARY KEY NOT NULL,
+      operation_attempt_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_operation_records_run_idx
+      ON playbook_graph_operation_records (run_id, created_at, operation_record_id);
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_operation_records_attempt_idx
+      ON playbook_graph_operation_records (operation_attempt_id);
+
     CREATE TABLE IF NOT EXISTS playbook_graph_node_memos (
       run_id TEXT NOT NULL,
       node_memo_key TEXT NOT NULL,
@@ -213,6 +231,21 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   const listReviews = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_review_events WHERE run_id = ? ORDER BY created_at ASC"
   );
+  const getOperationRecordPayload = db.prepare<PayloadRow | null, [string]>(
+    "SELECT payload FROM playbook_graph_operation_records WHERE operation_record_id = ?"
+  );
+  const listOperations = db.prepare<PayloadRow, [string]>(
+    "SELECT payload FROM playbook_graph_operation_records WHERE run_id = ? ORDER BY created_at ASC, operation_record_id ASC"
+  );
+  const listAttemptTerminalOperations = db.prepare<PayloadRow, [string, string]>(
+    "SELECT payload FROM playbook_graph_operation_records WHERE operation_attempt_id = ? AND kind = ? AND status IN ('succeeded', 'failed') ORDER BY created_at ASC, operation_record_id ASC"
+  );
+  const saveOperation = db.prepare(`
+    INSERT INTO playbook_graph_operation_records (
+      operation_record_id, operation_attempt_id, run_id, kind, status, payload, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
   const saveMemo = db.prepare(`
     INSERT INTO playbook_graph_node_memos (
       run_id, node_memo_key, queue_entry_id, node_path, payload, created_at
@@ -365,6 +398,35 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     );
   }
 
+  function writeOperationRecord(record: PlaybookGraphOperationRecord): void {
+    const parsed = PlaybookGraphOperationRecordSchema.parse(record);
+    const existingById = getOperationRecordPayload.get(parsed.operationRecordId);
+    if (existingById) {
+      const previous = parseJson<unknown>(existingById.payload);
+      if (stableJsonStringify(previous) === stableJsonStringify(parsed)) return;
+      throw new Error("Graph operation record already exists with different durable payload");
+    }
+    if (parsed.status === "succeeded" || parsed.status === "failed") {
+      for (const existing of listAttemptTerminalOperations.all(
+        parsed.operationAttemptId,
+        parsed.kind
+      )) {
+        const previous = parseJson<unknown>(existing.payload);
+        if (stableJsonStringify(previous) === stableJsonStringify(parsed)) return;
+        throw new Error("Graph operation attempt already has a different terminal record");
+      }
+    }
+    saveOperation.run(
+      parsed.operationRecordId,
+      parsed.operationAttemptId,
+      parsed.runId,
+      parsed.kind,
+      parsed.status,
+      JSON.stringify(parsed),
+      parsed.createdAt
+    );
+  }
+
   function writeBranchItem(item: PlaybookGraphBranchItem): void {
     const parsed = PlaybookGraphBranchItemSchema.parse(item);
     saveBranchItem.run(parsed.branchItemId, parsed.runId, JSON.stringify(parsed), parsed.updatedAt);
@@ -492,6 +554,33 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     }
   );
 
+  const graphMutationOperationTransaction = db.transaction(
+    (input: {
+      run?: PlaybookGraphRunRecord;
+      queueEntries?: PlaybookGraphQueueEntry[];
+      branchItems?: PlaybookGraphBranchItem[];
+      artifactVersions?: PlaybookGraphArtifactVersion[];
+      reviewEvents?: PlaybookGraphReviewEvent[];
+      operationRecord: PlaybookGraphOperationRecord;
+    }) => {
+      if (input.run) writeRun(input.run);
+      for (const entry of input.queueEntries ?? []) writeQueue(entry);
+      for (const item of input.branchItems ?? []) writeBranchItem(item);
+      for (const version of input.artifactVersions ?? []) writeArtifactVersion(version);
+      for (const event of input.reviewEvents ?? []) {
+        const parsed = PlaybookGraphReviewEventSchema.parse(event);
+        saveReview.run(
+          parsed.reviewEventId,
+          parsed.runId,
+          parsed.queueEntryId,
+          JSON.stringify(parsed),
+          parsed.createdAt
+        );
+      }
+      writeOperationRecord(input.operationRecord);
+    }
+  );
+
   return {
     close() {
       db.close();
@@ -607,6 +696,17 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
         JSON.stringify(parsed),
         parsed.createdAt
       );
+    },
+    async listOperationRecords(runId) {
+      return listOperations
+        .all(runId)
+        .map((row) => PlaybookGraphOperationRecordSchema.parse(parseJson<unknown>(row.payload)));
+    },
+    async addOperationRecord(record) {
+      writeOperationRecord(record);
+    },
+    async applyGraphMutationWithOperationRecord(input) {
+      graphMutationOperationTransaction(input);
     },
     async getMemo(runId, nodeMemoKey) {
       const row = getMemo.get(runId, nodeMemoKey);

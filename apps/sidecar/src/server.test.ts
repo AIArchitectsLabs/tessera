@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,6 +47,15 @@ let handleGraphRunCreate: typeof import("./server.js").handleGraphRunCreate | un
 let handleGraphRunGet: typeof import("./server.js").handleGraphRunGet | undefined;
 let handleGraphRunList: typeof import("./server.js").handleGraphRunList | undefined;
 let handleGraphRunResume: typeof import("./server.js").handleGraphRunResume | undefined;
+let handleGraphRunReviewSurface:
+  | typeof import("./server.js").handleGraphRunReviewSurface
+  | undefined;
+let handleGraphRunGitMilestonePreview:
+  | typeof import("./server.js").handleGraphRunGitMilestonePreview
+  | undefined;
+let handleGraphRunGitMilestoneCommit:
+  | typeof import("./server.js").handleGraphRunGitMilestoneCommit
+  | undefined;
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
@@ -83,6 +92,9 @@ beforeAll(async () => {
     handleGraphRunGet = serverModule.handleGraphRunGet;
     handleGraphRunList = serverModule.handleGraphRunList;
     handleGraphRunResume = serverModule.handleGraphRunResume;
+    handleGraphRunReviewSurface = serverModule.handleGraphRunReviewSurface;
+    handleGraphRunGitMilestonePreview = serverModule.handleGraphRunGitMilestonePreview;
+    handleGraphRunGitMilestoneCommit = serverModule.handleGraphRunGitMilestoneCommit;
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
@@ -189,6 +201,46 @@ function testCompiledGraph(scriptSource?: string) {
       ],
     },
     sourceFiles,
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testReviewCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.review-surface",
+      version: "0.1.0",
+      name: "Review Surface Graph",
+      artifacts: {
+        brief: { schema: "schemas/brief.schema.json" },
+      },
+      start: "draft",
+      nodes: [
+        {
+          id: "draft",
+          kind: "script",
+          run: "scripts/draft.ts",
+          inputs: {},
+          outputArtifact: "brief",
+          onSuccess: "review",
+        },
+        {
+          id: "review",
+          kind: "humanReview",
+          artifact: "brief",
+          actions: ["approve", "request_changes"],
+          onApprove: "completed",
+          onRequestChanges: "draft",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+      "scripts/draft.ts": "export default function draft() {}\n",
+    },
     compilerVersion: "server-test",
     scriptSdkVersion: "server-test",
     compiledAt: "2026-05-15T00:00:00.000Z",
@@ -501,6 +553,250 @@ describe("graph run endpoints", () => {
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("projects a pure graph run review surface from pinned run state", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testReviewCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { title: "Stale brief" };
+          },
+        }
+      );
+
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; nodePath: string; status: string }>;
+      };
+      expect(created.run.status).toBe("blocked");
+
+      const draftEntry = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.nodeId === "draft"
+      );
+      const reviewEntry = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.nodeId === "review"
+      );
+      expect(draftEntry).toBeDefined();
+      expect(reviewEntry).toBeDefined();
+      if (!draftEntry || !reviewEntry) throw new Error("missing review test queue entries");
+
+      await store.updateQueueEntry({
+        ...draftEntry,
+        status: "skipped",
+        updatedAt: "2026-05-15T00:01:00.000Z",
+        completedAt: "2026-05-15T00:01:00.000Z",
+      });
+      await store.addArtifactVersion({
+        schemaVersion: 1,
+        runId: created.run.runId,
+        artifactId: "brief",
+        versionId: `${reviewEntry.queueEntryId}:brief:edit`,
+        producerQueueEntryId: reviewEntry.queueEntryId,
+        nodePath: reviewEntry.nodePath,
+        contentHash: "sha256:edited-brief",
+        value: { title: "Active brief" },
+        createdAt: "2026-05-15T00:02:00.000Z",
+      });
+
+      const beforeCounts = {
+        queue: (await store.getQueue(created.run.runId)).length,
+        artifacts: (await store.listArtifactVersions(created.run.runId)).length,
+        reviews: (await store.listReviewEvents(created.run.runId)).length,
+      };
+      const response = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store }
+      );
+
+      expect(response?.status).toBe(200);
+      const surface = (await response?.json()) as {
+        activeArtifacts: Array<{ versionId: string; producerStatus?: string; value: unknown }>;
+        artifactTimeline: Array<{ versionId: string; active: boolean; producerStatus?: string }>;
+        timeline: Array<{ kind: string; artifactId?: string; synthetic: boolean }>;
+        actions: Array<{ decision: string; queueEntryId?: string; sideEffect: string }>;
+      };
+      expect(surface.activeArtifacts).toHaveLength(1);
+      expect(surface.activeArtifacts[0]).toMatchObject({
+        versionId: `${reviewEntry.queueEntryId}:brief:edit`,
+        producerStatus: "blocked",
+        value: { title: "Active brief" },
+      });
+      expect(surface.artifactTimeline.some((row) => row.producerStatus === "skipped")).toBe(true);
+      expect(surface.artifactTimeline.filter((row) => row.active)).toHaveLength(1);
+      expect(surface.timeline).toContainEqual(
+        expect.objectContaining({
+          kind: "synthetic_requested",
+          artifactId: "brief",
+          synthetic: true,
+        })
+      );
+      expect(surface.actions.map((action) => action.decision).sort()).toEqual([
+        "approve",
+        "deny",
+        "edit_artifact",
+        "edit_input",
+        "edit_review",
+        "request_changes",
+      ]);
+      expect(surface.actions.find((action) => action.decision === "request_changes")).toMatchObject(
+        {
+          queueEntryId: reviewEntry.queueEntryId,
+          sideEffect: "invalidate_downstream",
+        }
+      );
+      expect({
+        queue: (await store.getQueue(created.run.runId)).length,
+        artifacts: (await store.listArtifactVersions(created.run.runId)).length,
+        reviews: (await store.listReviewEvents(created.run.runId)).length,
+      }).toEqual(beforeCounts);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("exposes workspace git milestone preview and commits through the graph run boundary", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    expect(handleGraphRunGitMilestonePreview).toBeDefined();
+    expect(handleGraphRunGitMilestoneCommit).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const gitMilestoneService = {
+      preview: mock(async () => ({
+        schemaVersion: 1 as const,
+        available: true,
+        workspaceRoot,
+        gitRoot: workspaceRoot,
+        branch: "main",
+        changedFiles: [{ path: "out/draft.json", status: "M", allowed: true }],
+        proposedMessage: "Record graph run milestone",
+        dirtyPolicy: "allow_selected_paths" as const,
+        unsupportedFeatures: ["push"],
+      })),
+      commit: mock(
+        async (request: {
+          runId: string;
+          actionSpecId: string;
+          affectedPaths: string[];
+          message: string;
+        }) => ({
+          evidence: {
+            schemaVersion: 1 as const,
+            runId: request.runId,
+            actionSpecId: request.actionSpecId,
+            affectedPaths: request.affectedPaths,
+            commitHash: "abc123",
+            committedAt: "2026-05-16T00:00:00.000Z",
+            trailers: { "Graph-Run": request.runId, "Action-Spec": request.actionSpecId },
+          },
+          preview: {
+            schemaVersion: 1 as const,
+            available: true,
+            workspaceRoot,
+            gitRoot: workspaceRoot,
+            branch: "main",
+            changedFiles: [],
+            proposedMessage: request.message,
+            dirtyPolicy: "allow_selected_paths" as const,
+            unsupportedFeatures: ["push"],
+          },
+        })
+      ),
+    };
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as { run: { runId: string } };
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store, gitMilestoneService }
+      );
+      expect(surfaceResponse?.status).toBe(200);
+      const surface = (await surfaceResponse?.json()) as {
+        gitMilestone?: { available: boolean; changedFiles: Array<{ path: string }> };
+      };
+      expect(surface.gitMilestone).toBeUndefined();
+      expect(gitMilestoneService.preview).not.toHaveBeenCalled();
+
+      const previewResponse = await handleGraphRunGitMilestonePreview?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/git-milestone/preview`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            actionSpecId: `${created.run.runId}:git_milestone`,
+            workspaceRoot,
+            affectedPaths: ["out/draft.json"],
+          }),
+        }),
+        created.run.runId,
+        { store, gitMilestoneService }
+      );
+      expect(previewResponse?.status).toBe(200);
+      const preview = (await previewResponse?.json()) as {
+        available: boolean;
+        changedFiles: Array<{ path: string }>;
+      };
+      expect(preview.available).toBe(true);
+      expect(preview.changedFiles[0]?.path).toBe("out/draft.json");
+      expect(gitMilestoneService.preview).toHaveBeenCalledTimes(1);
+
+      const commitResponse = await handleGraphRunGitMilestoneCommit?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/git-milestone`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            actionSpecId: `${created.run.runId}:git_milestone`,
+            workspaceRoot,
+            affectedPaths: ["out/draft.json"],
+            message: "Record graph run milestone",
+          }),
+        }),
+        created.run.runId,
+        { store, gitMilestoneService }
+      );
+      expect(commitResponse?.status).toBe(200);
+      const commit = (await commitResponse?.json()) as {
+        evidence: { runId: string; commitHash: string };
+      };
+      expect(commit.evidence).toMatchObject({ runId: created.run.runId, commitHash: "abc123" });
+      expect(
+        (await store.listOperationRecords(created.run.runId)).map((record) => record.status)
+      ).toEqual(["started", "succeeded"]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
     }
   });
 

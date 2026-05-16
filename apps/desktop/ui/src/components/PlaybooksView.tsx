@@ -12,8 +12,11 @@ import type {
   ModelSettingsRead,
   PlaybookAssignmentPreviewResult,
   PlaybookDetail,
+  PlaybookGraphGitMilestonePreview,
+  PlaybookGraphResumeActionSpec,
   PlaybookGraphRunDetail,
   PlaybookGraphRunListResult,
+  PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
   PlaybookRunPreferenceReadResult,
@@ -621,30 +624,77 @@ function RunEventItem({ event }: { event: WorkflowRunEvent }) {
   );
 }
 
-type GraphRunResumeDecision =
-  | "approve"
-  | "deny"
-  | "approve_context_change"
-  | "approve_repair"
-  | "retry_interrupted";
+function parseGraphActionPayload(
+  action: PlaybookGraphResumeActionSpec,
+  drafts: Record<string, string> | undefined
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const field of action.requiredPayloadFields) {
+    const raw = (drafts?.[field.path] ?? "").trim();
+    if (!raw) {
+      if (!field.required) continue;
+      throw new Error(`${field.label} is required`);
+    }
+    if (field.kind === "string") {
+      payload[field.path] = raw;
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error(`${field.label} must be valid JSON`);
+    }
+    if (
+      field.kind === "object" &&
+      (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    ) {
+      throw new Error(`${field.label} must be a JSON object`);
+    }
+    payload[field.path] = parsed;
+  }
+  return payload;
+}
 
 function GraphRuntimeSection({
   runs,
   detail,
+  surface,
   error,
   onSelect,
   onResume,
+  onPreviewGitMilestone,
 }: {
   runs: PlaybookGraphRunDetail["run"][];
   detail: PlaybookGraphRunDetail | null;
+  surface: PlaybookGraphRunReviewSurface | null;
   error: string | null;
   onSelect: (runId: string) => void;
-  onResume: (decision: GraphRunResumeDecision) => void;
+  onResume: (action: PlaybookGraphResumeActionSpec, payload?: Record<string, unknown>) => void;
+  onPreviewGitMilestone: (
+    runId: string,
+    workspaceRoot: string
+  ) => Promise<PlaybookGraphGitMilestonePreview>;
 }) {
+  const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [payloadError, setPayloadError] = useState<string | null>(null);
+  const [gitPreview, setGitPreview] = useState<PlaybookGraphGitMilestonePreview | null>(null);
+  const [gitPreviewError, setGitPreviewError] = useState<string | null>(null);
   const selectedRunId = detail?.run.runId;
-  const blockedDecision = detail?.run.blockedReason?.includes("execution context changed")
-    ? "approve_context_change"
-    : "approve";
+  const workspaceRoot =
+    detail?.run.materialization?.kind === "workspace"
+      ? detail.run.materialization.workspaceRoot
+      : undefined;
+
+  const updatePayloadDraft = (actionId: string, path: string, value: string) => {
+    setPayloadDrafts((current) => ({
+      ...current,
+      [actionId]: {
+        ...(current[actionId] ?? {}),
+        [path]: value,
+      },
+    }));
+  };
 
   if (runs.length === 0 && !detail && !error) return null;
 
@@ -690,25 +740,168 @@ function GraphRuntimeSection({
             </div>
           ) : null}
 
-          {detail.run.status === "blocked" ? (
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => onResume(blockedDecision)}>
-                Continue
-              </Button>
-              <Button size="sm" variant="secondary" onClick={() => onResume("deny")}>
-                Stop
-              </Button>
+          {(surface?.actions.length ?? 0) > 0 ? (
+            <div className="space-y-2">
+              {payloadError ? (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {payloadError}
+                </div>
+              ) : null}
+              {surface?.actions.map((action) => (
+                <div
+                  key={action.actionId}
+                  data-graph-action={action.actionId}
+                  className="rounded-md border border-border bg-background px-3 py-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-medium text-foreground">{action.label}</div>
+                      {action.description ? (
+                        <div className="mt-0.5 text-muted-foreground">{action.description}</div>
+                      ) : null}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={action.destructive ? "secondary" : "default"}
+                      onClick={(event) => {
+                        try {
+                          setPayloadError(null);
+                          if (action.destructive && !window.confirm(`${action.label}?`)) return;
+                          const actionRoot = event.currentTarget.closest("[data-graph-action]");
+                          const localDrafts = { ...(payloadDrafts[action.actionId] ?? {}) };
+                          const fieldElements =
+                            actionRoot?.querySelectorAll<HTMLTextAreaElement | HTMLSelectElement>(
+                              "[data-payload-field]"
+                            ) ?? [];
+                          for (const fieldElement of fieldElements) {
+                            const fieldPath = fieldElement.dataset.payloadField;
+                            if (fieldPath) localDrafts[fieldPath] = fieldElement.value;
+                          }
+                          onResume(action, parseGraphActionPayload(action, localDrafts));
+                        } catch (payloadParseError) {
+                          setPayloadError(
+                            payloadParseError instanceof Error
+                              ? payloadParseError.message
+                              : String(payloadParseError)
+                          );
+                        }
+                      }}
+                    >
+                      {action.label}
+                    </Button>
+                  </div>
+                  {action.requiredPayloadFields.length > 0 ? (
+                    <div className="mt-2 space-y-2">
+                      {action.requiredPayloadFields.map((field) => {
+                        const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
+                        const activeArtifactIds =
+                          surface?.activeArtifacts.map((artifact) => artifact.artifactId) ?? [];
+                        if (field.path === "artifactId" && activeArtifactIds.length > 0) {
+                          return (
+                            <label
+                              key={field.path}
+                              className="block text-[11px] text-muted-foreground"
+                            >
+                              {field.label}
+                              <select
+                                data-payload-field={field.path}
+                                className="mt-1 w-full rounded-md border border-border bg-muted px-2 py-1 text-foreground"
+                                value={value}
+                                onChange={(event) =>
+                                  updatePayloadDraft(
+                                    action.actionId,
+                                    field.path,
+                                    event.target.value
+                                  )
+                                }
+                              >
+                                <option value="">Select artifact</option>
+                                {activeArtifactIds.map((artifactId) => (
+                                  <option key={artifactId} value={artifactId}>
+                                    {artifactId}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          );
+                        }
+                        const isString = field.kind === "string";
+                        return (
+                          <label
+                            key={field.path}
+                            className="block text-[11px] text-muted-foreground"
+                          >
+                            {field.label}
+                            <textarea
+                              data-payload-field={field.path}
+                              className={cn(
+                                "mt-1 w-full resize-y rounded-md border border-border bg-muted px-2 py-1 text-foreground",
+                                isString ? "min-h-16" : "min-h-20 font-mono"
+                              )}
+                              value={value}
+                              placeholder={
+                                isString
+                                  ? field.label
+                                  : field.kind === "object"
+                                    ? "{ }"
+                                    : "JSON value"
+                              }
+                              onChange={(event) =>
+                                updatePayloadDraft(action.actionId, field.path, event.target.value)
+                              }
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  <div className="mt-1 text-muted-foreground">
+                    {action.sideEffect.replace("_", " ")}
+                    {action.invalidatesDownstream ? " · invalidates downstream" : ""}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
-          {detail.run.status === "needs_repair" ? (
-            <Button size="sm" onClick={() => onResume("approve_repair")}>
-              Approve repair
-            </Button>
-          ) : null}
-          {detail.run.status === "interrupted" ? (
-            <Button size="sm" onClick={() => onResume("retry_interrupted")}>
-              Retry interrupted work
-            </Button>
+
+          {workspaceRoot ? (
+            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="font-medium text-foreground">Git milestone</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    Git readiness is checked only when previewed.
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setGitPreviewError(null);
+                    void onPreviewGitMilestone(detail.run.runId, workspaceRoot)
+                      .then(setGitPreview)
+                      .catch((previewError) =>
+                        setGitPreviewError(
+                          previewError instanceof Error
+                            ? previewError.message
+                            : String(previewError)
+                        )
+                      );
+                  }}
+                >
+                  Preview Git milestone
+                </Button>
+              </div>
+              {gitPreviewError ? (
+                <div className="mt-2 text-red-700">{gitPreviewError}</div>
+              ) : gitPreview ? (
+                <div className="mt-2 text-muted-foreground">
+                  {gitPreview.available ? "Ready" : (gitPreview.unavailableReason ?? "Unavailable")}{" "}
+                  · {gitPreview.changedFiles.length} changed file
+                  {gitPreview.changedFiles.length === 1 ? "" : "s"}
+                </div>
+              ) : null}
+            </div>
           ) : null}
 
           <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
@@ -723,6 +916,48 @@ function GraphRuntimeSection({
             ))}
           </div>
 
+          {(surface?.activeArtifacts.length ?? 0) > 0 ? (
+            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+              {surface?.activeArtifacts.map((artifact) => (
+                <div
+                  key={`${artifact.artifactId}:${artifact.versionId}`}
+                  className="px-3 py-2 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-foreground">{artifact.artifactId}</span>
+                    <span className="text-muted-foreground">
+                      {artifact.producerStatus ?? "unknown"}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {summarizeValue(artifact.value)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {(surface?.artifactTimeline.length ?? 0) > 0 ? (
+            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              Artifact timeline: {surface?.artifactTimeline.length} version
+              {surface?.artifactTimeline.length === 1 ? "" : "s"} ·{" "}
+              {surface?.artifactTimeline.filter((artifact) => artifact.active).length} active
+            </div>
+          ) : null}
+
+          {(surface?.timeline.length ?? 0) > 0 ? (
+            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+              {surface?.timeline.map((row) => (
+                <div key={row.timelineRowId} className="px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">{row.message}</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {row.kind.replace("_", " ")} · {formatTime(row.createdAt)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           {detail.branchItems.length > 0 ? (
             <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
               {detail.branchItems.map((item) => (
@@ -731,6 +966,21 @@ function GraphRuntimeSection({
                     Branch {item.index + 1} · {item.status}
                   </div>
                   <div className="mt-0.5 text-muted-foreground">{summarizeValue(item.value)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {(surface?.branches.length ?? 0) > 0 ? (
+            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+              {surface?.branches.map((branch) => (
+                <div key={branch.parentQueueEntryId} className="px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">
+                    {branch.parentNodePath} · {branch.parentStatus}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {branch.items.length} branch item{branch.items.length === 1 ? "" : "s"}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1620,18 +1870,28 @@ function DetailsPanel({
   playbookDetail,
   graphRuns,
   selectedGraphRun,
+  selectedGraphRunSurface,
   graphRunError,
   onSelectGraphRun,
   onResumeGraphRun,
+  onPreviewGraphRunGitMilestone,
   onClose,
 }: {
   run: PlaybookRunDetail | null;
   playbookDetail: PlaybookDetail | null;
   graphRuns: PlaybookGraphRunDetail["run"][];
   selectedGraphRun: PlaybookGraphRunDetail | null;
+  selectedGraphRunSurface: PlaybookGraphRunReviewSurface | null;
   graphRunError: string | null;
   onSelectGraphRun: (runId: string) => void;
-  onResumeGraphRun: (decision: GraphRunResumeDecision) => void;
+  onResumeGraphRun: (
+    action: PlaybookGraphResumeActionSpec,
+    payload?: Record<string, unknown>
+  ) => void;
+  onPreviewGraphRunGitMilestone: (
+    runId: string,
+    workspaceRoot: string
+  ) => Promise<PlaybookGraphGitMilestonePreview>;
   onClose: () => void;
 }) {
   const visibleInputs = useMemo(() => {
@@ -1752,18 +2012,22 @@ function DetailsPanel({
             <GraphRuntimeSection
               runs={graphRuns}
               detail={selectedGraphRun}
+              surface={selectedGraphRunSurface}
               error={graphRunError}
               onSelect={onSelectGraphRun}
               onResume={onResumeGraphRun}
+              onPreviewGitMilestone={onPreviewGraphRunGitMilestone}
             />
           </div>
         ) : (
           <GraphRuntimeSection
             runs={graphRuns}
             detail={selectedGraphRun}
+            surface={selectedGraphRunSurface}
             error={graphRunError}
             onSelect={onSelectGraphRun}
             onResume={onResumeGraphRun}
+            onPreviewGitMilestone={onPreviewGraphRunGitMilestone}
           />
         )}
       </div>
@@ -1783,6 +2047,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [selectedGraphRunId, setSelectedGraphRunId] = useState<string | null>(null);
   const [selectedGraphRunDetail, setSelectedGraphRunDetail] =
     useState<PlaybookGraphRunDetail | null>(null);
+  const [selectedGraphRunSurface, setSelectedGraphRunSurface] =
+    useState<PlaybookGraphRunReviewSurface | null>(null);
   const [graphRunError, setGraphRunError] = useState<string | null>(null);
   const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettingsRead | null>(null);
@@ -2033,6 +2299,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setGraphRuns([]);
       setSelectedGraphRunId(null);
       setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
       return;
     }
 
@@ -2045,22 +2312,27 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setSelectedGraphRunId((current) => {
         if (current && result.runs.some((run) => run.runId === current)) return current;
         setSelectedGraphRunDetail(null);
+        setSelectedGraphRunSurface(null);
         return result.runs[0]?.runId ?? null;
       });
     } catch (loadError) {
       if (requestId !== graphRunListRequestRef.current) return;
       setGraphRuns([]);
       setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
       setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
     }
   }, []);
 
   const loadGraphRunDetail = useCallback(async (runId: string) => {
     try {
-      const detail = await invoke<PlaybookGraphRunDetail>("graph_run_get", { runId });
-      setSelectedGraphRunDetail(detail);
+      const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+        runId,
+      });
+      setSelectedGraphRunSurface(surface);
+      setSelectedGraphRunDetail(surface.detail);
       setGraphRuns((current) =>
-        current.map((run) => (run.runId === detail.run.runId ? detail.run : run))
+        current.map((run) => (run.runId === surface.detail.run.runId ? surface.detail.run : run))
       );
     } catch (loadError) {
       setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -2100,6 +2372,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   useEffect(() => {
     if (!selectedGraphRunId) {
       setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
       return;
     }
     void loadGraphRunDetail(selectedGraphRunId);
@@ -2301,7 +2574,10 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }
 
-  async function resumeGraphRun(decision: GraphRunResumeDecision) {
+  async function resumeGraphRun(
+    action: PlaybookGraphResumeActionSpec,
+    payload?: Record<string, unknown>
+  ) {
     if (!selectedGraphRunDetail) return;
     setRunning(true);
     setGraphRunError(null);
@@ -2310,18 +2586,35 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         runId: selectedGraphRunDetail.run.runId,
         request: {
           runId: selectedGraphRunDetail.run.runId,
-          decision,
+          decision: action.decision,
+          ...(action.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
+          ...(payload && Object.keys(payload).length > 0 ? { payload } : {}),
         },
       });
       setSelectedGraphRunDetail(detail);
       setGraphRuns((current) =>
         current.map((run) => (run.runId === detail.run.runId ? detail.run : run))
       );
+      await loadGraphRunDetail(detail.run.runId);
     } catch (runError) {
       setGraphRunError(runError instanceof Error ? runError.message : String(runError));
     } finally {
       setRunning(false);
     }
+  }
+
+  async function previewGraphRunGitMilestone(
+    runId: string,
+    workspaceRoot: string
+  ): Promise<PlaybookGraphGitMilestonePreview> {
+    return invoke<PlaybookGraphGitMilestonePreview>("graph_run_git_milestone_preview", {
+      runId,
+      request: {
+        runId,
+        actionSpecId: `${runId}:git_milestone`,
+        workspaceRoot,
+      },
+    });
   }
 
   const renderPlaybookButton = (playbook: PlaybookSummary) => (
@@ -2504,9 +2797,11 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           playbookDetail={selectedPlaybookDetail}
           graphRuns={graphRuns}
           selectedGraphRun={selectedGraphRunDetail}
+          selectedGraphRunSurface={selectedGraphRunSurface}
           graphRunError={graphRunError}
           onSelectGraphRun={setSelectedGraphRunId}
-          onResumeGraphRun={(decision) => void resumeGraphRun(decision)}
+          onResumeGraphRun={(action, payload) => void resumeGraphRun(action, payload)}
+          onPreviewGraphRunGitMilestone={previewGraphRunGitMilestone}
           onClose={() => setShowDetails(false)}
         />
       ) : null}

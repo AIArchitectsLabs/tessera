@@ -1851,6 +1851,47 @@ async fn graph_run_get(
 }
 
 #[tauri::command]
+async fn graph_run_review_surface(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/graph-runs/{}/review-surface", percent_encode(&run_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn graph_run_git_milestone_commit(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/graph-runs/{}/git-milestone", percent_encode(&run_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn graph_run_git_milestone_preview(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let path = format!(
+        "/graph-runs/{}/git-milestone/preview",
+        percent_encode(&run_id)
+    );
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn graph_run_resume(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
@@ -2916,7 +2957,10 @@ pub fn run() {
             agent_profile_reset,
             graph_run_create,
             graph_run_get,
+            graph_run_git_milestone_commit,
+            graph_run_git_milestone_preview,
             graph_run_list,
+            graph_run_review_surface,
             graph_run_resume,
             inbox_cancel,
             inbox_create,

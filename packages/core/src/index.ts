@@ -52,6 +52,14 @@ export {
   WorkspaceBoundaryError,
   type WorkspaceGuard,
 } from "./workspace-guard.js";
+export {
+  createGraphGitMilestoneService,
+  type GitServiceCommandInput,
+  type GitServiceCommandResult,
+  type GitServiceCommandRunner,
+  type GraphGitMilestonePreviewInput,
+  type GraphGitMilestoneServiceOptions,
+} from "./git-service.js";
 export { createPdfToolDefinitions } from "./pdf-tools.js";
 export {
   createOptionalCapabilityManager,

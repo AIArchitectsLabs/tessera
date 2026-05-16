@@ -4,6 +4,7 @@ import type {
   PlaybookGraphArtifactVersion,
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
+  PlaybookGraphOperationRecord,
   PlaybookGraphQueueEntry,
   PlaybookGraphReviewEvent,
   PlaybookGraphRunListFilter,
@@ -28,6 +29,7 @@ class MemoryGraphRunStore implements GraphRunStore {
   artifacts = new Map<string, PlaybookGraphArtifactVersion>();
   branchItems = new Map<string, PlaybookGraphBranchItem>();
   reviews: PlaybookGraphReviewEvent[] = [];
+  operations: PlaybookGraphOperationRecord[] = [];
   memos = new Map<string, PlaybookGraphNodeMemo>();
 
   async createRun(run: PlaybookGraphRunRecord): Promise<void> {
@@ -204,6 +206,30 @@ class MemoryGraphRunStore implements GraphRunStore {
 
   async addReviewEvent(event: PlaybookGraphReviewEvent): Promise<void> {
     this.reviews.push(event);
+  }
+
+  async listOperationRecords(runId: string): Promise<PlaybookGraphOperationRecord[]> {
+    return this.operations.filter((record) => record.runId === runId);
+  }
+
+  async addOperationRecord(record: PlaybookGraphOperationRecord): Promise<void> {
+    this.operations.push(record);
+  }
+
+  async applyGraphMutationWithOperationRecord(input: {
+    run?: PlaybookGraphRunRecord;
+    queueEntries?: PlaybookGraphQueueEntry[];
+    branchItems?: PlaybookGraphBranchItem[];
+    artifactVersions?: PlaybookGraphArtifactVersion[];
+    reviewEvents?: PlaybookGraphReviewEvent[];
+    operationRecord: PlaybookGraphOperationRecord;
+  }): Promise<void> {
+    if (input.run) this.runs.set(input.run.runId, input.run);
+    for (const entry of input.queueEntries ?? []) this.queue.set(entry.queueEntryId, entry);
+    for (const item of input.branchItems ?? []) this.branchItems.set(item.branchItemId, item);
+    for (const version of input.artifactVersions ?? []) await this.addArtifactVersion(version);
+    for (const event of input.reviewEvents ?? []) this.reviews.push(event);
+    this.operations.push(input.operationRecord);
   }
 
   async getMemo(runId: string, nodeMemoKey: string): Promise<PlaybookGraphNodeMemo | undefined> {

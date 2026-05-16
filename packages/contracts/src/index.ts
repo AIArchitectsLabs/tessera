@@ -2100,6 +2100,60 @@ export const PlaybookGraphReviewEventSchema = z
   .strict();
 export type PlaybookGraphReviewEvent = z.infer<typeof PlaybookGraphReviewEventSchema>;
 
+export const PlaybookGraphOperationKindSchema = z.enum([
+  "resume",
+  "edit_input",
+  "edit_artifact",
+  "edit_review",
+  "retry_interrupted",
+  "repair",
+  "git_milestone",
+]);
+export type PlaybookGraphOperationKind = z.infer<typeof PlaybookGraphOperationKindSchema>;
+
+export const PlaybookGraphOperationStatusSchema = z.enum(["started", "succeeded", "failed"]);
+export type PlaybookGraphOperationStatus = z.infer<typeof PlaybookGraphOperationStatusSchema>;
+
+const PlaybookGraphOperationSummarySchema = z
+  .string()
+  .max(500)
+  .superRefine((value, ctx) => {
+    if (
+      !/(api[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|secret|password|credential|authorization)/i.test(
+        value
+      )
+    ) {
+      return;
+    }
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Graph operation payload summaries must not contain secret-bearing fields",
+    });
+  });
+
+export const PlaybookGraphOperationRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    operationRecordId: z.string().min(1),
+    operationAttemptId: z.string().min(1),
+    runId: z.string().min(1),
+    actionSpecId: z.string().min(1),
+    kind: PlaybookGraphOperationKindSchema,
+    status: PlaybookGraphOperationStatusSchema,
+    operatorIntent: z.string().min(1).max(160),
+    queueEntryId: z.string().min(1).optional(),
+    affectedArtifactIds: z.array(z.string().min(1)).default([]),
+    affectedReviewEventIds: z.array(z.string().min(1)).default([]),
+    affectedQueueEntryIds: z.array(z.string().min(1)).default([]),
+    gitEvidenceId: z.string().min(1).optional(),
+    redactedPayloadSummary: PlaybookGraphOperationSummarySchema.optional(),
+    createdAt: z.string().datetime(),
+    completedAt: z.string().datetime().optional(),
+    failureReason: z.string().min(1).max(1_000).optional(),
+  })
+  .strict();
+export type PlaybookGraphOperationRecord = z.infer<typeof PlaybookGraphOperationRecordSchema>;
+
 export const PlaybookGraphMemoKeyPartsSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -2161,6 +2215,207 @@ export const PlaybookGraphResumeDecisionSchema = z
   .strict();
 export type PlaybookGraphResumeDecision = z.infer<typeof PlaybookGraphResumeDecisionSchema>;
 
+export const PlaybookGraphResumeActionSpecSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    actionId: z.string().min(1),
+    decision: PlaybookGraphResumeDecisionSchema.shape.decision,
+    label: z.string().min(1),
+    description: z.string().min(1).optional(),
+    queueEntryId: z.string().min(1).optional(),
+    nodePath: PlaybookGraphNodePathSchema.optional(),
+    nodeKind: PlaybookGraphQueueEntrySchema.shape.nodeKind.optional(),
+    allowedRunStatuses: z.array(PlaybookGraphRunStatusSchema).min(1),
+    allowedQueueStatuses: z.array(PlaybookGraphQueueStatusSchema).default([]),
+    requiredPayloadFields: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            label: z.string().min(1),
+            kind: z.enum(["string", "json", "object", "compiledGraph", "sourceFiles"]),
+            required: z.boolean().default(true),
+          })
+          .strict()
+      )
+      .default([]),
+    sideEffect: z.enum(["none", "resume", "invalidate_downstream", "terminal", "git_commit"]),
+    destructive: z.boolean().default(false),
+    invalidatesDownstream: z.boolean().default(false),
+    requiresExecutionContext: z.boolean().default(false),
+    requiresProvider: z.boolean().default(false),
+    requiresCredential: z.boolean().default(false),
+    requiresWorkspace: z.boolean().default(false),
+  })
+  .strict();
+export type PlaybookGraphResumeActionSpec = z.infer<typeof PlaybookGraphResumeActionSpecSchema>;
+
+export const PlaybookGraphActiveArtifactSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    artifactId: z.string().min(1),
+    versionId: z.string().min(1),
+    producerQueueEntryId: z.string().min(1),
+    producerStatus: PlaybookGraphQueueStatusSchema.optional(),
+    nodePath: PlaybookGraphNodePathSchema,
+    contentHash: Sha256DigestSchema,
+    value: z.unknown(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type PlaybookGraphActiveArtifact = z.infer<typeof PlaybookGraphActiveArtifactSchema>;
+
+export const PlaybookGraphArtifactTimelineRowSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    artifactId: z.string().min(1),
+    versionId: z.string().min(1),
+    producerQueueEntryId: z.string().min(1),
+    producerStatus: PlaybookGraphQueueStatusSchema.optional(),
+    nodePath: PlaybookGraphNodePathSchema,
+    contentHash: Sha256DigestSchema,
+    active: z.boolean(),
+    value: z.unknown(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type PlaybookGraphArtifactTimelineRow = z.infer<
+  typeof PlaybookGraphArtifactTimelineRowSchema
+>;
+
+export const PlaybookGraphTimelineRowSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    timelineRowId: z.string().min(1),
+    kind: z.enum([
+      "review_event",
+      "synthetic_requested",
+      "synthetic_blocked",
+      "synthetic_interrupted",
+      "synthetic_repair",
+      "git_milestone",
+      "operation_record",
+    ]),
+    createdAt: z.string().datetime(),
+    synthetic: z.boolean().default(false),
+    queueEntryId: z.string().min(1).optional(),
+    nodePath: PlaybookGraphNodePathSchema.optional(),
+    artifactId: z.string().min(1).optional(),
+    reviewEventId: z.string().min(1).optional(),
+    decision: PlaybookGraphReviewEventSchema.shape.decision.optional(),
+    message: z.string().min(1),
+    payload: z.record(z.unknown()).default({}),
+  })
+  .strict();
+export type PlaybookGraphTimelineRow = z.infer<typeof PlaybookGraphTimelineRowSchema>;
+
+export const PlaybookGraphBranchDrilldownItemSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    branchItem: PlaybookGraphBranchItemSchema,
+    queue: z.array(PlaybookGraphQueueEntrySchema).default([]),
+    activeArtifacts: z.array(PlaybookGraphActiveArtifactSchema).default([]),
+    stale: z.boolean().default(false),
+    error: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphBranchDrilldownItem = z.infer<
+  typeof PlaybookGraphBranchDrilldownItemSchema
+>;
+
+export const PlaybookGraphBranchDrilldownGroupSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    parentQueueEntryId: z.string().min(1),
+    parentNodePath: PlaybookGraphNodePathSchema,
+    parentStatus: PlaybookGraphQueueStatusSchema,
+    items: z.array(PlaybookGraphBranchDrilldownItemSchema).default([]),
+  })
+  .strict();
+export type PlaybookGraphBranchDrilldownGroup = z.infer<
+  typeof PlaybookGraphBranchDrilldownGroupSchema
+>;
+
+export const PlaybookGraphGitChangedFileSchema = z
+  .object({
+    path: z.string().min(1),
+    previousPath: z.string().min(1).optional(),
+    status: z.string().min(1),
+    allowed: z.boolean(),
+  })
+  .strict();
+export type PlaybookGraphGitChangedFile = z.infer<typeof PlaybookGraphGitChangedFileSchema>;
+
+export const PlaybookGraphGitMilestoneEvidenceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    runId: z.string().min(1),
+    actionSpecId: z.string().min(1),
+    affectedPaths: z.array(z.string().min(1)).min(1),
+    commitHash: z.string().min(1),
+    committedAt: z.string().datetime(),
+    trailers: z.record(z.string()).default({}),
+  })
+  .strict();
+export type PlaybookGraphGitMilestoneEvidence = z.infer<
+  typeof PlaybookGraphGitMilestoneEvidenceSchema
+>;
+
+export const PlaybookGraphGitMilestonePreviewSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    available: z.boolean(),
+    unavailableReason: z.string().min(1).optional(),
+    workspaceRoot: z.string().min(1).optional(),
+    gitRoot: z.string().min(1).optional(),
+    branch: z.string().min(1).optional(),
+    changedFiles: z.array(PlaybookGraphGitChangedFileSchema).default([]),
+    proposedMessage: z.string().min(1).optional(),
+    dirtyPolicy: z.enum(["clean_only", "allow_selected_paths"]).default("allow_selected_paths"),
+    unsupportedFeatures: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type PlaybookGraphGitMilestonePreview = z.infer<
+  typeof PlaybookGraphGitMilestonePreviewSchema
+>;
+
+export const PlaybookGraphGitMilestonePreviewRequestSchema = z
+  .object({
+    runId: z.string().min(1),
+    actionSpecId: z.string().min(1),
+    workspaceRoot: z.string().min(1).optional(),
+    affectedPaths: z.array(z.string().min(1)).default([]),
+    message: z.string().min(1).optional(),
+    dirtyPolicy: z.enum(["clean_only", "allow_selected_paths"]).default("allow_selected_paths"),
+  })
+  .strict();
+export type PlaybookGraphGitMilestonePreviewRequest = z.infer<
+  typeof PlaybookGraphGitMilestonePreviewRequestSchema
+>;
+
+export const PlaybookGraphGitMilestoneCommitRequestSchema = z
+  .object({
+    runId: z.string().min(1),
+    actionSpecId: z.string().min(1),
+    workspaceRoot: z.string().min(1),
+    affectedPaths: z.array(z.string().min(1)).min(1),
+    message: z.string().min(1),
+  })
+  .strict();
+export type PlaybookGraphGitMilestoneCommitRequest = z.infer<
+  typeof PlaybookGraphGitMilestoneCommitRequestSchema
+>;
+
+export const PlaybookGraphGitMilestoneCommitResultSchema = z
+  .object({
+    evidence: PlaybookGraphGitMilestoneEvidenceSchema,
+    preview: PlaybookGraphGitMilestonePreviewSchema,
+  })
+  .strict();
+export type PlaybookGraphGitMilestoneCommitResult = z.infer<
+  typeof PlaybookGraphGitMilestoneCommitResultSchema
+>;
+
 export const PlaybookGraphRunListResultSchema = z
   .object({
     runs: z.array(PlaybookGraphRunRecordSchema),
@@ -2208,9 +2463,24 @@ export const PlaybookGraphRunDetailSchema = z
     branchItems: z.array(PlaybookGraphBranchItemSchema).default([]),
     artifacts: z.array(PlaybookGraphArtifactVersionSchema).default([]),
     reviews: z.array(PlaybookGraphReviewEventSchema).default([]),
+    operations: z.array(PlaybookGraphOperationRecordSchema).default([]),
   })
   .strict();
 export type PlaybookGraphRunDetail = z.infer<typeof PlaybookGraphRunDetailSchema>;
+
+export const PlaybookGraphRunReviewSurfaceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    detail: PlaybookGraphRunDetailSchema,
+    activeArtifacts: z.array(PlaybookGraphActiveArtifactSchema).default([]),
+    artifactTimeline: z.array(PlaybookGraphArtifactTimelineRowSchema).default([]),
+    timeline: z.array(PlaybookGraphTimelineRowSchema).default([]),
+    branches: z.array(PlaybookGraphBranchDrilldownGroupSchema).default([]),
+    actions: z.array(PlaybookGraphResumeActionSpecSchema).default([]),
+    gitMilestone: PlaybookGraphGitMilestonePreviewSchema.optional(),
+  })
+  .strict();
+export type PlaybookGraphRunReviewSurface = z.infer<typeof PlaybookGraphRunReviewSurfaceSchema>;
 
 export const PlaybookSummarySchema = z.object({
   id: z.string().min(1),

@@ -7,7 +7,9 @@ import type {
   PlaybookGraphArtifactVersion,
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
+  PlaybookGraphOperationRecord,
   PlaybookGraphQueueEntry,
+  PlaybookGraphReviewEvent,
   PlaybookGraphRunRecord,
 } from "@tessera/contracts";
 import { PlaybookGraphRunRecordSchema } from "@tessera/contracts";
@@ -21,6 +23,27 @@ import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
 const tempDirs: string[] = [];
 const now = "2026-05-15T00:00:00.000Z";
 const later = "2026-05-15T00:00:01.000Z";
+
+function operationRecord(
+  patch: Partial<PlaybookGraphOperationRecord> = {}
+): PlaybookGraphOperationRecord {
+  return {
+    schemaVersion: 1,
+    operationRecordId: "operation-record-1",
+    operationAttemptId: "operation-attempt-1",
+    runId: "run-1",
+    actionSpecId: "queue-plan:approve",
+    kind: "resume",
+    status: "succeeded",
+    operatorIntent: "Approve graph review",
+    affectedArtifactIds: [],
+    affectedReviewEventIds: [],
+    affectedQueueEntryIds: ["queue-plan"],
+    createdAt: later,
+    completedAt: later,
+    ...patch,
+  };
+}
 
 function tempDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "tessera-graph-run-store-"));
@@ -633,6 +656,116 @@ describe("createPlaybookGraphRunStore", () => {
     expect(failed?.error).toBe("script failed");
     expect(failed?.runtimeId).toBeUndefined();
     expect(failed?.leaseId).toBeUndefined();
+    store.close();
+  });
+
+  test("lists operation records deterministically and keeps duplicate record IDs idempotent", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const first = operationRecord({ runId: run.runId, operationRecordId: "operation-record-b" });
+    const second = operationRecord({
+      runId: run.runId,
+      operationRecordId: "operation-record-a",
+      operationAttemptId: "operation-attempt-2",
+      createdAt: now,
+      completedAt: now,
+    });
+
+    await store.addOperationRecord(first);
+    await store.addOperationRecord(second);
+    await store.addOperationRecord(first);
+
+    expect(
+      (await store.listOperationRecords(run.runId)).map((record) => record.operationRecordId)
+    ).toEqual(["operation-record-a", "operation-record-b"]);
+    await expect(
+      store.addOperationRecord({ ...first, operatorIntent: "Changed intent" })
+    ).rejects.toThrow(/different durable payload/);
+    store.close();
+  });
+
+  test("rejects different terminal operation records for the same attempt and kind", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const terminal = operationRecord({ runId: run.runId });
+    await store.addOperationRecord(terminal);
+
+    await expect(
+      store.addOperationRecord({
+        ...terminal,
+        operationRecordId: "operation-record-2",
+        status: "failed",
+        failureReason: "commit failed",
+      })
+    ).rejects.toThrow(/terminal record/);
+    expect(await store.listOperationRecords(run.runId)).toEqual([terminal]);
+    store.close();
+  });
+
+  test("persists git intent and result rows with one operation attempt", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    await store.addOperationRecord(
+      operationRecord({
+        runId: run.runId,
+        operationRecordId: "git-started",
+        operationAttemptId: "git-attempt-1",
+        kind: "git_milestone",
+        status: "started",
+        operatorIntent: "Record Git milestone",
+        affectedQueueEntryIds: [],
+        completedAt: undefined,
+      })
+    );
+    await store.addOperationRecord(
+      operationRecord({
+        runId: run.runId,
+        operationRecordId: "git-succeeded",
+        operationAttemptId: "git-attempt-1",
+        kind: "git_milestone",
+        status: "succeeded",
+        operatorIntent: "Record Git milestone",
+        affectedQueueEntryIds: [],
+        gitEvidenceId: "abc123",
+      })
+    );
+
+    expect((await store.listOperationRecords(run.runId)).map((record) => record.status)).toEqual([
+      "started",
+      "succeeded",
+    ]);
+    store.close();
+  });
+
+  test("applyGraphMutationWithOperationRecord rolls back graph writes when the operation is invalid", async () => {
+    const { dbPath, run, queueEntry } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const reviewEvent: PlaybookGraphReviewEvent = {
+      schemaVersion: 1,
+      reviewEventId: "review-1",
+      runId: run.runId,
+      queueEntryId: queueEntry.queueEntryId,
+      nodePath: queueEntry.nodePath,
+      artifactId: "plan",
+      decision: "approved",
+      payload: {},
+      createdAt: later,
+    };
+
+    await expect(
+      store.applyGraphMutationWithOperationRecord({
+        run: { ...run, status: "running", updatedAt: later },
+        reviewEvents: [reviewEvent],
+        operationRecord: {
+          ...operationRecord({ runId: run.runId }),
+          redactedPayloadSummary: "password: leaked",
+        },
+      })
+    ).rejects.toThrow(/secret-bearing/);
+
+    expect((await store.getRun(run.runId))?.status).toBe("queued");
+    expect(await store.listReviewEvents(run.runId)).toEqual([]);
+    expect(await store.listOperationRecords(run.runId)).toEqual([]);
     store.close();
   });
 });
