@@ -31,6 +31,20 @@ describe("createAgentModel", () => {
     expect(model.id).toBe("claude-sonnet-4-6");
   });
 
+  test("creates a native Google Gemini model", () => {
+    const config = AgentProviderConfigSchema.parse({
+      provider: "google",
+      model: "gemini-2.5-pro",
+    });
+
+    const model = createAgentModel(config);
+
+    expect(model.provider).toBe("google");
+    expect(model.api).toBe("google-generative-ai");
+    expect(model.baseUrl).toBe("https://generativelanguage.googleapis.com/v1beta");
+    expect(model.id).toBe("gemini-2.5-pro");
+  });
+
   test("creates an OpenRouter OpenAI-compatible model", () => {
     const config = AgentProviderConfigSchema.parse({
       provider: "openrouter",

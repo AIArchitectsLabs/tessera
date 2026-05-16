@@ -853,6 +853,11 @@ fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json
             "model": provider.model,
             "apiKeyEnv": "ANTHROPIC_API_KEY"
         }),
+        model_settings::ModelProvider::Google => serde_json::json!({
+            "provider": "google",
+            "model": provider.model,
+            "apiKeyEnv": "GEMINI_API_KEY"
+        }),
         model_settings::ModelProvider::Openrouter => serde_json::json!({
             "provider": "openrouter",
             "model": provider.model,
@@ -1047,6 +1052,7 @@ fn parse_model_provider(provider: &str) -> Result<model_settings::ModelProvider,
         "openai" => Ok(model_settings::ModelProvider::Openai),
         "openai-codex" => Ok(model_settings::ModelProvider::OpenaiCodex),
         "anthropic" => Ok(model_settings::ModelProvider::Anthropic),
+        "google" => Ok(model_settings::ModelProvider::Google),
         "openrouter" => Ok(model_settings::ModelProvider::Openrouter),
         "local" => Ok(model_settings::ModelProvider::Local),
         other => Err(format!("Unsupported provider: {}", other)),

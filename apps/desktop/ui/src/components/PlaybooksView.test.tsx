@@ -1176,6 +1176,7 @@ const modelSettings: ModelSettingsRead = {
     openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
+    google: { provider: "google", model: "gemini-2.5-pro", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
     local: {
       provider: "local",

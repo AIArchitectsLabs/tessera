@@ -9,6 +9,7 @@ export const MODEL_PROVIDERS: ModelProvider[] = [
   "openai",
   "openai-codex",
   "anthropic",
+  "google",
   "openrouter",
   "local",
 ];
@@ -28,6 +29,10 @@ export const MODEL_OPTIONS_BY_PROVIDER: Record<ModelProvider, ModelOption[]> = {
   anthropic: [
     { label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
     { label: "Claude 3.7 Sonnet", value: "claude-3.7-sonnet" },
+  ],
+  google: [
+    { label: "Gemini 2.5 Flash", value: "gemini-2.5-flash" },
+    { label: "Gemini 2.5 Pro", value: "gemini-2.5-pro" },
   ],
   openrouter: [
     { label: "Auto Router", value: "openrouter/auto" },
@@ -62,6 +67,8 @@ export function providerLabel(provider: ModelProvider): string {
       return "OpenAI Codex";
     case "anthropic":
       return "Anthropic";
+    case "google":
+      return "Google AI Studio";
     case "openrouter":
       return "OpenRouter";
     case "local":
@@ -100,6 +107,12 @@ export function defaultDraftForProvider(provider: ModelProvider): AgentProviderC
         provider: "anthropic",
         model: modelPlaceholderForProvider("anthropic"),
         apiKeyEnv: "ANTHROPIC_API_KEY",
+      };
+    case "google":
+      return {
+        provider: "google",
+        model: modelPlaceholderForProvider("google"),
+        apiKeyEnv: "GEMINI_API_KEY",
       };
     case "openrouter":
       return {

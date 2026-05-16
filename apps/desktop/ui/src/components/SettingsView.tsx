@@ -557,8 +557,14 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
   ) {
     setSettings(loaded);
     setSelectedProvider(provider);
-    const providerSettings = loaded.providers[provider];
-    setDraft(providerConfigFromSettings(providerSettings) ?? defaultDraftForProvider(provider));
+    const providerSettings = (loaded.providers as Partial<ModelSettingsRead["providers"]>)[
+      provider
+    ];
+    setDraft(
+      providerSettings
+        ? (providerConfigFromSettings(providerSettings) ?? defaultDraftForProvider(provider))
+        : defaultDraftForProvider(provider)
+    );
     setApiKey("");
   }
 
@@ -765,10 +771,12 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
       return;
     }
     setSelectedProvider(provider);
+    const providerSettings = settings
+      ? (settings.providers as Partial<ModelSettingsRead["providers"]>)[provider]
+      : undefined;
     setDraft(
-      settings
-        ? (providerConfigFromSettings(settings.providers[provider]) ??
-            defaultDraftForProvider(provider))
+      providerSettings
+        ? (providerConfigFromSettings(providerSettings) ?? defaultDraftForProvider(provider))
         : defaultDraftForProvider(provider)
     );
     setApiKey("");
@@ -3363,6 +3371,12 @@ function providerConfigFromSettings(
         provider: "anthropic",
         model: settings.model,
         apiKeyEnv: "ANTHROPIC_API_KEY",
+      };
+    case "google":
+      return {
+        provider: "google",
+        model: settings.model,
+        apiKeyEnv: "GEMINI_API_KEY",
       };
     case "openrouter":
       return {

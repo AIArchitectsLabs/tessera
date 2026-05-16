@@ -17,6 +17,7 @@ tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
 keyring = "3.6.3"
 url = "2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [dev-dependencies]
 tempfile = "3"

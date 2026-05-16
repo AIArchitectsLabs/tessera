@@ -14,6 +14,7 @@ describe("model settings contracts", () => {
       providers: {
         openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
         anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
+        google: { provider: "google", model: "gemini-2.5-pro", hasCredential: false },
         openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
         "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
         local: {
@@ -62,6 +63,24 @@ describe("model settings contracts", () => {
     expect(parsed.provider).toBe("local");
   });
 
+  test("accepts Google AI Studio provider settings and save requests", () => {
+    const settings = ModelProviderSettingsSchema.parse({
+      provider: "google",
+      model: "gemini-2.5-pro",
+      hasCredential: true,
+    });
+
+    const request = ModelSettingsSaveRequestSchema.parse({
+      selectedProvider: "google",
+      provider: { provider: "google", model: "gemini-2.5-pro" },
+      credential: { apiKey: "AIza-test" },
+    });
+
+    expect(settings.provider).toBe("google");
+    expect(request.provider.provider).toBe("google");
+    expect(request.credential?.apiKey).toBe("AIza-test");
+  });
+
   test("accepts credential delete request for one provider", () => {
     const parsed = ModelCredentialDeleteRequestSchema.parse({ provider: "openai-codex" });
     expect(parsed.provider).toBe("openai-codex");
@@ -96,5 +115,15 @@ describe("model settings contracts", () => {
       accessToken: "access-token",
       accountId: "acct_test",
     });
+  });
+
+  test("agent turn accepts Google AI Studio provider config", () => {
+    const parsed = AgentTurnRequestSchema.parse({
+      prompt: "Reply OK",
+      provider: { provider: "google", model: "gemini-2.5-pro", apiKeyEnv: "GEMINI_API_KEY" },
+      credential: { apiKey: "AIza-test" },
+    });
+
+    expect(parsed.provider.provider).toBe("google");
   });
 });

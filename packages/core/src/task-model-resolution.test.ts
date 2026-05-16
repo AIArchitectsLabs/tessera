@@ -9,6 +9,7 @@ const settings: ModelSettingsRead = {
   providers: {
     openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
+    google: { provider: "google", model: "gemini-2.5-pro", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     local: {
@@ -133,5 +134,26 @@ describe("resolveTaskExecutionConfig", () => {
       baseUrl: "http://127.0.0.1:11434/v1",
     });
     expect(result.credential).toBeUndefined();
+  });
+
+  test("Google provider resolves env and requires credentials", () => {
+    expect(() =>
+      resolveTaskExecutionConfig({
+        agent: DEFAULT_AGENT_PROFILE,
+        modelSettings: { ...settings, selectedProvider: "google" },
+      })
+    ).toThrow("google is not configured. Add an API key in Settings > Model.");
+
+    const result = resolveTaskExecutionConfig({
+      agent: DEFAULT_AGENT_PROFILE,
+      credential: "google-key",
+      modelSettings: { ...settings, selectedProvider: "google" },
+    });
+
+    expect(result.provider).toEqual({
+      provider: "google",
+      model: "gemini-2.5-pro",
+      apiKeyEnv: "GEMINI_API_KEY",
+    });
   });
 });

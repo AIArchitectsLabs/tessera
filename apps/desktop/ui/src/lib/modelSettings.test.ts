@@ -16,6 +16,7 @@ describe("model settings UI helpers", () => {
     expect(providerLabel("openai")).toBe("OpenAI");
     expect(providerLabel("openai-codex")).toBe("OpenAI Codex");
     expect(providerLabel("anthropic")).toBe("Anthropic");
+    expect(providerLabel("google")).toBe("Google AI Studio");
     expect(providerLabel("openrouter")).toBe("OpenRouter");
     expect(providerLabel("local")).toBe("Local OpenAI-compatible");
   });
@@ -23,6 +24,7 @@ describe("model settings UI helpers", () => {
   test("returns model placeholders", () => {
     expect(modelPlaceholderForProvider("openai")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("openai-codex")).toBe("gpt-5.4");
+    expect(modelPlaceholderForProvider("google")).toBe("gemini-2.5-pro");
     expect(modelPlaceholderForProvider("local")).toBe("llama3.2");
   });
 
@@ -82,6 +84,11 @@ describe("model settings UI helpers", () => {
         provider: "anthropic",
         model: "claude-sonnet-4-6",
         apiKeyEnv: "ANTHROPIC_API_KEY",
+      },
+      google: {
+        provider: "google",
+        model: "gemini-2.5-pro",
+        apiKeyEnv: "GEMINI_API_KEY",
       },
       openrouter: {
         provider: "openrouter",

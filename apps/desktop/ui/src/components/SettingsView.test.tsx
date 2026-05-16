@@ -61,7 +61,7 @@ type InvokeCall = {
 
 const invokeCalls: InvokeCall[] = [];
 
-const modelSettings: ModelSettingsRead = {
+let modelSettings: ModelSettingsRead = {
   selectedProvider: "openai",
   providers: {
     openai: {
@@ -77,6 +77,11 @@ const modelSettings: ModelSettingsRead = {
     anthropic: {
       provider: "anthropic",
       model: "claude-3.7-sonnet",
+      hasCredential: false,
+    },
+    google: {
+      provider: "google",
+      model: "gemini-2.5-pro",
       hasCredential: false,
     },
     openrouter: {
@@ -496,11 +501,41 @@ const { SettingsView } = await import("./SettingsView");
 
 beforeEach(() => {
   invokeCalls.length = 0;
-  modelSettings.selectedProvider = "openai";
-  modelSettings.providers["openai-codex"] = {
-    provider: "openai-codex",
-    model: "gpt-5.4",
-    hasCredential: false,
+  modelSettings = {
+    selectedProvider: "openai",
+    providers: {
+      openai: {
+        provider: "openai",
+        model: "gpt-4.1",
+        hasCredential: false,
+      },
+      "openai-codex": {
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        hasCredential: false,
+      },
+      anthropic: {
+        provider: "anthropic",
+        model: "claude-3.7-sonnet",
+        hasCredential: false,
+      },
+      google: {
+        provider: "google",
+        model: "gemini-2.5-pro",
+        hasCredential: false,
+      },
+      openrouter: {
+        provider: "openrouter",
+        model: "openrouter/openai/gpt-4.1",
+        hasCredential: false,
+      },
+      local: {
+        provider: "local",
+        model: "llama3.1",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        hasCredential: false,
+      },
+    },
   };
   integrationSettings = initialIntegrationSettings();
   memoryStatus = {
@@ -828,6 +863,21 @@ describe("SettingsView model flow", () => {
 });
 
 describe("SettingsView search flow", () => {
+  test("selecting Google AI Studio backfills the Gemini model when saved settings are old", async () => {
+    const { google: _missing, ...providers } = modelSettings.providers;
+    modelSettings = {
+      ...modelSettings,
+      providers,
+    } as ModelSettingsRead;
+    const view = await renderModelView();
+
+    fireEvent.click(view.getByRole("button", { name: /google ai studio/i }));
+
+    await waitFor(() => {
+      expect(view.getByDisplayValue("gemini-2.5-pro")).toBeTruthy();
+    });
+  });
+
   test("switching search mode to Tavily updates selected search provider state", async () => {
     const view = await renderIntegrationsView();
 

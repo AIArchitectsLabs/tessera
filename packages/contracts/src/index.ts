@@ -70,6 +70,12 @@ export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
     thinkingLevel: CloudThinkingLevelSchema,
   }),
   z.object({
+    provider: z.literal("google"),
+    model: z.string().min(1),
+    apiKeyEnv: z.string().min(1).default("GEMINI_API_KEY"),
+    thinkingLevel: CloudThinkingLevelSchema,
+  }),
+  z.object({
     provider: z.literal("openrouter"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("OPENROUTER_API_KEY"),
@@ -90,6 +96,7 @@ export const ModelProviderSchema = z.enum([
   "openai",
   "openai-codex",
   "anthropic",
+  "google",
   "openrouter",
   "local",
 ]);
@@ -113,6 +120,12 @@ const AnthropicModelProviderSettingsSchema = z.object({
   hasCredential: z.boolean().default(false),
 });
 
+const GoogleModelProviderSettingsSchema = z.object({
+  provider: z.literal("google"),
+  model: z.string().min(1),
+  hasCredential: z.boolean().default(false),
+});
+
 const OpenRouterModelProviderSettingsSchema = z.object({
   provider: z.literal("openrouter"),
   model: z.string().min(1),
@@ -130,6 +143,7 @@ export const ModelProviderSettingsSchema = z.discriminatedUnion("provider", [
   OpenAIModelProviderSettingsSchema,
   OpenAICodexModelProviderSettingsSchema,
   AnthropicModelProviderSettingsSchema,
+  GoogleModelProviderSettingsSchema,
   OpenRouterModelProviderSettingsSchema,
   LocalModelProviderSettingsSchema,
 ]);
@@ -141,6 +155,7 @@ export const ModelSettingsReadSchema = z.object({
     openai: OpenAIModelProviderSettingsSchema,
     "openai-codex": OpenAICodexModelProviderSettingsSchema,
     anthropic: AnthropicModelProviderSettingsSchema,
+    google: GoogleModelProviderSettingsSchema,
     openrouter: OpenRouterModelProviderSettingsSchema,
     local: LocalModelProviderSettingsSchema,
   }),

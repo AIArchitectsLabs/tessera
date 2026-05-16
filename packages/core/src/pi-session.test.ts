@@ -1038,6 +1038,25 @@ describe("runPiTaskTurn", () => {
 });
 
 describe("createTesseraModelRegistry", () => {
+  test("registers native Google Gemini models", async () => {
+    const result = await createTesseraModelRegistry({
+      credential: "google-key",
+      provider: {
+        provider: "google",
+        model: "gemini-2.5-pro",
+        apiKeyEnv: "GEMINI_API_KEY",
+      },
+    });
+
+    expect(result.model).toMatchObject({
+      api: "google-generative-ai",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      id: "gemini-2.5-pro",
+      provider: "google",
+    });
+    await expect(result.modelRegistry.authStorage.getApiKey("google")).resolves.toBe("google-key");
+  });
+
   test("does not require credentials for local providers", async () => {
     const result = await createTesseraModelRegistry({
       provider: {

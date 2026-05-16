@@ -106,6 +106,7 @@ type FetchLike = typeof fetch;
 function providerBaseUrl(provider: AgentProviderConfig): string {
   if (provider.provider === "openai-codex") return "https://chatgpt.com/backend-api/codex";
   if (provider.provider === "anthropic") return "https://api.anthropic.com";
+  if (provider.provider === "google") return "https://generativelanguage.googleapis.com/v1beta";
   if (provider.provider === "openrouter") return "https://openrouter.ai/api/v1";
   if (provider.provider === "local") return provider.baseUrl;
   return "https://api.openai.com/v1";
@@ -113,6 +114,7 @@ function providerBaseUrl(provider: AgentProviderConfig): string {
 
 function providerApi(provider: AgentProviderConfig): string {
   if (provider.provider === "anthropic") return "anthropic-messages";
+  if (provider.provider === "google") return "google-generative-ai";
   return "openai-completions";
 }
 
@@ -121,6 +123,7 @@ function providerRequiresCredential(provider: AgentProviderConfig): boolean {
     provider.provider === "openai" ||
     provider.provider === "openai-codex" ||
     provider.provider === "anthropic" ||
+    provider.provider === "google" ||
     provider.provider === "openrouter"
   );
 }
@@ -139,8 +142,13 @@ function modelCapabilities(provider: AgentProviderConfig) {
     reasoning: provider.provider !== "local",
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: provider.provider === "anthropic" ? 200_000 : 128_000,
-    maxTokens: 8_192,
+    contextWindow:
+      provider.provider === "anthropic"
+        ? 200_000
+        : provider.provider === "google"
+          ? 1_048_576
+          : 128_000,
+    maxTokens: provider.provider === "google" ? 65_536 : 8_192,
     ...(provider.provider === "local"
       ? {
           compat: {

@@ -5,11 +5,18 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use url::Url;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND, FILETIME};
+#[cfg(windows)]
+use windows_sys::Win32::Security::Credentials::{
+    CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_FLAGS,
+    CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+};
 
 pub const KEYCHAIN_SERVICE: &str = "Tessera";
 pub const SETTINGS_FILE: &str = "model-settings.json";
@@ -26,6 +33,7 @@ pub enum ModelProvider {
     #[serde(rename = "openai-codex")]
     OpenaiCodex,
     Anthropic,
+    Google,
     Openrouter,
     Local,
 }
@@ -36,6 +44,7 @@ impl ModelProvider {
             Self::Openai => "model.openai",
             Self::OpenaiCodex => "model.openai-codex",
             Self::Anthropic => "model.anthropic",
+            Self::Google => "model.google",
             Self::Openrouter => "model.openrouter",
             Self::Local => "model.local",
         }
@@ -53,6 +62,7 @@ impl ModelProvider {
             Self::Openai => "gpt-5.4",
             Self::OpenaiCodex => "gpt-5.4",
             Self::Anthropic => "claude-sonnet-4-6",
+            Self::Google => "gemini-2.5-flash",
             Self::Openrouter => "openai/gpt-5.4",
             Self::Local => "llama3.2",
         }
@@ -190,7 +200,10 @@ pub fn missing_credential_result(provider: ModelProvider) -> ModelConnectionTest
             ModelProvider::Local => {
                 "Local provider does not require an API key by default".to_string()
             }
-            ModelProvider::Openai | ModelProvider::Anthropic | ModelProvider::Openrouter => {
+            ModelProvider::Openai
+            | ModelProvider::Anthropic
+            | ModelProvider::Google
+            | ModelProvider::Openrouter => {
                 "Add an API key in Settings > Model before running this provider".to_string()
             }
             ModelProvider::OpenaiCodex => {
@@ -339,6 +352,7 @@ pub fn default_settings_file() -> SettingsFile {
         ModelProvider::Openai,
         ModelProvider::OpenaiCodex,
         ModelProvider::Anthropic,
+        ModelProvider::Google,
         ModelProvider::Openrouter,
         ModelProvider::Local,
     ] {
@@ -369,13 +383,19 @@ pub fn load_settings_file(path: &Path) -> Result<SettingsFile> {
     }
 
     let text = fs::read_to_string(path).context("Could not read model settings")?;
+    let text = text.trim_start_matches('\u{feff}');
     let settings: SettingsFile =
-        serde_json::from_str(&text).context("Could not parse model settings")?;
+        serde_json::from_str(text).context("Could not parse model settings")?;
     Ok(normalize_settings_file(settings))
 }
 
 fn normalize_settings_file(mut settings: SettingsFile) -> SettingsFile {
     let defaults = default_settings_file();
+    if let Some(config) = settings.providers.get_mut(&ModelProvider::Google) {
+        if config.model == "gemini-2.5-pro" {
+            config.model = ModelProvider::Google.default_model().to_string();
+        }
+    }
     for (provider, config) in defaults.providers {
         settings.providers.entry(provider).or_insert(config);
     }
@@ -395,7 +415,7 @@ pub fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
     fs::write(path, text).context("Could not write model settings")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 fn keyring_entry(provider: ModelProvider, user_key: Option<&str>) -> Result<Entry> {
     let account = provider.account_for_user(scoped_user_key(user_key)?);
     Entry::new(KEYCHAIN_SERVICE, &account).context("Could not open keychain entry")
@@ -411,7 +431,12 @@ pub fn get_credential_for_user(
         return get_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        return get_windows_credential(&provider.account_for_user(scoped_user_key(user_key)?));
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     match keyring_entry(provider, user_key)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -433,7 +458,15 @@ fn set_credential_for_user(
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        return set_windows_credential(
+            &provider.account_for_user(scoped_user_key(user_key)?),
+            api_key,
+        );
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     keyring_entry(provider, user_key)?
         .set_password(api_key)
         .context("Could not store model credential")
@@ -446,11 +479,167 @@ pub fn delete_credential_for_user(provider: ModelProvider, user_key: Option<&str
         return delete_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        return delete_windows_credential(&provider.account_for_user(scoped_user_key(user_key)?));
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     match keyring_entry(provider, user_key)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("Could not delete model credential"),
     }
+}
+
+#[cfg(windows)]
+fn to_wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn to_wide_no_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().collect()
+}
+
+#[cfg(windows)]
+fn windows_credential_target(account: &str) -> String {
+    format!("{account}.{KEYCHAIN_SERVICE}")
+}
+
+#[cfg(windows)]
+fn windows_error_context(action: &str) -> String {
+    format!("{action}: Windows error code {}", unsafe { GetLastError() })
+}
+
+#[cfg(windows)]
+fn get_windows_credential(account: &str) -> Result<Option<String>> {
+    get_windows_credential_for_target(&windows_credential_target(account))
+}
+
+#[cfg(windows)]
+fn get_windows_credential_for_target(target: &str) -> Result<Option<String>> {
+    let target = to_wide_null(target);
+    let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+    let read = unsafe {
+        CredReadW(
+            target.as_ptr(),
+            CRED_TYPE_GENERIC,
+            0,
+            &mut credential as *mut _,
+        )
+    };
+
+    if read == 0 {
+        let error = unsafe { GetLastError() };
+        if error == ERROR_NOT_FOUND {
+            return Ok(None);
+        }
+        bail!(
+            "{}",
+            windows_error_context("Could not read model credential")
+        );
+    }
+
+    let credential_ref = unsafe { &*credential };
+    let blob = unsafe {
+        std::slice::from_raw_parts(
+            credential_ref.CredentialBlob as *const u8,
+            credential_ref.CredentialBlobSize as usize,
+        )
+    };
+    if blob.len() % 2 != 0 {
+        unsafe { CredFree(credential as *mut _) };
+        bail!("Could not read model credential: invalid UTF-16 credential blob");
+    }
+
+    let words: Vec<u16> = blob
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+    let value = String::from_utf16(&words).context("Could not decode model credential")?;
+    unsafe { CredFree(credential as *mut _) };
+    Ok(Some(value))
+}
+
+#[cfg(windows)]
+fn set_windows_credential(account: &str, api_key: &str) -> Result<()> {
+    set_windows_credential_for_target(
+        &windows_credential_target(account),
+        account,
+        "Tessera model credential",
+        api_key,
+    )
+}
+
+#[cfg(windows)]
+fn set_windows_credential_for_target(
+    target: &str,
+    username: &str,
+    comment: &str,
+    api_key: &str,
+) -> Result<()> {
+    let mut username = to_wide_null(username);
+    let mut target = to_wide_null(target);
+    let mut comment = to_wide_null(comment);
+    let mut secret_words = to_wide_no_null(api_key);
+    let mut secret = Vec::with_capacity(secret_words.len() * 2);
+    for word in &secret_words {
+        secret.extend_from_slice(&word.to_le_bytes());
+    }
+
+    let mut credential = CREDENTIALW {
+        Flags: CRED_FLAGS::default(),
+        Type: CRED_TYPE_GENERIC,
+        TargetName: target.as_mut_ptr(),
+        Comment: comment.as_mut_ptr(),
+        LastWritten: FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        },
+        CredentialBlobSize: secret.len() as u32,
+        CredentialBlob: secret.as_mut_ptr(),
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        AttributeCount: 0,
+        Attributes: std::ptr::null_mut(),
+        TargetAlias: std::ptr::null_mut(),
+        UserName: username.as_mut_ptr(),
+    };
+
+    let written = unsafe { CredWriteW(&mut credential as *mut _, 0) };
+    secret.fill(0);
+    secret_words.fill(0);
+    if written == 0 {
+        bail!(
+            "{}",
+            windows_error_context("Could not store model credential")
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn delete_windows_credential(account: &str) -> Result<()> {
+    delete_windows_credential_for_target(&windows_credential_target(account))
+}
+
+#[cfg(windows)]
+fn delete_windows_credential_for_target(target: &str) -> Result<()> {
+    let target = to_wide_null(target);
+    let deleted = unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
+    if deleted != 0 {
+        return Ok(());
+    }
+
+    let error = unsafe { GetLastError() };
+    if error == ERROR_NOT_FOUND {
+        return Ok(());
+    }
+
+    bail!(
+        "{}",
+        windows_error_context("Could not delete model credential")
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -694,6 +883,7 @@ mod tests {
             assert_eq!(ModelProvider::Openai.account(), "model.openai");
             assert_eq!(ModelProvider::OpenaiCodex.account(), "model.openai-codex");
             assert_eq!(ModelProvider::Anthropic.account(), "model.anthropic");
+            assert_eq!(ModelProvider::Google.account(), "model.google");
             assert_eq!(ModelProvider::Openrouter.account(), "model.openrouter");
             assert_eq!(ModelProvider::Local.account(), "model.local");
         }
@@ -703,7 +893,7 @@ mod tests {
             let settings = default_settings_file();
 
             assert_eq!(settings.selected_provider, ModelProvider::Openai);
-            assert_eq!(settings.providers.len(), 5);
+            assert_eq!(settings.providers.len(), 6);
             assert_eq!(
                 settings
                     .providers
@@ -717,6 +907,40 @@ mod tests {
                     .get(&ModelProvider::Local)
                     .and_then(|provider| provider.base_url.as_deref()),
                 Some("http://127.0.0.1:11434/v1")
+            );
+        }
+
+        #[test]
+        fn load_settings_file_backfills_new_providers_for_existing_settings() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(SETTINGS_FILE);
+            fs::write(
+                &path,
+                r#"{
+                  "selectedProvider": "openai",
+                  "providers": {
+                    "openai": { "provider": "openai", "model": "gpt-5.4" },
+                    "anthropic": { "provider": "anthropic", "model": "claude-sonnet-4-6" },
+                    "openrouter": { "provider": "openrouter", "model": "openai/gpt-5.4" },
+                    "local": {
+                      "provider": "local",
+                      "model": "llama3.2",
+                      "baseUrl": "http://127.0.0.1:11434/v1"
+                    }
+                  }
+                }"#,
+            )
+            .expect("write old settings");
+
+            let settings = load_settings_file(&path).expect("load");
+
+            assert_eq!(
+                settings.providers.get(&ModelProvider::Google),
+                Some(&ProviderConfig {
+                    provider: ModelProvider::Google,
+                    model: "gemini-2.5-pro".to_string(),
+                    base_url: None,
+                })
             );
         }
 
@@ -893,7 +1117,9 @@ mod tests {
             let settings = default_settings_file();
             let mut known_credentials = BTreeMap::new();
             known_credentials.insert(ModelProvider::Openai, true);
+            known_credentials.insert(ModelProvider::OpenaiCodex, false);
             known_credentials.insert(ModelProvider::Anthropic, false);
+            known_credentials.insert(ModelProvider::Google, false);
             known_credentials.insert(ModelProvider::Openrouter, false);
             known_credentials.insert(ModelProvider::Local, false);
 
@@ -1023,6 +1249,31 @@ mod tests {
                 index += 3;
             }
             out
+        }
+
+        #[test]
+        #[ignore]
+        #[cfg(windows)]
+        fn windows_credential_round_trips_through_credential_manager() {
+            let target = format!(
+                "tessera.test.{}.{}",
+                std::process::id(),
+                std::thread::current().name().unwrap_or("model-settings")
+            );
+            delete_windows_credential_for_target(&target).expect("clear old test credential");
+            set_windows_credential_for_target(
+                &target,
+                "model.test",
+                "Tessera test model credential",
+                "secret-test",
+            )
+            .expect("store test credential");
+
+            let credential =
+                get_windows_credential_for_target(&target).expect("read test credential");
+
+            assert_eq!(credential.as_deref(), Some("secret-test"));
+            delete_windows_credential_for_target(&target).expect("cleanup test credential");
         }
     }
 }

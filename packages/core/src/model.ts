@@ -29,7 +29,7 @@ export function resolveApiKey(
 
 export function createAgentModel(
   config: AgentProviderConfig
-): Model<"openai-completions" | "anthropic-messages"> {
+): Model<"openai-completions" | "anthropic-messages" | "google-generative-ai"> {
   if (config.provider === "openai-codex") {
     throw new Error("Codex OAuth requires a dedicated transport before task execution.");
   }
@@ -61,6 +61,21 @@ export function createAgentModel(
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200_000,
       maxTokens: 8_192,
+    };
+  }
+
+  if (config.provider === "google") {
+    return {
+      id: config.model,
+      name: config.model,
+      api: "google-generative-ai",
+      provider: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_048_576,
+      maxTokens: 65_536,
     };
   }
 
