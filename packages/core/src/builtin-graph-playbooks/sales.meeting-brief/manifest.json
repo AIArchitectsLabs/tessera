@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "sales.meeting-brief",
+  "version": "1",
+  "name": "Sales Meeting Brief",
+  "description": "Creates a source-aware customer meeting brief and pauses before preparing a workspace artifact.",
+  "entrypoint": "playbook.ts"
+}

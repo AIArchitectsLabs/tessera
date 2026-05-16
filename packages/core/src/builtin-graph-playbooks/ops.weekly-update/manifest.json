@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "ops.weekly-update",
+  "version": "1",
+  "name": "Weekly Update",
+  "description": "Prepare and stage a weekly status update with one approval checkpoint.",
+  "entrypoint": "playbook.ts"
+}

@@ -80,6 +80,28 @@ function describePlaywrightLaunchError(error: unknown): BrowserRuntimeUnavailabl
   );
 }
 
+function isBrowserRuntimeFailureError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Protocol error") ||
+    message.includes("Target page, context or browser has been closed") ||
+    message.includes("Browser has been closed") ||
+    message.includes("browser has been closed") ||
+    message.includes("Connection closed")
+  );
+}
+
+function describePlaywrightRuntimeError(error: unknown): Error {
+  if (!isBrowserRuntimeFailureError(error)) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return new BrowserRuntimeUnavailableError(
+    `Browser runtime became unavailable while executing an action. Install Playwright Chromium for local browser tests or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH for packaged runtime. ${message}`
+  );
+}
+
 export function resolveBrowserRuntimeConfigFromEnv(
   env: BrowserRuntimeEnv = process.env
 ): Pick<PlaywrightBrowserExecutorOptions, "browsersPath" | "executablePath"> {
@@ -340,19 +362,23 @@ export function createPlaywrightBrowserExecutor(
         throw new Error(`Browser action ${input.action} requires supervised mode.`);
       }
 
-      switch (input.action) {
-        case "open":
-          return open(input);
-        case "see":
-          return see(input);
-        case "snap":
-          return snap(input);
-        case "back":
-          return back(input);
-        case "reload":
-          return reload(input);
-        case "close":
-          return close(input);
+      try {
+        switch (input.action) {
+          case "open":
+            return await open(input);
+          case "see":
+            return await see(input);
+          case "snap":
+            return await snap(input);
+          case "back":
+            return await back(input);
+          case "reload":
+            return await reload(input);
+          case "close":
+            return await close(input);
+        }
+      } catch (error) {
+        throw describePlaywrightRuntimeError(error);
       }
       throw new Error(`Unsupported browser action: ${input.action}`);
     },

@@ -69,6 +69,7 @@ import {
   TodoOperationSchema,
   type WorkflowCapabilityInventory,
   type WorkflowDefinition,
+  type WorkflowOutputDeclaration,
   WorkflowResumeRequestSchema,
   type WorkflowRunAssignmentPlan,
   WorkflowRunAssignmentPlanSchema,
@@ -116,6 +117,7 @@ import {
   findCliCommand,
   hashPlaybookSourceFiles,
   installGraphPlaybookPackage,
+  loadBuiltInGraphPlaybookPackages,
   optionalCapabilityDefinitionsFromEnv,
   parsePinnedCompiledGraph,
   playbookGraphExecutionContextDriftReason,
@@ -348,6 +350,18 @@ interface GraphPlaybookRegistryState {
 
 const installedGraphPlaybookRegistryState: GraphPlaybookRegistryState = { entries: [] };
 
+export interface BuiltInGraphPlaybookRegistryEntry extends GraphPlaybookRegistryEntry {
+  kind: "built-in";
+  compiled: CompiledPlaybookGraph;
+  sourceFiles: Record<string, string>;
+}
+
+interface BuiltInGraphPlaybookRegistryState {
+  entries: BuiltInGraphPlaybookRegistryEntry[];
+}
+
+const builtInGraphPlaybookRegistryState: BuiltInGraphPlaybookRegistryState = { entries: [] };
+
 export async function refreshInstalledGraphPlaybookRegistry(
   options: {
     installRoot?: string;
@@ -368,6 +382,46 @@ void refreshInstalledGraphPlaybookRegistry().catch((error) => {
   console.warn(
     JSON.stringify({
       type: "tessera.graph_playbook_registry.startup_failed",
+      message: error instanceof Error ? error.message : String(error),
+    })
+  );
+});
+
+export async function refreshBuiltInGraphPlaybookRegistry(
+  options: {
+    state?: BuiltInGraphPlaybookRegistryState;
+    compiledAt?: string;
+  } = {}
+): Promise<BuiltInGraphPlaybookRegistryEntry[]> {
+  const state = options.state ?? builtInGraphPlaybookRegistryState;
+  const loaded = await loadBuiltInGraphPlaybookPackages({
+    compilerVersion: `tessera-core-${CORE_VERSION}`,
+    scriptSdkVersion: `tessera-plugin-sdk-${CORE_VERSION}`,
+    ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
+  });
+  const entries = await Promise.all(
+    loaded.map(async (entry) => {
+      const packageFiles = await readPlaybookGraphPackage(entry.root);
+      return {
+        kind: "built-in" as const,
+        id: entry.compiled.graph.id,
+        version: entry.compiled.graph.version,
+        name: entry.compiled.graph.name,
+        graphHash: entry.compiled.metadata.graphHash,
+        installedRoot: entry.root,
+        compiled: entry.compiled,
+        sourceFiles: packageFiles.sourceFiles,
+      };
+    })
+  );
+  state.entries = entries.sort((left, right) => left.id.localeCompare(right.id));
+  return state.entries;
+}
+
+void refreshBuiltInGraphPlaybookRegistry().catch((error) => {
+  console.warn(
+    JSON.stringify({
+      type: "tessera.builtin_graph_playbook_registry.startup_failed",
       message: error instanceof Error ? error.message : String(error),
     })
   );
@@ -498,6 +552,77 @@ function playbookSummary(definition: WorkflowDefinition): PlaybookSummary {
     stepCount: definition.steps.length,
     phases,
   });
+}
+
+function graphMetadataArray<T>(metadata: Record<string, unknown> | undefined, key: string): T[] {
+  const value = metadata?.[key];
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function graphPlaybookVersion(version: string): number {
+  const parsed = Number.parseInt(version, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function graphPlaybookSummary(entry: BuiltInGraphPlaybookRegistryEntry): PlaybookSummary {
+  const graph = entry.compiled.graph;
+  const metadata = graph.metadata;
+  return PlaybookSummarySchema.parse({
+    id: graph.id,
+    version: graphPlaybookVersion(graph.version),
+    name: graph.name,
+    description: graph.description,
+    category: typeof metadata?.category === "string" ? metadata.category : undefined,
+    businessUseCase:
+      typeof metadata?.businessUseCase === "string" ? metadata.businessUseCase : undefined,
+    requiredCapabilities: graphMetadataArray(metadata, "requiredCapabilities"),
+    optionalCapabilities: graphMetadataArray(metadata, "optionalCapabilities"),
+    outputs: graphMetadataArray<WorkflowOutputDeclaration>(metadata, "outputs"),
+    stepCount: graph.nodes.length,
+    phases: graphMetadataArray<string>(metadata, "phases"),
+  });
+}
+
+function graphPlaybookDetail(entry: BuiltInGraphPlaybookRegistryEntry) {
+  const summary = graphPlaybookSummary(entry);
+  return PlaybookDetailSchema.parse({
+    ...summary,
+    inputs: entry.compiled.graph.inputs,
+    steps: entry.compiled.graph.nodes.map((node) =>
+      node.kind === "agent"
+        ? {
+            id: node.id,
+            kind: "agent" as const,
+            label: node.label,
+            prompt: `file:${node.prompt}`,
+            workspaceRootInput: "workspaceRoot",
+            onSuccess: node.onSuccess,
+            onFailure: node.onFailure,
+          }
+        : {
+            id: node.id,
+            kind: "tool" as const,
+            label: node.label,
+            toolId: "workspace.ping" as const,
+            args: {},
+            onSuccess: node.onSuccess,
+            onFailure: node.onFailure,
+          }
+    ),
+  });
+}
+
+async function builtInGraphPlaybooks(): Promise<BuiltInGraphPlaybookRegistryEntry[]> {
+  if (builtInGraphPlaybookRegistryState.entries.length > 0) {
+    return builtInGraphPlaybookRegistryState.entries;
+  }
+  return refreshBuiltInGraphPlaybookRegistry();
+}
+
+async function builtInGraphPlaybook(
+  playbookId: string
+): Promise<BuiltInGraphPlaybookRegistryEntry | undefined> {
+  return (await builtInGraphPlaybooks()).find((entry) => entry.id === playbookId);
 }
 
 function workflowDefinition(workflowId: string): WorkflowDefinition | undefined {
@@ -2548,7 +2673,7 @@ export function createGraphRunWorker(options: GraphRunWorkerOptions = {}): Graph
   };
 }
 
-async function addHumanReviewEvent(input: {
+async function buildHumanReviewEvent(input: {
   store: GraphRunStore;
   runId: string;
   queueEntry: PlaybookGraphQueueEntry;
@@ -2556,11 +2681,11 @@ async function addHumanReviewEvent(input: {
   decision: "approved" | "denied" | "request_changes";
   payload: Record<string, unknown>;
   createdAt: string;
-}): Promise<void> {
+}): Promise<PlaybookGraphReviewEvent> {
   const artifact = (await input.store.listArtifactVersions(input.runId))
     .filter((version) => version.artifactId === input.artifactId)
     .at(-1);
-  await input.store.addReviewEvent({
+  return {
     schemaVersion: 1,
     reviewEventId: randomUUID(),
     runId: input.runId,
@@ -2571,7 +2696,7 @@ async function addHumanReviewEvent(input: {
     decision: input.decision,
     payload: input.payload,
     createdAt: input.createdAt,
-  });
+  };
 }
 
 async function installedGraphRunSourceFiles(
@@ -2992,17 +3117,24 @@ function graphRunBranchItemForNodePath(
     .sort((left, right) => right.nodePath.length - left.nodePath.length)[0];
 }
 
-async function invalidateGraphRunQueue(input: {
+async function graphRunQueueInvalidation(input: {
   store: GraphRunStore;
   runId: string;
   now: string;
   rootQueueEntryId?: string;
   artifactVersion?: PlaybookGraphArtifactVersion;
-}): Promise<number> {
+}): Promise<{
+  count: number;
+  queueEntries: PlaybookGraphQueueEntry[];
+  branchItems: PlaybookGraphBranchItem[];
+}> {
   const queue = await input.store.getQueue(input.runId);
   const branchItems = await input.store.listBranchItems(input.runId);
   const run = await input.store.getRun(input.runId);
   const artifactVersions = await input.store.listArtifactVersions(input.runId);
+  const invalidationArtifactVersions = input.artifactVersion
+    ? [...artifactVersions, input.artifactVersion]
+    : artifactVersions;
   let nodes: PlaybookGraphNode[] | undefined;
   if (run) {
     try {
@@ -3053,9 +3185,10 @@ async function invalidateGraphRunQueue(input: {
       }
     }
   }
+  const nextBranchItems: PlaybookGraphBranchItem[] = [];
   for (const item of branchItems) {
     if (!invalidatedParallelMapIds.has(item.parentQueueEntryId)) continue;
-    await input.store.upsertBranchItem({
+    nextBranchItems.push({
       ...item,
       status: "skipped",
       updatedAt: input.now,
@@ -3063,20 +3196,25 @@ async function invalidateGraphRunQueue(input: {
   }
 
   let count = 0;
+  const nextQueueEntries: PlaybookGraphQueueEntry[] = [];
   for (const entry of queue) {
     if (!affected.has(entry.queueEntryId)) continue;
     if (staleBranchQueueIds.has(entry.queueEntryId)) {
-      await input.store.updateQueueEntry(skipGraphQueueEntry(entry, input.now));
+      nextQueueEntries.push(skipGraphQueueEntry(entry, input.now));
       count += 1;
       continue;
     }
     const node = nodes ? findGraphRunNode(nodes, entry.nodeId) : undefined;
-    await input.store.updateQueueEntry(
-      requeueGraphQueueEntry(entry, input.now, node ? { node, artifactVersions } : undefined)
+    nextQueueEntries.push(
+      requeueGraphQueueEntry(
+        entry,
+        input.now,
+        node ? { node, artifactVersions: invalidationArtifactVersions } : undefined
+      )
     );
     count += 1;
   }
-  return count;
+  return { count, queueEntries: nextQueueEntries, branchItems: nextBranchItems };
 }
 
 function graphRunHasValidSnapshot(run: PlaybookGraphRunRecord): boolean {
@@ -3147,6 +3285,34 @@ export async function handleGraphRunResume(
           })
         : options.executionContext);
 
+    const mutation: {
+      run?: PlaybookGraphRunRecord;
+      queueEntries: PlaybookGraphQueueEntry[];
+      branchItems: PlaybookGraphBranchItem[];
+      artifactVersions: PlaybookGraphArtifactVersion[];
+      reviewEvents: PlaybookGraphReviewEvent[];
+    } = {
+      queueEntries: [],
+      branchItems: [],
+      artifactVersions: [],
+      reviewEvents: [],
+    };
+    const affectedArtifactIds = new Set<string>();
+    const affectedReviewEventIds = new Set<string>();
+    const affectedQueueEntryIds = new Set<string>();
+    let shouldDrain = false;
+    let drainOptions = graphRunOptionsWithExecutionContext(runtimeOptions, executionContext);
+
+    const addReviewEvent = async (
+      input: Omit<Parameters<typeof buildHumanReviewEvent>[0], "store" | "runId" | "createdAt">
+    ) => {
+      const event = await buildHumanReviewEvent({ store, runId, createdAt: now, ...input });
+      mutation.reviewEvents.push(event);
+      affectedReviewEventIds.add(event.reviewEventId);
+      affectedQueueEntryIds.add(event.queueEntryId);
+      affectedArtifactIds.add(event.artifactId);
+    };
+
     if (parsed.data.decision === "deny") {
       const queue = await store.getQueue(runId);
       const active = parsed.data.queueEntryId
@@ -3156,17 +3322,14 @@ export async function handleGraphRunResume(
       const node = active ? findGraphRunNode(compiled.graph.nodes, active.nodeId) : undefined;
       if (active) {
         if (node?.kind === "humanReview") {
-          await addHumanReviewEvent({
-            store,
-            runId,
+          await addReviewEvent({
             queueEntry: active,
             artifactId: node.artifact,
             decision: "denied",
             payload: parsed.data.payload,
-            createdAt: now,
           });
         }
-        await store.updateQueueEntry({
+        mutation.queueEntries.push({
           ...active,
           status: "failed",
           runtimeId: undefined,
@@ -3177,14 +3340,15 @@ export async function handleGraphRunResume(
           completedAt: now,
           error: "Graph run denied by user",
         });
+        affectedQueueEntryIds.add(active.queueEntryId);
       }
-      await store.updateRun({
+      mutation.run = {
         ...run,
         status: "denied",
         currentQueueEntryId: active?.queueEntryId ?? run.currentQueueEntryId,
         updatedAt: now,
         completedAt: now,
-      });
+      };
     } else if (parsed.data.decision === "approve_context_change") {
       if (executionContext === undefined) {
         return Response.json(
@@ -3198,7 +3362,7 @@ export async function handleGraphRunResume(
           { status: 409 }
         );
       }
-      await store.updateRun({
+      mutation.run = {
         ...run,
         status: "running",
         executionContext: createPlaybookGraphExecutionContextPin(executionContext),
@@ -3207,11 +3371,8 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
         updatedAt: now,
-      });
-      await maybeDrainGraphRun(
-        runId,
-        graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
-      );
+      };
+      shouldDrain = true;
     } else if (
       parsed.data.decision === "approve_repair" ||
       parsed.data.decision === "retry_repair"
@@ -3253,7 +3414,7 @@ export async function handleGraphRunResume(
         });
         repairedPlaybookId = compiled.data.metadata.playbookId;
       }
-      await store.updateRun({
+      mutation.run = {
         ...run,
         playbookId: repairedPlaybookId,
         snapshot: repairedSnapshot,
@@ -3263,11 +3424,8 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
         updatedAt: now,
-      });
-      await maybeDrainGraphRun(
-        runId,
-        graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
-      );
+      };
+      shouldDrain = true;
     } else if (parsed.data.decision === "edit_input") {
       const nextInput = parsed.data.payload.input;
       if (!nextInput || typeof nextInput !== "object" || Array.isArray(nextInput)) {
@@ -3276,8 +3434,13 @@ export async function handleGraphRunResume(
           { status: 400 }
         );
       }
-      const invalidated = await invalidateGraphRunQueue({ store, runId, now });
-      await store.updateRun({
+      const invalidated = await graphRunQueueInvalidation({ store, runId, now });
+      mutation.queueEntries.push(...invalidated.queueEntries);
+      mutation.branchItems.push(...invalidated.branchItems);
+      for (const entry of invalidated.queueEntries) affectedQueueEntryIds.add(entry.queueEntryId);
+      for (const item of invalidated.branchItems)
+        affectedQueueEntryIds.add(item.parentQueueEntryId);
+      mutation.run = {
         ...run,
         status: "running",
         input: { ...run.input, ...(nextInput as Record<string, unknown>) },
@@ -3286,13 +3449,8 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
         updatedAt: now,
-      });
-      if (invalidated > 0) {
-        await maybeDrainGraphRun(
-          runId,
-          graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
-        );
-      }
+      };
+      shouldDrain = invalidated.count > 0;
     } else if (parsed.data.decision === "edit_artifact") {
       const artifactId = parsed.data.payload.artifactId;
       if (typeof artifactId !== "string" || !artifactId.trim()) {
@@ -3322,9 +3480,20 @@ export async function handleGraphRunResume(
         value,
         createdAt: now,
       };
-      await store.addArtifactVersion(version);
-      await invalidateGraphRunQueue({ store, runId, now, artifactVersion: version });
-      await store.updateRun({
+      const invalidated = await graphRunQueueInvalidation({
+        store,
+        runId,
+        now,
+        artifactVersion: version,
+      });
+      mutation.artifactVersions.push(version);
+      mutation.queueEntries.push(...invalidated.queueEntries);
+      mutation.branchItems.push(...invalidated.branchItems);
+      affectedArtifactIds.add(artifactId);
+      for (const entry of invalidated.queueEntries) affectedQueueEntryIds.add(entry.queueEntryId);
+      for (const item of invalidated.branchItems)
+        affectedQueueEntryIds.add(item.parentQueueEntryId);
+      mutation.run = {
         ...run,
         status: "running",
         blockedReason: undefined,
@@ -3332,11 +3501,8 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
         updatedAt: now,
-      });
-      await maybeDrainGraphRun(
-        runId,
-        graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
-      );
+      };
+      shouldDrain = true;
     } else if (parsed.data.decision === "edit_review") {
       const queue = await store.getQueue(runId);
       const target =
@@ -3346,7 +3512,7 @@ export async function handleGraphRunResume(
       if (!target) {
         return Response.json({ error: "No queue entry to attach review edit" }, { status: 409 });
       }
-      await store.addReviewEvent({
+      const reviewEvent: PlaybookGraphReviewEvent = {
         schemaVersion: 1,
         reviewEventId: randomUUID(),
         runId,
@@ -3359,14 +3525,23 @@ export async function handleGraphRunResume(
         decision: "edited",
         payload: parsed.data.payload,
         createdAt: now,
-      });
-      await invalidateGraphRunQueue({
+      };
+      const invalidated = await graphRunQueueInvalidation({
         store,
         runId,
         now,
         rootQueueEntryId: target.queueEntryId,
       });
-      await store.updateRun({
+      mutation.reviewEvents.push(reviewEvent);
+      mutation.queueEntries.push(...invalidated.queueEntries);
+      mutation.branchItems.push(...invalidated.branchItems);
+      affectedReviewEventIds.add(reviewEvent.reviewEventId);
+      affectedQueueEntryIds.add(target.queueEntryId);
+      affectedArtifactIds.add(reviewEvent.artifactId);
+      for (const entry of invalidated.queueEntries) affectedQueueEntryIds.add(entry.queueEntryId);
+      for (const item of invalidated.branchItems)
+        affectedQueueEntryIds.add(item.parentQueueEntryId);
+      mutation.run = {
         ...run,
         status: "running",
         blockedReason: undefined,
@@ -3374,11 +3549,8 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
         updatedAt: now,
-      });
-      await maybeDrainGraphRun(
-        runId,
-        graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
-      );
+      };
+      shouldDrain = true;
     } else if (parsed.data.decision === "retry_interrupted") {
       const queue = await store.getQueue(runId);
       const interrupted = queue.find(
@@ -3389,7 +3561,7 @@ export async function handleGraphRunResume(
       if (!interrupted) {
         return Response.json({ error: "No interrupted queue entry to retry" }, { status: 409 });
       }
-      await store.updateQueueEntry({
+      mutation.queueEntries.push({
         ...interrupted,
         status: "queued",
         runtimeId: undefined,
@@ -3401,17 +3573,16 @@ export async function handleGraphRunResume(
         error: undefined,
         completedAt: undefined,
       });
-      await store.updateRun({ ...run, status: "running", updatedAt: now });
-      await maybeDrainGraphRun(
-        runId,
-        graphRunOptionsWithExecutionContext(
-          graphRunOptionsWithWorkspaceRoot(
-            runtimeOptions,
-            graphRunPayloadWorkspaceRoot(parsed.data.payload)
-          ),
-          executionContext
-        )
+      affectedQueueEntryIds.add(interrupted.queueEntryId);
+      mutation.run = { ...run, status: "running", updatedAt: now };
+      drainOptions = graphRunOptionsWithExecutionContext(
+        graphRunOptionsWithWorkspaceRoot(
+          runtimeOptions,
+          graphRunPayloadWorkspaceRoot(parsed.data.payload)
+        ),
+        executionContext
       );
+      shouldDrain = true;
     } else if (parsed.data.decision === "approve" || parsed.data.decision === "request_changes") {
       const queue = await store.getQueue(runId);
       const blocked = queue.find(
@@ -3425,12 +3596,12 @@ export async function handleGraphRunResume(
       const compiled = parsePinnedCompiledGraph(run.snapshot);
       const node = findGraphRunNode(compiled.graph.nodes, blocked.nodeId);
       if (!node) {
-        await store.updateRun({
+        mutation.run = {
           ...run,
           status: "needs_repair",
           repairReason: `Unknown blocked graph node: ${blocked.nodeId}`,
           updatedAt: now,
-        });
+        };
       } else if (node.kind !== "humanReview") {
         return Response.json(
           { error: `${node.kind} queue entries cannot be approved through human review resume` },
@@ -3442,114 +3613,105 @@ export async function handleGraphRunResume(
           { status: 409 }
         );
       } else {
-        await addHumanReviewEvent({
-          store,
-          runId,
+        await addReviewEvent({
           queueEntry: blocked,
           artifactId: node.artifact,
           decision: parsed.data.decision === "approve" ? "approved" : "request_changes",
           payload: parsed.data.payload,
-          createdAt: now,
         });
       }
-      if (!node || node.kind !== "humanReview") {
-        const detail = await graphRunDetail(runId, store);
-        if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
-        return Response.json(detail);
-      }
-      const target =
-        parsed.data.decision === "approve"
-          ? (node.onApprove ?? node.onSuccess ?? "completed")
-          : node.onRequestChanges;
-      if (!target) {
-        return Response.json(
-          { error: "Blocked human review has no resume target" },
-          { status: 409 }
-        );
-      }
-      const completedQueue = queueSuccessPatch(blocked, now);
-      await store.updateQueueEntry(completedQueue);
-      if (target === "completed") {
-        const branchItem = graphRunBranchItemForNodePath(
-          completedQueue.nodePath,
-          await store.listBranchItems(runId)
-        );
-        if (branchItem) {
-          await store.upsertBranchItem({
-            ...branchItem,
-            status: "completed",
-            updatedAt: now,
-          });
-          await store.updateRun({
-            ...run,
-            status: "running",
-            currentQueueEntryId: undefined,
-            blockedReason: undefined,
-            repairReason: undefined,
-            error: undefined,
-            completedAt: undefined,
-            updatedAt: now,
-          });
-          await maybeDrainGraphRun(
-            runId,
-            graphRunOptionsWithExecutionContext(runtimeOptions, executionContext)
+      if (node?.kind === "humanReview") {
+        const target =
+          parsed.data.decision === "approve"
+            ? (node.onApprove ?? node.onSuccess ?? "completed")
+            : node.onRequestChanges;
+        if (!target) {
+          return Response.json(
+            { error: "Blocked human review has no resume target" },
+            { status: 409 }
           );
-        } else {
-          await store.updateRun({
+        }
+        const completedQueue = queueSuccessPatch(blocked, now);
+        mutation.queueEntries.push(completedQueue);
+        affectedQueueEntryIds.add(completedQueue.queueEntryId);
+        if (target === "completed") {
+          const branchItem = graphRunBranchItemForNodePath(
+            completedQueue.nodePath,
+            await store.listBranchItems(runId)
+          );
+          if (branchItem) {
+            mutation.branchItems.push({
+              ...branchItem,
+              status: "completed",
+              updatedAt: now,
+            });
+            mutation.run = {
+              ...run,
+              status: "running",
+              currentQueueEntryId: undefined,
+              blockedReason: undefined,
+              repairReason: undefined,
+              error: undefined,
+              completedAt: undefined,
+              updatedAt: now,
+            };
+            shouldDrain = true;
+          } else {
+            mutation.run = {
+              ...run,
+              status: "completed",
+              currentQueueEntryId: undefined,
+              blockedReason: undefined,
+              updatedAt: now,
+              completedAt: now,
+            };
+          }
+        } else if (target === "failed" || target === "denied") {
+          mutation.run = {
             ...run,
-            status: "completed",
+            status: target,
             currentQueueEntryId: undefined,
             blockedReason: undefined,
             updatedAt: now,
             completedAt: now,
-          });
-        }
-      } else if (target === "failed" || target === "denied") {
-        await store.updateRun({
-          ...run,
-          status: target,
-          currentQueueEntryId: undefined,
-          blockedReason: undefined,
-          updatedAt: now,
-          completedAt: now,
-        });
-      } else {
-        const next = findGraphRunNode(compiled.graph.nodes, target);
-        if (!next) {
-          await store.updateRun({
-            ...run,
-            status: "needs_repair",
-            repairReason: `Unknown graph resume target: ${target}`,
-            updatedAt: now,
-          });
+          };
         } else {
-          const artifactVersions = await store.listArtifactVersions(run.runId);
-          const nextQueueEntry = createPlaybookGraphQueueEntry({
-            runId: run.runId,
-            node: next,
-            nodePath: childPlaybookGraphNodePath(completedQueue.nodePath, next.id),
-            dependsOn: [completedQueue.queueEntryId],
-            artifactVersions,
-            now,
-          });
-          await store.upsertQueueEntry(nextQueueEntry);
-          await store.updateRun({
-            ...run,
-            status: "running",
-            currentQueueEntryId: nextQueueEntry.queueEntryId,
-            blockedReason: undefined,
-            updatedAt: now,
-          });
-          await maybeDrainGraphRun(
-            runId,
-            graphRunOptionsWithExecutionContext(
+          const next = findGraphRunNode(compiled.graph.nodes, target);
+          if (!next) {
+            mutation.run = {
+              ...run,
+              status: "needs_repair",
+              repairReason: `Unknown graph resume target: ${target}`,
+              updatedAt: now,
+            };
+          } else {
+            const artifactVersions = await store.listArtifactVersions(run.runId);
+            const nextQueueEntry = createPlaybookGraphQueueEntry({
+              runId: run.runId,
+              node: next,
+              nodePath: childPlaybookGraphNodePath(completedQueue.nodePath, next.id),
+              dependsOn: [completedQueue.queueEntryId],
+              artifactVersions,
+              now,
+            });
+            mutation.queueEntries.push(nextQueueEntry);
+            affectedQueueEntryIds.add(nextQueueEntry.queueEntryId);
+            mutation.run = {
+              ...run,
+              status: "running",
+              currentQueueEntryId: nextQueueEntry.queueEntryId,
+              blockedReason: undefined,
+              updatedAt: now,
+            };
+            drainOptions = graphRunOptionsWithExecutionContext(
               graphRunOptionsWithWorkspaceRoot(
                 runtimeOptions,
                 graphRunPayloadWorkspaceRoot(parsed.data.payload)
               ),
               executionContext
-            )
-          );
+            );
+            shouldDrain = true;
+          }
         }
       }
     } else {
@@ -3557,23 +3719,30 @@ export async function handleGraphRunResume(
     }
 
     const redactedPayloadSummary = graphRunPayloadSummary(parsed.data.payload);
-    await store.addOperationRecord(
-      graphRunOperationRecord({
+    await store.applyGraphMutationWithOperationRecord({
+      ...(mutation.run ? { run: mutation.run } : {}),
+      queueEntries: mutation.queueEntries,
+      branchItems: mutation.branchItems,
+      artifactVersions: mutation.artifactVersions,
+      reviewEvents: mutation.reviewEvents,
+      operationRecord: graphRunOperationRecord({
         runId,
         actionSpecId: `${parsed.data.queueEntryId ?? runId}:${parsed.data.decision}`,
         kind: graphRunOperationKind(parsed.data.decision),
         status: "succeeded",
         operatorIntent: parsed.data.decision.replaceAll("_", " "),
-        createdAt: graphRunNow(options),
-        affectedArtifactIds:
-          typeof parsed.data.payload.artifactId === "string"
-            ? [parsed.data.payload.artifactId]
-            : [],
-        affectedQueueEntryIds: parsed.data.queueEntryId ? [parsed.data.queueEntryId] : [],
+        createdAt: now,
+        affectedArtifactIds: Array.from(affectedArtifactIds).sort(),
+        affectedReviewEventIds: Array.from(affectedReviewEventIds).sort(),
+        affectedQueueEntryIds: Array.from(affectedQueueEntryIds).sort(),
         ...(parsed.data.queueEntryId ? { queueEntryId: parsed.data.queueEntryId } : {}),
         ...(redactedPayloadSummary ? { redactedPayloadSummary } : {}),
-      })
-    );
+      }),
+    });
+
+    if (shouldDrain) {
+      await maybeDrainGraphRun(runId, drainOptions);
+    }
 
     const detail = await graphRunDetail(runId, store);
     if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
@@ -3695,32 +3864,27 @@ async function handleWorkflowRunDashboardLayout(req: Request, runId: string): Pr
   return Response.json({ layout: runWithLayout.dashboardLayout ?? null });
 }
 
-function handlePlaybookList(req: Request): Response {
+export async function handlePlaybookList(req: Request): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
+  const builtIns = await builtInGraphPlaybooks();
   return Response.json(
     PlaybookListResultSchema.parse({
-      playbooks: workflowDefinitions().map((definition) => playbookSummary(definition)),
+      playbooks: builtIns.map((entry) => graphPlaybookSummary(entry)),
     })
   );
 }
 
-function handlePlaybookGet(req: Request, playbookId: string): Response {
+export async function handlePlaybookGet(req: Request, playbookId: string): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const definition = workflowDefinition(playbookId);
-  if (!definition) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  return Response.json(
-    PlaybookDetailSchema.parse({
-      ...playbookSummary(definition),
-      inputs: definition.inputs,
-      steps: definition.steps,
-    })
-  );
+  const entry = await builtInGraphPlaybook(playbookId);
+  if (!entry) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  return Response.json(graphPlaybookDetail(entry));
 }
 
 async function handlePlaybookAssignmentPreview(
@@ -3782,15 +3946,13 @@ export function buildPlaybookRunPreference(
   });
 }
 
-async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
+export async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const entry = workflowRegistry.get(playbookId);
-  const definition = entry?.definition;
-  if (!entry || !definition)
-    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  const entry = await builtInGraphPlaybook(playbookId);
+  if (!entry) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
 
   let body: unknown;
   try {
@@ -3799,43 +3961,33 @@ async function handlePlaybookRunCreate(req: Request, playbookId: string): Promis
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const parsed = parsePlaybookRunCreateRequest(body, playbookId);
+  const request =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const input =
+    request.input && typeof request.input === "object" && !Array.isArray(request.input)
+      ? (request.input as Record<string, unknown>)
+      : {};
+  const graphRunBody = {
+    input,
+    compiledGraph: entry.compiled,
+    sourceFiles: entry.sourceFiles,
+    drainDeterministic:
+      typeof request.drainDeterministic === "boolean" ? request.drainDeterministic : true,
+    ...(typeof request.workspaceRoot === "string" ? { workspaceRoot: request.workspaceRoot } : {}),
+    ...(typeof request.agentId === "string" ? { agentId: request.agentId } : {}),
+    ...(request.agentProvider ? { agentProvider: request.agentProvider } : {}),
+    ...(request.credential ? { credential: request.credential } : {}),
+  };
 
-  try {
-    const playbookState = resolvePlaybookExecutionState({
-      definition,
-      capabilityInventory: parsed.capabilityInventory,
-      assignmentPlan: parsed.assignmentPlan,
-    });
-    const executionOptions = buildWorkflowExecutionOptions({
-      assignmentPlan: playbookState.assignmentPlan,
-      capabilityInventory: playbookState.capabilityInventory,
-      ...(parsed.agentProvider ? { agentProvider: parsed.agentProvider } : {}),
-      ...(parsed.credential ? { credential: parsed.credential } : {}),
-    });
-    const result = await runWorkflow({
-      definition,
-      input: parsed.input,
-      cli: {
-        runWorkspaceCli,
-      },
-      ...executionOptions,
-      async onCheckpoint(run) {
-        await saveWorkflowRunWithDashboardLayout(
-          mergePlaybookRunMetadata(run, playbookState),
-          entry
-        );
-      },
-    });
-    const merged = mergePlaybookRunMetadata(result, playbookState);
-    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
-    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
-    ensureWorkflowApprovalInbox(saved);
-    return Response.json(playbookRunDetail(saved));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return Response.json({ error: message }, { status: 500 });
-  }
+  return handleGraphRunCreate(
+    new Request(req.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(graphRunBody),
+    })
+  );
 }
 
 async function handlePlaybookRunPreferenceGet(req: Request, playbookId: string): Promise<Response> {
@@ -3913,37 +4065,28 @@ async function handlePlaybookRunPreferenceSave(
   }
 }
 
-function handlePlaybookRunList(req: Request): Response {
+export async function handlePlaybookRunList(req: Request): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const { searchParams } = new URL(req.url);
-  const status = searchParams.get("status");
   const playbookId = searchParams.get("playbookId") ?? undefined;
-  if (playbookId && !workflowRegistry.has(playbookId)) {
+  if (playbookId && !(await builtInGraphPlaybook(playbookId))) {
     return Response.json({ error: "Unknown playbook id" }, { status: 404 });
   }
-  const parsedStatus = status ? WorkflowRunStatusSchema.safeParse(status) : undefined;
-  if (parsedStatus && !parsedStatus.success) {
-    return Response.json({ error: "Unsupported playbook run status filter" }, { status: 400 });
-  }
 
-  const runs = workflowStore.list({
-    ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
-    ...(playbookId ? { workflowId: playbookId } : {}),
-  });
-  return Response.json({ runs: runs.map((run) => playbookRunDetail(run)) });
+  const graphRunUrl = new URL(req.url);
+  graphRunUrl.pathname = "/graph-runs";
+  return handleGraphRunList(new Request(graphRunUrl.toString(), { method: "GET" }));
 }
 
-function handlePlaybookRunGet(req: Request, runId: string): Response {
+export async function handlePlaybookRunGet(req: Request, runId: string): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const run = workflowStore.get(runId);
-  if (!run) return Response.json({ error: "Unknown playbook run" }, { status: 404 });
-  return Response.json(playbookRunDetail(run));
+  return handleGraphRunGet(req, runId);
 }
 
 function ensureWorkflowApprovalInbox(result: {

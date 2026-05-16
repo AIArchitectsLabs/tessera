@@ -1,0 +1,42 @@
+import { join } from "node:path";
+import type { LoadedGraphPlaybookPackage } from "./playbook-graph-package-loader.js";
+import { loadGraphPlaybookPackage } from "./playbook-graph-package-loader.js";
+
+const BUILTIN_GRAPH_PLAYBOOKS_DIR = join(import.meta.dir, "builtin-graph-playbooks");
+
+export const BUILTIN_GRAPH_PLAYBOOK_ROOTS: Record<string, string> = {
+  "customer.renewal-risk-review": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "customer.renewal-risk-review"),
+  "demo.write-approval": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "demo.write-approval"),
+  "ops.activity-snapshot": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.activity-snapshot"),
+  "operations.weekly-status-digest": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.weekly-status-digest"),
+  "ops.weekly-update": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.weekly-update"),
+  "sales.meeting-brief": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "sales.meeting-brief"),
+};
+
+export async function loadBuiltInGraphPlaybookPackages(options: {
+  compilerVersion: string;
+  scriptSdkVersion: string;
+  compiledAt?: string;
+  roots?: Record<string, string>;
+}): Promise<LoadedGraphPlaybookPackage[]> {
+  const roots = options.roots ?? BUILTIN_GRAPH_PLAYBOOK_ROOTS;
+  const packages = await Promise.all(
+    Object.entries(roots)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(async ([id, root]) => {
+        const loaded = await loadGraphPlaybookPackage({
+          root,
+          compilerVersion: options.compilerVersion,
+          scriptSdkVersion: options.scriptSdkVersion,
+          ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
+        });
+        if (loaded.compiled.graph.id !== id) {
+          throw new Error(
+            `Built-in graph playbook root id mismatch: expected ${id}, got ${loaded.compiled.graph.id}`
+          );
+        }
+        return loaded;
+      })
+  );
+  return packages;
+}

@@ -1811,6 +1811,7 @@ export type PlaybookGraph = {
   version: string;
   name: string;
   description?: string;
+  metadata?: Record<string, unknown>;
   inputs: Record<string, PlaybookGraphInput>;
   artifacts: Record<string, PlaybookGraphArtifact>;
   capabilities: string[];
@@ -1826,6 +1827,7 @@ export const PlaybookGraphSchema = z
     version: z.string().min(1),
     name: z.string().min(1),
     description: z.string().min(1).optional(),
+    metadata: z.record(z.unknown()).optional(),
     inputs: z.record(PlaybookGraphInputSchema).default({}),
     artifacts: z.record(PlaybookGraphArtifactSchema).default({}),
     capabilities: z.array(z.string().min(1)).default([]),

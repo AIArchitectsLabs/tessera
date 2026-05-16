@@ -183,6 +183,10 @@ export {
   type InstalledGraphPlaybookPackage,
 } from "./playbook-graph-package-installer.js";
 export {
+  BUILTIN_GRAPH_PLAYBOOK_ROOTS,
+  loadBuiltInGraphPlaybookPackages,
+} from "./builtin-graph-playbooks.js";
+export {
   createGraphNodeMemoKeyParts,
   createPlaybookGraphExecutionContextPin,
   createPlaybookGraphQueueEntry,

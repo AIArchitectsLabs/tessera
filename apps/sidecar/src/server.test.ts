@@ -9,6 +9,7 @@ import {
   type WorkflowRunResult,
 } from "@tessera/contracts";
 import {
+  type GraphRunStore,
   compilePlaybookGraph,
   createOptionalCapabilityManager,
   createPlaybookGraphCache,
@@ -56,6 +57,8 @@ let handleGraphRunGitMilestonePreview:
 let handleGraphRunGitMilestoneCommit:
   | typeof import("./server.js").handleGraphRunGitMilestoneCommit
   | undefined;
+let handlePlaybookGet: typeof import("./server.js").handlePlaybookGet | undefined;
+let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefined;
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
@@ -95,6 +98,8 @@ beforeAll(async () => {
     handleGraphRunReviewSurface = serverModule.handleGraphRunReviewSurface;
     handleGraphRunGitMilestonePreview = serverModule.handleGraphRunGitMilestonePreview;
     handleGraphRunGitMilestoneCommit = serverModule.handleGraphRunGitMilestoneCommit;
+    handlePlaybookGet = serverModule.handlePlaybookGet;
+    handlePlaybookList = serverModule.handlePlaybookList;
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
@@ -797,6 +802,141 @@ describe("graph run endpoints", () => {
         rm(dirname(dbPath), { recursive: true, force: true }),
         rm(workspaceRoot, { recursive: true, force: true }),
       ]);
+    }
+  });
+
+  test("records failed Git milestone operations when commit fails", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunGitMilestoneCommit).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const gitMilestoneService = {
+      preview: mock(async () => ({
+        schemaVersion: 1 as const,
+        available: true,
+        workspaceRoot,
+        gitRoot: workspaceRoot,
+        branch: "main",
+        changedFiles: [{ path: "out/draft.json", status: "M", allowed: true }],
+        proposedMessage: "Record graph run milestone",
+        dirtyPolicy: "allow_selected_paths" as const,
+        unsupportedFeatures: ["push"],
+      })),
+      commit: mock(async () => {
+        throw new Error("commit rejected");
+      }),
+    };
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as { run: { runId: string } };
+
+      const commitResponse = await handleGraphRunGitMilestoneCommit?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/git-milestone`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            actionSpecId: `${created.run.runId}:git_milestone`,
+            workspaceRoot,
+            affectedPaths: ["out/draft.json"],
+            message: "Record graph run milestone",
+          }),
+        }),
+        created.run.runId,
+        { store, gitMilestoneService }
+      );
+
+      expect(commitResponse?.status).toBe(409);
+      const records = await store.listOperationRecords(created.run.runId);
+      expect(records.map((record) => record.status)).toEqual(["started", "failed"]);
+      expect(records[1]).toMatchObject({
+        kind: "git_milestone",
+        failureReason: "commit rejected",
+      });
+      expect(records[1]?.operationAttemptId).toBe(records[0]?.operationAttemptId);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("rolls back local resume mutations when operation ledger transaction fails", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testReviewCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { title: "Needs review" };
+          },
+        }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const reviewEntry = created.queue.find((entry) => entry.nodeId === "review");
+      expect(created.run.status).toBe("blocked");
+      expect(reviewEntry).toBeDefined();
+      if (!reviewEntry) throw new Error("missing review queue entry");
+
+      const failOperationLedger = async () => {
+        throw new Error("operation ledger unavailable");
+      };
+      const failingStore: GraphRunStore = {
+        ...store,
+        addOperationRecord: failOperationLedger,
+        applyGraphMutationWithOperationRecord: failOperationLedger,
+      };
+      const response = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: reviewEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store: failingStore }
+      );
+
+      expect(response?.status).toBe(500);
+      expect((await store.getRun(created.run.runId))?.status).toBe("blocked");
+      expect(
+        (await store.getQueue(created.run.runId)).find(
+          (entry) => entry.queueEntryId === reviewEntry.queueEntryId
+        )?.status
+      ).toBe("blocked");
+      expect(await store.listReviewEvents(created.run.runId)).toEqual([]);
+      expect(await store.listOperationRecords(created.run.runId)).toEqual([]);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
 
@@ -2945,6 +3085,54 @@ describe("graph run endpoints", () => {
       workflowStore.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
     }
+  });
+});
+
+describe("built-in graph playbook projection", () => {
+  test("lists built-in playbooks from graph packages with stable metadata", async () => {
+    const response = await handlePlaybookList?.(new Request("http://localhost/playbooks"));
+    expect(response?.status).toBe(200);
+    const body = (await response?.json()) as { playbooks: Array<Record<string, unknown>> };
+
+    expect(body.playbooks.map((playbook) => playbook.id)).toEqual([
+      "customer.renewal-risk-review",
+      "demo.write-approval",
+      "operations.weekly-status-digest",
+      "ops.activity-snapshot",
+      "ops.weekly-update",
+      "sales.meeting-brief",
+    ]);
+    expect(
+      body.playbooks.find((playbook) => playbook.id === "ops.activity-snapshot")
+    ).toMatchObject({
+      name: "Activity Snapshot",
+      category: "operations",
+      outputs: [
+        { kind: "dashboard", label: "Activity dashboard", layout: "layouts/dashboard.json" },
+      ],
+    });
+  });
+
+  test("returns graph-derived input details for a built-in playbook", async () => {
+    const response = await handlePlaybookGet?.(
+      new Request("http://localhost/playbooks/sales.meeting-brief"),
+      "sales.meeting-brief"
+    );
+    expect(response?.status).toBe(200);
+    const detail = (await response?.json()) as Record<string, unknown>;
+
+    expect(detail).toMatchObject({
+      id: "sales.meeting-brief",
+      name: "Sales Meeting Brief",
+      category: "sales",
+    });
+    expect(Object.keys(detail.inputs as Record<string, unknown>)).toContain("company");
+    expect(detail.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "draftBrief", kind: "agent" }),
+        expect.objectContaining({ id: "approveBrief", kind: "tool" }),
+      ])
+    );
   });
 });
 

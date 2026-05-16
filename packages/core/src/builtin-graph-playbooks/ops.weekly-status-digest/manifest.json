@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "operations.weekly-status-digest",
+  "version": "1",
+  "name": "Weekly Status Digest",
+  "description": "Creates a concise weekly operating digest with progress, risks, decisions, and follow-ups.",
+  "entrypoint": "playbook.ts"
+}

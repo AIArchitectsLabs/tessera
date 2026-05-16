@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "ops.activity-snapshot",
+  "version": "1",
+  "name": "Activity Snapshot",
+  "description": "Refreshable dashboard of recent workspace activity.",
+  "entrypoint": "playbook.ts"
+}

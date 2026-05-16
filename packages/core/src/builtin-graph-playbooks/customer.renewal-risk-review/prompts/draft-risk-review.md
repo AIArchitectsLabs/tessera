@@ -1,0 +1,1 @@
+Create a renewal risk brief for {{inputs.account}}, owned by {{inputs.owner}}, with renewal date {{inputs.renewalDate}}. Objective: {{inputs.objective}}. Continue when selected sources are unavailable. Include health assumptions, risk signals, expansion signals, stakeholder gaps, blockers, recommended save plan actions, used sources, skipped sources, and source gaps.
