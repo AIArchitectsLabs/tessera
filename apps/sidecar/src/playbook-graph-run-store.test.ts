@@ -1,0 +1,638 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type {
+  CompiledPlaybookGraph,
+  PlaybookGraphArtifactVersion,
+  PlaybookGraphBranchItem,
+  PlaybookGraphNodeMemo,
+  PlaybookGraphQueueEntry,
+  PlaybookGraphRunRecord,
+} from "@tessera/contracts";
+import { PlaybookGraphRunRecordSchema } from "@tessera/contracts";
+import {
+  compilePlaybookGraph,
+  createPlaybookGraphRun,
+  createPlaybookGraphSnapshot,
+} from "@tessera/core";
+import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
+
+const tempDirs: string[] = [];
+const now = "2026-05-15T00:00:00.000Z";
+const later = "2026-05-15T00:00:01.000Z";
+
+function tempDbPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "tessera-graph-run-store-"));
+  tempDirs.push(dir);
+  return join(dir, "graph-runs.sqlite");
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function compiledGraph(): CompiledPlaybookGraph {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.seo-blog",
+      version: "0.1.0",
+      name: "SEO Blog Article",
+      artifacts: {
+        plan: { schema: "schemas/plan.schema.json" },
+      },
+      start: "plan",
+      nodes: [
+        {
+          id: "plan",
+          kind: "script",
+          run: "scripts/plan.ts",
+          inputs: {},
+          outputArtifact: "plan",
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: { "playbook.ts": "export default graph;\n" },
+    compilerVersion: "test-compiler",
+    scriptSdkVersion: "test-sdk",
+    compiledAt: now,
+  });
+}
+
+async function createRunAndQueue(dbPath = tempDbPath()): Promise<{
+  dbPath: string;
+  run: PlaybookGraphRunRecord;
+  queueEntry: PlaybookGraphQueueEntry;
+}> {
+  const store = createPlaybookGraphRunStore(dbPath);
+  const run = await createPlaybookGraphRun({
+    compiledGraph: compiledGraph(),
+    store,
+    runId: "run-1",
+    now,
+  });
+  const queueEntry = (await store.getQueue(run.runId))[0];
+  store.close();
+  if (!queueEntry) throw new Error("Missing queue entry");
+  return { dbPath, run, queueEntry };
+}
+
+describe("createPlaybookGraphRunStore", () => {
+  test("persists graph runs and queue entries across store instances", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+
+    const store = createPlaybookGraphRunStore(dbPath);
+    expect((await store.getRun(run.runId))?.snapshot.snapshotHash).toBe(run.snapshot.snapshotHash);
+    expect((await store.getQueue(run.runId)).map((entry) => entry.nodePath)).toEqual(["plan"]);
+    store.close();
+  });
+
+  test("atomically creates runs with the initial queue entry", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const graph = compiledGraph();
+    const run = PlaybookGraphRunRecordSchema.parse({
+      schemaVersion: 1,
+      runId: "run-invalid-initial-queue",
+      playbookId: graph.graph.id,
+      status: "queued",
+      input: {},
+      snapshot: createPlaybookGraphSnapshot({ compiledGraph: graph }),
+      startedAt: now,
+      updatedAt: now,
+    });
+    const invalidQueueEntry = {
+      schemaVersion: 1,
+      queueEntryId: "queue-invalid",
+      runId: run.runId,
+      nodeId: "plan",
+      nodePath: "../plan",
+      nodeKind: "script",
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    } as unknown as PlaybookGraphQueueEntry;
+
+    await expect(
+      store.createRunWithQueue({ run, queueEntries: [invalidQueueEntry] })
+    ).rejects.toThrow(/node paths/);
+    expect(await store.getRun(run.runId)).toBeUndefined();
+    expect(await store.getQueue(run.runId)).toEqual([]);
+    store.close();
+  });
+
+  test("persists graph run materialization context across store instances", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph(),
+      store,
+      runId: "run-1",
+      now,
+      materialization: {
+        schemaVersion: 1,
+        kind: "workspace",
+        workspaceRoot: "/tmp/tessera-workspace",
+      },
+    });
+    store.close();
+
+    const reopened = createPlaybookGraphRunStore(dbPath);
+    expect((await reopened.getRun(run.runId))?.materialization).toEqual({
+      schemaVersion: 1,
+      kind: "workspace",
+      workspaceRoot: "/tmp/tessera-workspace",
+    });
+    reopened.close();
+  });
+
+  test("reports needs_repair when the pinned snapshot hash no longer verifies", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph(),
+      store,
+      runId: "run-1",
+      now,
+    });
+
+    await store.updateRun({
+      ...run,
+      snapshot: { ...run.snapshot, snapshotJson: '{"tampered":true}' },
+    });
+
+    expect((await store.getRun(run.runId))?.status).toBe("needs_repair");
+    expect((await store.listRuns({ status: "needs_repair" })).map((item) => item.runId)).toEqual([
+      run.runId,
+    ]);
+    store.close();
+  });
+
+  test("atomically claims one dependency-satisfied queued entry", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const first = createPlaybookGraphRunStore(dbPath);
+    const second = createPlaybookGraphRunStore(dbPath);
+
+    const claimed = await first.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: later,
+      now,
+    });
+    const loser = await second.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-2",
+      leaseId: "lease-2",
+      leaseExpiresAt: later,
+      now,
+    });
+
+    expect(claimed?.status).toBe("running");
+    expect(claimed?.runtimeId).toBe("runtime-1");
+    expect(loser).toBeUndefined();
+    first.close();
+    second.close();
+  });
+
+  test("does not claim entries until dependencies and consumed artifact versions exist", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph(),
+      store,
+      runId: "run-1",
+      now,
+    });
+    const base = (await store.getQueue(run.runId))[0];
+    if (!base) throw new Error("Missing queue entry");
+    await store.updateQueueEntry({ ...base, status: "succeeded", updatedAt: now });
+    await store.upsertQueueEntry({
+      ...base,
+      queueEntryId: "queue-dependent",
+      nodeId: "dependent",
+      nodePath: "dependent",
+      status: "queued",
+      dependsOn: [base.queueEntryId],
+      consumesArtifacts: [
+        { artifactId: "plan", versionId: "artifact-version-1", contentHash: "sha256:plan" },
+      ],
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    expect(
+      await store.claimNextQueuedEntry({
+        runId: run.runId,
+        runtimeId: "runtime-1",
+        leaseId: "lease-1",
+        leaseExpiresAt: later,
+        now,
+      })
+    ).toBeUndefined();
+
+    await store.addArtifactVersion({
+      schemaVersion: 1,
+      runId: run.runId,
+      artifactId: "plan",
+      versionId: "artifact-version-1",
+      producerQueueEntryId: base.queueEntryId,
+      nodePath: "plan",
+      contentHash: "sha256:plan",
+      value: { ok: true },
+      createdAt: later,
+    });
+
+    expect(
+      (
+        await store.claimNextQueuedEntry({
+          runId: run.runId,
+          runtimeId: "runtime-1",
+          leaseId: "lease-1",
+          leaseExpiresAt: later,
+          now,
+        })
+      )?.queueEntryId
+    ).toBe("queue-dependent");
+    store.close();
+  });
+
+  test("renews and releases leases only for the matching runtime claim", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: later,
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+
+    expect(
+      await store.renewQueueLease({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        runtimeId: "runtime-2",
+        leaseId: "lease-1",
+        leaseExpiresAt: "2026-05-15T00:00:05.000Z",
+        now: later,
+      })
+    ).toBe(false);
+    expect(
+      await store.renewQueueLease({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        runtimeId: "runtime-1",
+        leaseId: "lease-1",
+        leaseExpiresAt: "2026-05-15T00:00:05.000Z",
+        now: later,
+      })
+    ).toBe(true);
+    expect(
+      await store.releaseQueueLease({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        runtimeId: "runtime-2",
+        leaseId: "lease-1",
+        now: later,
+      })
+    ).toBe(false);
+    expect(
+      await store.releaseQueueLease({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        runtimeId: "runtime-1",
+        leaseId: "lease-1",
+        now: later,
+      })
+    ).toBe(true);
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("queued");
+    store.close();
+  });
+
+  test("marks stale running leases interrupted without stealing unexpired claims", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-old",
+      leaseId: "lease-old",
+      leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      now,
+    });
+
+    expect(
+      await store.markStaleQueueLeasesInterrupted({
+        runId: run.runId,
+        runtimeId: "runtime-new",
+        now: "2026-05-15T00:00:00.500Z",
+        interruptedAt: "2026-05-15T00:00:00.500Z",
+      })
+    ).toBe(0);
+    expect(
+      await store.markStaleQueueLeasesInterrupted({
+        runId: run.runId,
+        runtimeId: "runtime-new",
+        now: "2026-05-15T00:00:02.000Z",
+        interruptedAt: "2026-05-15T00:00:02.000Z",
+      })
+    ).toBe(1);
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("interrupted");
+    store.close();
+  });
+
+  test("checkpointNodeSuccess commits queue, run, artifacts, and memo together", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: "2026-05-15T00:00:05.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+    const completedEntry: PlaybookGraphQueueEntry = {
+      ...claimed,
+      status: "succeeded",
+      nodeMemoKey: "sha256:memo",
+      updatedAt: later,
+      completedAt: later,
+    };
+    const artifact: PlaybookGraphArtifactVersion = {
+      schemaVersion: 1,
+      runId: run.runId,
+      artifactId: "plan",
+      versionId: "artifact-version-1",
+      producerQueueEntryId: claimed.queueEntryId,
+      nodePath: "plan",
+      contentHash: "sha256:plan",
+      value: { ok: true },
+      createdAt: later,
+    };
+    const memo: PlaybookGraphNodeMemo = {
+      schemaVersion: 1,
+      runId: run.runId,
+      nodeMemoKey: "sha256:memo",
+      queueEntryId: claimed.queueEntryId,
+      nodePath: "plan",
+      status: "succeeded",
+      memoKeyParts: {
+        schemaVersion: 1,
+        runId: run.runId,
+        snapshotHash: run.snapshot.snapshotHash,
+        graphHash: run.snapshot.graphHash,
+        nodePath: "plan",
+        nodeSpecHash: "sha256:node",
+        executionContextHash: "sha256:context",
+        inputSnapshotHash: "sha256:input",
+      },
+      artifactRefs: [
+        {
+          artifactId: artifact.artifactId,
+          versionId: artifact.versionId,
+          contentHash: artifact.contentHash,
+        },
+      ],
+      createdAt: later,
+    };
+
+    await store.checkpointNodeSuccess({
+      run: { ...run, status: "completed", updatedAt: later, completedAt: later },
+      queueEntry: completedEntry,
+      memo,
+      artifactVersions: [artifact],
+    });
+
+    expect((await store.getRun(run.runId))?.status).toBe("completed");
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("succeeded");
+    expect((await store.getQueue(run.runId))[0]?.runtimeId).toBeUndefined();
+    expect(await store.getArtifactVersion(run.runId, "plan", "artifact-version-1")).toEqual(
+      artifact
+    );
+    expect(await store.getMemo(run.runId, "sha256:memo")).toEqual(memo);
+    store.close();
+  });
+
+  test("checkpointNodeSuccess persists branch items atomically with queue progress", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: "2026-05-15T00:00:05.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+    const branchItem: PlaybookGraphBranchItem = {
+      schemaVersion: 1,
+      runId: run.runId,
+      parentQueueEntryId: claimed.queueEntryId,
+      branchItemId: `${claimed.queueEntryId}:item:0`,
+      nodePath: "plan:item:0",
+      index: 0,
+      itemHash: "sha256:item",
+      value: { title: "First" },
+      status: "queued",
+      createdAt: later,
+      updatedAt: later,
+    };
+
+    await store.checkpointNodeSuccess({
+      run: { ...run, status: "running", updatedAt: later },
+      queueEntry: {
+        ...claimed,
+        status: "succeeded",
+        updatedAt: later,
+        completedAt: later,
+      },
+      branchItems: [branchItem],
+    });
+    store.close();
+
+    const reopened = createPlaybookGraphRunStore(dbPath);
+    expect(await reopened.listBranchItems(run.runId)).toEqual([branchItem]);
+    expect((await reopened.getQueue(run.runId))[0]?.status).toBe("succeeded");
+    reopened.close();
+  });
+
+  test("keeps artifact versions and memo entries immutable", async () => {
+    const { dbPath, run, queueEntry } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const artifact: PlaybookGraphArtifactVersion = {
+      schemaVersion: 1,
+      runId: run.runId,
+      artifactId: "plan",
+      versionId: "artifact-version-1",
+      producerQueueEntryId: queueEntry.queueEntryId,
+      nodePath: "plan",
+      contentHash: "sha256:plan",
+      value: { ok: true },
+      createdAt: later,
+    };
+    const memo: PlaybookGraphNodeMemo = {
+      schemaVersion: 1,
+      runId: run.runId,
+      nodeMemoKey: "sha256:memo",
+      queueEntryId: queueEntry.queueEntryId,
+      nodePath: "plan",
+      status: "succeeded",
+      memoKeyParts: {
+        schemaVersion: 1,
+        runId: run.runId,
+        snapshotHash: run.snapshot.snapshotHash,
+        graphHash: run.snapshot.graphHash,
+        nodePath: "plan",
+        nodeSpecHash: "sha256:node",
+        executionContextHash: "sha256:context",
+        inputSnapshotHash: "sha256:input",
+      },
+      artifactRefs: [],
+      createdAt: later,
+    };
+
+    await store.addArtifactVersion(artifact);
+    await store.putMemo(memo);
+
+    await expect(
+      store.addArtifactVersion({
+        ...artifact,
+        contentHash: "sha256:other",
+        value: { ok: false },
+      })
+    ).rejects.toThrow(/different durable payload/);
+    await expect(
+      store.putMemo({
+        ...memo,
+        outputPreview: "changed",
+      })
+    ).rejects.toThrow(/different durable payload/);
+    expect(await store.getArtifactVersion(run.runId, "plan", "artifact-version-1")).toEqual(
+      artifact
+    );
+    expect(await store.getMemo(run.runId, "sha256:memo")).toEqual(memo);
+    store.close();
+  });
+
+  test("checkpointNodeSuccess rejects stale claims without writing memo or artifacts", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: "2026-05-15T00:00:00.500Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+
+    await expect(
+      store.checkpointNodeSuccess({
+        run: { ...run, status: "completed", updatedAt: later, completedAt: later },
+        queueEntry: {
+          ...claimed,
+          status: "succeeded",
+          updatedAt: later,
+          completedAt: later,
+        },
+        artifactVersions: [
+          {
+            schemaVersion: 1,
+            runId: run.runId,
+            artifactId: "plan",
+            versionId: "artifact-version-1",
+            producerQueueEntryId: claimed.queueEntryId,
+            nodePath: "plan",
+            contentHash: "sha256:plan",
+            value: { ok: true },
+            createdAt: later,
+          },
+        ],
+      })
+    ).rejects.toThrow(/lease expired/);
+    expect(await store.listArtifactVersions(run.runId)).toEqual([]);
+    expect((await store.getRun(run.runId))?.status).toBe("queued");
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("running");
+    store.close();
+  });
+
+  test("checkpointNodeFailure rejects stale claims without failing the run", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: "2026-05-15T00:00:00.500Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+
+    await expect(
+      store.checkpointNodeFailure({
+        run: {
+          ...run,
+          status: "failed",
+          error: "stale failure",
+          updatedAt: later,
+          completedAt: later,
+        },
+        queueEntry: {
+          ...claimed,
+          status: "failed",
+          error: "stale failure",
+          updatedAt: later,
+          completedAt: later,
+        },
+      })
+    ).rejects.toThrow(/lease expired/);
+    expect((await store.getRun(run.runId))?.status).toBe("queued");
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("running");
+    expect((await store.getQueue(run.runId))[0]?.error).toBeUndefined();
+    store.close();
+  });
+
+  test("checkpointNodeFailure commits failed state and clears the lease for active claims", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-1",
+      leaseExpiresAt: "2026-05-15T00:00:02.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+
+    await store.checkpointNodeFailure({
+      run: {
+        ...run,
+        status: "failed",
+        error: "script failed",
+        updatedAt: later,
+        completedAt: later,
+      },
+      queueEntry: {
+        ...claimed,
+        status: "failed",
+        error: "script failed",
+        updatedAt: later,
+        completedAt: later,
+      },
+    });
+
+    const failed = (await store.getQueue(run.runId))[0];
+    expect((await store.getRun(run.runId))?.status).toBe("failed");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe("script failed");
+    expect(failed?.runtimeId).toBeUndefined();
+    expect(failed?.leaseId).toBeUndefined();
+    store.close();
+  });
+});

@@ -548,7 +548,7 @@ Use Lore trailers.
 
 ## Follow-Up Plans
 
-- **Plan C:** Durable graph runtime execution, run records, graph snapshot pinning, node queue, memo keys, and restart-safe resume.
-- **Plan D:** Human review surfaces, artifact revision history, workspace materialization, and git-aware milestone commits.
-- **Plan E:** TypeScript script runner sandbox for script nodes.
+- **Plan C:** Durable graph runtime execution, run records, graph snapshot pinning, node queue, memo keys, and restart-safe resume. Landed in `docs/superpowers/plans/2026-05-16-playbook-graph-durable-runtime.md`.
+- **Plan D:** Rich human review surfaces, artifact revision history UX, branch drill-down, and git-aware milestone commits.
+- **Plan E:** Stronger OS/process sandbox hardening for graph script nodes before untrusted third-party packages.
 - **Plan F:** SEO/GEO blog reference playbook repository.

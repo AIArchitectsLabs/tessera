@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   PlaybookGraphArtifactPathRefSchema,
   PlaybookGraphCompileMetadataSchema,
+  PlaybookGraphNodeIdSchema,
   PlaybookGraphSchema,
   PlaybookGraphSourceRefSchema,
 } from "./index.js";
@@ -161,6 +162,19 @@ describe("PlaybookGraphSchema", () => {
     expect(graph.inputs).toEqual({});
     expect(graph.artifacts).toEqual({});
     expect(graph.capabilities).toEqual([]);
+  });
+
+  test("rejects node ids that cannot be used as durable queue path segments", () => {
+    for (const id of ["unsafe id", "unsafe/id", ".", ".."]) {
+      expect(() => PlaybookGraphNodeIdSchema.parse(id)).toThrow(/Graph node ids/);
+      expect(() =>
+        PlaybookGraphSchema.parse({
+          ...validGraph,
+          start: id,
+          nodes: [{ id, kind: "join", inputs: [], onSuccess: "completed" }],
+        })
+      ).toThrow(/Graph node ids/);
+    }
   });
 
   test("defaults artifact path refs to the graph root", () => {

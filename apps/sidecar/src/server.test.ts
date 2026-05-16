@@ -1,14 +1,21 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   WorkflowCapabilityInventorySchema,
   WorkflowRunAssignmentPlanSchema,
+  type WorkflowRunResult,
 } from "@tessera/contracts";
-import { createOptionalCapabilityManager } from "@tessera/core";
+import {
+  compilePlaybookGraph,
+  createOptionalCapabilityManager,
+  createPlaybookGraphCache,
+} from "@tessera/core";
 import type { GraphPlaybookRegistryEntry } from "./graph-playbook-registry.js";
+import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
+import { createWorkflowCheckpointStore } from "./workflow-store.js";
 
 type RecordedFetchCall = {
   url: string;
@@ -17,6 +24,7 @@ type RecordedFetchCall = {
 
 const originalServe = Bun.serve;
 const originalMemoryDisabled = process.env.TESSERA_MEMORY_DISABLED;
+const originalGraphRunWorker = process.env.TESSERA_GRAPH_RUN_WORKER;
 let isPlaybookRunPreferenceAssignmentPlanValidationError:
   | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
   | undefined;
@@ -35,6 +43,12 @@ let handleCapabilityBinaryInstall:
   | typeof import("./server.js").handleCapabilityBinaryInstall
   | undefined;
 let handleGraphPlaybookInstall: typeof import("./server.js").handleGraphPlaybookInstall | undefined;
+let handleGraphRunCreate: typeof import("./server.js").handleGraphRunCreate | undefined;
+let handleGraphRunGet: typeof import("./server.js").handleGraphRunGet | undefined;
+let handleGraphRunList: typeof import("./server.js").handleGraphRunList | undefined;
+let handleGraphRunResume: typeof import("./server.js").handleGraphRunResume | undefined;
+let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
+let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let resolveGoogleWorkspaceCliEnv:
   | typeof import("./server.js").resolveGoogleWorkspaceCliEnv
@@ -50,6 +64,7 @@ beforeAll(async () => {
     stop() {},
   })) as typeof Bun.serve;
   process.env.TESSERA_MEMORY_DISABLED = "1";
+  process.env.TESSERA_GRAPH_RUN_WORKER = "0";
 
   try {
     const serverModule = await import("./server.js");
@@ -64,6 +79,12 @@ beforeAll(async () => {
     handleCapabilityBinary = serverModule.handleCapabilityBinary;
     handleCapabilityBinaryInstall = serverModule.handleCapabilityBinaryInstall;
     handleGraphPlaybookInstall = serverModule.handleGraphPlaybookInstall;
+    handleGraphRunCreate = serverModule.handleGraphRunCreate;
+    handleGraphRunGet = serverModule.handleGraphRunGet;
+    handleGraphRunList = serverModule.handleGraphRunList;
+    handleGraphRunResume = serverModule.handleGraphRunResume;
+    createGraphRunWorker = serverModule.createGraphRunWorker;
+    drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     isPlaybookRunPreferenceAssignmentPlanValidationError =
       serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
@@ -137,6 +158,43 @@ export default definePlaybook(${JSON.stringify(graph, null, 2)});
   await writeGraphPackageFile(root, "schemas/scorecard.schema.json", '{"type":"object"}\n');
 }
 
+function testCompiledGraphSourceFiles(scriptSource = "export default function score() {}\n") {
+  return {
+    "playbook.ts": "export default graph;\n",
+    "scripts/score.ts": scriptSource,
+  };
+}
+
+function testCompiledGraph(scriptSource?: string) {
+  const sourceFiles = testCompiledGraphSourceFiles(scriptSource);
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.seo-blog",
+      version: "0.1.0",
+      name: "SEO Blog Article",
+      artifacts: {
+        scorecard: { schema: "schemas/scorecard.schema.json" },
+      },
+      start: "score",
+      nodes: [
+        {
+          id: "score",
+          kind: "script",
+          run: "scripts/score.ts",
+          inputs: {},
+          outputArtifact: "scorecard",
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles,
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
 async function expectGraphPackageInstallBadRequest(sourceRoot: string): Promise<string> {
   const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
   const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
@@ -169,6 +227,11 @@ afterAll(() => {
     process.env.TESSERA_MEMORY_DISABLED = undefined;
   } else {
     process.env.TESSERA_MEMORY_DISABLED = originalMemoryDisabled;
+  }
+  if (originalGraphRunWorker === undefined) {
+    process.env.TESSERA_GRAPH_RUN_WORKER = undefined;
+  } else {
+    process.env.TESSERA_GRAPH_RUN_WORKER = originalGraphRunWorker;
   }
 });
 
@@ -356,6 +419,2235 @@ export default definePlaybook({
           rm(root, { recursive: true, force: true })
         )
       );
+    }
+  });
+});
+
+describe("graph run endpoints", () => {
+  test("creates and reads a graph run from an inline compiled graph", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunGet).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            input: { topic: "durable runtime" },
+          }),
+        }),
+        { store }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string; snapshot: { snapshotJson: string } };
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("queued");
+      expect(detail.queue).toHaveLength(1);
+      expect(detail.queue[0]).toMatchObject({ nodeId: "score", status: "queued" });
+
+      const getResponse = await handleGraphRunGet?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}`),
+        detail.run.runId,
+        { store }
+      );
+      expect(getResponse?.status).toBe(200);
+      const getPayload = (await getResponse?.json()) as typeof detail;
+      expect(getPayload.run.snapshot.snapshotJson).toBe(detail.run.snapshot.snapshotJson);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("pins graph agent auth fingerprints without persisting raw credentials", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            agentProvider: {
+              provider: "openai",
+              model: "gpt-test",
+              apiKeyEnv: "OPENAI_API_KEY",
+            },
+            credential: { apiKey: "sk-raw-secret" },
+          }),
+        }),
+        { store }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: {
+          executionContext?: {
+            fingerprints: Record<string, unknown>;
+          };
+        };
+      };
+      const fingerprints = detail.run.executionContext?.fingerprints;
+      expect(fingerprints?.provider).toBe("openai");
+      expect(fingerprints?.model).toBe("gpt-test");
+      expect(JSON.stringify(fingerprints)).not.toContain("sk-raw-secret");
+      expect(JSON.stringify(fingerprints)).toContain("runtimeAuthDigest");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("creates graph runs from cache references and pins snapshots for later reads", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-graph-cache-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const compiled = testCompiledGraph();
+      await createPlaybookGraphCache(cacheRoot).save(compiled);
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: compiled.metadata.playbookId,
+            graphHash: compiled.metadata.graphHash,
+          }),
+        }),
+        { store, cacheRoot }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { runId: string; snapshot: { graphHash: string; snapshotJson: string } };
+      };
+      expect(detail.run.snapshot.graphHash).toBe(compiled.metadata.graphHash);
+
+      await rm(cacheRoot, { recursive: true, force: true });
+      expect((await store.getRun(detail.run.runId))?.snapshot.snapshotJson).toBe(
+        detail.run.snapshot.snapshotJson
+      );
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(cacheRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("drains deterministic nodes when an adapter is explicitly provided", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter({ node }) {
+            return { nodeId: node.id, ok: true };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ status: string }>;
+        artifacts: unknown[];
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue[0]?.status).toBe("succeeded");
+      expect(detail.artifacts).toHaveLength(1);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drains installed graph scripts from pinned source bundles without an injected adapter", async () => {
+    expect(handleGraphPlaybookInstall).toBeDefined();
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const sourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state = { entries: [] as GraphPlaybookRegistryEntry[] };
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      await writeGraphPackage(
+        sourceRoot,
+        "0.2.0",
+        `export default ({ input }) => ({
+  topic: input.topic,
+  runtime: "pinned-source",
+});
+`
+      );
+      const installResponse = await handleGraphPlaybookInstall?.(
+        new Request("http://localhost/graph-playbooks/install", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(installResponse?.status).toBe(200);
+      const installed = (await installResponse?.json()) as {
+        id: string;
+        graphHash: string;
+      };
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: installed.id,
+            graphHash: installed.graphHash,
+            input: { topic: "production scripts" },
+            drainDeterministic: true,
+          }),
+        }),
+        { store, installRoot, cacheRoot, graphPlaybookRegistryState: state }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; snapshot: { sourceFiles?: Record<string, string> } };
+        queue: Array<{ status: string }>;
+        artifacts: Array<{ value: unknown }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue[0]?.status).toBe("succeeded");
+      expect(detail.artifacts[0]?.value).toEqual({
+        topic: "production scripts",
+        runtime: "pinned-source",
+      });
+      expect(detail.run.snapshot.sourceFiles?.["scripts/score.ts"]).toContain("pinned-source");
+    } finally {
+      store.close();
+      await Promise.all(
+        [dirname(dbPath), sourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("background graph worker executes script nodes from persisted source after restart", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    let store = createPlaybookGraphRunStore(dbPath);
+    const sourceFiles = testCompiledGraphSourceFiles(
+      "export default ({ input }) => ({ topic: input.topic, resumed: true });\n"
+    );
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(
+              "export default ({ input }) => ({ topic: input.topic, resumed: true });\n"
+            ),
+            sourceFiles,
+            input: { topic: "restart" },
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string; status: string } };
+      expect(created.run.status).toBe("queued");
+      store.close();
+
+      store = createPlaybookGraphRunStore(dbPath);
+      const result = await drainGraphRunWorkQueue({ store });
+
+      expect(result).toMatchObject({ inspected: 1, drained: 1, errors: [] });
+      expect((await store.getRun(created.run.runId))?.status).toBe("completed");
+      expect((await store.listArtifactVersions(created.run.runId))[0]?.value).toEqual({
+        topic: "restart",
+        resumed: true,
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drains artifactWrite nodes when an adapter is explicitly provided", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.materialize",
+        version: "0.1.0",
+        name: "Materialize Graph",
+        artifacts: { draft: { schema: "schemas/draft.schema.json" } },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "script",
+            run: "scripts/draft.ts",
+            inputs: {},
+            outputArtifact: "draft",
+            onSuccess: "writeDraft",
+          },
+          {
+            id: "writeDraft",
+            kind: "artifactWrite",
+            artifact: "draft",
+            path: "out/draft.json",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const writes: Array<{ path: string; value: unknown }> = [];
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { title: "Draft" };
+          },
+          artifactWriteAdapter({ node, value }) {
+            writes.push({ path: node.path, value });
+            return { path: node.path };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+        artifacts: unknown[];
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue.find((entry) => entry.nodeId === "writeDraft")?.status).toBe("succeeded");
+      expect(detail.artifacts).toHaveLength(1);
+      expect(writes).toEqual([{ path: "out/draft.json", value: { title: "Draft" } }]);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drains agent and tool nodes through sidecar graph adapters", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-tool",
+        version: "0.1.0",
+        name: "Agent Tool Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+          ticket: { schema: "schemas/ticket.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft" },
+            onSuccess: "ticket",
+          },
+          {
+            id: "ticket",
+            kind: "tool",
+            capability: "integration.crm.write",
+            args: {},
+            outputArtifact: "ticket",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft the customer follow-up.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const calls: string[] = [];
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { account: "Acme" },
+          }),
+        }),
+        {
+          store,
+          agentAdapter({ input, prompt }) {
+            calls.push("agent");
+            return { status: "completed", text: prompt, account: input.account };
+          },
+          toolAdapter({ node, artifacts }) {
+            calls.push("tool");
+            return { capability: node.capability, draft: artifacts.draft };
+          },
+          toolPolicies: {
+            "integration.crm.write": {
+              capability: "integration.crm.write",
+              idempotent: false,
+              sideEffect: "external",
+            },
+          },
+          toolCapabilities: ["integration.crm.write"],
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+        artifacts: Array<{ artifactId: string; value: unknown }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(calls).toEqual(["agent", "tool"]);
+      expect(detail.queue.map((entry) => [entry.nodeId, entry.status])).toEqual([
+        ["draft", "succeeded"],
+        ["ticket", "succeeded"],
+      ]);
+      expect(detail.artifacts.map((artifact) => artifact.artifactId)).toEqual(["draft", "ticket"]);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drains read-only graph tool nodes through the default shell registry", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.shell-tool",
+        version: "0.1.0",
+        name: "Shell Tool Graph",
+        artifacts: {
+          search: { schema: "schemas/search.schema.json" },
+        },
+        start: "search",
+        nodes: [
+          {
+            id: "search",
+            kind: "tool",
+            capability: "web.search",
+            args: { query: "tessera" },
+            outputArtifact: "search",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const cliCalls: string[][] = [];
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli(args) {
+            cliCalls.push(args);
+            return {
+              stdout: JSON.stringify({
+                query: "tessera",
+                provider: "brave-search",
+                capability: "search",
+                cached: false,
+                latencyMs: 12,
+                results: [
+                  {
+                    title: "Tessera",
+                    url: "https://example.com",
+                    snippet: "Agent workspace",
+                    source: "example.com",
+                    position: 1,
+                  },
+                ],
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 12,
+            };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+        artifacts: Array<{ artifactId: string; value: unknown }>;
+      };
+      expect(cliCalls).toEqual([["web-search", "search", "tessera"]]);
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "search", status: "succeeded" });
+      expect(detail.artifacts[0]?.artifactId).toBe("search");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("blocks write shell subcommands under read-only graph tool capabilities", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.shell-tool-denied",
+        version: "0.1.0",
+        name: "Shell Tool Denied Graph",
+        artifacts: {
+          calendar: { schema: "schemas/calendar.schema.json" },
+        },
+        start: "calendar",
+        nodes: [
+          {
+            id: "calendar",
+            kind: "tool",
+            capability: "integration.calendar.events.read",
+            args: { command: "gcal", subcommand: "delete", args: ["evt-1"] },
+            outputArtifact: "calendar",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    let cliCalls = 0;
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli() {
+            cliCalls += 1;
+            return { stdout: "{}", stderr: "", exitCode: 0, signal: null, durationMs: 1 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; error?: string };
+        queue: Array<{ nodeId: string; status: string; error?: string }>;
+      };
+      expect(cliCalls).toBe(0);
+      expect(detail.run.status).toBe("failed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "calendar", status: "failed" });
+      expect(detail.queue[0]?.error).toContain("cannot execute gcal delete");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drains parallelMap branch work and exposes branch items in graph details", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.parallel-map",
+        version: "0.1.0",
+        name: "Parallel Map Graph",
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          result: { schema: "schemas/result.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/items.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$.rows" },
+            branch: {
+              start: "score",
+              nodes: [
+                {
+                  id: "score",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "result",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "join",
+          },
+          {
+            id: "join",
+            kind: "join",
+            inputs: ["result"],
+            outputArtifact: "result",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, branchItem }) {
+            if (node.id === "items") return { rows: [{ id: "a" }, { id: "b" }] };
+            return { branch: branchItem?.value };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        branchItems: Array<{ status: string; value: unknown }>;
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.branchItems.map((item) => item.status)).toEqual(["completed", "completed"]);
+      expect(detail.branchItems.map((item) => item.value)).toEqual([{ id: "a" }, { id: "b" }]);
+      expect(detail.queue.find((entry) => entry.nodeId === "join")?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves humanReview nodes nested inside parallelMap branches", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.branch-review",
+        version: "0.1.0",
+        name: "Branch Review Graph",
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/items.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            branch: {
+              start: "draft",
+              nodes: [
+                {
+                  id: "draft",
+                  kind: "script",
+                  run: "scripts/draft.ts",
+                  inputs: {},
+                  outputArtifact: "draft",
+                  onSuccess: "review",
+                },
+                {
+                  id: "review",
+                  kind: "humanReview",
+                  artifact: "draft",
+                  actions: ["approve"],
+                  onApprove: "completed",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, branchItem }) {
+            if (node.id === "items") return [{ id: "a" }];
+            return { branch: branchItem?.value };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      expect(created.run.status).toBe("blocked");
+      const reviewEntry = created.queue.find(
+        (entry) => entry.nodeId === "review" && entry.status === "blocked"
+      );
+      expect(reviewEntry).toBeDefined();
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            queueEntryId: reviewEntry?.queueEntryId,
+            decision: "approve",
+            payload: { approvedBy: "test" },
+          }),
+        }),
+        created.run.runId,
+        { store, scriptAdapter() {} }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+        branchItems: Array<{ status: string }>;
+        reviews: Array<{ decision: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.queue.find((entry) => entry.nodeId === "review")?.status).toBe("succeeded");
+      expect(resumed.branchItems.map((item) => item.status)).toEqual(["completed"]);
+      expect(resumed.reviews.map((event) => event.decision)).toEqual(["approved"]);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("materializes artifactWrite nodes inside an explicit workspace root", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.workspace-materialize",
+        version: "0.1.0",
+        name: "Workspace Materialize Graph",
+        artifacts: { draft: { schema: "schemas/draft.schema.json" } },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "script",
+            run: "scripts/draft.ts",
+            inputs: {},
+            outputArtifact: "draft",
+            onSuccess: "writeDraft",
+          },
+          {
+            id: "writeDraft",
+            kind: "artifactWrite",
+            artifact: "draft",
+            path: "out/draft.json",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { title: "Draft", sections: ["intro", "proof"] };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue.find((entry) => entry.nodeId === "writeDraft")?.status).toBe("succeeded");
+      await expect(readFile(join(workspaceRoot, "out/draft.json"), "utf8")).resolves.toBe(
+        `${JSON.stringify({ title: "Draft", sections: ["intro", "proof"] }, null, 2)}\n`
+      );
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("resumes artifactWrite materialization from persisted workspace context", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const overrideWorkspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.workspace-resume",
+        version: "0.1.0",
+        name: "Workspace Resume Graph",
+        artifacts: { draft: { schema: "schemas/draft.schema.json" } },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "script",
+            run: "scripts/draft.ts",
+            inputs: {},
+            outputArtifact: "draft",
+            onSuccess: "review",
+          },
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "draft",
+            actions: ["approve"],
+            onApprove: "writeDraft",
+          },
+          {
+            id: "writeDraft",
+            kind: "artifactWrite",
+            artifact: "draft",
+            path: "out/resumed-draft.json",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    let store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { title: "Restart-safe draft" };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; status: string; materialization?: { workspaceRoot: string } };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      expect(created.run.status).toBe("blocked");
+      expect(created.run.materialization?.workspaceRoot).toBe(workspaceRoot);
+      const reviewEntryId = created.queue.find((entry) => entry.nodeId === "review")?.queueEntryId;
+      expect(reviewEntryId).toBeDefined();
+      store.close();
+
+      store = createPlaybookGraphRunStore(dbPath);
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            queueEntryId: reviewEntryId,
+            decision: "approve",
+            payload: { workspaceRoot: overrideWorkspaceRoot },
+          }),
+        }),
+        created.run.runId,
+        { store }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.queue.find((entry) => entry.nodeId === "writeDraft")?.status).toBe(
+        "succeeded"
+      );
+      await expect(readFile(join(workspaceRoot, "out/resumed-draft.json"), "utf8")).resolves.toBe(
+        `${JSON.stringify({ title: "Restart-safe draft" }, null, 2)}\n`
+      );
+      await expect(
+        readFile(join(overrideWorkspaceRoot, "out/resumed-draft.json"), "utf8")
+      ).rejects.toThrow();
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+        rm(overrideWorkspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("lists graph runs and denies blocked graph runs without touching legacy workflow paths", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunList).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.review",
+        version: "0.1.0",
+        name: "Review Graph",
+        artifacts: { draft: { schema: "schemas/draft.schema.json" } },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "draft",
+            actions: ["approve", "deny"],
+            onApprove: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+          }),
+        }),
+        { store, scriptAdapter() {} }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("blocked");
+
+      const listResponse = await handleGraphRunList?.(
+        new Request("http://localhost/graph-runs?status=blocked"),
+        { store }
+      );
+      expect(((await listResponse?.json()) as { runs: unknown[] }).runs).toHaveLength(1);
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: detail.run.runId,
+            queueEntryId: detail.queue[0]?.queueEntryId,
+            decision: "deny",
+          }),
+        }),
+        detail.run.runId,
+        { store }
+      );
+      expect(resumeResponse?.status).toBe(200);
+      expect(((await resumeResponse?.json()) as { run: { status: string } }).run.status).toBe(
+        "denied"
+      );
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("request changes revisits review nodes without overwriting prior queue entries", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.review-loop",
+        version: "0.1.0",
+        name: "Review Loop Graph",
+        artifacts: { draft: { schema: "schemas/draft.schema.json" } },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "draft",
+            actions: ["approve", "request_changes"],
+            onApprove: "completed",
+            onRequestChanges: "revise",
+          },
+          {
+            id: "revise",
+            kind: "script",
+            run: "scripts/revise.ts",
+            inputs: { draft: { artifact: "draft" } },
+            outputArtifact: "draft",
+            onSuccess: "review",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        { store, scriptAdapter() {} }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; status: string }>;
+      };
+      const reviewEntryId = detail.queue[0]?.queueEntryId;
+      expect(detail.run.status).toBe("blocked");
+
+      const changeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: detail.run.runId,
+            queueEntryId: reviewEntryId,
+            decision: "request_changes",
+          }),
+        }),
+        detail.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            return { revised: true };
+          },
+        }
+      );
+
+      expect(changeResponse?.status).toBe(200);
+      const changed = (await changeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      expect(changed.run.status).toBe("blocked");
+      expect(changed.queue.map((entry) => entry.queueEntryId)).toEqual([
+        `${detail.run.runId}:review`,
+        `${detail.run.runId}:review/revise`,
+        `${detail.run.runId}:review/revise/review`,
+      ]);
+      expect(changed.queue.filter((entry) => entry.nodeId === "review")).toHaveLength(2);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("does not approve unsupported blocked graph nodes", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.unsupported",
+        version: "0.1.0",
+        name: "Unsupported Graph",
+        start: "agent",
+        nodes: [
+          {
+            id: "agent",
+            kind: "agent",
+            prompt: "prompts/write.md",
+            inputs: {},
+            tools: [],
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        { store, scriptAdapter() {} }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("blocked");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: detail.run.runId,
+            queueEntryId: detail.queue[0]?.queueEntryId,
+            decision: "approve",
+          }),
+        }),
+        detail.run.runId,
+        { store }
+      );
+
+      expect(approveResponse?.status).toBe(409);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("blocked");
+      expect((await store.getQueue(detail.run.runId))[0]?.status).toBe("blocked");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker drains queued runs outside request handlers", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(createGraphRunWorker).toBeDefined();
+    if (!createGraphRunWorker) throw new Error("createGraphRunWorker was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string };
+      };
+      expect(detail.run.status).toBe("queued");
+
+      let calls = 0;
+      const worker = createGraphRunWorker({
+        store,
+        scriptAdapter({ node }) {
+          calls += 1;
+          return { nodeId: node.id, ok: true };
+        },
+      });
+      const result = await worker.tick();
+
+      expect(result).toMatchObject({ inspected: 1, drained: 1, errors: [] });
+      expect(calls).toBe(1);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("completed");
+      expect((await store.getQueue(detail.run.runId))[0]?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("blocks graph work on execution context drift and resumes after approval", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const originalContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-a:fingerprint",
+      budget: { maxUsd: 5 },
+    };
+    const changedContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-b:fingerprint",
+      budget: { maxUsd: 5 },
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            executionContext: originalContext,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; status: string; executionContext?: { fingerprints: unknown } };
+      };
+      expect(created.run.status).toBe("queued");
+      expect(created.run.executionContext?.fingerprints).toEqual(originalContext);
+
+      let calls = 0;
+      const workerResult = await drainGraphRunWorkQueue({
+        store,
+        executionContext: changedContext,
+        scriptAdapter() {
+          calls += 1;
+          return { ok: true };
+        },
+      });
+
+      expect(workerResult).toMatchObject({ inspected: 1, drained: 1, errors: [] });
+      expect(calls).toBe(0);
+      expect((await store.getRun(created.run.runId))?.status).toBe("blocked");
+      expect((await store.getRun(created.run.runId))?.blockedReason).toContain(
+        "execution context changed"
+      );
+      expect((await store.getQueue(created.run.runId))[0]?.status).toBe("queued");
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_context_change",
+            executionContext: changedContext,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            calls += 1;
+            return { ok: true };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string; executionContext?: { fingerprints: Record<string, unknown> } };
+        queue: Array<{ status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.run.executionContext?.fingerprints.account).toBe("acct-b:fingerprint");
+      expect(resumed.queue[0]?.status).toBe("succeeded");
+      expect(calls).toBe(1);
+
+      const redundantResumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_context_change",
+            executionContext: changedContext,
+          }),
+        }),
+        created.run.runId,
+        { store }
+      );
+      expect(redundantResumeResponse?.status).toBe(409);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves repair continuations without changing the pinned snapshot", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; snapshot: { snapshotHash: string } };
+      };
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "needs_repair",
+        repairReason: "operator verified snapshot repair",
+        updatedAt: "2026-05-15T00:00:01.000Z",
+      });
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_repair",
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            return { repaired: true };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string; snapshot: { snapshotHash: string } };
+        queue: Array<{ status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.run.snapshot.snapshotHash).toBe(created.run.snapshot.snapshotHash);
+      expect(resumed.queue[0]?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("repair approval must replace corrupted pinned snapshots before resume", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = testCompiledGraph();
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; snapshot: { snapshotHash: string } };
+      };
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        snapshot: { ...run.snapshot, snapshotJson: '{"tampered":true}' },
+        status: "needs_repair",
+        repairReason: "Pinned graph snapshot hash mismatch",
+        updatedAt: "2026-05-15T00:00:01.000Z",
+      });
+
+      const missingRepairResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_repair",
+          }),
+        }),
+        created.run.runId,
+        { store }
+      );
+      expect(missingRepairResponse?.status).toBe(409);
+
+      const repairedResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_repair",
+            payload: { compiledGraph: compiled },
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            return { repaired: true };
+          },
+        }
+      );
+
+      expect(repairedResponse?.status).toBe(200);
+      const repaired = (await repairedResponse?.json()) as {
+        run: { status: string; snapshot: { snapshotHash: string; snapshotJson: string } };
+      };
+      expect(repaired.run.status).toBe("completed");
+      expect(repaired.run.snapshot.snapshotHash).toBe(created.run.snapshot.snapshotHash);
+      expect(repaired.run.snapshot.snapshotJson).not.toBe('{"tampered":true}');
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("repair approval rejects replacement graphs that need queue migration", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = testCompiledGraph();
+    const replacement = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.seo-blog",
+        version: "0.1.0",
+        name: "SEO Blog Article",
+        artifacts: {
+          scorecard: { schema: "schemas/scorecard.schema.json" },
+        },
+        start: "other",
+        nodes: [
+          {
+            id: "other",
+            kind: "script",
+            run: "scripts/other.ts",
+            inputs: {},
+            outputArtifact: "scorecard",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "scripts/other.ts": "export default function other() {}\n",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "needs_repair",
+        repairReason: "operator requested replacement",
+        updatedAt: "2026-05-15T00:00:01.000Z",
+      });
+
+      const repairResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_repair",
+            payload: { compiledGraph: replacement },
+          }),
+        }),
+        created.run.runId,
+        { store }
+      );
+
+      expect(repairResponse?.status).toBe(409);
+      const repairError = (await repairResponse?.json()) as { error: string };
+      expect(repairError.error).toContain("graphHash");
+      expect((await store.getRun(created.run.runId))?.status).toBe("needs_repair");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("artifact edits invalidate only downstream consumers", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.edit-artifact",
+        version: "0.1.0",
+        name: "Edit Artifact Graph",
+        artifacts: {
+          plan: { schema: "schemas/plan.schema.json" },
+          score: { schema: "schemas/score.schema.json" },
+        },
+        start: "plan",
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "score",
+          },
+          {
+            id: "score",
+            kind: "script",
+            run: "scripts/score.ts",
+            inputs: { plan: { artifact: "plan" } },
+            outputArtifact: "score",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const calls: string[] = [];
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, artifacts }) {
+            calls.push(node.id);
+            if (node.id === "plan") return { title: "Original" };
+            return { scoredFrom: artifacts.plan };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      expect(calls).toEqual(["plan", "score"]);
+      calls.length = 0;
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_artifact",
+            payload: { artifactId: "plan", value: { title: "Edited" } },
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter({ node, artifacts }) {
+            calls.push(node.id);
+            if (node.id === "plan") return { title: "Unexpected rerun" };
+            return { scoredFrom: artifacts.plan };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const edited = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{
+          nodeId: string;
+          status: string;
+          consumesArtifacts: Array<{ artifactId: string; versionId: string }>;
+        }>;
+        artifacts: Array<{ artifactId: string; value: unknown }>;
+      };
+      expect(edited.run.status).toBe("completed");
+      expect(calls).toEqual(["score"]);
+      expect(edited.queue.find((entry) => entry.nodeId === "plan")?.status).toBe("succeeded");
+      const scoreEntry = edited.queue.find((entry) => entry.nodeId === "score");
+      expect(scoreEntry?.status).toBe("succeeded");
+      expect(scoreEntry?.consumesArtifacts[0]?.artifactId).toBe("plan");
+      expect(edited.artifacts.filter((artifact) => artifact.artifactId === "plan")).toHaveLength(2);
+      expect(edited.artifacts.at(-1)?.value).toEqual({ scoredFrom: { title: "Edited" } });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("input edits refresh downstream artifact refs after upstream reruns", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.edit-input",
+        version: "0.1.0",
+        name: "Edit Input Graph",
+        artifacts: {
+          plan: { schema: "schemas/plan.schema.json" },
+          score: { schema: "schemas/score.schema.json" },
+        },
+        start: "plan",
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "score",
+          },
+          {
+            id: "score",
+            kind: "script",
+            run: "scripts/score.ts",
+            inputs: { plan: { artifact: "plan" } },
+            outputArtifact: "score",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { title: "Original" },
+          }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, input, artifacts }) {
+            if (node.id === "plan") return { title: input.title };
+            return { scoredFrom: artifacts.plan };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_input",
+            payload: { input: { title: "Edited" } },
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter({ node, input, artifacts }) {
+            if (node.id === "plan") return { title: input.title };
+            return { scoredFrom: artifacts.plan };
+          },
+        }
+      );
+
+      const edited = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{
+          nodeId: string;
+          consumesArtifacts: Array<{ artifactId: string; versionId: string }>;
+        }>;
+        artifacts: Array<{ artifactId: string; versionId: string; value: unknown }>;
+      };
+      if (resumeResponse?.status !== 200) {
+        throw new Error(JSON.stringify(edited));
+      }
+      const planVersions = edited.artifacts.filter((artifact) => artifact.artifactId === "plan");
+      const latestPlan = planVersions.at(-1);
+      const scoreEntry = edited.queue.find((entry) => entry.nodeId === "score");
+      expect(edited.run.status).toBe("completed");
+      expect(planVersions).toHaveLength(2);
+      expect(latestPlan?.value).toEqual({ title: "Edited" });
+      expect(scoreEntry?.consumesArtifacts[0]?.versionId).toBe(latestPlan?.versionId);
+      expect(edited.artifacts.at(-1)?.value).toEqual({ scoredFrom: { title: "Edited" } });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("input edits skip stale parallelMap branch rows before refan-out", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.edit-map",
+        version: "0.1.0",
+        name: "Edit Map Graph",
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          result: { schema: "schemas/result.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/items.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$.rows" },
+            branch: {
+              start: "score",
+              nodes: [
+                {
+                  id: "score",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "result",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "join",
+          },
+          {
+            id: "join",
+            kind: "join",
+            inputs: ["result"],
+            outputArtifact: "result",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { rows: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+          }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, input, branchItem }) {
+            if (node.id === "items") return { rows: input.rows };
+            return { branch: branchItem?.value };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_input",
+            payload: { input: { rows: [{ id: "a2" }] } },
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter({ node, input, branchItem }) {
+            if (node.id === "items") return { rows: input.rows };
+            return { branch: branchItem?.value };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const edited = (await resumeResponse?.json()) as {
+        run: { status: string };
+        branchItems: Array<{ index: number; status: string; value?: unknown }>;
+        queue: Array<{ nodePath: string; status: string }>;
+      };
+      expect(edited.run.status).toBe("completed");
+      expect(
+        edited.branchItems
+          .sort((left, right) => left.index - right.index)
+          .map((item) => [item.index, item.status, item.value])
+      ).toEqual([
+        [0, "completed", { id: "a2" }],
+        [1, "skipped", { id: "b" }],
+        [2, "skipped", { id: "c" }],
+      ]);
+      expect(
+        edited.queue
+          .filter(
+            (entry) => entry.nodePath.includes("/item:1/") || entry.nodePath.includes("/item:2/")
+          )
+          .map((entry) => entry.status)
+      ).toEqual(["skipped", "skipped"]);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("input edits to empty parallelMap items do not expose stale branch artifacts", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.edit-map-empty",
+        version: "0.1.0",
+        name: "Edit Empty Map Graph",
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          result: { schema: "schemas/result.schema.json" },
+          final: { schema: "schemas/final.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/items.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$.rows" },
+            branch: {
+              start: "score",
+              nodes: [
+                {
+                  id: "score",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "result",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "after",
+          },
+          {
+            id: "after",
+            kind: "script",
+            run: "scripts/after.ts",
+            inputs: { result: { artifact: "result" } },
+            outputArtifact: "final",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { rows: [{ id: "a" }] },
+          }),
+        }),
+        {
+          store,
+          scriptAdapter({ node, input, artifacts, branchItem }) {
+            if (node.id === "items") return { rows: input.rows };
+            if (node.id === "score") return { branch: branchItem?.value };
+            return { seen: artifacts.result ?? null };
+          },
+        }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_input",
+            payload: { input: { rows: [] } },
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter({ node, input, artifacts, branchItem }) {
+            if (node.id === "items") return { rows: input.rows };
+            if (node.id === "score") return { branch: branchItem?.value };
+            return { seen: artifacts.result ?? null };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const edited = (await resumeResponse?.json()) as {
+        run: { status: string };
+        artifacts: Array<{ artifactId: string; value: unknown }>;
+        branchItems: Array<{ status: string }>;
+      };
+      expect(edited.run.status).toBe("completed");
+      expect(edited.branchItems.map((item) => item.status)).toEqual(["skipped"]);
+      expect(
+        edited.artifacts.filter((artifact) => artifact.artifactId === "final").at(-1)?.value
+      ).toEqual({ seen: null });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker blocks drift before recovering stale leases", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const originalContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-a:fingerprint",
+    };
+    const changedContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-b:fingerprint",
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            executionContext: originalContext,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: created.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      if (!claimed) throw new Error("Missing claimed queue entry");
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+      let calls = 0;
+
+      const workerResult = await drainGraphRunWorkQueue({
+        store,
+        now: () => "2026-05-15T00:00:02.000Z",
+        executionContext: changedContext,
+        scriptAdapter() {
+          calls += 1;
+          return { ok: true };
+        },
+      });
+
+      expect(workerResult).toMatchObject({
+        inspected: 1,
+        recovered: 0,
+        requeued: 0,
+        blocked: 1,
+        drained: 1,
+        errors: [],
+      });
+      expect(calls).toBe(0);
+      expect((await store.getRun(created.run.runId))?.status).toBe("blocked");
+      const queueEntry = (await store.getQueue(created.run.runId))[0];
+      expect(queueEntry?.status).toBe("running");
+      expect(queueEntry?.runtimeId).toBe("old-runtime");
+      expect(queueEntry?.leaseId).toBe("old-lease");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker deduplicates overlapping ticks", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(createGraphRunWorker).toBeDefined();
+    if (!createGraphRunWorker) throw new Error("createGraphRunWorker was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      let calls = 0;
+      const worker = createGraphRunWorker({
+        store,
+        async scriptAdapter() {
+          calls += 1;
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          return { ok: true };
+        },
+      });
+
+      const [first, second] = await Promise.all([worker.tick(), worker.tick()]);
+
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({ inspected: 1, drained: 1, errors: [] });
+      expect(calls).toBe(1);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("completed");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker recovers stale rerunnable leases before draining", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      expect(claimed?.status).toBe("running");
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+      let tick = 2;
+      let calls = 0;
+
+      const result = await drainGraphRunWorkQueue({
+        store,
+        runtimeId: "worker-runtime",
+        now: () => `2026-05-15T00:00:${String(tick++).padStart(2, "0")}.000Z`,
+        scriptAdapter() {
+          calls += 1;
+          return { ok: true };
+        },
+      });
+
+      expect(result).toMatchObject({
+        inspected: 1,
+        recovered: 1,
+        requeued: 1,
+        drained: 1,
+        errors: [],
+      });
+      expect(calls).toBe(1);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("completed");
+      expect((await store.getQueue(detail.run.runId))[0]?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("graph worker leaves legacy workflow rows unchanged in the shared database", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const graphStore = createPlaybookGraphRunStore(dbPath);
+    const workflowStore = createWorkflowCheckpointStore(dbPath);
+    const legacyRun: WorkflowRunResult = {
+      runId: "legacy-run-1",
+      workflowId: "demo.write-approval",
+      status: "blocked",
+      currentStepId: "writeProbe",
+      input: { message: "hello" },
+      outputs: { ping: { message: "pong" } },
+      sourceGaps: [],
+      startedAt: "2026-05-15T00:00:00.000Z",
+      updatedAt: "2026-05-15T00:00:00.000Z",
+    };
+    try {
+      workflowStore.save(legacyRun);
+      const before = workflowStore.get(legacyRun.runId);
+      expect(before).toEqual(legacyRun);
+      if (!before) throw new Error("Missing seeded legacy workflow run");
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store: graphStore }
+      );
+      const created = (await response?.json()) as { run: { runId: string } };
+      await drainGraphRunWorkQueue({
+        store: graphStore,
+        scriptAdapter() {
+          return { ok: true };
+        },
+      });
+
+      expect((await graphStore.getRun(created.run.runId))?.status).toBe("completed");
+      expect(workflowStore.get(legacyRun.runId)).toEqual(before);
+      expect(workflowStore.list()).toEqual([before]);
+    } finally {
+      graphStore.close();
+      workflowStore.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
 });

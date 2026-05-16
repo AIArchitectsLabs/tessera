@@ -12,6 +12,8 @@ import type {
   ModelSettingsRead,
   PlaybookAssignmentPreviewResult,
   PlaybookDetail,
+  PlaybookGraphRunDetail,
+  PlaybookGraphRunListResult,
   PlaybookListResult,
   PlaybookRunDetail,
   PlaybookRunPreferenceReadResult,
@@ -52,6 +54,28 @@ const statusClass: Record<PlaybookRunDetail["status"], string> = {
   completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
   denied: "border-zinc-200 bg-zinc-100 text-zinc-600",
   failed: "border-red-200 bg-red-50 text-red-700",
+};
+
+const graphStatusCopy: Record<PlaybookGraphRunDetail["run"]["status"], string> = {
+  queued: "Queued",
+  running: "Running",
+  blocked: "Blocked",
+  interrupted: "Interrupted",
+  completed: "Completed",
+  failed: "Failed",
+  denied: "Denied",
+  needs_repair: "Needs repair",
+};
+
+const graphStatusClass: Record<PlaybookGraphRunDetail["run"]["status"], string> = {
+  queued: "border-zinc-200 bg-zinc-100 text-zinc-600",
+  running: "border-blue-200 bg-blue-50 text-blue-700",
+  blocked: "border-amber-200 bg-amber-50 text-amber-700",
+  interrupted: "border-orange-200 bg-orange-50 text-orange-700",
+  completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  failed: "border-red-200 bg-red-50 text-red-700",
+  denied: "border-zinc-200 bg-zinc-100 text-zinc-600",
+  needs_repair: "border-red-200 bg-red-50 text-red-700",
 };
 
 const ctaCopyMap: Record<string, string> = {
@@ -594,6 +618,133 @@ function RunEventItem({ event }: { event: WorkflowRunEvent }) {
       <div className="text-sm font-medium text-foreground">{event.message}</div>
       <div className="mt-1 text-xs text-muted-foreground">{formatTime(event.createdAt)}</div>
     </div>
+  );
+}
+
+type GraphRunResumeDecision =
+  | "approve"
+  | "deny"
+  | "approve_context_change"
+  | "approve_repair"
+  | "retry_interrupted";
+
+function GraphRuntimeSection({
+  runs,
+  detail,
+  error,
+  onSelect,
+  onResume,
+}: {
+  runs: PlaybookGraphRunDetail["run"][];
+  detail: PlaybookGraphRunDetail | null;
+  error: string | null;
+  onSelect: (runId: string) => void;
+  onResume: (decision: GraphRunResumeDecision) => void;
+}) {
+  const selectedRunId = detail?.run.runId;
+  const blockedDecision = detail?.run.blockedReason?.includes("execution context changed")
+    ? "approve_context_change"
+    : "approve";
+
+  if (runs.length === 0 && !detail && !error) return null;
+
+  return (
+    <Section title="Graph runtime" subtitle="Durable queue, branches, reviews, and artifacts">
+      {error ? (
+        <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {error}
+        </div>
+      ) : null}
+      <div className="space-y-2">
+        {runs.map((run) => (
+          <button
+            key={run.runId}
+            type="button"
+            className={cn(
+              "w-full rounded-md border border-border bg-background px-3 py-2 text-left text-xs hover:border-primary/40",
+              selectedRunId === run.runId ? "border-primary/50" : ""
+            )}
+            onClick={() => onSelect(run.runId)}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-foreground">{run.playbookId}</span>
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-[10px]",
+                  graphStatusClass[run.status]
+                )}
+              >
+                {graphStatusCopy[run.status]}
+              </span>
+            </div>
+            <div className="mt-1 text-muted-foreground">{formatTime(run.updatedAt)}</div>
+          </button>
+        ))}
+      </div>
+
+      {detail ? (
+        <div className="mt-3 space-y-3">
+          {detail.run.blockedReason || detail.run.repairReason || detail.run.error ? (
+            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              {detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error}
+            </div>
+          ) : null}
+
+          {detail.run.status === "blocked" ? (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => onResume(blockedDecision)}>
+                Continue
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => onResume("deny")}>
+                Stop
+              </Button>
+            </div>
+          ) : null}
+          {detail.run.status === "needs_repair" ? (
+            <Button size="sm" onClick={() => onResume("approve_repair")}>
+              Approve repair
+            </Button>
+          ) : null}
+          {detail.run.status === "interrupted" ? (
+            <Button size="sm" onClick={() => onResume("retry_interrupted")}>
+              Retry interrupted work
+            </Button>
+          ) : null}
+
+          <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+            {detail.queue.map((entry) => (
+              <div key={entry.queueEntryId} className="px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">{entry.nodePath}</span>
+                  <span className="text-muted-foreground">{entry.status}</span>
+                </div>
+                <div className="mt-0.5 text-muted-foreground">{entry.nodeKind}</div>
+              </div>
+            ))}
+          </div>
+
+          {detail.branchItems.length > 0 ? (
+            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+              {detail.branchItems.map((item) => (
+                <div key={item.branchItemId} className="px-3 py-2 text-xs">
+                  <div className="font-medium text-foreground">
+                    Branch {item.index + 1} · {item.status}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">{summarizeValue(item.value)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {(detail.artifacts.length > 0 || detail.reviews.length > 0) && (
+            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              {detail.artifacts.length} artifact version{detail.artifacts.length === 1 ? "" : "s"} ·{" "}
+              {detail.reviews.length} review event{detail.reviews.length === 1 ? "" : "s"}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </Section>
   );
 }
 
@@ -1467,10 +1618,20 @@ function GuidedResult({
 function DetailsPanel({
   run,
   playbookDetail,
+  graphRuns,
+  selectedGraphRun,
+  graphRunError,
+  onSelectGraphRun,
+  onResumeGraphRun,
   onClose,
 }: {
   run: PlaybookRunDetail | null;
   playbookDetail: PlaybookDetail | null;
+  graphRuns: PlaybookGraphRunDetail["run"][];
+  selectedGraphRun: PlaybookGraphRunDetail | null;
+  graphRunError: string | null;
+  onSelectGraphRun: (runId: string) => void;
+  onResumeGraphRun: (decision: GraphRunResumeDecision) => void;
   onClose: () => void;
 }) {
   const visibleInputs = useMemo(() => {
@@ -1587,9 +1748,23 @@ function DetailsPanel({
                 </div>
               </Section>
             ) : null}
+
+            <GraphRuntimeSection
+              runs={graphRuns}
+              detail={selectedGraphRun}
+              error={graphRunError}
+              onSelect={onSelectGraphRun}
+              onResume={onResumeGraphRun}
+            />
           </div>
         ) : (
-          <div className="text-sm text-muted-foreground">No run selected.</div>
+          <GraphRuntimeSection
+            runs={graphRuns}
+            detail={selectedGraphRun}
+            error={graphRunError}
+            onSelect={onSelectGraphRun}
+            onResume={onResumeGraphRun}
+          />
         )}
       </div>
     </aside>
@@ -1604,6 +1779,11 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<PlaybookRunDetail | null>(null);
+  const [graphRuns, setGraphRuns] = useState<PlaybookGraphRunDetail["run"][]>([]);
+  const [selectedGraphRunId, setSelectedGraphRunId] = useState<string | null>(null);
+  const [selectedGraphRunDetail, setSelectedGraphRunDetail] =
+    useState<PlaybookGraphRunDetail | null>(null);
+  const [graphRunError, setGraphRunError] = useState<string | null>(null);
   const [dashboardLayout, setDashboardLayout] = useState<DashboardLayout | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettingsRead | null>(null);
   const [integrationSettings, setIntegrationSettings] = useState<IntegrationSettingsRead | null>(
@@ -1630,6 +1810,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const runListRequestRef = useRef(0);
+  const graphRunListRequestRef = useRef(0);
 
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase),
@@ -1845,6 +2026,47 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }, []);
 
+  const loadGraphRuns = useCallback(async (playbookId?: string | null) => {
+    const requestId = ++graphRunListRequestRef.current;
+    setGraphRunError(null);
+    if (!playbookId) {
+      setGraphRuns([]);
+      setSelectedGraphRunId(null);
+      setSelectedGraphRunDetail(null);
+      return;
+    }
+
+    try {
+      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
+        playbookId,
+      });
+      if (requestId !== graphRunListRequestRef.current) return;
+      setGraphRuns(result.runs);
+      setSelectedGraphRunId((current) => {
+        if (current && result.runs.some((run) => run.runId === current)) return current;
+        setSelectedGraphRunDetail(null);
+        return result.runs[0]?.runId ?? null;
+      });
+    } catch (loadError) {
+      if (requestId !== graphRunListRequestRef.current) return;
+      setGraphRuns([]);
+      setSelectedGraphRunDetail(null);
+      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
+    }
+  }, []);
+
+  const loadGraphRunDetail = useCallback(async (runId: string) => {
+    try {
+      const detail = await invoke<PlaybookGraphRunDetail>("graph_run_get", { runId });
+      setSelectedGraphRunDetail(detail);
+      setGraphRuns((current) =>
+        current.map((run) => (run.runId === detail.run.runId ? detail.run : run))
+      );
+    } catch (loadError) {
+      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
+    }
+  }, []);
+
   useEffect(() => {
     void loadPlaybooks();
     void loadSetup();
@@ -1864,12 +2086,24 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }, [loadRuns, selectedPlaybookId]);
 
   useEffect(() => {
+    void loadGraphRuns(selectedPlaybookId);
+  }, [loadGraphRuns, selectedPlaybookId]);
+
+  useEffect(() => {
     if (!selectedRunId) {
       setSelectedRunDetail(null);
       return;
     }
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedGraphRunId) {
+      setSelectedGraphRunDetail(null);
+      return;
+    }
+    void loadGraphRunDetail(selectedGraphRunId);
+  }, [loadGraphRunDetail, selectedGraphRunId]);
 
   useEffect(() => {
     if (!refreshNotice) return;
@@ -1932,19 +2166,26 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     void loadSetup();
     void loadRunHistory();
     void loadRuns(selectedPlaybookId);
+    void loadGraphRuns(selectedPlaybookId);
     if (selectedPlaybookId) {
       void loadPlaybookDetail(selectedPlaybookId);
     }
     if (selectedRunId) {
       void loadRunDetail(selectedRunId);
     }
+    if (selectedGraphRunId) {
+      void loadGraphRunDetail(selectedGraphRunId);
+    }
   }, [
+    loadGraphRunDetail,
+    loadGraphRuns,
     loadPlaybookDetail,
     loadPlaybooks,
     loadRunDetail,
     loadRunHistory,
     loadRuns,
     loadSetup,
+    selectedGraphRunId,
     selectedPlaybookId,
     selectedRunId,
   ]);
@@ -2055,6 +2296,29 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setSelectedRunDetail(run);
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function resumeGraphRun(decision: GraphRunResumeDecision) {
+    if (!selectedGraphRunDetail) return;
+    setRunning(true);
+    setGraphRunError(null);
+    try {
+      const detail = await invoke<PlaybookGraphRunDetail>("graph_run_resume", {
+        runId: selectedGraphRunDetail.run.runId,
+        request: {
+          runId: selectedGraphRunDetail.run.runId,
+          decision,
+        },
+      });
+      setSelectedGraphRunDetail(detail);
+      setGraphRuns((current) =>
+        current.map((run) => (run.runId === detail.run.runId ? detail.run : run))
+      );
+    } catch (runError) {
+      setGraphRunError(runError instanceof Error ? runError.message : String(runError));
     } finally {
       setRunning(false);
     }
@@ -2238,6 +2502,11 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         <DetailsPanel
           run={selectedRun}
           playbookDetail={selectedPlaybookDetail}
+          graphRuns={graphRuns}
+          selectedGraphRun={selectedGraphRunDetail}
+          graphRunError={graphRunError}
+          onSelectGraphRun={setSelectedGraphRunId}
+          onResumeGraphRun={(decision) => void resumeGraphRun(decision)}
           onClose={() => setShowDetails(false)}
         />
       ) : null}

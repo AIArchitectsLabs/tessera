@@ -1805,6 +1805,66 @@ async fn playbook_run_resume(
 }
 
 #[tauri::command]
+async fn graph_run_create(
+    app: AppHandle,
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request = attach_default_workflow_execution(&app, request).await?;
+    let json = state
+        .post("/graph-runs", &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn graph_run_list(
+    state: State<'_, SidecarHandle>,
+    playbook_id: Option<String>,
+    status: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    if let Some(playbook_id) = playbook_id {
+        params.push(format!("playbookId={}", percent_encode(&playbook_id)));
+    }
+    if let Some(status) = status {
+        params.push(format!("status={}", percent_encode(&status)));
+    }
+    let path = if params.is_empty() {
+        "/graph-runs".to_string()
+    } else {
+        format!("/graph-runs?{}", params.join("&"))
+    };
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn graph_run_get(
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!("/graph-runs/{}", percent_encode(&run_id));
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn graph_run_resume(
+    app: AppHandle,
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request = attach_default_workflow_execution(&app, request).await?;
+    let body = request.to_string();
+    let path = format!("/graph-runs/{}/resume", percent_encode(&run_id));
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn inbox_list(
     state: State<'_, SidecarHandle>,
     status: Option<String>,
@@ -2854,6 +2914,10 @@ pub fn run() {
             agent_profile_update,
             agent_profile_delete,
             agent_profile_reset,
+            graph_run_create,
+            graph_run_get,
+            graph_run_list,
+            graph_run_resume,
             inbox_cancel,
             inbox_create,
             inbox_get,
