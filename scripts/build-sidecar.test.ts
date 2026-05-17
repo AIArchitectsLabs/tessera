@@ -20,6 +20,17 @@ afterEach(() => {
 });
 
 describe("build-sidecar", () => {
+  test("keeps sidecar runtime assets in the Tauri resource bundle", async () => {
+    const config = JSON.parse(await readFile("apps/desktop/src-tauri/tauri.conf.json", "utf8")) as {
+      bundle?: { resources?: Record<string, string> };
+    };
+
+    expect(config.bundle?.resources).toMatchObject({
+      "binaries/package.json": "package.json",
+      "binaries/skills": "skills",
+    });
+  });
+
   test("copies curated skills into the packaged binaries directory", async () => {
     const root = tempRoot();
     const binDir = join(root, "apps/desktop/src-tauri/binaries");

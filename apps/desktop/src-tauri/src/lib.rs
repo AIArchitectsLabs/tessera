@@ -283,6 +283,18 @@ fn binaries_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
     }
 }
 
+fn external_bin_path(app: &AppHandle, name: &str) -> anyhow::Result<PathBuf> {
+    if cfg!(debug_assertions) {
+        Ok(binaries_dir(app)?.join(format!("{name}-{TARGET_TRIPLE}{EXE_EXT}")))
+    } else {
+        let executable = std::env::current_exe().context("Could not resolve current executable")?;
+        let executable_dir = executable
+            .parent()
+            .ok_or_else(|| anyhow!("Current executable has no parent directory"))?;
+        Ok(executable_dir.join(format!("{name}{EXE_EXT}")))
+    }
+}
+
 fn bundled_gws_path(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(binaries_dir(app)?.join(format!("gws-{TARGET_TRIPLE}{EXE_EXT}")))
 }
@@ -1082,7 +1094,7 @@ async fn attach_default_workflow_execution(
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let bin_dir = binaries_dir(app.handle()).context("Could not resolve binaries dir")?;
-    let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
+    let cli_path = external_bin_path(app.handle(), "tessera-cli")?;
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -1127,9 +1139,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             curated_skills_dir.to_string_lossy().as_ref(),
         )
         .env("TESSERA_GRAPH_RUN_WORKER", "1")
-        // pi-coding-agent resolves its package dir via dirname(process.execPath) when
-        // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
-        // Point it at binaries/ where package.json is kept alongside the sources.
+        // pi-coding-agent resolves package assets at module init. Point it at the
+        // Tauri binaries/resource dir where packaging keeps package.json.
         .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
 
     for (name, build_value) in optional_capability_env_sources() {
@@ -1300,8 +1311,7 @@ async fn run_workspace_cli_command(
     args: &[&str],
     credential_env: Option<(String, String)>,
 ) -> Result<SpawnResult, String> {
-    let bin_dir = binaries_dir(app).map_err(|error| error.to_string())?;
-    let cli_path = bin_dir.join(format!("tessera-cli-{TARGET_TRIPLE}{EXE_EXT}"));
+    let cli_path = external_bin_path(app, "tessera-cli").map_err(|error| error.to_string())?;
     let app_config_dir = app
         .path()
         .app_config_dir()

@@ -33,7 +33,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/tessera-sidecar", "binaries/tessera-cli"]
+    "externalBin": ["binaries/tessera-sidecar", "binaries/tessera-cli"],
+    "resources": {
+      "binaries/package.json": "package.json",
+      "binaries/skills": "skills"
+    }
   },
   "plugins": {
     "shell": {
