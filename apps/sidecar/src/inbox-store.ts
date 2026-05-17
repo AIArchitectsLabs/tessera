@@ -20,7 +20,6 @@ export interface InboxListFilter {
   type?: InboxMessageType;
   workspaceRoot?: string;
   taskId?: string;
-  workflowRunId?: string;
 }
 
 export interface InboxStore {
@@ -37,7 +36,6 @@ interface InboxMessageRow {
   id: string;
   workspace_root: string | null;
   task_id: string | null;
-  workflow_run_id: string | null;
   turn_id: string | null;
   source: InboxMessage["source"];
   type: InboxMessage["type"];
@@ -87,7 +85,6 @@ function rowToMessage(row: InboxMessageRow, audit: InboxAuditRow[]): InboxMessag
     id: row.id,
     workspaceRoot: row.workspace_root ?? undefined,
     taskId: row.task_id ?? undefined,
-    workflowRunId: row.workflow_run_id ?? undefined,
     turnId: row.turn_id ?? undefined,
     source: row.source,
     type: row.type,
@@ -111,7 +108,6 @@ function matchesFilter(message: InboxMessage, filter: InboxListFilter): boolean 
   if (filter.type && message.type !== filter.type) return false;
   if (filter.workspaceRoot && message.workspaceRoot !== filter.workspaceRoot) return false;
   if (filter.taskId && message.taskId !== filter.taskId) return false;
-  if (filter.workflowRunId && message.workflowRunId !== filter.workflowRunId) return false;
   return true;
 }
 
@@ -124,7 +120,6 @@ export function createInboxStore(dbPath: string): InboxStore {
       id TEXT PRIMARY KEY NOT NULL,
       workspace_root TEXT,
       task_id TEXT,
-      workflow_run_id TEXT,
       turn_id TEXT,
       source TEXT NOT NULL,
       type TEXT NOT NULL,
@@ -154,9 +149,9 @@ export function createInboxStore(dbPath: string): InboxStore {
 
   const insertMessage = db.prepare(`
     INSERT INTO inbox_messages (
-      id, workspace_root, task_id, workflow_run_id, turn_id, source, type, severity, status, title, body, context_json, actions_json, deadline, snoozed_until, resolved_at, created_at, updated_at
+      id, workspace_root, task_id, turn_id, source, type, severity, status, title, body, context_json, actions_json, deadline, snoozed_until, resolved_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertAudit = db.prepare(`
     INSERT INTO inbox_audit_entries (id, message_id, event, actor, payload_json, created_at)
@@ -206,7 +201,6 @@ export function createInboxStore(dbPath: string): InboxStore {
         id,
         parsed.workspaceRoot ?? null,
         parsed.taskId ?? null,
-        parsed.workflowRunId ?? null,
         parsed.turnId ?? null,
         parsed.source,
         parsed.type,

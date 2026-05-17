@@ -152,6 +152,9 @@ export function buildSidecar(): void {
 
   console.log(`[build-sidecar] target triple: ${triple}`);
 
+  console.log("[build-sidecar] generating built-in graph playbook bundles...");
+  run("bun", ["run", "scripts/generate-builtin-graph-playbook-bundles.ts"]);
+
   // Compile sidecar
   console.log("[build-sidecar] compiling sidecar...");
   run("bun", ["run", "--filter", "@tessera/sidecar", "build"]);

@@ -1,6 +1,10 @@
 import { join } from "node:path";
+import { BUILTIN_GRAPH_PLAYBOOK_SOURCE_BUNDLES } from "./builtin-graph-playbook-bundles.generated.js";
 import type { LoadedGraphPlaybookPackage } from "./playbook-graph-package-loader.js";
-import { loadGraphPlaybookPackage } from "./playbook-graph-package-loader.js";
+import {
+  loadCollectedGraphPlaybookPackage,
+  loadGraphPlaybookPackage,
+} from "./playbook-graph-package-loader.js";
 
 const BUILTIN_GRAPH_PLAYBOOKS_DIR = join(import.meta.dir, "builtin-graph-playbooks");
 
@@ -19,17 +23,25 @@ export async function loadBuiltInGraphPlaybookPackages(options: {
   compiledAt?: string;
   roots?: Record<string, string>;
 }): Promise<LoadedGraphPlaybookPackage[]> {
-  const roots = options.roots ?? BUILTIN_GRAPH_PLAYBOOK_ROOTS;
   const packages = await Promise.all(
-    Object.entries(roots)
+    Object.entries(options.roots ?? BUILTIN_GRAPH_PLAYBOOK_SOURCE_BUNDLES)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(async ([id, root]) => {
-        const loaded = await loadGraphPlaybookPackage({
-          root,
-          compilerVersion: options.compilerVersion,
-          scriptSdkVersion: options.scriptSdkVersion,
-          ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
-        });
+      .map(async ([id, source]) => {
+        const loaded =
+          typeof source === "string"
+            ? await loadGraphPlaybookPackage({
+                root: source,
+                compilerVersion: options.compilerVersion,
+                scriptSdkVersion: options.scriptSdkVersion,
+                ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
+              })
+            : loadCollectedGraphPlaybookPackage({
+                root: BUILTIN_GRAPH_PLAYBOOK_ROOTS[id] ?? `builtin:${id}`,
+                sourceFiles: source.sourceFiles,
+                compilerVersion: options.compilerVersion,
+                scriptSdkVersion: options.scriptSdkVersion,
+                ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
+              });
         if (loaded.compiled.graph.id !== id) {
           throw new Error(
             `Built-in graph playbook root id mismatch: expected ${id}, got ${loaded.compiled.graph.id}`

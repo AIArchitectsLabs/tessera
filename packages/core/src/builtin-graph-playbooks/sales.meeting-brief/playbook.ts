@@ -187,8 +187,16 @@ export default {
       kind: "humanReview",
       artifact: "meetingBrief",
       actions: ["approve", "request_changes", "deny"],
-      onApprove: "completed",
+      onApprove: "writeBrief",
       onRequestChanges: "draftBrief",
+    },
+    {
+      id: "writeBrief",
+      label: "Write meeting brief",
+      kind: "artifactWrite",
+      artifact: "meetingBrief",
+      path: "Sales Meeting Brief - {{inputs.company}}.md",
+      onSuccess: "completed",
     },
   ],
 };

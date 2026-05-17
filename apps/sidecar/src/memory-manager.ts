@@ -12,7 +12,6 @@ import type {
   ModelRuntimeCredential,
   TaskDetail,
   TaskTurn,
-  WorkflowRunResult,
 } from "@tessera/contracts";
 import {
   classifyMemoryContent,
@@ -30,7 +29,6 @@ export interface TaskRecallOutput {
 
 export interface TesseraMemoryManager {
   recordTaskTurn(input: { task: TaskDetail; turn: TaskTurn }): Promise<MemoryEvent | undefined>;
-  recordWorkflowRun(input: { run: WorkflowRunResult; workspaceRoot?: string }): Promise<void>;
   proposeCandidates(input: {
     eventIds: string[];
     provider?: AgentProviderConfig;
@@ -42,11 +40,6 @@ export interface TesseraMemoryManager {
     mode: MemoryRecallMode;
     maxCharacters: number;
   }): Promise<TaskRecallOutput>;
-  recallForPlaybookRun(input: {
-    workflowId: string;
-    workspaceRoot: string;
-    maxItems: number;
-  }): Promise<MemoryRecallResult>;
 }
 
 interface ExtractedMemorySignal {
@@ -145,16 +138,6 @@ function memoryToRecallItem(memory: Memory): MemoryRecallItem {
   };
 }
 
-function playbookMemoryToRecallItem(memory: Memory, workflowId: string): MemoryRecallItem {
-  return {
-    ...memoryToRecallItem(memory),
-    reason:
-      memory.scope === "playbook"
-        ? `Active playbook memory for ${workflowId}.`
-        : "Active workspace memory for this playbook run.",
-  };
-}
-
 function chunkToRecallItem(chunk: MemoryChunkSearchResult): MemoryRecallItem {
   const turnId = typeof chunk.metadata.turnId === "string" ? chunk.metadata.turnId : chunk.sourceId;
   return {
@@ -172,27 +155,6 @@ function chunkToRecallItem(chunk: MemoryChunkSearchResult): MemoryRecallItem {
 
 function taskDocumentTitle(turn: TaskTurn): string {
   return `${turn.role} turn ${turn.status}`;
-}
-
-function workflowWorkspaceRoot(input: {
-  run: WorkflowRunResult;
-  workspaceRoot?: string;
-}): string | undefined {
-  if (input.workspaceRoot?.trim()) return input.workspaceRoot;
-  const workspaceRoot = input.run.input.workspaceRoot;
-  return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
-}
-
-function workflowProjection(run: WorkflowRunResult): string {
-  const stepCount = run.steps?.length ?? 0;
-  const outputKeys = run.outputs ? Object.keys(run.outputs).sort() : [];
-  return [
-    `Workflow: ${run.workflowId}`,
-    `Status: ${run.status}`,
-    `Step count: ${stepCount}`,
-    `Output keys: ${outputKeys.length > 0 ? outputKeys.join(", ") : "none"}`,
-    `Completed at: ${run.completedAt ?? run.updatedAt ?? "unknown"}`,
-  ].join("\n");
 }
 
 function explicitMemoryBody(content: string): string | undefined {
@@ -605,46 +567,16 @@ function memoryFromSignal(input: {
   };
 }
 
-function playbookMemoryMatchesWorkflow(input: {
-  memory: Memory;
-  workflowId: string;
-  store: MemoryStore;
-}): boolean {
-  if (input.memory.scope === "workspace") return true;
-  if (input.memory.scope !== "playbook") return false;
-
-  return input.memory.sourceEventIds.some((eventId) => {
-    const event = input.store.getEventById(eventId);
-    return event?.metadata.workflowId === input.workflowId;
-  });
-}
-
 export function createNoopMemoryManager(): TesseraMemoryManager {
   return {
     async recordTaskTurn() {
       return undefined;
     },
-    async recordWorkflowRun() {},
     async proposeCandidates() {
       return [];
     },
     async recallForTask(input) {
       return emptyRecall(input);
-    },
-    async recallForPlaybookRun(input) {
-      return {
-        mode: "workspace",
-        timedOut: false,
-        items: [],
-        trace: {
-          query: input.workflowId,
-          workspaceKey: workspaceKeyForRoot(input.workspaceRoot),
-          candidateCount: 0,
-          selectedCount: 0,
-          omittedReasons: [],
-          durationMs: 0,
-        },
-      };
     },
   };
 }
@@ -703,38 +635,6 @@ export function createMemoryManager(options: CreateMemoryManagerOptions): Tesser
           updatedAt: createdAt,
         });
         return event;
-      } catch {}
-    },
-    async recordWorkflowRun(input) {
-      try {
-        const workspaceRoot = workflowWorkspaceRoot(input);
-        if (!workspaceRoot) return;
-
-        const workspaceKey = workspaceKeyForRoot(workspaceRoot);
-        const classified = classifyMemoryContent(workflowProjection(input.run));
-        const content = classified.capturePolicy === "rejected" ? "" : classified.content;
-        const createdAt = input.run.completedAt ?? input.run.updatedAt ?? nowIso();
-        store.recordEvent({
-          id: createId("memory-event"),
-          eventKey: `workflow:${input.run.runId}:${input.run.status}`,
-          workspaceKey,
-          ...(ownerId ? { ownerId } : {}),
-          scope: "playbook",
-          subjectType: "workflow_run",
-          subjectId: input.run.runId,
-          eventType: `playbook.run.${input.run.status}`,
-          content,
-          contentHash: memoryContentHash(content),
-          metadata: {
-            runId: input.run.runId,
-            workflowId: input.run.workflowId,
-            status: input.run.status,
-          },
-          sensitivity: classified.sensitivity,
-          capturePolicy: classified.capturePolicy,
-          schemaVersion: 1,
-          createdAt,
-        });
       } catch {}
     },
     async proposeCandidates(input) {
@@ -826,57 +726,6 @@ export function createMemoryManager(options: CreateMemoryManagerOptions): Tesser
           startedAt,
           omittedReasons: ["memory recall failed"],
         });
-      }
-    },
-    async recallForPlaybookRun(input) {
-      const startedAt = Date.now();
-      const workspaceKey = workspaceKeyForRoot(input.workspaceRoot);
-      try {
-        const candidateLimit = Math.max(input.maxItems * 2, input.maxItems, 1);
-        const candidates = store
-          .listActiveMemories({
-            workspaceKey,
-            ...(ownerId ? { ownerId } : {}),
-            limit: candidateLimit,
-          })
-          .filter((memory) =>
-            playbookMemoryMatchesWorkflow({
-              memory,
-              workflowId: input.workflowId,
-              store,
-            })
-          );
-        const items = candidates
-          .slice(0, Math.max(input.maxItems, 0))
-          .map((memory) => playbookMemoryToRecallItem(memory, input.workflowId));
-
-        return {
-          mode: "workspace",
-          timedOut: false,
-          items,
-          trace: {
-            query: input.workflowId,
-            workspaceKey,
-            candidateCount: candidates.length,
-            selectedCount: items.length,
-            omittedReasons: [],
-            durationMs: Math.max(0, Date.now() - startedAt),
-          },
-        };
-      } catch {
-        return {
-          mode: "workspace",
-          timedOut: false,
-          items: [],
-          trace: {
-            query: input.workflowId,
-            workspaceKey,
-            candidateCount: 0,
-            selectedCount: 0,
-            omittedReasons: ["playbook memory recall failed"],
-            durationMs: Math.max(0, Date.now() - startedAt),
-          },
-        };
       }
     },
   };

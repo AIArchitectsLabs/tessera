@@ -117,6 +117,9 @@ function shouldCollectSourceFile(relativePath: string, manifestEntrypoint: strin
   if (relativePath.startsWith("schemas/")) {
     return relativePath.endsWith(".json");
   }
+  if (relativePath.startsWith("layouts/")) {
+    return relativePath.endsWith(".json");
+  }
   return false;
 }
 

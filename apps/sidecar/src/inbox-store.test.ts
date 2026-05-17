@@ -42,7 +42,7 @@ describe("inbox store", () => {
     }
   });
 
-  test("filters messages by status, type, workspace, task, and workflow", () => {
+  test("filters messages by status, type, workspace, and task", () => {
     const store = createInboxStore(tempDbPath("inbox.sqlite"));
     try {
       const taskMessage = store.create({
@@ -57,13 +57,12 @@ describe("inbox store", () => {
       });
       store.create({
         workspaceRoot: "/workspace/other",
-        workflowRunId: "run-1",
-        source: "workflow",
-        type: "approval",
+        source: "task",
+        type: "review",
         severity: "critical",
-        title: "Approve write",
-        context: { approval: { preview: "Write file" } },
-        actions: [{ id: "approve", label: "Approve", style: "primary" }],
+        title: "Review other workspace",
+        context: { artifactId: "artifact-2" },
+        actions: [{ id: "acknowledge", label: "Acknowledge", style: "secondary" }],
       });
       store.snooze(taskMessage.id, {
         snoozedUntil: "2026-05-06T10:00:00.000Z",
@@ -72,10 +71,9 @@ describe("inbox store", () => {
       expect(store.list({ status: "snoozed" }).map((message) => message.id)).toEqual([
         taskMessage.id,
       ]);
-      expect(store.list({ type: "approval" })).toHaveLength(1);
+      expect(store.list({ type: "review" })).toHaveLength(2);
       expect(store.list({ workspaceRoot: "/workspace/acme" })).toHaveLength(1);
       expect(store.list({ taskId: "task-1" })).toHaveLength(1);
-      expect(store.list({ workflowRunId: "run-1" })).toHaveLength(1);
     } finally {
       store.close();
     }

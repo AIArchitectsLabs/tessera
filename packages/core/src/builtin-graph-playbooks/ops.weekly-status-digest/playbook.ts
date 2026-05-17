@@ -4,7 +4,7 @@ export default {
   version: "1",
   name: "Weekly Status Digest",
   description:
-    "Creates a concise weekly operating digest with progress, risks, decisions, and follow-ups.",
+    "Creates a concise weekly operating digest with progress, risks, decisions, and follow-ups, then pauses before writing it to the workspace.",
   metadata: {
     category: "operations",
     businessUseCase: "Summarize weekly team progress for stakeholders",
@@ -20,7 +20,7 @@ export default {
         label: "Source summary",
       },
     ],
-    phases: ["Summarize"],
+    phases: ["Summarize", "Review"],
   },
   inputs: {
     team: {
@@ -127,7 +127,7 @@ export default {
     {
       id: "draftStatusDigest",
       label: "Draft weekly status digest",
-      onSuccess: "completed",
+      onSuccess: "approveStatusDigest",
       kind: "agent",
       prompt: "prompts/draft-status-digest.md",
       inputs: {
@@ -152,6 +152,23 @@ export default {
         artifact: "statusDigest",
         schema: "schemas/statusDigest.schema.json",
       },
+    },
+    {
+      id: "approveStatusDigest",
+      label: "Review weekly status digest",
+      kind: "humanReview",
+      artifact: "statusDigest",
+      actions: ["approve", "request_changes", "deny"],
+      onApprove: "writeStatusDigest",
+      onRequestChanges: "draftStatusDigest",
+    },
+    {
+      id: "writeStatusDigest",
+      label: "Write weekly status digest",
+      kind: "artifactWrite",
+      artifact: "statusDigest",
+      path: "Weekly Status Digest - {{inputs.team}} - {{inputs.weekEnding}}.md",
+      onSuccess: "completed",
     },
   ],
 };

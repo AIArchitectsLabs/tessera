@@ -107,12 +107,14 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
         credential,
         prompt: request.prompt,
         provider: request.provider,
+        timeoutMs: request.timeoutMs,
       });
       return {
         status: "completed",
         messages: [{ role: "assistant", text: result.text }],
         toolResults,
         permissionDecisions,
+        ...(result.usage ? { usage: result.usage } : {}),
       };
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);

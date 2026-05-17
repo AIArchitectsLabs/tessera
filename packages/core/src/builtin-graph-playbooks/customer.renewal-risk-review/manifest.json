@@ -3,6 +3,6 @@
   "id": "customer.renewal-risk-review",
   "version": "1",
   "name": "Renewal Risk Review",
-  "description": "Creates a renewal risk brief with expansion signals, blockers, stakeholder gaps, and recommended actions.",
+  "description": "Creates a renewal risk brief with expansion signals, blockers, stakeholder gaps, and recommended actions, then pauses before writing it to the workspace.",
   "entrypoint": "playbook.ts"
 }

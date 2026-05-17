@@ -4,7 +4,7 @@ export default {
   version: "1",
   name: "Renewal Risk Review",
   description:
-    "Creates a renewal risk brief with expansion signals, blockers, stakeholder gaps, and recommended actions.",
+    "Creates a renewal risk brief with expansion signals, blockers, stakeholder gaps, and recommended actions, then pauses before writing it to the workspace.",
   metadata: {
     category: "customer-success",
     businessUseCase: "Prepare a renewal risk brief for an account",
@@ -20,7 +20,7 @@ export default {
         label: "Source summary",
       },
     ],
-    phases: ["Analyze"],
+    phases: ["Analyze", "Review"],
   },
   inputs: {
     account: {
@@ -125,7 +125,7 @@ export default {
     {
       id: "draftRiskBrief",
       label: "Draft renewal risk brief",
-      onSuccess: "completed",
+      onSuccess: "approveRiskBrief",
       kind: "agent",
       prompt: "prompts/draft-risk-review.md",
       inputs: {
@@ -153,6 +153,23 @@ export default {
         artifact: "businessBrief",
         schema: "schemas/businessBrief.schema.json",
       },
+    },
+    {
+      id: "approveRiskBrief",
+      label: "Review renewal risk brief",
+      kind: "humanReview",
+      artifact: "businessBrief",
+      actions: ["approve", "request_changes", "deny"],
+      onApprove: "writeRiskBrief",
+      onRequestChanges: "draftRiskBrief",
+    },
+    {
+      id: "writeRiskBrief",
+      label: "Write renewal risk brief",
+      kind: "artifactWrite",
+      artifact: "businessBrief",
+      path: "Renewal Risk Review - {{inputs.account}}.md",
+      onSuccess: "completed",
     },
   ],
 };

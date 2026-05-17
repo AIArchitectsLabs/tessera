@@ -31,6 +31,7 @@
       "apps/desktop/src-tauri/target",
       "apps/desktop/src-tauri/gen",
       "apps/desktop/src-tauri/binaries",
+      "packages/core/src/builtin-graph-playbook-bundles.generated.ts",
       ".omx",
       "bun.lockb"
     ]

@@ -29,6 +29,21 @@ export function playbookApprovalCopy(
   run: PlaybookRunDetail,
   playbook: PlaybookSummary | PlaybookDetail | null
 ): PlaybookApprovalCopy {
+  if (run.approval?.reasonCode === "graph_context_change") {
+    return {
+      prepared:
+        "Tessera paused because this run was started with an older setup. It needs your approval before it continues with the current setup.",
+      approve: "Tessera will continue this run using the current setup.",
+    };
+  }
+
+  if (run.approval?.reasonCode === "graph_interrupted_retry") {
+    return {
+      prepared: "Tessera was interrupted before this run finished.",
+      approve: "Tessera will retry the interrupted step and continue the run.",
+    };
+  }
+
   if (playbook?.id === "sales.meeting-brief" && run.approval?.toolId === "workspace.writeProbe") {
     const company = inputValue(run, "company");
     const stakeholder = inputValue(run, "stakeholder");

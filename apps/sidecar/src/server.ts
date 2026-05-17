@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, extname, join, relative } from "node:path";
 import {
   type AgentProfile,
   type AgentProviderConfig,
@@ -13,6 +13,7 @@ import {
   ClarifyResponseSchema,
   type CompiledPlaybookGraph,
   CompiledPlaybookGraphSchema,
+  DashboardLayoutSchema,
   InboxCancelRequestSchema,
   InboxCreateRequestSchema,
   InboxListResultSchema,
@@ -21,13 +22,10 @@ import {
   InboxSnoozeRequestSchema,
   InboxStatusSchema,
   MemoryForgetRequestSchema,
-  type MemoryRecallResult,
   MemoryReviewDecisionRequestSchema,
   MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
   NotifyRequestSchema,
-  PlaybookAssignmentPreviewRequestSchema,
-  PlaybookAssignmentPreviewResultSchema,
   PlaybookDetailSchema,
   type PlaybookGraphArtifactVersion,
   type PlaybookGraphBranchItem,
@@ -47,13 +45,6 @@ import {
   type PlaybookGraphRunRecord,
   PlaybookGraphRunReviewSurfaceSchema,
   PlaybookListResultSchema,
-  PlaybookRunDetailSchema,
-  type PlaybookRunPreference,
-  PlaybookRunPreferenceReadRequestSchema,
-  PlaybookRunPreferenceReadResultSchema,
-  type PlaybookRunPreferenceSaveRequest,
-  PlaybookRunPreferenceSaveRequestSchema,
-  PlaybookRunPreferenceSchema,
   type PlaybookSummary,
   PlaybookSummarySchema,
   type ShellToolCall,
@@ -67,17 +58,7 @@ import {
   type TaskSkillActivation,
   TaskUpdateRequestSchema,
   TodoOperationSchema,
-  type WorkflowCapabilityInventory,
-  type WorkflowDefinition,
   type WorkflowOutputDeclaration,
-  WorkflowResumeRequestSchema,
-  type WorkflowRunAssignmentPlan,
-  WorkflowRunAssignmentPlanSchema,
-  type WorkflowRunEvent,
-  WorkflowRunListResultSchema,
-  WorkflowRunRequestSchema,
-  type WorkflowRunResult,
-  WorkflowRunStatusSchema,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
@@ -85,12 +66,8 @@ import {
   AgentProfileUpdateRequestSchema,
 } from "@tessera/contracts";
 import {
-  ACTIVITY_SNAPSHOT_WORKFLOW,
-  BUILTIN_PLAYBOOK_ROOTS,
   CORE_VERSION,
-  CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
   DEFAULT_AGENT_PROFILE,
-  DEMO_WORKFLOW,
   type GraphRunStore,
   type OptionalCapabilityInstallProgress,
   type OptionalCapabilityManager,
@@ -99,9 +76,6 @@ import {
   type PlaybookGraphScriptAdapterInput,
   type PlaybookGraphToolAdapterInput,
   type PlaybookGraphToolExecutionPolicy,
-  SALES_MEETING_BRIEF_WORKFLOW,
-  WEEKLY_STATUS_DIGEST_WORKFLOW,
-  WEEKLY_UPDATE_WORKFLOW,
   childPlaybookGraphNodePath,
   createGraphGitMilestoneService,
   createOptionalCapabilityManager,
@@ -123,8 +97,6 @@ import {
   playbookGraphExecutionContextDriftReason,
   readPlaybookGraphPackage,
   resolveSlashSkillInvocation,
-  resumeWorkflowRun,
-  runWorkflow,
   stableJsonStringify,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
@@ -138,7 +110,6 @@ import {
   loadInstalledGraphPlaybookRegistry,
 } from "./graph-playbook-registry.js";
 import { createInboxStore } from "./inbox-store.js";
-import { generateDashboardLayout } from "./layout-runner.js";
 import {
   type TesseraMemoryManager,
   createMemoryManager,
@@ -147,20 +118,10 @@ import {
 import { type MemoryStore, createMemoryStore } from "./memory-store.js";
 import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
 import { runPlaybookGraphScript } from "./playbook-graph-script-runner.js";
-import {
-  buildLocalPlaybookCapabilityInventory,
-  createPlaybookAssignmentPreview,
-  mergePlaybookRunMetadata,
-  parsePlaybookRunCreateRequest,
-  resolveCheckpointedPlaybookExecutionContext,
-  resolvePlaybookExecutionContext,
-} from "./playbook-routing.js";
-import { createPlaybookRunPreferenceStore } from "./playbook-run-preferences.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
-import { createWorkflowCheckpointStore } from "./workflow-store.js";
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
@@ -213,9 +174,7 @@ type CapabilityInstallProgress = {
 };
 const capabilityInstallProgress = new Map<string, CapabilityInstallProgress>();
 const capabilityInstallTasks = new Map<string, Promise<void>>();
-const workflowStore = createWorkflowCheckpointStore(WORKFLOW_DB_PATH);
 const graphRunStore = createPlaybookGraphRunStore(WORKFLOW_DB_PATH);
-const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const inboxStore = createInboxStore(TASK_DB_PATH);
@@ -291,58 +250,6 @@ const { memoryStore, memoryManager, memoryStatus } = createServerMemoryRuntime({
   warn: (message) => console.warn(message),
 });
 const taskEventBus = createTaskEventBus();
-interface WorkflowRegistryEntry {
-  definition: WorkflowDefinition;
-  packageRoot: string;
-}
-
-function builtinPlaybookRoot(workflowId: string): string {
-  const root = BUILTIN_PLAYBOOK_ROOTS[workflowId];
-  if (!root) throw new Error(`Missing built-in playbook root for ${workflowId}`);
-  return root;
-}
-
-const workflowRegistry = new Map<string, WorkflowRegistryEntry>([
-  [
-    SALES_MEETING_BRIEF_WORKFLOW.id,
-    {
-      definition: SALES_MEETING_BRIEF_WORKFLOW,
-      packageRoot: builtinPlaybookRoot(SALES_MEETING_BRIEF_WORKFLOW.id),
-    },
-  ],
-  [
-    CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id,
-    {
-      definition: CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW,
-      packageRoot: builtinPlaybookRoot(CUSTOMER_RENEWAL_RISK_REVIEW_WORKFLOW.id),
-    },
-  ],
-  [
-    WEEKLY_STATUS_DIGEST_WORKFLOW.id,
-    {
-      definition: WEEKLY_STATUS_DIGEST_WORKFLOW,
-      packageRoot: builtinPlaybookRoot(WEEKLY_STATUS_DIGEST_WORKFLOW.id),
-    },
-  ],
-  [
-    DEMO_WORKFLOW.id,
-    { definition: DEMO_WORKFLOW, packageRoot: builtinPlaybookRoot(DEMO_WORKFLOW.id) },
-  ],
-  [
-    WEEKLY_UPDATE_WORKFLOW.id,
-    {
-      definition: WEEKLY_UPDATE_WORKFLOW,
-      packageRoot: builtinPlaybookRoot(WEEKLY_UPDATE_WORKFLOW.id),
-    },
-  ],
-  [
-    ACTIVITY_SNAPSHOT_WORKFLOW.id,
-    {
-      definition: ACTIVITY_SNAPSHOT_WORKFLOW,
-      packageRoot: builtinPlaybookRoot(ACTIVITY_SNAPSHOT_WORKFLOW.id),
-    },
-  ],
-]);
 
 interface GraphPlaybookRegistryState {
   entries: GraphPlaybookRegistryEntry[];
@@ -399,21 +306,16 @@ export async function refreshBuiltInGraphPlaybookRegistry(
     scriptSdkVersion: `tessera-plugin-sdk-${CORE_VERSION}`,
     ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
   });
-  const entries = await Promise.all(
-    loaded.map(async (entry) => {
-      const packageFiles = await readPlaybookGraphPackage(entry.root);
-      return {
-        kind: "built-in" as const,
-        id: entry.compiled.graph.id,
-        version: entry.compiled.graph.version,
-        name: entry.compiled.graph.name,
-        graphHash: entry.compiled.metadata.graphHash,
-        installedRoot: entry.root,
-        compiled: entry.compiled,
-        sourceFiles: packageFiles.sourceFiles,
-      };
-    })
-  );
+  const entries = loaded.map((entry) => ({
+    kind: "built-in" as const,
+    id: entry.compiled.graph.id,
+    version: entry.compiled.graph.version,
+    name: entry.compiled.graph.name,
+    graphHash: entry.compiled.metadata.graphHash,
+    installedRoot: entry.root,
+    compiled: entry.compiled,
+    sourceFiles: entry.sourceFiles,
+  }));
   state.entries = entries.sort((left, right) => left.id.localeCompare(right.id));
   return state.entries;
 }
@@ -473,9 +375,7 @@ process.on("exit", () => {
   if (socketPath && existsSync(socketPath)) unlinkSync(socketPath);
   graphRunBackgroundWorkerRef.current?.stop();
   void browserExecutor.dispose();
-  workflowStore.close();
   graphRunStore.close();
-  playbookRunPreferenceStore.close();
   taskStore.close();
   agentProfileStore.close();
   inboxStore.close();
@@ -511,47 +411,9 @@ function validateWebSocket(req: Request): Response | null {
   return null;
 }
 
-export function buildWorkflowExecutionOptions(options: {
-  agentProvider?: AgentProviderConfig;
-  assignmentPlan?: WorkflowRunAssignmentPlan;
-  capabilityInventory?: WorkflowCapabilityInventory;
-  credential?: ModelRuntimeCredential;
-}): {
-  agentCredential?: ModelRuntimeCredential;
-  agentProvider?: AgentProviderConfig;
-  assignmentPlan?: WorkflowRunAssignmentPlan;
-  capabilityInventory?: WorkflowCapabilityInventory;
-} {
-  return {
-    ...(options.assignmentPlan ? { assignmentPlan: options.assignmentPlan } : {}),
-    ...(options.capabilityInventory ? { capabilityInventory: options.capabilityInventory } : {}),
-    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
-    ...(options.credential ? { agentCredential: options.credential } : {}),
-  };
-}
-
 function capOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_BYTES) return text;
   return `${text.slice(0, MAX_OUTPUT_BYTES)}\n[output truncated at 1 MiB]`;
-}
-
-function playbookSummary(definition: WorkflowDefinition): PlaybookSummary {
-  const phases = definition.phaseOrder ?? [
-    ...new Set(definition.steps.map((step) => step.phase ?? "Run")),
-  ];
-  return PlaybookSummarySchema.parse({
-    id: definition.id,
-    version: definition.version,
-    name: definition.name,
-    description: definition.description,
-    category: definition.category,
-    businessUseCase: definition.businessUseCase,
-    requiredCapabilities: definition.requiredCapabilities,
-    optionalCapabilities: definition.optionalCapabilities,
-    outputs: definition.outputs,
-    stepCount: definition.steps.length,
-    phases,
-  });
 }
 
 function graphMetadataArray<T>(metadata: Record<string, unknown> | undefined, key: string): T[] {
@@ -564,6 +426,27 @@ function graphPlaybookVersion(version: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
+function graphPlaybookOutputs(
+  entry: BuiltInGraphPlaybookRegistryEntry
+): WorkflowOutputDeclaration[] {
+  return graphMetadataArray<WorkflowOutputDeclaration>(
+    entry.compiled.graph.metadata,
+    "outputs"
+  ).map((output) => {
+    if (output.kind !== "dashboard" || !output.layout) return output;
+    const layoutSource = entry.sourceFiles[output.layout];
+    if (!layoutSource) return output;
+    try {
+      return {
+        ...output,
+        layoutData: DashboardLayoutSchema.parse(JSON.parse(layoutSource)),
+      };
+    } catch {
+      return output;
+    }
+  });
+}
+
 function graphPlaybookSummary(entry: BuiltInGraphPlaybookRegistryEntry): PlaybookSummary {
   const graph = entry.compiled.graph;
   const metadata = graph.metadata;
@@ -572,12 +455,13 @@ function graphPlaybookSummary(entry: BuiltInGraphPlaybookRegistryEntry): Playboo
     version: graphPlaybookVersion(graph.version),
     name: graph.name,
     description: graph.description,
+    graphHash: entry.graphHash,
     category: typeof metadata?.category === "string" ? metadata.category : undefined,
     businessUseCase:
       typeof metadata?.businessUseCase === "string" ? metadata.businessUseCase : undefined,
     requiredCapabilities: graphMetadataArray(metadata, "requiredCapabilities"),
     optionalCapabilities: graphMetadataArray(metadata, "optionalCapabilities"),
-    outputs: graphMetadataArray<WorkflowOutputDeclaration>(metadata, "outputs"),
+    outputs: graphPlaybookOutputs(entry),
     stepCount: graph.nodes.length,
     phases: graphMetadataArray<string>(metadata, "phases"),
   });
@@ -625,173 +509,13 @@ async function builtInGraphPlaybook(
   return (await builtInGraphPlaybooks()).find((entry) => entry.id === playbookId);
 }
 
-function workflowDefinition(workflowId: string): WorkflowDefinition | undefined {
-  return workflowRegistry.get(workflowId)?.definition;
-}
-
-function workflowDefinitions(): WorkflowDefinition[] {
-  return [...workflowRegistry.values()].map((entry) => entry.definition);
-}
-
-async function saveWorkflowRunWithDashboardLayout(
-  run: Parameters<typeof workflowStore.save>[0],
-  entry: WorkflowRegistryEntry | undefined
-): Promise<Parameters<typeof workflowStore.save>[0]> {
-  if (!entry || !["completed", "failed", "denied"].includes(run.status)) {
-    workflowStore.save(run);
-    await recordWorkflowRunMemory(run);
-    return run;
-  }
-
-  const layout = await generateDashboardLayout({
-    definition: entry.definition,
-    packageRoot: entry.packageRoot,
-    outputs: run.outputs ?? {},
-    runId: run.runId,
-    completedAt: run.completedAt ?? new Date().toISOString(),
-  });
-  const runWithLayout = layout ? { ...run, dashboardLayout: layout } : run;
-  workflowStore.save(runWithLayout);
-  await recordWorkflowRunMemory(runWithLayout);
-  return runWithLayout;
-}
-
-function workspaceRootFromWorkflowRun(
-  run: Parameters<typeof workflowStore.save>[0]
-): string | undefined {
-  const workspaceRoot = run.input.workspaceRoot;
-  return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
-}
-
-function memoryShadowEvent(input: {
-  run: WorkflowRunResult;
-  memoryShadow: MemoryRecallResult;
-}): WorkflowRunEvent {
-  return {
-    id: `workflow-event-memory-shadow-${randomBytes(8).toString("hex")}`,
-    runId: input.run.runId,
-    workflowId: input.run.workflowId,
-    status: "running",
-    message: "Playbook memory shadow recall evaluated",
-    createdAt: new Date().toISOString(),
-    metadata: {
-      memoryShadow: input.memoryShadow,
-    },
-  };
-}
-
-function emptyPlaybookMemoryShadow(input: {
-  run: WorkflowRunResult;
-  workspaceRoot?: string;
-  omittedReason: string;
-}): MemoryRecallResult {
-  return {
-    mode: "workspace",
-    timedOut: false,
-    items: [],
-    trace: {
-      query: input.run.workflowId,
-      ...(input.workspaceRoot ? { workspaceKey: input.workspaceRoot } : {}),
-      candidateCount: 0,
-      selectedCount: 0,
-      omittedReasons: [input.omittedReason],
-      durationMs: 0,
-    },
-  };
-}
-
-export async function attachPlaybookMemoryShadow(
-  run: WorkflowRunResult,
-  manager: Pick<TesseraMemoryManager, "recallForPlaybookRun"> = memoryManager
-): Promise<WorkflowRunResult> {
-  const workspaceRoot = workspaceRootFromWorkflowRun(run);
-  let memoryShadow: MemoryRecallResult;
-  if (!workspaceRoot) {
-    memoryShadow = emptyPlaybookMemoryShadow({
-      run,
-      omittedReason: "playbook memory shadow recall skipped: missing workspace root",
-    });
-  } else {
-    try {
-      memoryShadow = await manager.recallForPlaybookRun({
-        workflowId: run.workflowId,
-        workspaceRoot,
-        maxItems: 8,
-      });
-    } catch {
-      memoryShadow = emptyPlaybookMemoryShadow({
-        run,
-        workspaceRoot,
-        omittedReason: "playbook memory shadow recall failed",
-      });
-    }
-  }
-
-  const events = (run.events ?? []).filter(
-    (event) => !(event.metadata && "memoryShadow" in event.metadata)
+async function builtInGraphPlaybookByHash(
+  playbookId: string,
+  graphHash: string
+): Promise<BuiltInGraphPlaybookRegistryEntry | undefined> {
+  return (await builtInGraphPlaybooks()).find(
+    (entry) => entry.id === playbookId && entry.graphHash === graphHash
   );
-  return {
-    ...run,
-    events: [...events, memoryShadowEvent({ run, memoryShadow })],
-  };
-}
-
-async function recordWorkflowRunMemory(
-  run: Parameters<typeof workflowStore.save>[0]
-): Promise<void> {
-  try {
-    const workspaceRoot = workspaceRootFromWorkflowRun(run);
-    await memoryManager.recordWorkflowRun({
-      run,
-      ...(workspaceRoot ? { workspaceRoot } : {}),
-    });
-  } catch {}
-}
-
-function playbookRunDetail(run: unknown): unknown {
-  const parsed = PlaybookRunDetailSchema.parse(run);
-  const definition = workflowDefinition(parsed.workflowId);
-  return PlaybookRunDetailSchema.parse({
-    ...parsed,
-    ...(definition ? { playbook: playbookSummary(definition) } : {}),
-  });
-}
-
-function currentCapabilityInventory() {
-  return buildLocalPlaybookCapabilityInventory(agentProfileStore.list());
-}
-
-function resolvePlaybookExecutionState(options: {
-  definition: WorkflowDefinition;
-  capabilityInventory?: unknown;
-  assignmentPlan?: unknown;
-  existingAssignmentPlan?: unknown;
-}) {
-  const capabilityInventory =
-    (options.capabilityInventory as ReturnType<typeof currentCapabilityInventory>) ??
-    currentCapabilityInventory();
-
-  if (options.existingAssignmentPlan) {
-    const checkpointOptions: Parameters<typeof resolveCheckpointedPlaybookExecutionContext>[0] = {
-      definition: options.definition,
-      capabilityInventory,
-      existingAssignmentPlan: WorkflowRunAssignmentPlanSchema.parse(options.existingAssignmentPlan),
-    };
-    if (options.assignmentPlan) {
-      checkpointOptions.requestedAssignmentPlan = WorkflowRunAssignmentPlanSchema.parse(
-        options.assignmentPlan
-      );
-    }
-    return resolveCheckpointedPlaybookExecutionContext(checkpointOptions);
-  }
-
-  return resolvePlaybookExecutionContext({
-    definition: options.definition,
-    capabilityInventory,
-    ...(options.assignmentPlan
-      ? { assignmentPlan: WorkflowRunAssignmentPlanSchema.parse(options.assignmentPlan) }
-      : {}),
-  });
 }
 
 async function resolveCapabilityBinary(options: {
@@ -1642,7 +1366,37 @@ function graphRunPayloadWorkspaceRoot(payload: Record<string, unknown>): string 
   return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
 }
 
-function formatGraphArtifactWriteContent(value: unknown): string {
+function graphArtifactPathValue(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[\\/:\0]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function renderGraphArtifactWritePath(path: string, input: Record<string, unknown>): string {
+  return path.replace(/\{\{\s*inputs\.([A-Za-z0-9_.:-]+)\s*\}\}/g, (_match, key: string) => {
+    const value = key.split(".").reduce<unknown>((cursor, segment) => {
+      if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
+      return (cursor as Record<string, unknown>)[segment];
+    }, input);
+    return graphArtifactPathValue(value) || "untitled";
+  });
+}
+
+function textValueFromArtifact(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const text = (value as Record<string, unknown>).text;
+  return typeof text === "string" && text.trim().length > 0 ? text : undefined;
+}
+
+function formatGraphArtifactWriteContent(value: unknown, path: string): string {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".md" || extension === ".markdown" || extension === ".txt") {
+    const text = textValueFromArtifact(value);
+    if (text !== undefined) return text.endsWith("\n") ? text : `${text}\n`;
+  }
   if (typeof value === "string") return value;
   const json = JSON.stringify(value, null, 2);
   return `${json ?? String(value)}\n`;
@@ -1652,11 +1406,12 @@ async function createWorkspaceArtifactWriteAdapter(
   workspaceRoot: string
 ): Promise<NonNullable<GraphRunHandlerOptions["artifactWriteAdapter"]>> {
   const guard = await createWorkspaceGuard(workspaceRoot);
-  return async ({ node, artifactVersion, value }) => {
-    const parentAbsolute = await guard.resolveInsideWorkspaceForCreate(dirname(node.path));
+  return async ({ run, node, artifactVersion, value }) => {
+    const renderedPath = renderGraphArtifactWritePath(node.path, run.input);
+    const parentAbsolute = await guard.resolveInsideWorkspaceForCreate(dirname(renderedPath));
     await mkdir(parentAbsolute, { recursive: true });
-    const absolute = await guard.resolveInsideWorkspaceForCreate(node.path);
-    const content = formatGraphArtifactWriteContent(value);
+    const absolute = await guard.resolveInsideWorkspaceForCreate(renderedPath);
+    const content = formatGraphArtifactWriteContent(value, renderedPath);
     await writeFile(absolute, content, "utf8");
     return {
       path: relative(guard.root, absolute),
@@ -1757,7 +1512,118 @@ function graphRunAgentProvider(options: GraphRunHandlerOptions): AgentProviderCo
   return agent?.model.mode === "override" ? agent.model.provider : undefined;
 }
 
-function graphRunAgentPrompt(input: PlaybookGraphAgentAdapterInput): string {
+const GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_FILES = 24;
+const GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_SNIPPETS = 8;
+const GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_DEPTH = 3;
+const GRAPH_AGENT_WORKSPACE_CONTEXT_SNIPPET_CHARS = 1_200;
+const GRAPH_AGENT_WORKSPACE_CONTEXT_TEXT_EXTENSIONS = new Set([
+  ".csv",
+  ".html",
+  ".json",
+  ".md",
+  ".skill",
+  ".txt",
+]);
+const GRAPH_AGENT_WORKSPACE_CONTEXT_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "target",
+  "dist",
+  "build",
+]);
+
+type GraphAgentWorkspaceFile = {
+  absolutePath: string;
+  modifiedMs: number;
+  relativePath: string;
+  size: number;
+};
+
+function graphRunWorkspaceRootFromInput(input: PlaybookGraphAgentAdapterInput): string | undefined {
+  const workspaceRoot = input.input.workspaceRoot;
+  return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
+}
+
+function graphRunWorkspaceContextIsTextFile(path: string): boolean {
+  return GRAPH_AGENT_WORKSPACE_CONTEXT_TEXT_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+async function collectGraphRunWorkspaceFiles(
+  root: string,
+  dir: string,
+  depth: number
+): Promise<GraphAgentWorkspaceFile[]> {
+  if (depth > GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_DEPTH) return [];
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const files: GraphAgentWorkspaceFile[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith("~$") || entry.name.startsWith(".~lock.")) continue;
+    if (entry.name.startsWith(".") && entry.name !== ".") continue;
+    const absolutePath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (GRAPH_AGENT_WORKSPACE_CONTEXT_SKIP_DIRS.has(entry.name)) continue;
+      files.push(...(await collectGraphRunWorkspaceFiles(root, absolutePath, depth + 1)));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const metadata = await stat(absolutePath).catch(() => undefined);
+    if (!metadata) continue;
+    files.push({
+      absolutePath,
+      modifiedMs: metadata.mtimeMs,
+      relativePath: relative(root, absolutePath).replaceAll("\\", "/"),
+      size: metadata.size,
+    });
+  }
+  return files;
+}
+
+export async function graphRunWorkspaceContext(
+  input: PlaybookGraphAgentAdapterInput
+): Promise<string | undefined> {
+  const workspaceRoot = graphRunWorkspaceRootFromInput(input);
+  if (!workspaceRoot) return undefined;
+  const guard = await createWorkspaceGuard(workspaceRoot).catch(() => undefined);
+  if (!guard) return undefined;
+  const files = (await collectGraphRunWorkspaceFiles(guard.root, guard.root, 0))
+    .sort((left, right) => right.modifiedMs - left.modifiedMs)
+    .slice(0, GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_FILES);
+  if (files.length === 0) {
+    return `Workspace root: ${guard.root}\nNo files were visible in this workspace.`;
+  }
+
+  const inventory = files.map((file) => {
+    const modified = new Date(file.modifiedMs).toISOString();
+    return `- ${file.relativePath} (${file.size} bytes, modified ${modified})`;
+  });
+  const snippets: string[] = [];
+  for (const file of files) {
+    if (snippets.length >= GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_SNIPPETS) break;
+    if (!graphRunWorkspaceContextIsTextFile(file.relativePath)) continue;
+    const text = await readFile(file.absolutePath, "utf8").catch(() => undefined);
+    if (!text?.trim()) continue;
+    snippets.push(
+      [
+        `### ${file.relativePath}`,
+        text.trim().slice(0, GRAPH_AGENT_WORKSPACE_CONTEXT_SNIPPET_CHARS),
+      ].join("\n")
+    );
+  }
+
+  return [
+    `Workspace root: ${guard.root}`,
+    "Recent workspace files:",
+    inventory.join("\n"),
+    snippets.length > 0 ? ["", "Workspace excerpts:", snippets.join("\n\n")].join("\n") : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function graphRunAgentPrompt(
+  input: PlaybookGraphAgentAdapterInput,
+  workspaceContext?: string
+): string {
   const context = stableJsonStringify({
     runId: input.run.runId,
     nodeId: input.node.id,
@@ -1767,6 +1633,7 @@ function graphRunAgentPrompt(input: PlaybookGraphAgentAdapterInput): string {
   });
   return [
     input.prompt ?? `Execute graph agent node ${input.node.id}.`,
+    ...(workspaceContext ? ["", "Workspace context:", workspaceContext] : []),
     "",
     "Pinned graph runtime context:",
     context,
@@ -1783,6 +1650,7 @@ function graphRunAgentOutput(result: AgentTurnResult): unknown {
     ...(text ? { text } : {}),
     toolResults: result.toolResults,
     permissionDecisions: result.permissionDecisions,
+    ...(result.usage ? { usage: result.usage } : {}),
     ...(result.error ? { error: result.error } : {}),
   };
 }
@@ -1797,10 +1665,11 @@ function graphRunAgentAdapter(
   if (!provider) throw new Error("Graph agent execution requires a model provider");
   const workspaceCli = graphRunWorkspaceCli(options);
   return async (input) => {
+    const workspaceContext = await graphRunWorkspaceContext(input);
     const result = await executeAgentTurn({
       cli: { runWorkspaceCli: workspaceCli },
       request: {
-        prompt: graphRunAgentPrompt(input),
+        prompt: graphRunAgentPrompt(input, workspaceContext),
         provider,
         grants: [],
         ...(options.credential ? { credential: options.credential } : {}),
@@ -2734,6 +2603,42 @@ async function installedGraphRunSourceFiles(
   return packageFiles.sourceFiles;
 }
 
+async function builtInGraphRunSourceFiles(
+  compiledGraph: CompiledPlaybookGraph
+): Promise<Record<string, string> | undefined> {
+  const entry = await builtInGraphPlaybookByHash(
+    compiledGraph.metadata.playbookId,
+    compiledGraph.metadata.graphHash
+  );
+  if (!entry) return undefined;
+
+  const sourceHash = hashPlaybookSourceFiles(entry.sourceFiles);
+  if (sourceHash !== compiledGraph.metadata.sourceHash) {
+    throw new Error("Built-in graph source files do not match compiled graph source hash");
+  }
+  return entry.sourceFiles;
+}
+
+async function graphRunCompiledGraphFromReference(
+  input: {
+    playbookId?: string | undefined;
+    graphHash?: string | undefined;
+  },
+  options: GraphRunHandlerOptions
+): Promise<CompiledPlaybookGraph | undefined> {
+  const playbookId = input.playbookId ?? "";
+  const graphHash = input.graphHash ?? "";
+  if (!playbookId || !graphHash) return undefined;
+
+  const cached = await createPlaybookGraphCache(options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT).get(
+    playbookId,
+    graphHash
+  );
+  if (cached) return cached;
+
+  return (await builtInGraphPlaybookByHash(playbookId, graphHash))?.compiled;
+}
+
 export async function handleGraphRunCreate(
   req: Request,
   options: GraphRunHandlerOptions = {}
@@ -2774,16 +2679,14 @@ export async function handleGraphRunCreate(
           })
         : undefined);
     const compiledGraph =
-      parsed.data.compiledGraph ??
-      (await createPlaybookGraphCache(options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT).get(
-        parsed.data.playbookId ?? "",
-        parsed.data.graphHash ?? ""
-      ));
+      parsed.data.compiledGraph ?? (await graphRunCompiledGraphFromReference(parsed.data, options));
     if (!compiledGraph) {
       return Response.json({ error: "Unknown compiled graph" }, { status: 404 });
     }
     const sourceFiles =
-      parsed.data.sourceFiles ?? (await installedGraphRunSourceFiles(compiledGraph, options));
+      parsed.data.sourceFiles ??
+      (await installedGraphRunSourceFiles(compiledGraph, options)) ??
+      (await builtInGraphRunSourceFiles(compiledGraph));
 
     const run = await createPlaybookGraphRun({
       compiledGraph,
@@ -3362,10 +3265,32 @@ export async function handleGraphRunResume(
           { status: 409 }
         );
       }
+      const queue = await store.getQueue(runId);
+      const resumeEntry = queue.find(
+        (entry) =>
+          (entry.status === "running" || entry.status === "interrupted") &&
+          (!run.currentQueueEntryId || entry.queueEntryId === run.currentQueueEntryId)
+      );
+      if (resumeEntry) {
+        mutation.queueEntries.push({
+          ...resumeEntry,
+          status: "queued",
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          blockedReason: undefined,
+          error: undefined,
+          completedAt: undefined,
+          updatedAt: now,
+        });
+        affectedQueueEntryIds.add(resumeEntry.queueEntryId);
+      }
       mutation.run = {
         ...run,
         status: "running",
         executionContext: createPlaybookGraphExecutionContextPin(executionContext),
+        currentQueueEntryId: resumeEntry?.queueEntryId ?? run.currentQueueEntryId,
         blockedReason: undefined,
         repairReason: undefined,
         error: undefined,
@@ -3574,7 +3499,19 @@ export async function handleGraphRunResume(
         completedAt: undefined,
       });
       affectedQueueEntryIds.add(interrupted.queueEntryId);
-      mutation.run = { ...run, status: "running", updatedAt: now };
+      mutation.run = {
+        ...run,
+        status: "running",
+        currentQueueEntryId: interrupted.queueEntryId,
+        ...(executionContext !== undefined
+          ? { executionContext: createPlaybookGraphExecutionContextPin(executionContext) }
+          : {}),
+        blockedReason: undefined,
+        repairReason: undefined,
+        error: undefined,
+        completedAt: undefined,
+        updatedAt: now,
+      };
       drainOptions = graphRunOptionsWithExecutionContext(
         graphRunOptionsWithWorkspaceRoot(
           runtimeOptions,
@@ -3755,115 +3692,6 @@ export async function handleGraphRunResume(
   }
 }
 
-async function handleWorkflowRun(req: Request): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const parsed = WorkflowRunRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json({ error: parsed.error.message }, { status: 400 });
-  }
-
-  const entry = workflowRegistry.get(parsed.data.workflowId);
-  const definition = entry?.definition;
-  if (!entry || !definition) {
-    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
-  }
-
-  try {
-    const playbookState = resolvePlaybookExecutionState({
-      definition,
-      capabilityInventory: parsed.data.capabilityInventory,
-      assignmentPlan: parsed.data.assignmentPlan,
-    });
-    const executionOptions = buildWorkflowExecutionOptions({
-      assignmentPlan: playbookState.assignmentPlan,
-      capabilityInventory: playbookState.capabilityInventory,
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
-    });
-    const result = await runWorkflow({
-      definition,
-      input: parsed.data.input,
-      cli: {
-        runWorkspaceCli,
-      },
-      ...executionOptions,
-      async onCheckpoint(run) {
-        await saveWorkflowRunWithDashboardLayout(
-          mergePlaybookRunMetadata(run, playbookState),
-          entry
-        );
-      },
-    });
-    const merged = mergePlaybookRunMetadata(result, playbookState);
-    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
-    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
-    ensureWorkflowApprovalInbox(saved);
-    return Response.json(saved);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return Response.json({ error: message }, { status: 500 });
-  }
-}
-
-function handleWorkflowRunList(req: Request): Response {
-  if (req.method !== "GET") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const { searchParams } = new URL(req.url);
-  const status = searchParams.get("status");
-  const workflowId = searchParams.get("workflowId") ?? undefined;
-  if (workflowId && !workflowRegistry.has(workflowId)) {
-    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
-  }
-  const parsedStatus = status ? WorkflowRunStatusSchema.safeParse(status) : undefined;
-  if (parsedStatus && !parsedStatus.success) {
-    return Response.json({ error: "Unsupported workflow status filter" }, { status: 400 });
-  }
-
-  const result = WorkflowRunListResultSchema.parse({
-    runs: workflowStore.list({
-      ...(parsedStatus?.success ? { status: parsedStatus.data } : {}),
-      ...(workflowId ? { workflowId } : {}),
-    }),
-  });
-  return Response.json(result);
-}
-
-function handleWorkflowRunGet(req: Request, runId: string): Response {
-  if (req.method !== "GET") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const run = workflowStore.get(runId);
-  if (!run) return Response.json({ error: "Unknown workflow run" }, { status: 404 });
-  return Response.json(run);
-}
-
-async function handleWorkflowRunDashboardLayout(req: Request, runId: string): Promise<Response> {
-  if (req.method !== "GET") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const run = workflowStore.get(runId);
-  if (!run) return Response.json({ error: "Run not found" }, { status: 404 });
-  if (run.dashboardLayout) return Response.json({ layout: run.dashboardLayout });
-
-  const entry = workflowRegistry.get(run.workflowId);
-  const runWithLayout = await saveWorkflowRunWithDashboardLayout(run, entry);
-  return Response.json({ layout: runWithLayout.dashboardLayout ?? null });
-}
-
 export async function handlePlaybookList(req: Request): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -3887,241 +3715,6 @@ export async function handlePlaybookGet(req: Request, playbookId: string): Promi
   return Response.json(graphPlaybookDetail(entry));
 }
 
-async function handlePlaybookAssignmentPreview(
-  req: Request,
-  playbookId: string
-): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const entry = workflowRegistry.get(playbookId);
-  const definition = entry?.definition;
-  if (!entry || !definition) {
-    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const parsed = PlaybookAssignmentPreviewRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json({ error: parsed.error.message }, { status: 400 });
-  }
-
-  const preview = createPlaybookAssignmentPreview({
-    definition,
-    capabilityInventory:
-      parsed.data.capabilityInventory ??
-      buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
-    ...(parsed.data.previousPlan ? { previousPlan: parsed.data.previousPlan } : {}),
-  });
-
-  return Response.json(PlaybookAssignmentPreviewResultSchema.parse(preview));
-}
-
-export function isPlaybookRunPreferenceAssignmentPlanValidationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.startsWith("Assignment for step ") ||
-    message.startsWith("Assignment plan ") ||
-    message.startsWith("Unable to resolve assignment for step ")
-  );
-}
-
-export function buildPlaybookRunPreference(
-  playbookId: string,
-  request: PlaybookRunPreferenceSaveRequest,
-  updatedAt = new Date()
-): PlaybookRunPreference {
-  return PlaybookRunPreferenceSchema.parse({
-    workspaceRoot: request.workspaceRoot,
-    playbookId,
-    assignmentPlan: request.assignmentPlan,
-    updatedAt: updatedAt.toISOString(),
-  });
-}
-
-export async function handlePlaybookRunCreate(req: Request, playbookId: string): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const entry = await builtInGraphPlaybook(playbookId);
-  if (!entry) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const request =
-    body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : {};
-  const input =
-    request.input && typeof request.input === "object" && !Array.isArray(request.input)
-      ? (request.input as Record<string, unknown>)
-      : {};
-  const graphRunBody = {
-    input,
-    compiledGraph: entry.compiled,
-    sourceFiles: entry.sourceFiles,
-    drainDeterministic:
-      typeof request.drainDeterministic === "boolean" ? request.drainDeterministic : true,
-    ...(typeof request.workspaceRoot === "string" ? { workspaceRoot: request.workspaceRoot } : {}),
-    ...(typeof request.agentId === "string" ? { agentId: request.agentId } : {}),
-    ...(request.agentProvider ? { agentProvider: request.agentProvider } : {}),
-    ...(request.credential ? { credential: request.credential } : {}),
-  };
-
-  return handleGraphRunCreate(
-    new Request(req.url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(graphRunBody),
-    })
-  );
-}
-
-async function handlePlaybookRunPreferenceGet(req: Request, playbookId: string): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const entry = workflowRegistry.get(playbookId);
-  if (!entry || !entry.definition) {
-    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const parsed = PlaybookRunPreferenceReadRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json({ error: parsed.error.message }, { status: 400 });
-  }
-
-  return Response.json(
-    PlaybookRunPreferenceReadResultSchema.parse({
-      preference: playbookRunPreferenceStore.get(parsed.data.workspaceRoot, playbookId),
-    })
-  );
-}
-
-async function handlePlaybookRunPreferenceSave(
-  req: Request,
-  playbookId: string
-): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const entry = workflowRegistry.get(playbookId);
-  const definition = entry?.definition;
-  if (!entry || !definition) {
-    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const request = PlaybookRunPreferenceSaveRequestSchema.safeParse(body);
-  if (!request.success) {
-    return Response.json({ error: request.error.message }, { status: 400 });
-  }
-  const preference = buildPlaybookRunPreference(playbookId, request.data);
-
-  try {
-    resolvePlaybookExecutionState({
-      definition,
-      capabilityInventory:
-        request.data.capabilityInventory ??
-        buildLocalPlaybookCapabilityInventory(agentProfileStore.list()),
-      assignmentPlan: preference.assignmentPlan,
-    });
-    playbookRunPreferenceStore.save(preference);
-    return Response.json(PlaybookRunPreferenceReadResultSchema.parse({ preference }));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (isPlaybookRunPreferenceAssignmentPlanValidationError(error)) {
-      return Response.json({ error: message }, { status: 409 });
-    }
-    return Response.json({ error: message }, { status: 500 });
-  }
-}
-
-export async function handlePlaybookRunList(req: Request): Promise<Response> {
-  if (req.method !== "GET") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  const { searchParams } = new URL(req.url);
-  const playbookId = searchParams.get("playbookId") ?? undefined;
-  if (playbookId && !(await builtInGraphPlaybook(playbookId))) {
-    return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  }
-
-  const graphRunUrl = new URL(req.url);
-  graphRunUrl.pathname = "/graph-runs";
-  return handleGraphRunList(new Request(graphRunUrl.toString(), { method: "GET" }));
-}
-
-export async function handlePlaybookRunGet(req: Request, runId: string): Promise<Response> {
-  if (req.method !== "GET") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  return handleGraphRunGet(req, runId);
-}
-
-function ensureWorkflowApprovalInbox(result: {
-  runId: string;
-  status: string;
-  approval?:
-    | {
-        preview: string;
-        risk: { destructive: boolean };
-      }
-    | undefined;
-}): void {
-  if (result.status !== "blocked" || !result.approval) return;
-  const existing = inboxStore.list({
-    workflowRunId: result.runId,
-    type: "approval",
-    status: "open",
-  });
-  if (existing.length > 0) return;
-
-  inboxStore.create({
-    workflowRunId: result.runId,
-    source: "workflow",
-    type: "approval",
-    severity: result.approval.risk.destructive ? "critical" : "warning",
-    title: "Workflow approval needed",
-    body: result.approval.preview,
-    context: { approval: result.approval },
-    actions: [
-      { id: "approve", label: "Approve", style: "primary" },
-      { id: "deny", label: "Deny", style: "danger" },
-    ],
-  });
-}
-
 function handleInboxList(req: Request): Response {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -4141,14 +3734,12 @@ function handleInboxList(req: Request): Response {
 
   const workspaceRoot = searchParams.get("workspaceRoot");
   const taskId = searchParams.get("taskId");
-  const workflowRunId = searchParams.get("workflowRunId");
   const result = InboxListResultSchema.parse({
     messages: inboxStore.list({
       status: parsedStatus.data,
       ...(parsedType?.success ? { type: parsedType.data } : {}),
       ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(taskId ? { taskId } : {}),
-      ...(workflowRunId ? { workflowRunId } : {}),
     }),
   });
   return Response.json(result);
@@ -4212,35 +3803,6 @@ async function handleInboxResolve(req: Request, messageId: string): Promise<Resp
     const existing = inboxStore.get(messageId);
     if (!existing) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
 
-    if (
-      existing.type === "approval" &&
-      existing.source === "workflow" &&
-      existing.workflowRunId &&
-      (parsed.data.actionId === "approve" || parsed.data.actionId === "deny")
-    ) {
-      const run = workflowStore.get(existing.workflowRunId);
-      if (!run) return Response.json({ error: "Unknown workflow run" }, { status: 404 });
-      const entry = workflowRegistry.get(run.workflowId);
-      const definition = entry?.definition;
-      if (!entry || !definition) {
-        return Response.json({ error: "Unknown workflow id" }, { status: 404 });
-      }
-      const result = await resumeWorkflowRun({
-        run,
-        decision: parsed.data.actionId,
-        definition,
-        cli: {
-          runWorkspaceCli,
-        },
-        async onCheckpoint(checkpoint) {
-          await saveWorkflowRunWithDashboardLayout(checkpoint, entry);
-        },
-      });
-      const withMemoryShadow = await attachPlaybookMemoryShadow(result);
-      const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
-      ensureWorkflowApprovalInbox(saved);
-    }
-
     const message = inboxStore.resolve(messageId, parsed.data);
     return Response.json(message);
   } catch (error) {
@@ -4293,76 +3855,6 @@ async function handleInboxCancel(req: Request, messageId: string): Promise<Respo
   const message = inboxStore.cancel(messageId, parsed.data);
   if (!message) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
   return Response.json(message);
-}
-
-async function handleWorkflowResume(req: Request, runId: string): Promise<Response> {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const parsed = WorkflowResumeRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json({ error: parsed.error.message }, { status: 400 });
-  }
-
-  if (parsed.data.runId !== runId) {
-    return Response.json({ error: "Resume body runId does not match URL" }, { status: 400 });
-  }
-
-  const existing = workflowStore.get(runId);
-  if (!existing) {
-    return Response.json({ error: "Unknown workflow run" }, { status: 404 });
-  }
-  const entry = workflowRegistry.get(existing.workflowId);
-  const definition = entry?.definition;
-  if (!entry || !definition) {
-    return Response.json({ error: "Unknown workflow id" }, { status: 404 });
-  }
-
-  try {
-    const playbookState = resolvePlaybookExecutionState({
-      definition,
-      capabilityInventory: parsed.data.capabilityInventory,
-      assignmentPlan: parsed.data.assignmentPlan,
-      existingAssignmentPlan: existing.assignmentPlan,
-    });
-    const executionOptions = buildWorkflowExecutionOptions({
-      assignmentPlan: playbookState.assignmentPlan,
-      capabilityInventory: playbookState.capabilityInventory,
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
-    });
-    const result = await resumeWorkflowRun({
-      run: existing,
-      decision: parsed.data.decision,
-      definition,
-      cli: {
-        runWorkspaceCli,
-      },
-      ...executionOptions,
-      async onCheckpoint(checkpoint) {
-        await saveWorkflowRunWithDashboardLayout(
-          mergePlaybookRunMetadata(checkpoint, playbookState),
-          entry
-        );
-      },
-    });
-    const merged = mergePlaybookRunMetadata(result, playbookState);
-    const withMemoryShadow = await attachPlaybookMemoryShadow(merged);
-    const saved = await saveWorkflowRunWithDashboardLayout(withMemoryShadow, entry);
-    ensureWorkflowApprovalInbox(saved);
-    return Response.json(saved);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return Response.json({ error: message }, { status: 500 });
-  }
 }
 
 function handleTaskList(req: Request): Response {
@@ -5251,31 +4743,8 @@ const server = Bun.serve({
       return handleGraphRunGet(req, decodeURIComponent(graphRunId));
     }
 
-    if (pathname === "/workflows/run") {
-      return handleWorkflowRun(req);
-    }
-
-    if (pathname === "/workflows/runs") {
-      return handleWorkflowRunList(req);
-    }
-
-    const workflowRunDashboardLayoutMatch = pathname.match(
-      /^\/workflows\/runs\/([^/]+)\/dashboard-layout$/
-    );
-    const workflowRunDashboardLayoutId = workflowRunDashboardLayoutMatch?.[1];
-    if (workflowRunDashboardLayoutId) {
-      return handleWorkflowRunDashboardLayout(
-        req,
-        decodeURIComponent(workflowRunDashboardLayoutId)
-      );
-    }
-
     if (pathname === "/playbooks") {
       return handlePlaybookList(req);
-    }
-
-    if (pathname === "/playbook-runs") {
-      return handlePlaybookRunList(req);
     }
 
     if (pathname === "/inbox") {
@@ -5334,48 +4803,6 @@ const server = Bun.serve({
     const inboxId = inboxMatch?.[1];
     if (inboxId) {
       return handleInboxGet(req, decodeURIComponent(inboxId));
-    }
-
-    const playbookRunResumeMatch = pathname.match(/^\/playbook-runs\/([^/]+)\/resume$/);
-    const playbookRunResumeId = playbookRunResumeMatch?.[1];
-    if (playbookRunResumeId) {
-      return handleWorkflowResume(req, decodeURIComponent(playbookRunResumeId));
-    }
-
-    const playbookRunMatch = pathname.match(/^\/playbook-runs\/([^/]+)$/);
-    const playbookRunId = playbookRunMatch?.[1];
-    if (playbookRunId) {
-      return handlePlaybookRunGet(req, decodeURIComponent(playbookRunId));
-    }
-
-    const playbookRunCreateMatch = pathname.match(/^\/playbooks\/([^/]+)\/runs$/);
-    const playbookRunCreateId = playbookRunCreateMatch?.[1];
-    if (playbookRunCreateId) {
-      return handlePlaybookRunCreate(req, decodeURIComponent(playbookRunCreateId));
-    }
-
-    const playbookAssignmentPreviewMatch = pathname.match(
-      /^\/playbooks\/([^/]+)\/assignment-preview$/
-    );
-    const playbookAssignmentPreviewId = playbookAssignmentPreviewMatch?.[1];
-    if (playbookAssignmentPreviewId) {
-      return handlePlaybookAssignmentPreview(req, decodeURIComponent(playbookAssignmentPreviewId));
-    }
-
-    const playbookRunPreferenceGetMatch = pathname.match(
-      /^\/playbooks\/([^/]+)\/run-preference\/get$/
-    );
-    const playbookRunPreferenceGetId = playbookRunPreferenceGetMatch?.[1];
-    if (playbookRunPreferenceGetId) {
-      return handlePlaybookRunPreferenceGet(req, decodeURIComponent(playbookRunPreferenceGetId));
-    }
-
-    const playbookRunPreferenceSaveMatch = pathname.match(
-      /^\/playbooks\/([^/]+)\/run-preference\/save$/
-    );
-    const playbookRunPreferenceSaveId = playbookRunPreferenceSaveMatch?.[1];
-    if (playbookRunPreferenceSaveId) {
-      return handlePlaybookRunPreferenceSave(req, decodeURIComponent(playbookRunPreferenceSaveId));
     }
 
     const playbookMatch = pathname.match(/^\/playbooks\/([^/]+)$/);
@@ -5449,18 +4876,6 @@ const server = Bun.serve({
     if (taskId) {
       if (req.method === "GET") return handleTaskGet(req, taskId);
       return handleTaskUpdate(req, taskId);
-    }
-
-    const workflowResumeMatch = pathname.match(/^\/workflows\/([^/]+)\/resume$/);
-    const workflowRunId = workflowResumeMatch?.[1];
-    if (workflowRunId) {
-      return handleWorkflowResume(req, workflowRunId);
-    }
-
-    const workflowRunMatch = pathname.match(/^\/workflows\/runs\/([^/]+)$/);
-    const workflowRunGetId = workflowRunMatch?.[1];
-    if (workflowRunGetId) {
-      return handleWorkflowRunGet(req, decodeURIComponent(workflowRunGetId));
     }
 
     return new Response("Not Found", { status: 404 });

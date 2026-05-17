@@ -548,11 +548,23 @@ export const AgentToolResultSummarySchema = z.object({
 
 export type AgentToolResultSummary = z.infer<typeof AgentToolResultSummarySchema>;
 
+export const TokenUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+    reasoningTokens: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type TokenUsage = z.infer<typeof TokenUsageSchema>;
+
 export const AgentTurnResultSchema = z.object({
   status: z.enum(["completed", "blocked", "denied", "error"]),
   messages: z.array(AgentMessageSummarySchema),
   toolResults: z.array(AgentToolResultSummarySchema),
   permissionDecisions: z.array(PermissionDecisionSchema),
+  usage: TokenUsageSchema.optional(),
   error: z.string().optional(),
 });
 
@@ -1356,6 +1368,7 @@ export const WorkflowOutputDeclarationSchema = z.object({
   id: z.string().min(1).optional(),
   layoutScript: z.string().min(1).optional(),
   layout: z.string().min(1).optional(),
+  layoutData: z.lazy(() => DashboardLayoutSchema).optional(),
 });
 export type WorkflowOutputDeclaration = z.infer<typeof WorkflowOutputDeclarationSchema>;
 
@@ -1475,41 +1488,6 @@ export function resolveDashboardBinding(outputs: unknown, binding: string): unkn
   return cursor;
 }
 
-export const WorkflowDefinitionSchema = z
-  .object({
-    id: z.string().min(1),
-    version: z.number().int().positive(),
-    name: z.string().min(1),
-    description: z.string().optional(),
-    category: z.string().min(1).optional(),
-    businessUseCase: z.string().min(1).optional(),
-    requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
-    optionalCapabilities: z.array(WorkflowCapabilitySchema).default([]),
-    outputs: z.array(WorkflowOutputDeclarationSchema).optional(),
-    phaseOrder: z.array(z.string().min(1)).optional(),
-    inputs: z.record(WorkflowInputDefinitionSchema).default({}),
-    start: z.string().min(1),
-    steps: z
-      .array(z.discriminatedUnion("kind", [WorkflowToolStepSchema, WorkflowAgentStepSchema]))
-      .min(1),
-  })
-  .superRefine((definition, ctx) => {
-    const sources = definition.inputs.sources;
-    if (!sources?.options) return;
-
-    for (const [index, option] of sources.options.entries()) {
-      if (!WorkflowCapabilitySchema.safeParse(option.value).success) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Unsupported workflow source option: ${option.value}`,
-          path: ["inputs", "sources", "options", index, "value"],
-        });
-      }
-    }
-  });
-
-export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
-
 export const PlaybookMetaSchema = z.object({
   id: z.string().min(1),
   version: z.number().int().positive(),
@@ -1520,13 +1498,6 @@ export const PlaybookMetaSchema = z.object({
   signature: z.string().min(1).optional(),
 });
 export type PlaybookMeta = z.infer<typeof PlaybookMetaSchema>;
-
-export const PlaybookManifestSchema = z.object({
-  schemaVersion: z.literal(1),
-  meta: PlaybookMetaSchema,
-  workflow: WorkflowDefinitionSchema,
-});
-export type PlaybookManifest = z.infer<typeof PlaybookManifestSchema>;
 
 const PLAYBOOK_ID_RE = /^[A-Za-z0-9._:-]+$/;
 const ABSOLUTE_PATH_RE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
@@ -2489,6 +2460,7 @@ export const PlaybookSummarySchema = z.object({
   version: z.number().int().positive(),
   name: z.string().min(1),
   description: z.string().optional(),
+  graphHash: Sha256DigestSchema.optional(),
   category: z.string().min(1).optional(),
   businessUseCase: z.string().min(1).optional(),
   requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
@@ -2547,17 +2519,6 @@ export const WorkflowRunEventSchema = z.object({
 });
 
 export type WorkflowRunEvent = z.infer<typeof WorkflowRunEventSchema>;
-
-export const TokenUsageSchema = z
-  .object({
-    inputTokens: z.number().int().nonnegative(),
-    outputTokens: z.number().int().nonnegative(),
-    totalTokens: z.number().int().nonnegative(),
-    cachedInputTokens: z.number().int().nonnegative().optional(),
-    reasoningTokens: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-export type TokenUsage = z.infer<typeof TokenUsageSchema>;
 
 export const WorkflowRunStepRecordSchema = z.object({
   id: z.string().min(1),
@@ -2710,7 +2671,6 @@ export const InboxMessageSchema = z.object({
   id: z.string().min(1),
   workspaceRoot: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
-  workflowRunId: z.string().min(1).optional(),
   turnId: z.string().min(1).optional(),
   source: InboxSourceSchema,
   type: InboxMessageTypeSchema,
@@ -2732,7 +2692,6 @@ export type InboxMessage = z.infer<typeof InboxMessageSchema>;
 export const InboxCreateRequestSchema = z.object({
   workspaceRoot: z.string().min(1).optional(),
   taskId: z.string().min(1).optional(),
-  workflowRunId: z.string().min(1).optional(),
   turnId: z.string().min(1).optional(),
   source: InboxSourceSchema,
   type: InboxMessageTypeSchema,

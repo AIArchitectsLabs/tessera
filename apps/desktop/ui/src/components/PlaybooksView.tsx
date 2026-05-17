@@ -14,22 +14,20 @@ import type {
   PlaybookDetail,
   PlaybookGraphGitMilestonePreview,
   PlaybookGraphResumeActionSpec,
+  PlaybookGraphRunCreateRequest,
   PlaybookGraphRunDetail,
   PlaybookGraphRunListResult,
+  PlaybookGraphRunRecord,
   PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
-  PlaybookRunPreferenceReadResult,
   PlaybookSummary,
   TokenUsage,
   WorkflowCapabilityInventory,
   WorkflowInputDefinition,
   WorkflowNodeAssignment,
-  WorkflowResumeRequest,
   WorkflowRunAssignmentPlan,
   WorkflowRunEvent,
-  WorkflowRunListResult,
-  WorkflowRunRequest,
   WorkflowRunStepRecord,
 } from "@tessera/contracts";
 import { AlertTriangle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, X } from "lucide-react";
@@ -236,6 +234,24 @@ function filePathFromValue(value: unknown): string | null {
   return filePathFromValue(record.text);
 }
 
+function graphArtifactPathValue(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[\\/:\0]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function renderGraphArtifactWritePath(path: string, input: Record<string, unknown>): string {
+  return path.replace(/\{\{\s*inputs\.([A-Za-z0-9_.:-]+)\s*\}\}/g, (_match, key: string) => {
+    const value = key.split(".").reduce<unknown>((cursor, segment) => {
+      if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
+      return (cursor as Record<string, unknown>)[segment];
+    }, input);
+    return graphArtifactPathValue(value) || "untitled";
+  });
+}
+
 function displayPath(path: string | null): string | null {
   if (!path) return null;
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -345,6 +361,296 @@ function orderedPhases(
   const phaseOrder = playbook?.phases ?? [];
   const runPhases = run?.steps?.map((step) => step.phase).filter((p): p is string => !!p) ?? [];
   return [...new Set([...phaseOrder, ...runPhases])];
+}
+
+function workflowStatusFromGraph(
+  status: PlaybookGraphRunRecord["status"]
+): PlaybookRunDetail["status"] {
+  if (status === "completed") return "completed";
+  if (status === "blocked") return "blocked";
+  if (status === "denied") return "denied";
+  if (status === "failed" || status === "needs_repair" || status === "interrupted") {
+    return "failed";
+  }
+  return "running";
+}
+
+function workflowStepStatusFromGraph(
+  status: PlaybookGraphRunDetail["queue"][number]["status"]
+): WorkflowRunStepRecord["status"] {
+  if (status === "succeeded" || status === "memoized") return "succeeded";
+  if (status === "blocked") return "blocked";
+  if (status === "failed" || status === "interrupted") return "failed";
+  if (status === "skipped") return "skipped";
+  return "running";
+}
+
+function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, unknown> {
+  if (!detail) return {};
+  const latestByArtifact = new Map<string, PlaybookGraphRunDetail["artifacts"][number]>();
+  for (const artifact of detail.artifacts) {
+    latestByArtifact.set(artifact.artifactId, artifact);
+  }
+  const outputs: Record<string, unknown> = {};
+  for (const artifact of latestByArtifact.values()) {
+    outputs[artifact.artifactId] = artifact.value;
+    const segments = artifact.nodePath.split("/");
+    const nodeKey = segments[segments.length - 1];
+    if (nodeKey) outputs[nodeKey] = artifact.value;
+  }
+  for (const [artifactId, path] of graphRunArtifactWritePaths(detail)) {
+    const value = outputs[artifactId];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      outputs[artifactId] = { path, ...(value !== undefined ? { value } : {}) };
+      continue;
+    }
+    outputs[artifactId] = { ...value, path };
+  }
+  return outputs;
+}
+
+function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string, string> {
+  const paths = new Map<string, string>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(detail.run.snapshot.snapshotJson);
+  } catch {
+    return paths;
+  }
+  if (!parsed || typeof parsed !== "object") return paths;
+  const record = parsed as Record<string, unknown>;
+  const graph = record.graph && typeof record.graph === "object" ? record.graph : record;
+  const nodes = (graph as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return paths;
+
+  const completedNodeIds = new Set(
+    detail.queue
+      .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
+      .map((entry) => entry.nodeId)
+  );
+  for (const node of nodes) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    const candidate = node as Record<string, unknown>;
+    if (
+      candidate.kind !== "artifactWrite" ||
+      typeof candidate.id !== "string" ||
+      typeof candidate.artifact !== "string" ||
+      typeof candidate.path !== "string" ||
+      !completedNodeIds.has(candidate.id)
+    ) {
+      continue;
+    }
+    paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
+  }
+  return paths;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function tokenUsageFromValue(value: unknown): TokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = (value as { usage?: unknown }).usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const candidate = usage as Record<string, unknown>;
+  if (
+    !isNonNegativeInteger(candidate.inputTokens) ||
+    !isNonNegativeInteger(candidate.outputTokens) ||
+    !isNonNegativeInteger(candidate.totalTokens)
+  ) {
+    return undefined;
+  }
+  const cachedInputTokens = isNonNegativeInteger(candidate.cachedInputTokens)
+    ? candidate.cachedInputTokens
+    : undefined;
+  const reasoningTokens = isNonNegativeInteger(candidate.reasoningTokens)
+    ? candidate.reasoningTokens
+    : undefined;
+  return {
+    inputTokens: candidate.inputTokens,
+    outputTokens: candidate.outputTokens,
+    totalTokens: candidate.totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+  };
+}
+
+function combineTokenUsage(current: TokenUsage, next: TokenUsage): TokenUsage {
+  const cachedInputTokens =
+    current.cachedInputTokens !== undefined || next.cachedInputTokens !== undefined
+      ? (current.cachedInputTokens ?? 0) + (next.cachedInputTokens ?? 0)
+      : undefined;
+  const reasoningTokens =
+    current.reasoningTokens !== undefined || next.reasoningTokens !== undefined
+      ? (current.reasoningTokens ?? 0) + (next.reasoningTokens ?? 0)
+      : undefined;
+  return {
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    totalTokens: current.totalTokens + next.totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+  };
+}
+
+function graphRunUsage(detail: PlaybookGraphRunDetail | null): TokenUsage | undefined {
+  if (!detail) return undefined;
+  let usage: TokenUsage | undefined;
+  for (const artifact of detail.artifacts) {
+    const artifactUsage = tokenUsageFromValue(artifact.value);
+    if (!artifactUsage) continue;
+    usage = usage ? combineTokenUsage(usage, artifactUsage) : artifactUsage;
+  }
+  return usage;
+}
+
+function dashboardLayoutFromPlaybook(
+  playbook: PlaybookSummary | PlaybookDetail | null
+): DashboardLayout | null {
+  return playbook?.outputs?.find((output) => output.kind === "dashboard")?.layoutData ?? null;
+}
+
+function graphRunApproval(
+  detail: PlaybookGraphRunDetail | null,
+  playbook: PlaybookSummary | PlaybookDetail | null
+): PlaybookRunDetail["approval"] {
+  if (!detail || (detail.run.status !== "blocked" && detail.run.status !== "interrupted")) {
+    return undefined;
+  }
+  if (detail.run.blockedReason?.includes("execution context changed")) {
+    return {
+      toolId: "graph.approveContextChange",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview:
+        detail.run.blockedReason ??
+        "Tessera needs approval to continue this run after its setup changed.",
+      reasonCode: "graph_context_change",
+    };
+  }
+  const interruptedEntry = detail.queue.find((entry) => entry.status === "interrupted");
+  if (interruptedEntry) {
+    return {
+      toolId: "graph.retryInterrupted",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+        queueEntryId: interruptedEntry.queueEntryId,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview:
+        interruptedEntry.blockedReason ?? "Tessera was interrupted before this run finished.",
+      reasonCode: "graph_interrupted_retry",
+    };
+  }
+  const reviewEntry = detail.queue.find(
+    (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
+  );
+  if (!reviewEntry) return undefined;
+  return {
+    toolId: "workspace.writeProbe",
+    args: {
+      target: detail.run.input.approvalTarget ?? playbook?.name ?? "workspace",
+      value: detail.run.input.objective ?? "approved",
+    },
+    capability: "write",
+    risk: {
+      mutates: true,
+      destructive: false,
+      external: false,
+      reversible: true,
+      dryRunSupported: false,
+    },
+    preview: detail.run.blockedReason ?? "Review this graph run before continuing.",
+    reasonCode: "graph_human_review",
+  };
+}
+
+function graphRunToPlaybookRunDetail(
+  detail: PlaybookGraphRunDetail,
+  playbook: PlaybookSummary | PlaybookDetail | null
+): PlaybookRunDetail {
+  const outputs = graphRunOutputs(detail);
+  const usage = graphRunUsage(detail);
+  const steps = detail.queue.map((entry) => ({
+    id: entry.nodeId,
+    label: titleFromId(entry.nodeId),
+    kind: entry.nodeKind === "agent" ? ("agent" as const) : ("tool" as const),
+    phase: playbook?.phases?.[0] ?? "Run",
+    status: workflowStepStatusFromGraph(entry.status),
+    startedAt: entry.claimedAt ?? entry.createdAt,
+    completedAt: entry.completedAt,
+    error: entry.error,
+  }));
+
+  return {
+    runId: detail.run.runId,
+    workflowId: detail.run.playbookId,
+    status: workflowStatusFromGraph(detail.run.status),
+    currentStepId: detail.run.currentQueueEntryId,
+    input: detail.run.input,
+    outputs,
+    ...(usage ? { usage } : {}),
+    dashboardLayout: dashboardLayoutFromPlaybook(playbook) ?? undefined,
+    approval: graphRunApproval(detail, playbook),
+    error: detail.run.error ?? detail.run.repairReason,
+    startedAt: detail.run.startedAt,
+    updatedAt: detail.run.updatedAt,
+    completedAt: detail.run.completedAt,
+    steps,
+    events: detail.operations.map((operation) => ({
+      id: operation.operationRecordId,
+      runId: operation.runId,
+      workflowId: detail.run.playbookId,
+      status: operation.status === "failed" ? ("failed" as const) : ("succeeded" as const),
+      message: `${titleFromId(operation.kind)} ${operation.status}`,
+      createdAt: operation.createdAt,
+      metadata: {
+        actionSpecId: operation.actionSpecId,
+        kind: operation.kind,
+      },
+    })),
+    sourceGaps: [],
+    playbook: playbook ?? undefined,
+  };
+}
+
+function graphRunRecordToPlaybookRunDetail(
+  run: PlaybookGraphRunRecord,
+  playbook: PlaybookSummary | PlaybookDetail | null
+): PlaybookRunDetail {
+  return {
+    runId: run.runId,
+    workflowId: run.playbookId,
+    status: workflowStatusFromGraph(run.status),
+    currentStepId: run.currentQueueEntryId,
+    input: run.input,
+    outputs: {},
+    error: run.error ?? run.repairReason,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    completedAt: run.completedAt,
+    sourceGaps: [],
+    playbook: playbook ?? undefined,
+  };
 }
 
 function outputLabels(playbook?: PlaybookSummary | PlaybookDetail): string[] {
@@ -543,6 +849,77 @@ function buildCapabilityInventory(
   };
 }
 
+function assignmentForInventoryAgent(
+  stepId: string,
+  agent: WorkflowCapabilityInventory["agents"][number]
+): WorkflowNodeAssignment {
+  return {
+    stepId,
+    agentId: agent.id,
+    agentLabel: agent.label,
+    agentFingerprint: agent.fingerprint,
+    skillCapabilities: agent.skillCapabilities,
+    toolCapabilities: agent.toolCapabilities,
+    integrationCapabilities: [],
+  };
+}
+
+function buildGraphAssignmentPreview(
+  detail: PlaybookSummary | PlaybookDetail | null,
+  capabilityInventory: WorkflowCapabilityInventory | null
+): PlaybookAssignmentPreviewResult | null {
+  if (!detail || !("steps" in detail) || !capabilityInventory) return null;
+
+  const agentSteps = detail.steps.filter((step) => step.kind === "agent");
+  const assignments: WorkflowRunAssignmentPlan["assignments"] = {};
+  const defaultAgent = capabilityInventory.agents[0];
+
+  const nodePreviews = agentSteps.map((step) => {
+    const candidates = capabilityInventory.agents.map((agent, index) => ({
+      agentId: agent.id,
+      agentLabel: agent.label,
+      assignment: assignmentForInventoryAgent(step.id, agent),
+      recommended: index === 0,
+      disabled: false,
+    }));
+    const recommended = candidates[0];
+    if (recommended) {
+      assignments[step.id] = recommended.assignment;
+    }
+    return {
+      stepId: step.id,
+      stepLabel: step.label ?? titleFromId(step.id),
+      kind: "agent" as const,
+      ...(recommended
+        ? {
+            recommendedAgentId: recommended.agentId,
+            recommendedAgentLabel: recommended.agentLabel,
+          }
+        : {}),
+      candidates,
+    };
+  });
+
+  return {
+    assignmentPlan: {
+      resolverVersion: 1,
+      createdAt: new Date().toISOString(),
+      assignments: defaultAgent === undefined && agentSteps.length > 0 ? {} : assignments,
+    },
+    confirmationRequired: false,
+    blockers: [],
+    sourceGaps: [],
+    nodePreviews,
+  };
+}
+
+function firstAssignedAgentId(
+  assignmentPlan: WorkflowRunAssignmentPlan | null | undefined
+): string | undefined {
+  return Object.values(assignmentPlan?.assignments ?? {}).find((assignment) => assignment.agentId)
+    ?.agentId;
+}
+
 function initFormValues(inputs: Record<string, WorkflowInputDefinition>): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const [key, spec] of Object.entries(inputs)) {
@@ -681,6 +1058,9 @@ function GraphRuntimeSection({
   const [gitPreview, setGitPreview] = useState<PlaybookGraphGitMilestonePreview | null>(null);
   const [gitPreviewError, setGitPreviewError] = useState<string | null>(null);
   const selectedRunId = detail?.run.runId;
+  const visibleActions = (surface?.actions ?? []).filter(
+    (action) => action.decision !== "edit_input"
+  );
   const workspaceRoot =
     detail?.run.materialization?.kind === "workspace"
       ? detail.run.materialization.workspaceRoot
@@ -699,114 +1079,157 @@ function GraphRuntimeSection({
   if (runs.length === 0 && !detail && !error) return null;
 
   return (
-    <Section title="Graph runtime" subtitle="Durable queue, branches, reviews, and artifacts">
-      {error ? (
-        <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {error}
-        </div>
-      ) : null}
-      <div className="space-y-2">
-        {runs.map((run) => (
-          <button
-            key={run.runId}
-            type="button"
-            className={cn(
-              "w-full rounded-md border border-border bg-background px-3 py-2 text-left text-xs hover:border-primary/40",
-              selectedRunId === run.runId ? "border-primary/50" : ""
-            )}
-            onClick={() => onSelect(run.runId)}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium text-foreground">{run.playbookId}</span>
-              <span
-                className={cn(
-                  "rounded-full border px-2 py-0.5 text-[10px]",
-                  graphStatusClass[run.status]
-                )}
-              >
-                {graphStatusCopy[run.status]}
-              </span>
-            </div>
-            <div className="mt-1 text-muted-foreground">{formatTime(run.updatedAt)}</div>
-          </button>
-        ))}
-      </div>
-
-      {detail ? (
-        <div className="mt-3 space-y-3">
-          {detail.run.blockedReason || detail.run.repairReason || detail.run.error ? (
-            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              {detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error}
-            </div>
-          ) : null}
-
-          {(surface?.actions.length ?? 0) > 0 ? (
-            <div className="space-y-2">
-              {payloadError ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  {payloadError}
-                </div>
-              ) : null}
-              {surface?.actions.map((action) => (
-                <div
-                  key={action.actionId}
-                  data-graph-action={action.actionId}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-xs"
+    <details className="rounded-md border border-border bg-background px-3 py-2 text-xs">
+      <summary className="cursor-pointer select-none font-medium text-foreground">
+        Advanced run log
+      </summary>
+      <div className="mt-3 space-y-3">
+        {error ? (
+          <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {error}
+          </div>
+        ) : null}
+        <div className="space-y-2">
+          {runs.map((run) => (
+            <button
+              key={run.runId}
+              type="button"
+              className={cn(
+                "w-full rounded-md border border-border bg-background px-3 py-2 text-left text-xs hover:border-primary/40",
+                selectedRunId === run.runId ? "border-primary/50" : ""
+              )}
+              onClick={() => onSelect(run.runId)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-foreground">{run.playbookId}</span>
+                <span
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-[10px]",
+                    graphStatusClass[run.status]
+                  )}
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="font-medium text-foreground">{action.label}</div>
-                      {action.description ? (
-                        <div className="mt-0.5 text-muted-foreground">{action.description}</div>
-                      ) : null}
-                    </div>
-                    <Button
-                      size="sm"
-                      variant={action.destructive ? "secondary" : "default"}
-                      onClick={(event) => {
-                        try {
-                          setPayloadError(null);
-                          if (action.destructive && !window.confirm(`${action.label}?`)) return;
-                          const actionRoot = event.currentTarget.closest("[data-graph-action]");
-                          const localDrafts = { ...(payloadDrafts[action.actionId] ?? {}) };
-                          const fieldElements =
-                            actionRoot?.querySelectorAll<HTMLTextAreaElement | HTMLSelectElement>(
-                              "[data-payload-field]"
-                            ) ?? [];
-                          for (const fieldElement of fieldElements) {
-                            const fieldPath = fieldElement.dataset.payloadField;
-                            if (fieldPath) localDrafts[fieldPath] = fieldElement.value;
-                          }
-                          onResume(action, parseGraphActionPayload(action, localDrafts));
-                        } catch (payloadParseError) {
-                          setPayloadError(
-                            payloadParseError instanceof Error
-                              ? payloadParseError.message
-                              : String(payloadParseError)
-                          );
-                        }
-                      }}
-                    >
-                      {action.label}
-                    </Button>
+                  {graphStatusCopy[run.status]}
+                </span>
+              </div>
+              <div className="mt-1 text-muted-foreground">Updated {formatTime(run.updatedAt)}</div>
+            </button>
+          ))}
+        </div>
+
+        {detail ? (
+          <div className="mt-3 space-y-3">
+            {detail.run.blockedReason || detail.run.repairReason || detail.run.error ? (
+              <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                {detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error}
+              </div>
+            ) : null}
+
+            {visibleActions.length > 0 ? (
+              <div className="space-y-2">
+                {payloadError ? (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                    {payloadError}
                   </div>
-                  {action.requiredPayloadFields.length > 0 ? (
-                    <div className="mt-2 space-y-2">
-                      {action.requiredPayloadFields.map((field) => {
-                        const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
-                        const activeArtifactIds =
-                          surface?.activeArtifacts.map((artifact) => artifact.artifactId) ?? [];
-                        if (field.path === "artifactId" && activeArtifactIds.length > 0) {
+                ) : null}
+                {visibleActions.map((action) => (
+                  <div
+                    key={action.actionId}
+                    data-graph-action={action.actionId}
+                    className="rounded-md border border-border bg-background px-3 py-2 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="font-medium text-foreground">{action.label}</div>
+                        {action.description ? (
+                          <div className="mt-0.5 text-muted-foreground">{action.description}</div>
+                        ) : null}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant={action.destructive ? "secondary" : "default"}
+                        onClick={(event) => {
+                          try {
+                            setPayloadError(null);
+                            if (action.destructive && !window.confirm(`${action.label}?`)) return;
+                            const actionRoot = event.currentTarget.closest("[data-graph-action]");
+                            const localDrafts = { ...(payloadDrafts[action.actionId] ?? {}) };
+                            const fieldElements =
+                              actionRoot?.querySelectorAll<HTMLTextAreaElement | HTMLSelectElement>(
+                                "[data-payload-field]"
+                              ) ?? [];
+                            for (const fieldElement of fieldElements) {
+                              const fieldPath = fieldElement.dataset.payloadField;
+                              if (fieldPath) localDrafts[fieldPath] = fieldElement.value;
+                            }
+                            onResume(action, parseGraphActionPayload(action, localDrafts));
+                          } catch (payloadParseError) {
+                            setPayloadError(
+                              payloadParseError instanceof Error
+                                ? payloadParseError.message
+                                : String(payloadParseError)
+                            );
+                          }
+                        }}
+                      >
+                        {action.label}
+                      </Button>
+                    </div>
+                    {action.requiredPayloadFields.length > 0 ? (
+                      <div className="mt-2 space-y-2">
+                        {action.requiredPayloadFields.map((field) => {
+                          const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
+                          const activeArtifactIds =
+                            surface?.activeArtifacts.map((artifact) => artifact.artifactId) ?? [];
+                          if (field.path === "artifactId" && activeArtifactIds.length > 0) {
+                            return (
+                              <label
+                                key={field.path}
+                                className="block text-[11px] text-muted-foreground"
+                              >
+                                {field.label}
+                                <select
+                                  data-payload-field={field.path}
+                                  className="mt-1 w-full rounded-md border border-border bg-muted px-2 py-1 text-foreground"
+                                  value={value}
+                                  onChange={(event) =>
+                                    updatePayloadDraft(
+                                      action.actionId,
+                                      field.path,
+                                      event.target.value
+                                    )
+                                  }
+                                >
+                                  <option value="">Select artifact</option>
+                                  {activeArtifactIds.map((artifactId) => (
+                                    <option key={artifactId} value={artifactId}>
+                                      {artifactId}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            );
+                          }
+                          const isString = field.kind === "string";
                           return (
                             <label
                               key={field.path}
                               className="block text-[11px] text-muted-foreground"
                             >
                               {field.label}
-                              <select
+                              <textarea
                                 data-payload-field={field.path}
-                                className="mt-1 w-full rounded-md border border-border bg-muted px-2 py-1 text-foreground"
+                                className={cn(
+                                  "mt-1 w-full resize-y rounded-md border border-border bg-muted px-2 py-1 text-foreground",
+                                  isString ? "min-h-16" : "min-h-20 font-mono"
+                                )}
                                 value={value}
+                                placeholder={
+                                  isString
+                                    ? field.label
+                                    : field.kind === "object"
+                                      ? "{ }"
+                                      : "JSON value"
+                                }
                                 onChange={(event) =>
                                   updatePayloadDraft(
                                     action.actionId,
@@ -814,187 +1237,155 @@ function GraphRuntimeSection({
                                     event.target.value
                                   )
                                 }
-                              >
-                                <option value="">Select artifact</option>
-                                {activeArtifactIds.map((artifactId) => (
-                                  <option key={artifactId} value={artifactId}>
-                                    {artifactId}
-                                  </option>
-                                ))}
-                              </select>
+                              />
                             </label>
                           );
-                        }
-                        const isString = field.kind === "string";
-                        return (
-                          <label
-                            key={field.path}
-                            className="block text-[11px] text-muted-foreground"
-                          >
-                            {field.label}
-                            <textarea
-                              data-payload-field={field.path}
-                              className={cn(
-                                "mt-1 w-full resize-y rounded-md border border-border bg-muted px-2 py-1 text-foreground",
-                                isString ? "min-h-16" : "min-h-20 font-mono"
-                              )}
-                              value={value}
-                              placeholder={
-                                isString
-                                  ? field.label
-                                  : field.kind === "object"
-                                    ? "{ }"
-                                    : "JSON value"
-                              }
-                              onChange={(event) =>
-                                updatePayloadDraft(action.actionId, field.path, event.target.value)
-                              }
-                            />
-                          </label>
-                        );
-                      })}
+                        })}
+                      </div>
+                    ) : null}
+                    <div className="mt-1 text-muted-foreground">
+                      {action.sideEffect.replace("_", " ")}
+                      {action.invalidatesDownstream ? " · invalidates downstream" : ""}
                     </div>
-                  ) : null}
-                  <div className="mt-1 text-muted-foreground">
-                    {action.sideEffect.replace("_", " ")}
-                    {action.invalidatesDownstream ? " · invalidates downstream" : ""}
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {workspaceRoot ? (
-            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="font-medium text-foreground">Git milestone</div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    Git readiness is checked only when previewed.
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    setGitPreviewError(null);
-                    void onPreviewGitMilestone(detail.run.runId, workspaceRoot)
-                      .then(setGitPreview)
-                      .catch((previewError) =>
-                        setGitPreviewError(
-                          previewError instanceof Error
-                            ? previewError.message
-                            : String(previewError)
-                        )
-                      );
-                  }}
-                >
-                  Preview Git milestone
-                </Button>
+                ))}
               </div>
-              {gitPreviewError ? (
-                <div className="mt-2 text-red-700">{gitPreviewError}</div>
-              ) : gitPreview ? (
-                <div className="mt-2 text-muted-foreground">
-                  {gitPreview.available ? "Ready" : (gitPreview.unavailableReason ?? "Unavailable")}{" "}
-                  · {gitPreview.changedFiles.length} changed file
-                  {gitPreview.changedFiles.length === 1 ? "" : "s"}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+            ) : null}
 
-          <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-            {detail.queue.map((entry) => (
-              <div key={entry.queueEntryId} className="px-3 py-2 text-xs">
+            {workspaceRoot ? (
+              <div className="rounded-md border border-border bg-background px-3 py-2 text-xs">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-foreground">{entry.nodePath}</span>
-                  <span className="text-muted-foreground">{entry.status}</span>
+                  <div>
+                    <div className="font-medium text-foreground">Git milestone</div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      Git readiness is checked only when previewed.
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      setGitPreviewError(null);
+                      void onPreviewGitMilestone(detail.run.runId, workspaceRoot)
+                        .then(setGitPreview)
+                        .catch((previewError) =>
+                          setGitPreviewError(
+                            previewError instanceof Error
+                              ? previewError.message
+                              : String(previewError)
+                          )
+                        );
+                    }}
+                  >
+                    Preview Git milestone
+                  </Button>
                 </div>
-                <div className="mt-0.5 text-muted-foreground">{entry.nodeKind}</div>
+                {gitPreviewError ? (
+                  <div className="mt-2 text-red-700">{gitPreviewError}</div>
+                ) : gitPreview ? (
+                  <div className="mt-2 text-muted-foreground">
+                    {gitPreview.available
+                      ? "Ready"
+                      : (gitPreview.unavailableReason ?? "Unavailable")}{" "}
+                    · {gitPreview.changedFiles.length} changed file
+                    {gitPreview.changedFiles.length === 1 ? "" : "s"}
+                  </div>
+                ) : null}
               </div>
-            ))}
-          </div>
+            ) : null}
 
-          {(surface?.activeArtifacts.length ?? 0) > 0 ? (
             <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-              {surface?.activeArtifacts.map((artifact) => (
-                <div
-                  key={`${artifact.artifactId}:${artifact.versionId}`}
-                  className="px-3 py-2 text-xs"
-                >
+              {detail.queue.map((entry) => (
+                <div key={entry.queueEntryId} className="px-3 py-2 text-xs">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium text-foreground">{artifact.artifactId}</span>
-                    <span className="text-muted-foreground">
-                      {artifact.producerStatus ?? "unknown"}
-                    </span>
+                    <span className="font-medium text-foreground">{entry.nodePath}</span>
+                    <span className="text-muted-foreground">{entry.status}</span>
                   </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    {summarizeValue(artifact.value)}
-                  </div>
+                  <div className="mt-0.5 text-muted-foreground">{entry.nodeKind}</div>
                 </div>
               ))}
             </div>
-          ) : null}
 
-          {(surface?.artifactTimeline.length ?? 0) > 0 ? (
-            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              Artifact timeline: {surface?.artifactTimeline.length} version
-              {surface?.artifactTimeline.length === 1 ? "" : "s"} ·{" "}
-              {surface?.artifactTimeline.filter((artifact) => artifact.active).length} active
-            </div>
-          ) : null}
-
-          {(surface?.timeline.length ?? 0) > 0 ? (
-            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-              {surface?.timeline.map((row) => (
-                <div key={row.timelineRowId} className="px-3 py-2 text-xs">
-                  <div className="font-medium text-foreground">{row.message}</div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    {row.kind.replace("_", " ")} · {formatTime(row.createdAt)}
+            {(surface?.activeArtifacts.length ?? 0) > 0 ? (
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                {surface?.activeArtifacts.map((artifact) => (
+                  <div
+                    key={`${artifact.artifactId}:${artifact.versionId}`}
+                    className="px-3 py-2 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-foreground">{artifact.artifactId}</span>
+                      <span className="text-muted-foreground">
+                        {artifact.producerStatus ?? "unknown"}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      {summarizeValue(artifact.value)}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
+                ))}
+              </div>
+            ) : null}
 
-          {detail.branchItems.length > 0 ? (
-            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-              {detail.branchItems.map((item) => (
-                <div key={item.branchItemId} className="px-3 py-2 text-xs">
-                  <div className="font-medium text-foreground">
-                    Branch {item.index + 1} · {item.status}
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground">{summarizeValue(item.value)}</div>
-                </div>
-              ))}
-            </div>
-          ) : null}
+            {(surface?.artifactTimeline.length ?? 0) > 0 ? (
+              <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                Artifact timeline: {surface?.artifactTimeline.length} version
+                {surface?.artifactTimeline.length === 1 ? "" : "s"} ·{" "}
+                {surface?.artifactTimeline.filter((artifact) => artifact.active).length} active
+              </div>
+            ) : null}
 
-          {(surface?.branches.length ?? 0) > 0 ? (
-            <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-              {surface?.branches.map((branch) => (
-                <div key={branch.parentQueueEntryId} className="px-3 py-2 text-xs">
-                  <div className="font-medium text-foreground">
-                    {branch.parentNodePath} · {branch.parentStatus}
+            {(surface?.timeline.length ?? 0) > 0 ? (
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                {surface?.timeline.map((row) => (
+                  <div key={row.timelineRowId} className="px-3 py-2 text-xs">
+                    <div className="font-medium text-foreground">{row.message}</div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      {row.kind.replace("_", " ")} · {formatTime(row.createdAt)}
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    {branch.items.length} branch item{branch.items.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
+                ))}
+              </div>
+            ) : null}
 
-          {(detail.artifacts.length > 0 || detail.reviews.length > 0) && (
-            <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              {detail.artifacts.length} artifact version{detail.artifacts.length === 1 ? "" : "s"} ·{" "}
-              {detail.reviews.length} review event{detail.reviews.length === 1 ? "" : "s"}
-            </div>
-          )}
-        </div>
-      ) : null}
-    </Section>
+            {detail.branchItems.length > 0 ? (
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                {detail.branchItems.map((item) => (
+                  <div key={item.branchItemId} className="px-3 py-2 text-xs">
+                    <div className="font-medium text-foreground">
+                      Branch {item.index + 1} · {item.status}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">{summarizeValue(item.value)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {(surface?.branches.length ?? 0) > 0 ? (
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                {surface?.branches.map((branch) => (
+                  <div key={branch.parentQueueEntryId} className="px-3 py-2 text-xs">
+                    <div className="font-medium text-foreground">
+                      {branch.parentNodePath} · {branch.parentStatus}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      {branch.items.length} branch item{branch.items.length === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {(detail.artifacts.length > 0 || detail.reviews.length > 0) && (
+              <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                {detail.artifacts.length} artifact version{detail.artifacts.length === 1 ? "" : "s"}{" "}
+                · {detail.reviews.length} review event{detail.reviews.length === 1 ? "" : "s"}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -1120,6 +1511,7 @@ function GuidedStart({
   savingPreference,
   workspaceRoot,
   capabilityInventory,
+  graphReady,
 }: {
   playbook: PlaybookSummary;
   playbookDetail: PlaybookDetail | null;
@@ -1136,6 +1528,7 @@ function GuidedStart({
   savingPreference: boolean;
   workspaceRoot: string | null;
   capabilityInventory: WorkflowCapabilityInventory | null;
+  graphReady: boolean;
 }) {
   const ctaCopy = ctaCopyMap[playbook.id] ?? "Start playbook";
   const [setupEditorOpen, setSetupEditorOpen] = useState(false);
@@ -1166,8 +1559,7 @@ function GuidedStart({
     !!workspaceRoot &&
     !running &&
     blockers.length === 0 &&
-    !!draftAssignmentPlan &&
-    agentsConfirmed;
+    (graphReady || (!!draftAssignmentPlan && agentsConfirmed));
   const agentSteps = workflowSteps.filter((step) => step.kind === "agent");
   const savedAgentLabels = [
     ...new Set(
@@ -1224,7 +1616,7 @@ function GuidedStart({
         className="rounded-md"
         onClick={() => setSetupEditorOpen(true)}
       >
-        Setup
+        Change setup
       </Button>
     </div>
   ) : (
@@ -1409,7 +1801,7 @@ function GuidedStart({
           disabled={!canConfirmAgents}
         >
           {savingPreference ? <Loader2 size={14} className="animate-spin" /> : null}
-          {agentsConfirmed ? "Save setup" : "Use this setup"}
+          {graphReady ? "Save selection" : agentsConfirmed ? "Save setup" : "Use this setup"}
         </Button>
         {!setupEditorOpen && assignmentPreview ? (
           <Button
@@ -1894,32 +2286,60 @@ function DetailsPanel({
   ) => Promise<PlaybookGraphGitMilestonePreview>;
   onClose: () => void;
 }) {
+  const playbookForRun = playbookDetail ?? run?.playbook ?? null;
+  const runInput = run?.input ?? {};
+  const sourceGaps = run?.sourceGaps ?? [];
   const visibleInputs = useMemo(() => {
     const definitions = playbookDetail?.inputs ?? {};
-    return Object.entries(run?.input ?? {})
+    return Object.entries(runInput)
       .filter(([key]) => key !== "workspaceRoot")
       .map(([key, value]) => ({
         key,
         label: definitions[key]?.label ?? titleFromId(key),
         value: inputDisplayValue(value),
       }));
-  }, [playbookDetail?.inputs, run?.input]);
+  }, [playbookDetail?.inputs, runInput]);
+
+  const outputRows = useMemo(() => {
+    const outputs = playbookForRun?.outputs ?? [];
+    const runOutputs = run?.outputs ?? {};
+    return outputs
+      .filter((output) =>
+        shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
+      )
+      .map((output) => {
+        const value = playbookOutputValue(output.kind, runOutputs);
+        const artifactPath =
+          output.kind === "meetingBrief" ||
+          output.kind === "businessBrief" ||
+          output.kind === "statusDigest"
+            ? filePathFromValue(value)
+            : null;
+        return {
+          key: output.kind,
+          label: output.label,
+          path: artifactPath,
+          summary: playbookOutputSummary(output.kind, value, sourceGaps.length, artifactPath),
+        };
+      });
+  }, [playbookForRun?.outputs, run?.outputs, sourceGaps.length]);
 
   const runStepGroups = useMemo(() => {
     if (!run?.steps?.length) return [];
-    return orderedPhases(playbookDetail, run).map((phase) => ({
+    return orderedPhases(playbookForRun, run).map((phase) => ({
       phase,
       steps: (run.steps ?? []).filter((step) => step.phase === phase),
     }));
-  }, [run, playbookDetail]);
-  const sourceGaps = run?.sourceGaps ?? [];
+  }, [run, playbookForRun]);
+  const reviewEvents =
+    selectedGraphRun?.reviews.filter((review) => review.decision !== "requested") ?? [];
 
   return (
     <aside className="flex w-80 flex-shrink-0 flex-col border-l border-border bg-secondary">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
-          <h2 className="text-sm font-semibold text-foreground">Details</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">Run inputs, steps, and events</p>
+          <h2 className="text-sm font-semibold text-foreground">Run summary</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">What Tessera did and produced</p>
         </div>
         <button
           type="button"
@@ -1934,6 +2354,48 @@ function DetailsPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {run ? (
           <div className="space-y-5">
+            <div className="rounded-md border border-border bg-background px-3 py-3 text-xs">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium text-foreground">
+                    {playbookForRun?.name ?? titleFromId(run.workflowId)}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">
+                    {resultSub[run.status] ?? "Tessera updated this run."}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">
+                    Updated {formatTime(run.updatedAt)}
+                  </div>
+                </div>
+                <span
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-[10px]",
+                    statusClass[run.status]
+                  )}
+                >
+                  {statusCopy[run.status]}
+                </span>
+              </div>
+            </div>
+
+            {outputRows.length > 0 ? (
+              <Section title="Output" subtitle="What Tessera produced">
+                <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                  {outputRows.map((output) => (
+                    <div key={output.key} className="px-3 py-2 text-xs">
+                      <div className="font-medium text-foreground">{output.label}</div>
+                      {output.path ? (
+                        <div className="mt-0.5 text-muted-foreground">{output.path}</div>
+                      ) : null}
+                      {output.summary ? (
+                        <div className="mt-1 text-muted-foreground">{output.summary}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            ) : null}
+
             {visibleInputs.length > 0 ? (
               <Section title="Inputs" subtitle="What Tessera was asked to do">
                 <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
@@ -1941,6 +2403,29 @@ function DetailsPanel({
                     <div key={input.key} className="px-3 py-2 text-xs">
                       <div className="font-medium text-foreground">{input.label}</div>
                       <div className="mt-0.5 text-muted-foreground">{input.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            ) : null}
+
+            {reviewEvents.length > 0 ? (
+              <Section title="Review" subtitle="Your decisions on this run">
+                <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                  {reviewEvents.map((review) => (
+                    <div key={review.reviewEventId} className="px-3 py-2 text-xs">
+                      <div className="font-medium text-foreground">
+                        {review.decision === "approved"
+                          ? "Approved"
+                          : review.decision === "denied"
+                            ? "Denied"
+                            : review.decision === "request_changes"
+                              ? "Changes requested"
+                              : "Edited"}
+                      </div>
+                      <div className="mt-0.5 text-muted-foreground">
+                        {formatTime(review.createdAt)}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1963,7 +2448,7 @@ function DetailsPanel({
             ) : null}
 
             {runStepGroups.length > 0 ? (
-              <Section title="Steps" subtitle="What each step did">
+              <Section title="Progress" subtitle="How the run completed">
                 <div className="space-y-3">
                   {runStepGroups.map((group) => (
                     <div key={group.phase}>
@@ -2071,10 +2556,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [draftAssignmentPlan, setDraftAssignmentPlan] = useState<WorkflowRunAssignmentPlan | null>(
     null
   );
-  const [draftCapabilityInventory, setDraftCapabilityInventory] =
-    useState<WorkflowCapabilityInventory | null>(null);
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
-  const [savingPreference, setSavingPreference] = useState(false);
   const runListRequestRef = useRef(0);
   const graphRunListRequestRef = useRef(0);
 
@@ -2106,6 +2588,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     businessPlaybooks.find((p) => p.id === selectedPlaybookId) ?? businessPlaybooks[0] ?? null;
   const selectedPlaybookForUi =
     selectedPlaybookDetail?.id === selectedPlaybook?.id ? selectedPlaybookDetail : selectedPlaybook;
+  const selectedGraphHash = selectedPlaybookForUi?.graphHash;
   const selectedRun =
     selectedRunDetail ??
     (selectedRunId ? (runs.find((run) => run.runId === selectedRunId) ?? null) : null);
@@ -2138,65 +2621,31 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }, [showStartForm, running, selectedRun]);
 
   useEffect(() => {
-    let cancelled = false;
     if (!selectedPlaybookId || !workspaceRoot || !capabilityInventory) {
       setAssignmentPreview(null);
       setDraftAssignmentPlan(null);
-      setDraftCapabilityInventory(null);
       setAgentsConfirmed(false);
+      return;
+    }
+
+    if (selectedGraphHash) {
+      const preview = buildGraphAssignmentPreview(selectedPlaybookForUi, capabilityInventory);
+      setAssignmentPreview(preview);
+      setDraftAssignmentPlan(preview?.assignmentPlan ?? null);
+      setAgentsConfirmed(true);
       return;
     }
 
     setAssignmentPreview(null);
     setDraftAssignmentPlan(null);
-    setDraftCapabilityInventory(null);
     setAgentsConfirmed(false);
-
-    void (async () => {
-      try {
-        const preference = await invoke<PlaybookRunPreferenceReadResult>(
-          "playbook_run_preference_get",
-          {
-            playbookId: selectedPlaybookId,
-            request: { workspaceRoot },
-          }
-        );
-        if (cancelled) return;
-
-        const preview = await invoke<PlaybookAssignmentPreviewResult>(
-          "playbook_assignment_preview",
-          {
-            playbookId: selectedPlaybookId,
-            request: {
-              workspaceRoot,
-              capabilityInventory,
-              previousPlan: preference.preference?.assignmentPlan,
-            },
-          }
-        );
-        if (cancelled) return;
-
-        const nextAssignmentPlan =
-          preview.assignmentPlan ??
-          (preview.blockers.length > 0 ? null : (preference.preference?.assignmentPlan ?? null));
-        setAssignmentPreview(preview);
-        setDraftAssignmentPlan(nextAssignmentPlan);
-        setDraftCapabilityInventory(nextAssignmentPlan ? capabilityInventory : null);
-        setAgentsConfirmed(!!preference.preference && preview.blockers.length === 0);
-      } catch (loadError) {
-        if (cancelled) return;
-        setAssignmentPreview(null);
-        setDraftAssignmentPlan(null);
-        setDraftCapabilityInventory(null);
-        setAgentsConfirmed(false);
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [capabilityInventory, selectedPlaybookId, workspaceRoot]);
+  }, [
+    capabilityInventory,
+    selectedGraphHash,
+    selectedPlaybookForUi,
+    selectedPlaybookId,
+    workspaceRoot,
+  ]);
 
   const loadPlaybooks = useCallback(async () => {
     setLoadingPlaybooks(true);
@@ -2244,53 +2693,66 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }, []);
 
-  const loadRuns = useCallback(async (playbookId?: string | null) => {
-    const requestId = ++runListRequestRef.current;
-    setError(null);
-    if (!playbookId) {
-      setRuns([]);
-      setSelectedRunId(null);
-      setSelectedRunDetail(null);
-      return;
-    }
-
-    try {
-      const result = await invoke<WorkflowRunListResult>("playbook_run_list", {
-        playbookId,
-      });
-      if (requestId !== runListRequestRef.current) return;
-
-      const playbookRuns = result.runs.filter((run) => run.workflowId === playbookId);
-      setRuns(playbookRuns);
-      setSelectedRunId((current) => {
-        if (current && playbookRuns.some((run) => run.runId === current)) return current;
+  const loadRuns = useCallback(
+    async (playbookId?: string | null) => {
+      const requestId = ++runListRequestRef.current;
+      setError(null);
+      if (!playbookId) {
+        setRuns([]);
+        setSelectedRunId(null);
         setSelectedRunDetail(null);
-        return null;
-      });
-    } catch (loadError) {
-      if (requestId !== runListRequestRef.current) return;
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
+        return;
+      }
+
+      try {
+        const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
+          playbookId,
+        });
+        if (requestId !== runListRequestRef.current) return;
+
+        const playbookRuns = result.runs
+          .filter((run) => run.playbookId === playbookId)
+          .map((run) => graphRunRecordToPlaybookRunDetail(run, selectedPlaybookForUi));
+        setRuns(playbookRuns);
+        setSelectedRunId((current) => {
+          if (current && playbookRuns.some((run) => run.runId === current)) return current;
+          setSelectedRunDetail(null);
+          return null;
+        });
+      } catch (loadError) {
+        if (requestId !== runListRequestRef.current) return;
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    },
+    [selectedPlaybookForUi]
+  );
 
   const loadRunHistory = useCallback(async () => {
     try {
-      const result = await invoke<WorkflowRunListResult>("playbook_run_list");
-      setRunHistory(result.runs);
+      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list");
+      setRunHistory(result.runs.map((run) => graphRunRecordToPlaybookRunDetail(run, null)));
     } catch {
       setRunHistory([]);
     }
   }, []);
 
-  const loadRunDetail = useCallback(async (runId: string) => {
-    try {
-      const detail = await invoke<PlaybookRunDetail>("playbook_run_get", { runId });
-      setSelectedRunDetail(detail);
-      setRuns((current) => current.map((run) => (run.runId === detail.runId ? detail : run)));
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
+  const loadRunDetail = useCallback(
+    async (runId: string) => {
+      try {
+        const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+          runId,
+        });
+        const detail = graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi);
+        setSelectedGraphRunSurface(surface);
+        setSelectedGraphRunDetail(surface.detail);
+        setSelectedRunDetail(detail);
+        setRuns((current) => current.map((run) => (run.runId === detail.runId ? detail : run)));
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    },
+    [selectedPlaybookForUi]
+  );
 
   const loadGraphRuns = useCallback(async (playbookId?: string | null) => {
     const requestId = ++graphRunListRequestRef.current;
@@ -2324,20 +2786,24 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }, []);
 
-  const loadGraphRunDetail = useCallback(async (runId: string) => {
-    try {
-      const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
-        runId,
-      });
-      setSelectedGraphRunSurface(surface);
-      setSelectedGraphRunDetail(surface.detail);
-      setGraphRuns((current) =>
-        current.map((run) => (run.runId === surface.detail.run.runId ? surface.detail.run : run))
-      );
-    } catch (loadError) {
-      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
+  const loadGraphRunDetail = useCallback(
+    async (runId: string) => {
+      try {
+        const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+          runId,
+        });
+        setSelectedGraphRunSurface(surface);
+        setSelectedGraphRunDetail(surface.detail);
+        setSelectedRunDetail(graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi));
+        setGraphRuns((current) =>
+          current.map((run) => (run.runId === surface.detail.run.runId ? surface.detail.run : run))
+        );
+      } catch (loadError) {
+        setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    },
+    [selectedPlaybookForUi]
+  );
 
   useEffect(() => {
     void loadPlaybooks();
@@ -2397,17 +2863,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
 
     if (selectedRun.dashboardLayout) {
       setDashboardLayout(selectedRun.dashboardLayout);
+      return;
     }
 
-    void invoke<{ layout: DashboardLayout | null }>("playbook_get_dashboard_layout", {
-      runId: selectedRun.runId,
-    })
-      .then((result) => {
-        if (!cancelled) setDashboardLayout(result.layout);
-      })
-      .catch(() => {
-        if (!cancelled) setDashboardLayout(selectedRun.dashboardLayout ?? null);
-      });
+    if (!cancelled) {
+      setDashboardLayout(dashboardLayoutFromPlaybook(selectedPlaybookForUi));
+    }
 
     return () => {
       cancelled = true;
@@ -2469,7 +2930,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   ) {
     const assignmentPlan = assignmentPlanOverride ?? draftAssignmentPlan ?? undefined;
     if (!selectedPlaybook || !workspaceRoot) return;
-    if (!assignmentPlan) {
+    if (!selectedGraphHash && !assignmentPlan) {
       setError("Confirm agents before starting this playbook.");
       setShowStartForm(true);
       return;
@@ -2482,20 +2943,32 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         ...(inputOverride ?? formValues),
         workspaceRoot,
       };
-      const request: WorkflowRunRequest = {
-        workflowId: selectedPlaybook.id,
-        input: fullInput,
-        capabilityInventory: draftCapabilityInventory ?? capabilityInventory ?? undefined,
-        assignmentPlan,
-      };
-      const run = await invoke<PlaybookRunDetail>("playbook_run_create", {
+      if (!selectedGraphHash) {
+        throw new Error("This playbook is not available in the graph runtime.");
+      }
+      const request: PlaybookGraphRunCreateRequest = {
         playbookId: selectedPlaybook.id,
+        graphHash: selectedGraphHash,
+        agentId: firstAssignedAgentId(assignmentPlan) ?? "default",
+        input: fullInput,
+        workspaceRoot,
+        drainDeterministic: true,
+      };
+      const detail = await invoke<PlaybookGraphRunDetail>("graph_run_create", {
         request,
       });
+      const run = graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi);
       setRuns((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
       setRunHistory((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
+      setGraphRuns((current) => [
+        detail.run,
+        ...current.filter((item) => item.runId !== detail.run.runId),
+      ]);
       setSelectedRunId(run.runId);
       setSelectedRunDetail(run);
+      setSelectedGraphRunId(detail.run.runId);
+      setSelectedGraphRunDetail(detail);
+      await loadGraphRunDetail(detail.run.runId);
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
       setShowStartForm(true);
@@ -2505,26 +2978,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }
 
   async function confirmAgents() {
-    if (!selectedPlaybook || !workspaceRoot || !draftAssignmentPlan || savingPreference) return;
-    setSavingPreference(true);
-    setError(null);
-    try {
-      const saved = await invoke<PlaybookRunPreferenceReadResult>("playbook_run_preference_save", {
-        playbookId: selectedPlaybook.id,
-        request: {
-          workspaceRoot,
-          assignmentPlan: draftAssignmentPlan,
-          ...(draftCapabilityInventory ? { capabilityInventory: draftCapabilityInventory } : {}),
-        },
-      });
-      setDraftAssignmentPlan(saved.preference?.assignmentPlan ?? draftAssignmentPlan);
-      setAgentsConfirmed(true);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
-      setAgentsConfirmed(false);
-    } finally {
-      setSavingPreference(false);
-    }
+    setAgentsConfirmed(true);
   }
 
   async function refreshDashboardRun() {
@@ -2533,7 +2987,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       return;
     }
     const assignmentPlan = selectedRun.assignmentPlan ?? draftAssignmentPlan ?? undefined;
-    if (!assignmentPlan) {
+    if (!selectedGraphHash && !assignmentPlan) {
       setRefreshNotice("Agent setup is still loading");
       return;
     }
@@ -2554,18 +3008,31 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     setRunning(true);
     setError(null);
     try {
-      const request: WorkflowResumeRequest = {
+      const approvalDecision =
+        selectedRun.approval?.reasonCode === "graph_context_change"
+          ? "approve_context_change"
+          : selectedRun.approval?.reasonCode === "graph_interrupted_retry"
+            ? "retry_interrupted"
+            : "approve";
+      const actionDecision = decision === "approve" ? approvalDecision : "deny";
+      const action = selectedGraphRunSurface?.actions.find(
+        (item) => item.decision === actionDecision
+      );
+      const detail = await invoke<PlaybookGraphRunDetail>("graph_run_resume", {
         runId: selectedRun.runId,
-        decision,
-        capabilityInventory: capabilityInventory ?? undefined,
-        assignmentPlan: selectedRun.assignmentPlan,
-      };
-      const run = await invoke<PlaybookRunDetail>("playbook_run_resume", {
-        runId: selectedRun.runId,
-        request,
+        request: {
+          runId: selectedRun.runId,
+          decision: actionDecision,
+          ...(action?.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
+        },
       });
+      const run = graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi);
       setRuns((current) => current.map((item) => (item.runId === run.runId ? run : item)));
       setRunHistory((current) => current.map((item) => (item.runId === run.runId ? run : item)));
+      setGraphRuns((current) =>
+        current.map((item) => (item.runId === detail.run.runId ? detail.run : item))
+      );
+      setSelectedGraphRunDetail(detail);
       setSelectedRunDetail(run);
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
@@ -2595,6 +3062,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setGraphRuns((current) =>
         current.map((run) => (run.runId === detail.run.runId ? detail.run : run))
       );
+      setSelectedRunDetail(graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi));
       await loadGraphRunDetail(detail.run.runId);
     } catch (runError) {
       setGraphRunError(runError instanceof Error ? runError.message : String(runError));
@@ -2757,9 +3225,10 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
             onAssignmentPlanChange={setDraftAssignmentPlan}
             formReady={formReady}
             running={running}
-            savingPreference={savingPreference}
+            savingPreference={false}
             workspaceRoot={workspaceRoot}
             capabilityInventory={capabilityInventory}
+            graphReady={!!selectedGraphHash}
           />
         ) : guidedState === "preparing" ? (
           <GuidedPreparing run={selectedRun} playbook={selectedPlaybookForUi} />

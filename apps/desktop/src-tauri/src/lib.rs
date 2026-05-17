@@ -1126,6 +1126,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_CURATED_SKILLS_DIR",
             curated_skills_dir.to_string_lossy().as_ref(),
         )
+        .env("TESSERA_GRAPH_RUN_WORKER", "1")
         // pi-coding-agent resolves its package dir via dirname(process.execPath) when
         // running as a compiled Bun binary, but Tauri copies the sidecar to target/debug/.
         // Point it at binaries/ where package.json is kept alongside the sources.
@@ -1617,60 +1618,6 @@ async fn google_workspace_oauth_client_delete(
 }
 
 #[tauri::command]
-async fn workflow_run(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    input: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(
-        &app,
-        serde_json::json!({
-            "workflowId": "demo.write-approval",
-            "input": input,
-        }),
-    )
-    .await?;
-    let body = request.to_string();
-    let json = state
-        .post("/workflows/run", &body)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn workflow_list_pending(
-    state: State<'_, SidecarHandle>,
-) -> Result<serde_json::Value, String> {
-    let json = state
-        .get("/workflows/runs?status=blocked")
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn workflow_resume(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    run_id: String,
-    decision: String,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(
-        &app,
-        serde_json::json!({
-            "runId": &run_id,
-            "decision": decision,
-        }),
-    )
-    .await?;
-    let body = request.to_string();
-    let path = format!("/workflows/{run_id}/resume");
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn playbook_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
     let json = state.get("/playbooks").await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -1683,124 +1630,6 @@ async fn playbook_get(
 ) -> Result<serde_json::Value, String> {
     let path = format!("/playbooks/{}", percent_encode(&playbook_id));
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_create(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    playbook_id: String,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(&app, request).await?;
-    let body = request.to_string();
-    let path = format!("/playbooks/{}/runs", percent_encode(&playbook_id));
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_assignment_preview(
-    state: State<'_, SidecarHandle>,
-    playbook_id: String,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let body = request.to_string();
-    let path = format!(
-        "/playbooks/{}/assignment-preview",
-        percent_encode(&playbook_id)
-    );
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_list(
-    state: State<'_, SidecarHandle>,
-    playbook_id: Option<String>,
-    status: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let mut params = Vec::new();
-    if let Some(playbook_id) = playbook_id {
-        params.push(format!("playbookId={}", percent_encode(&playbook_id)));
-    }
-    if let Some(status) = status {
-        params.push(format!("status={}", percent_encode(&status)));
-    }
-    let path = if params.is_empty() {
-        "/playbook-runs".to_string()
-    } else {
-        format!("/playbook-runs?{}", params.join("&"))
-    };
-    let json = state.get(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_get(
-    state: State<'_, SidecarHandle>,
-    run_id: String,
-) -> Result<serde_json::Value, String> {
-    let path = format!("/playbook-runs/{}", percent_encode(&run_id));
-    let json = state.get(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_preference_get(
-    state: State<'_, SidecarHandle>,
-    playbook_id: String,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let body = request.to_string();
-    let path = format!(
-        "/playbooks/{}/run-preference/get",
-        percent_encode(&playbook_id)
-    );
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_preference_save(
-    state: State<'_, SidecarHandle>,
-    playbook_id: String,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let body = request.to_string();
-    let path = format!(
-        "/playbooks/{}/run-preference/save",
-        percent_encode(&playbook_id)
-    );
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_get_dashboard_layout(
-    state: State<'_, SidecarHandle>,
-    run_id: String,
-) -> Result<serde_json::Value, String> {
-    let path = format!(
-        "/workflows/runs/{}/dashboard-layout",
-        percent_encode(&run_id)
-    );
-    let json = state.get(&path).await.map_err(|e| e.to_string())?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn playbook_run_resume(
-    app: AppHandle,
-    state: State<'_, SidecarHandle>,
-    run_id: String,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(&app, request).await?;
-    let body = request.to_string();
-    let path = format!("/playbook-runs/{}/resume", percent_encode(&run_id));
-    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1912,7 +1741,6 @@ async fn inbox_list(
     message_type: Option<String>,
     workspace_root: Option<String>,
     task_id: Option<String>,
-    workflow_run_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = Vec::new();
     if let Some(status) = status {
@@ -1926,12 +1754,6 @@ async fn inbox_list(
     }
     if let Some(task_id) = task_id {
         params.push(format!("taskId={}", percent_encode(&task_id)));
-    }
-    if let Some(workflow_run_id) = workflow_run_id {
-        params.push(format!(
-            "workflowRunId={}",
-            percent_encode(&workflow_run_id)
-        ));
     }
 
     let path = if params.is_empty() {
@@ -2995,16 +2817,8 @@ pub fn run() {
             model_credential_delete,
             model_settings_get,
             model_settings_save,
-            playbook_assignment_preview,
-            playbook_get_dashboard_layout,
             playbook_get,
             playbook_list,
-            playbook_run_create,
-            playbook_run_get,
-            playbook_run_list,
-            playbook_run_preference_get,
-            playbook_run_preference_save,
-            playbook_run_resume,
             sidecar_ping,
             skill_get,
             skill_list,
@@ -3021,10 +2835,7 @@ pub fn run() {
             task_todo_apply,
             task_unsubscribe,
             task_update,
-            workspace_file_open,
-            workflow_list_pending,
-            workflow_run,
-            workflow_resume
+            workspace_file_open
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Tessera")

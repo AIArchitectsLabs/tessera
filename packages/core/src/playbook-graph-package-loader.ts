@@ -5,6 +5,7 @@ import type {
   PlaybookGraphNode,
   PlaybookGraphPackageManifest,
 } from "@tessera/contracts";
+import { PlaybookGraphPackageManifestSchema } from "@tessera/contracts";
 import ts from "typescript";
 import type { CompilePlaybookGraphOptions } from "./playbook-graph-compiler.js";
 import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
@@ -21,6 +22,7 @@ export interface LoadedGraphPlaybookPackage {
   root: string;
   manifest: PlaybookGraphPackageManifest;
   compiled: CompiledPlaybookGraph;
+  sourceFiles: Record<string, string>;
 }
 
 const ALLOWED_EXTERNAL_IMPORT_PREFIX = "@tessera/plugin-sdk";
@@ -469,21 +471,35 @@ export async function loadGraphPlaybookPackage(
   options: LoadGraphPlaybookPackageOptions
 ): Promise<LoadedGraphPlaybookPackage> {
   const packageFiles = await readPlaybookGraphPackage(options.root);
+  return loadCollectedGraphPlaybookPackage({
+    ...options,
+    manifest: packageFiles.manifest,
+    sourceFiles: packageFiles.sourceFiles,
+  });
+}
 
-  const graph = extractGraphPlaybookPackageGraph(
-    packageFiles.sourceFiles,
-    packageFiles.manifest.entrypoint
-  );
+export function loadCollectedGraphPlaybookPackage(
+  options: LoadGraphPlaybookPackageOptions & {
+    manifest?: PlaybookGraphPackageManifest;
+    sourceFiles: Record<string, string>;
+  }
+): LoadedGraphPlaybookPackage {
+  const manifest =
+    options.manifest ??
+    PlaybookGraphPackageManifestSchema.parse(
+      JSON.parse(options.sourceFiles["manifest.json"] ?? "{}") as unknown
+    );
+  const graph = extractGraphPlaybookPackageGraph(options.sourceFiles, manifest.entrypoint);
 
   if (typeof graph !== "object" || graph === null || Array.isArray(graph)) {
     throw new Error(
-      `Graph playbook entrypoint must default-export an object: ${packageFiles.manifest.entrypoint}`
+      `Graph playbook entrypoint must default-export an object: ${manifest.entrypoint}`
     );
   }
 
   const compileOptions: CompilePlaybookGraphOptions = {
     graph,
-    sourceFiles: packageFiles.sourceFiles,
+    sourceFiles: options.sourceFiles,
     compilerVersion: options.compilerVersion,
     scriptSdkVersion: options.scriptSdkVersion,
     ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
@@ -492,14 +508,15 @@ export async function loadGraphPlaybookPackage(
   const compiled = compilePlaybookGraph(compileOptions);
 
   validateGraphPlaybookPackageCompilation({
-    sourceFiles: packageFiles.sourceFiles,
-    manifest: packageFiles.manifest,
+    sourceFiles: options.sourceFiles,
+    manifest,
     compiled,
   });
 
   return {
-    root: packageFiles.root,
-    manifest: packageFiles.manifest,
+    root: options.root,
+    manifest,
     compiled,
+    sourceFiles: options.sourceFiles,
   };
 }

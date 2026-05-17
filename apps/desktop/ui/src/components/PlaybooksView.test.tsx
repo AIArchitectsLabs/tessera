@@ -11,7 +11,6 @@ import type {
   PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
-  WorkflowRunListResult,
 } from "@tessera/contracts";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { JSDOM } from "jsdom";
@@ -50,6 +49,7 @@ const playbook = {
   version: 1,
   name: "Sales Meeting Brief",
   description: "Prepare for a customer or prospect meeting",
+  graphHash: "sha256:graph",
   category: "Sales",
   businessUseCase: "Prepare for a customer or prospect meeting",
   requiredCapabilities: [],
@@ -75,6 +75,7 @@ const dashboardPlaybook = {
   version: 1,
   name: "Activity Snapshot",
   description: "Refreshable dashboard of recent workspace activity.",
+  graphHash: "sha256:dashboard-graph",
   category: "Operations",
   businessUseCase: "Latest workspace update",
   requiredCapabilities: [],
@@ -88,7 +89,24 @@ const dashboardPlaybook = {
       order: 1,
     },
   },
-  outputs: [{ kind: "dashboard", label: "Activity dashboard", layout: "layouts/dashboard.json" }],
+  outputs: [
+    {
+      kind: "dashboard",
+      label: "Activity dashboard",
+      layout: "layouts/dashboard.json",
+      layoutData: {
+        refreshLabel: "Refresh snapshot",
+        sections: [
+          {
+            type: "metrics",
+            title: "Activity",
+            items: [{ label: "Open items", binding: "draftSnapshot.openItems" }],
+          },
+          { type: "text", title: "Summary", binding: "draftSnapshot.summary" },
+        ],
+      },
+    },
+  ],
   steps: [],
   stepCount: 1,
   phases: ["Summarize"],
@@ -127,7 +145,18 @@ const graphRunDetail = {
     input: {},
     snapshot: {
       schemaVersion: 1,
-      snapshotJson: "{}",
+      snapshotJson: JSON.stringify({
+        graph: {
+          nodes: [
+            {
+              id: "writeBrief",
+              kind: "artifactWrite",
+              artifact: "meetingBrief",
+              path: "Sales Meeting Brief - {{inputs.company}}.md",
+            },
+          ],
+        },
+      }),
       snapshotHash: "sha256:snapshot",
       graphHash: "sha256:graph",
       sourceHash: "sha256:source",
@@ -290,6 +319,193 @@ const graphRunSurface = {
   ],
 } satisfies PlaybookGraphRunReviewSurface;
 
+const contextDriftGraphRunDetail = {
+  run: {
+    ...graphRunDetail.run,
+    runId: "graph-run-context-drift",
+    status: "blocked",
+    currentQueueEntryId: "queue-draft-context",
+    blockedReason:
+      "Graph execution context changed; expected sha256:old, got sha256:new. Approval is required before continuing.",
+    updatedAt: "2026-05-16T00:01:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-draft-context",
+      runId: "graph-run-context-drift",
+      nodeId: "draftBrief",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+      status: "queued",
+      dependsOn: [],
+      producesArtifacts: [],
+      consumesArtifacts: [],
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-16T00:00:00.000Z",
+      updatedAt: "2026-05-16T00:01:00.000Z",
+    },
+  ],
+  branchItems: [],
+  artifacts: [],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const contextDriftGraphRunSurface = {
+  schemaVersion: 1,
+  detail: contextDriftGraphRunDetail,
+  activeArtifacts: [],
+  artifactTimeline: [],
+  timeline: [],
+  branches: [],
+  actions: [
+    {
+      schemaVersion: 1,
+      actionId: "graph-run-context-drift:approve_context_change",
+      decision: "approve_context_change",
+      label: "Approve context change",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: [],
+      requiredPayloadFields: [],
+      sideEffect: "resume",
+      destructive: false,
+      invalidatesDownstream: false,
+      requiresExecutionContext: true,
+      requiresProvider: true,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+  ],
+} satisfies PlaybookGraphRunReviewSurface;
+
+const interruptedGraphRunDetail = {
+  run: {
+    ...graphRunDetail.run,
+    runId: "graph-run-interrupted",
+    status: "blocked",
+    currentQueueEntryId: "queue-draft-interrupted",
+    blockedReason: undefined,
+    updatedAt: "2026-05-18T00:01:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-draft-interrupted",
+      runId: "graph-run-interrupted",
+      nodeId: "draftBrief",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+      status: "interrupted",
+      dependsOn: [],
+      producesArtifacts: ["meetingBrief"],
+      consumesArtifacts: [],
+      recoveryPolicy: "block_for_review",
+      attempt: 1,
+      createdAt: "2026-05-18T00:00:00.000Z",
+      updatedAt: "2026-05-18T00:01:00.000Z",
+    },
+  ],
+  branchItems: [],
+  artifacts: [],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const interruptedGraphRunSurface = {
+  schemaVersion: 1,
+  detail: interruptedGraphRunDetail,
+  activeArtifacts: [],
+  artifactTimeline: [],
+  timeline: [],
+  branches: [],
+  actions: [
+    {
+      schemaVersion: 1,
+      actionId: "queue-draft-interrupted:retry_interrupted",
+      decision: "retry_interrupted",
+      label: "Retry interrupted work",
+      queueEntryId: "queue-draft-interrupted",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+      allowedRunStatuses: ["interrupted", "running", "blocked"],
+      allowedQueueStatuses: ["interrupted"],
+      requiredPayloadFields: [],
+      sideEffect: "resume",
+      destructive: false,
+      invalidatesDownstream: false,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+  ],
+} satisfies PlaybookGraphRunReviewSurface;
+
+const completedGraphRunDetail = {
+  run: {
+    ...graphRunDetail.run,
+    runId: "graph-run-completed",
+    status: "completed",
+    currentQueueEntryId: undefined,
+    blockedReason: undefined,
+    input: {
+      company: "FOMORA",
+      sources: ["web"],
+    },
+    updatedAt: "2026-05-09T07:17:00.000Z",
+    completedAt: "2026-05-09T07:17:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-write",
+      runId: "graph-run-completed",
+      nodeId: "writeBrief",
+      nodePath: "writeBrief",
+      nodeKind: "artifactWrite",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: [],
+      consumesArtifacts: [
+        { artifactId: "meetingBrief", versionId: "brief-v1", contentHash: "sha256:meeting-brief" },
+      ],
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-09T07:16:00.000Z",
+      updatedAt: "2026-05-09T07:17:00.000Z",
+      completedAt: "2026-05-09T07:17:00.000Z",
+    },
+  ],
+  branchItems: [],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-completed",
+      artifactId: "meetingBrief",
+      versionId: "brief-v1",
+      producerQueueEntryId: "queue-draft",
+      nodePath: "draftBrief",
+      contentHash: "sha256:meeting-brief",
+      value: {
+        text: "## Meeting brief\n\nCreated the brief and saved it in the workspace.",
+        boundaryViolations: 0,
+        usage: {
+          inputTokens: 1200,
+          outputTokens: 340,
+          totalTokens: 1540,
+          cachedInputTokens: 200,
+          reasoningTokens: 25,
+        },
+      },
+      createdAt: "2026-05-09T07:17:00.000Z",
+    },
+  ],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
+
 const dashboardRun = {
   runId: "run-dashboard",
   workflowId: "ops.activity-snapshot",
@@ -310,22 +526,61 @@ const dashboardRun = {
   steps: [],
 } as unknown as PlaybookRunDetail;
 
-const savedAssignmentPlan = {
-  resolverVersion: 1,
-  createdAt: "2026-05-11T00:00:00.000Z",
-  assignments: {
-    draftBrief: {
-      stepId: "draftBrief",
-      agentId: "default",
-      agentLabel: "Tessera",
-      skillCapabilities: [],
-      toolCapabilities: [],
-      integrationCapabilities: [],
+const dashboardGraphRunDetail = {
+  run: {
+    schemaVersion: 1,
+    runId: "graph-run-dashboard",
+    playbookId: dashboardPlaybook.id,
+    status: "completed",
+    input: {
+      scope: "this week",
     },
+    snapshot: {
+      schemaVersion: 1,
+      snapshotJson: "{}",
+      snapshotHash: "sha256:dashboard-snapshot",
+      graphHash: "sha256:dashboard-graph",
+      sourceHash: "sha256:dashboard-source",
+      sourceFileHashes: {},
+      playbookId: dashboardPlaybook.id,
+      packageVersion: "0.1.0",
+      compilerVersion: "test",
+      graphSchemaVersion: 1,
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    },
+    materialization: {
+      schemaVersion: 1,
+      kind: "workspace",
+      workspaceRoot: "/tmp/workspace",
+    },
+    startedAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-10T07:17:00.000Z",
+    completedAt: "2026-05-10T07:17:00.000Z",
   },
-};
-
-let hasSavedPreference = false;
+  queue: [],
+  branchItems: [],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-dashboard",
+      artifactId: "dashboard",
+      versionId: "dashboard-v1",
+      producerQueueEntryId: "queue-dashboard",
+      nodePath: "draftSnapshot",
+      contentHash: "sha256:dashboard-artifact",
+      value: {
+        openItems: 7,
+        atRisk: 2,
+        highlights: ["Inbox cleared"],
+        summary: "Workspace activity is steady.",
+      },
+      createdAt: "2026-05-10T07:17:00.000Z",
+    },
+  ],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
 
 const modelSettings: ModelSettingsRead = {
   selectedProvider: "openai",
@@ -359,106 +614,55 @@ const integrationSettings: IntegrationSettingsRead = {
   },
 };
 
+let includeContextDriftRun = false;
+let includeInterruptedRun = false;
+
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   switch (command) {
     case "playbook_list":
       return { playbooks: [playbook, dashboardPlaybook] } satisfies PlaybookListResult;
     case "playbook_get":
       return args?.playbookId === dashboardPlaybook.id ? dashboardPlaybook : playbook;
-    case "playbook_run_preference_get":
-      return {
-        preference: hasSavedPreference
-          ? {
-              workspaceRoot: "/tmp/workspace",
-              playbookId: playbook.id,
-              assignmentPlan: savedAssignmentPlan,
-              updatedAt: "2026-05-11T00:00:00.000Z",
-            }
-          : undefined,
-      };
-    case "playbook_assignment_preview": {
-      const previewInventory = (
-        args?.request as
-          | { capabilityInventory?: { agents?: Array<{ fingerprint?: string }> } }
-          | undefined
-      )?.capabilityInventory;
-      const previewAgentFingerprint =
-        previewInventory?.agents?.[0]?.fingerprint ?? "preview-agent-fingerprint";
-      return {
-        assignmentPlan: {
-          resolverVersion: 1,
-          createdAt: "2026-05-11T00:00:00.000Z",
-          assignments: {
-            draftBrief: {
-              stepId: "draftBrief",
-              agentId: "default",
-              agentLabel: "Tessera",
-              agentFingerprint: previewAgentFingerprint,
-              skillCapabilities: [],
-              toolCapabilities: [],
-              integrationCapabilities: [],
-            },
-          },
-        },
-        confirmationRequired: true,
-        blockers: [],
-        sourceGaps: [],
-        nodePreviews: [
-          {
-            stepId: "draftBrief",
-            stepLabel: "Draft meeting brief",
-            kind: "agent",
-            recommendedAgentId: "default",
-            recommendedAgentLabel: "Tessera",
-            candidates: [
-              {
-                agentId: "default",
-                agentLabel: "Tessera",
-                assignment: {
-                  stepId: "draftBrief",
-                  agentId: "default",
-                  agentLabel: "Tessera",
-                  agentFingerprint: previewAgentFingerprint,
-                  skillCapabilities: [],
-                  toolCapabilities: [],
-                  integrationCapabilities: [],
-                },
-                recommended: true,
-                disabled: false,
-              },
-            ],
-          },
-        ],
-      };
-    }
-    case "playbook_run_preference_save": {
-      hasSavedPreference = true;
-      const saveRequest = args?.request as { assignmentPlan?: unknown } | undefined;
-      return {
-        preference: {
-          workspaceRoot: "/tmp/workspace",
-          playbookId: playbook.id,
-          assignmentPlan: saveRequest?.assignmentPlan ?? savedAssignmentPlan,
-          updatedAt: "2026-05-11T00:00:00.000Z",
-        },
-      };
-    }
-    case "playbook_run_list":
-      if (args?.playbookId === dashboardPlaybook.id) {
-        return { runs: [dashboardRun] } satisfies WorkflowRunListResult;
-      }
-      if (args?.playbookId === playbook.id) {
-        return { runs: [completedRun] } satisfies WorkflowRunListResult;
-      }
-      return { runs: [dashboardRun, completedRun] } satisfies WorkflowRunListResult;
-    case "playbook_run_get":
-      return args?.runId === dashboardRun.runId ? dashboardRun : completedRun;
     case "graph_run_list":
       return {
-        runs: args?.playbookId === playbook.id ? [graphRunDetail.run] : [],
+        runs:
+          args?.playbookId === dashboardPlaybook.id
+            ? [dashboardGraphRunDetail.run]
+            : args?.playbookId === playbook.id
+              ? [
+                  completedGraphRunDetail.run,
+                  graphRunDetail.run,
+                  ...(includeContextDriftRun ? [contextDriftGraphRunDetail.run] : []),
+                  ...(includeInterruptedRun ? [interruptedGraphRunDetail.run] : []),
+                ]
+              : [dashboardGraphRunDetail.run, completedGraphRunDetail.run, graphRunDetail.run],
       } satisfies PlaybookGraphRunListResult;
     case "graph_run_review_surface":
-      return graphRunSurface;
+      return args?.runId === contextDriftGraphRunDetail.run.runId
+        ? contextDriftGraphRunSurface
+        : args?.runId === interruptedGraphRunDetail.run.runId
+          ? interruptedGraphRunSurface
+          : args?.runId === dashboardGraphRunDetail.run.runId
+            ? {
+                schemaVersion: 1,
+                detail: dashboardGraphRunDetail,
+                activeArtifacts: [],
+                artifactTimeline: [],
+                timeline: [],
+                branches: [],
+                actions: [],
+              }
+            : args?.runId === completedGraphRunDetail.run.runId
+              ? {
+                  schemaVersion: 1,
+                  detail: completedGraphRunDetail,
+                  activeArtifacts: [],
+                  artifactTimeline: [],
+                  timeline: [],
+                  branches: [],
+                  actions: [],
+                }
+              : graphRunSurface;
     case "graph_run_git_milestone_preview":
       return {
         schemaVersion: 1,
@@ -472,6 +676,36 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         unsupportedFeatures: ["push"],
       };
     case "graph_run_resume": {
+      if (args?.runId === interruptedGraphRunDetail.run.runId) {
+        const interruptedEntry = interruptedGraphRunDetail.queue[0];
+        if (!interruptedEntry) throw new Error("Missing interrupted queue entry");
+        return {
+          ...interruptedGraphRunDetail,
+          run: {
+            ...interruptedGraphRunDetail.run,
+            status: "running",
+            updatedAt: "2026-05-18T00:02:00.000Z",
+          },
+          queue: [
+            {
+              ...interruptedEntry,
+              status: "queued",
+              updatedAt: "2026-05-18T00:02:00.000Z",
+            },
+          ],
+        } satisfies PlaybookGraphRunDetail;
+      }
+      if (args?.runId === contextDriftGraphRunDetail.run.runId) {
+        return {
+          ...contextDriftGraphRunDetail,
+          run: {
+            ...contextDriftGraphRunDetail.run,
+            status: "running",
+            blockedReason: undefined,
+            updatedAt: "2026-05-16T00:02:00.000Z",
+          },
+        } satisfies PlaybookGraphRunDetail;
+      }
       const { blockedReason: _blockedReason, ...run } = graphRunDetail.run;
       return {
         ...graphRunDetail,
@@ -482,27 +716,26 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         },
       } satisfies PlaybookGraphRunDetail;
     }
-    case "playbook_run_create":
-      return {
-        ...completedRun,
-        runId: "run-new",
-        updatedAt: "2026-05-11T00:00:00.000Z",
-        assignmentPlan: (args?.request as { assignmentPlan?: unknown } | undefined)?.assignmentPlan,
-      } as PlaybookRunDetail;
-    case "playbook_get_dashboard_layout":
-      return {
-        layout: {
-          refreshLabel: "Refresh snapshot",
-          sections: [
-            {
-              type: "metrics",
-              title: "Activity",
-              items: [{ label: "Open items", binding: "draftSnapshot.openItems" }],
+    case "graph_run_create":
+      return (args?.request as { playbookId?: string } | undefined)?.playbookId ===
+        dashboardPlaybook.id
+        ? {
+            ...dashboardGraphRunDetail,
+            run: {
+              ...dashboardGraphRunDetail.run,
+              runId: "graph-run-dashboard-new",
+              updatedAt: "2026-05-11T00:00:00.000Z",
             },
-            { type: "text", title: "Summary", binding: "draftSnapshot.summary" },
-          ],
-        },
-      };
+          }
+        : {
+            ...completedGraphRunDetail,
+            run: {
+              ...completedGraphRunDetail.run,
+              runId: "graph-run-new",
+              status: "completed",
+              updatedAt: "2026-05-11T00:00:00.000Z",
+            },
+          };
     case "model_settings_get":
       return modelSettings;
     case "integration_settings_get":
@@ -513,6 +746,19 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
           {
             id: "default",
             name: "Tessera",
+            model: { mode: "default" },
+            instructions: "",
+            soul: "",
+            userContext: "",
+            skills: [],
+            toolPolicyPreset: "workspace_editor",
+            memoryDefaults: "",
+            createdAt: "2026-05-09T00:00:00.000Z",
+            updatedAt: "2026-05-09T00:00:00.000Z",
+          },
+          {
+            id: "analyst",
+            name: "Analyst",
             model: { mode: "default" },
             instructions: "",
             soul: "",
@@ -551,7 +797,8 @@ function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
 
 beforeEach(() => {
   invoke.mockClear();
-  hasSavedPreference = false;
+  includeContextDriftRun = false;
+  includeInterruptedRun = false;
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -622,82 +869,67 @@ describe("PlaybooksView", () => {
     expect(view.getByText(/Research requested: Web/)).toBeTruthy();
   });
 
-  test("requires first-run agent confirmation before enabling run", async () => {
-    const view = renderPlaybooksView();
-
-    await waitFor(() => {
-      expect(view.getByText("Playbook setup")).toBeTruthy();
-      expect(view.getByText(/Tessera is selected for this playbook/)).toBeTruthy();
-      expect(view.getByText("Brief writer")).toBeTruthy();
-    });
-
-    const runButton = view.getByRole("button", { name: "Prepare brief" });
-    expect((runButton as HTMLButtonElement).disabled).toBe(true);
-
-    const confirmButton = view.getByRole("button", { name: "Use this setup" });
-    fireEvent.click(confirmButton);
-
-    await waitFor(() => {
-      const saveCall = invoke.mock.calls.find(
-        ([command]) => command === "playbook_run_preference_save"
-      );
-      const saveRequest = saveCall?.[1] as
-        | {
-            request?: {
-              assignmentPlan?: {
-                assignments?: { draftBrief?: { agentFingerprint?: string } };
-              };
-              capabilityInventory?: { agents?: Array<{ fingerprint?: string; id?: string }> };
-            };
-          }
-        | undefined;
-      expect(saveRequest?.request?.capabilityInventory?.agents?.[0]?.id).toBe("default");
-      expect(saveRequest?.request?.capabilityInventory?.agents?.[0]?.fingerprint).toBe(
-        saveRequest?.request?.assignmentPlan?.assignments?.draftBrief?.agentFingerprint
-      );
-      expect(
-        (view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement).disabled
-      ).toBe(false);
-    });
-
-    fireEvent.click(view.getByRole("button", { name: "Prepare brief" }));
-
-    await waitFor(() => {
-      const createCall = invoke.mock.calls.find(([command]) => command === "playbook_run_create");
-      expect(createCall).toBeTruthy();
-      expect(
-        (
-          createCall?.[1] as
-            | { request?: { assignmentPlan?: { assignments?: Record<string, unknown> } } }
-            | undefined
-        )?.request?.assignmentPlan?.assignments?.draftBrief
-      ).toBeTruthy();
-    });
-  });
-
-  test("keeps saved setup compact and exposes role-based setup editor", async () => {
-    hasSavedPreference = true;
+  test("starts built-in playbooks through graph run creation", async () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
       expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
     });
-    expect(view.queryByText("Use this setup")).toBeNull();
 
-    fireEvent.click(view.getByRole("button", { name: "Setup" }));
+    fireEvent.click(view.getByRole("button", { name: "Change setup" }));
+    let agentSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      agentSelect = view.getByLabelText("Agent for Brief writer") as HTMLSelectElement;
+      expect(agentSelect).toBeTruthy();
+    });
+    if (!agentSelect) throw new Error("Expected agent select");
+    fireEvent.change(agentSelect, { target: { value: "analyst" } });
+
+    let runButton: HTMLButtonElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByRole("button", { name: "Prepare brief" }) as HTMLButtonElement;
+      expect(runButton.disabled).toBe(false);
+    });
+    if (!runButton) throw new Error("Expected run button");
+    fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByText("Playbook setup")).toBeTruthy();
-      expect(view.getByText("Brief writer")).toBeTruthy();
-      expect(view.getByRole("button", { name: "Workflow details" })).toBeTruthy();
+      const createCall = invoke.mock.calls.find(([command]) => command === "graph_run_create");
+      expect(createCall).toBeTruthy();
+      expect(createCall?.[1]).toMatchObject({
+        request: {
+          playbookId: "sales.meeting-brief",
+          graphHash: "sha256:graph",
+          agentId: "analyst",
+          workspaceRoot: "/tmp/workspace",
+          drainDeterministic: true,
+        },
+      });
     });
   });
 
-  test("shows token usage for completed runs with usage data", async () => {
+  test("keeps agent setup available for migrated graph built-ins", async () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByText(/1\.5k tokens/i)).toBeTruthy();
+      expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Change setup" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Playbook setup")).toBeTruthy();
+      expect(view.getByLabelText("Agent for Brief writer")).toBeTruthy();
+    });
+    expect(view.getByRole("button", { name: "Save selection" })).toBeTruthy();
+    expect(view.queryByText("Graph runtime ready")).toBeNull();
+  });
+
+  test("shows completed graph run outputs", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText(/May 9/)).toBeTruthy();
     });
 
     const runButton = view.getByText(/May 9/).closest("button");
@@ -705,8 +937,96 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByText("Usage")).toBeTruthy();
-      expect(view.getByText(/Total 1\.5k tokens/i)).toBeTruthy();
+      expect(view.getByText(/Sales Meeting Brief - FOMORA\.md/)).toBeTruthy();
+      expect(view.getByText("Input 1.2k tokens")).toBeTruthy();
+      expect(view.getByText("Output 340 tokens")).toBeTruthy();
+      expect(view.getByText("Total 1.5k tokens")).toBeTruthy();
+      expect(view.getByText("Cached 200 tokens")).toBeTruthy();
+      expect(view.getByText("Reasoning 25 tokens")).toBeTruthy();
+    });
+
+    const artifactCard = view.getByTitle("Open artifact");
+    fireEvent.click(artifactCard);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
+        workspaceRoot: "/tmp/workspace",
+        path: "Sales Meeting Brief - FOMORA.md",
+      });
+    });
+  });
+
+  test("shows context-change blocked graph runs as review work", async () => {
+    includeContextDriftRun = true;
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 16/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected context drift run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Your review is needed")).toBeTruthy();
+      expect(view.getByText(/older setup/)).toBeTruthy();
+      expect(view.queryByRole("button", { name: "Start another" })).toBeNull();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string } | undefined)?.runId === "graph-run-context-drift"
+      );
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        runId: "graph-run-context-drift",
+        request: {
+          runId: "graph-run-context-drift",
+          decision: "approve_context_change",
+        },
+      });
+    });
+  });
+
+  test("offers a simple retry review for interrupted graph runs", async () => {
+    includeInterruptedRun = true;
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected interrupted run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Your review is needed")).toBeTruthy();
+      expect(view.getByText(/interrupted before this run finished/)).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string } | undefined)?.runId === "graph-run-interrupted"
+      );
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        runId: "graph-run-interrupted",
+        request: {
+          runId: "graph-run-interrupted",
+          decision: "retry_interrupted",
+          queueEntryId: "queue-draft-interrupted",
+        },
+      });
     });
   });
 
@@ -735,7 +1055,9 @@ describe("PlaybooksView", () => {
     fireEvent.click(view.getByRole("button", { name: "View details" }));
 
     await waitFor(() => {
-      expect(view.getByText("Graph runtime")).toBeTruthy();
+      expect(view.getByText("Run summary")).toBeTruthy();
+      expect(view.getByText("Advanced run log")).toBeTruthy();
+      expect(view.queryByText("Graph runtime")).toBeNull();
       expect(view.getAllByText("Blocked").length).toBeGreaterThan(0);
     });
     const blockedLabels = view.getAllByText("Blocked");
@@ -754,13 +1076,7 @@ describe("PlaybooksView", () => {
       expect(view.getAllByText("human review required").length).toBeGreaterThan(0);
     });
 
-    const inputPayload = view.getByPlaceholderText("{ }") as HTMLTextAreaElement;
-    fireEvent.change(inputPayload, { target: { value: "not-json" } });
-    fireEvent.click(view.getByRole("button", { name: "Edit input" }));
-    await waitFor(() => {
-      expect(view.getByText("Input must be valid JSON")).toBeTruthy();
-    });
-
+    expect(view.queryByRole("button", { name: "Edit input" })).toBeNull();
     expect(view.queryByPlaceholderText(/JSON payload/i)).toBeNull();
     const payloadTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
     fireEvent.change(payloadTextarea, {
@@ -821,10 +1137,10 @@ describe("PlaybooksView", () => {
       );
       expect(previewCall).toBeTruthy();
       expect(previewCall?.[1]).toMatchObject({
-        runId: "graph-run-1",
+        runId: "graph-run-completed",
         request: {
-          runId: "graph-run-1",
-          actionSpecId: "graph-run-1:git_milestone",
+          runId: "graph-run-completed",
+          actionSpecId: "graph-run-completed:git_milestone",
           workspaceRoot: "/tmp/workspace",
         },
       });

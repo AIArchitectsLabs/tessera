@@ -43,14 +43,13 @@ describe("inbox contracts", () => {
     expect(parsed.actions[0]?.id).toBe("respond");
   });
 
-  test("accepts workflow approval messages with permission context", () => {
+  test("accepts approval messages with permission context", () => {
     const parsed = InboxMessageSchema.parse({
       id: "inbox-approval",
-      source: "workflow",
+      source: "task",
       type: "approval",
       severity: "critical",
       status: "open",
-      workflowRunId: "run-1",
       title: "Approve workspace write",
       context: {
         approval: {
@@ -78,7 +77,6 @@ describe("inbox contracts", () => {
     });
 
     expect(parsed.type).toBe("approval");
-    expect(parsed.workflowRunId).toBe("run-1");
   });
 
   test("rejects secret-bearing fields in create requests", () => {

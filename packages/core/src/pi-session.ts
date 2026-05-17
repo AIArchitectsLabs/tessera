@@ -177,6 +177,10 @@ function numericUsageValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function usageDetailsRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
 function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | undefined {
   const input =
     numericUsageValue(record.inputTokens) ??
@@ -197,12 +201,22 @@ function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | und
       input + output,
   };
 
-  const cachedInputTokens = numericUsageValue(record.cachedInputTokens);
+  const inputDetails = usageDetailsRecord(record.input_tokens_details);
+  const outputDetails = usageDetailsRecord(record.output_tokens_details);
+  const cachedInputTokens =
+    numericUsageValue(record.cachedInputTokens) ??
+    numericUsageValue(record.cached_input_tokens) ??
+    numericUsageValue(inputDetails?.cachedTokens) ??
+    numericUsageValue(inputDetails?.cached_tokens);
   if (cachedInputTokens !== undefined) {
     usage.cachedInputTokens = cachedInputTokens;
   }
 
-  const reasoningTokens = numericUsageValue(record.reasoningTokens);
+  const reasoningTokens =
+    numericUsageValue(record.reasoningTokens) ??
+    numericUsageValue(record.reasoning_tokens) ??
+    numericUsageValue(outputDetails?.reasoningTokens) ??
+    numericUsageValue(outputDetails?.reasoning_tokens);
   if (reasoningTokens !== undefined) {
     usage.reasoningTokens = reasoningTokens;
   }
@@ -364,6 +378,7 @@ export async function runCodexResponsesTurn(options: {
   fetchImpl?: FetchLike;
   prompt: string;
   provider: Extract<AgentProviderConfig, { provider: "openai-codex" }>;
+  timeoutMs?: number;
 }): Promise<PiTaskTurnResult> {
   const headers: Record<string, string> = {
     accept: "text/event-stream",
@@ -376,27 +391,49 @@ export async function runCodexResponsesTurn(options: {
   if (options.credential.accountId) {
     headers["ChatGPT-Account-ID"] = options.credential.accountId;
   }
-  const response = await (options.fetchImpl ?? fetch)(`${options.credential.baseUrl}/responses`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: options.provider.model,
-      instructions: "You are a helpful assistant.",
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: options.prompt }],
-        },
-      ],
-      store: false,
-      stream: true,
-    }),
-  });
-  if (!response.ok) {
-    const detail = await codexErrorDetail(response);
-    throw new Error(`Codex Responses request failed with status ${response.status}${detail}`);
+  const timeoutMs = options.timeoutMs;
+  const abortController = timeoutMs !== undefined ? new AbortController() : undefined;
+  let timedOut = false;
+  const timeout =
+    timeoutMs !== undefined
+      ? setTimeout(() => {
+          timedOut = true;
+          abortController?.abort();
+        }, timeoutMs)
+      : undefined;
+  let responseText: string;
+  try {
+    const response = await (options.fetchImpl ?? fetch)(`${options.credential.baseUrl}/responses`, {
+      method: "POST",
+      headers,
+      ...(abortController ? { signal: abortController.signal } : {}),
+      body: JSON.stringify({
+        model: options.provider.model,
+        instructions: "You are a helpful assistant.",
+        input: [
+          {
+            role: "user",
+            content: [{ type: "input_text", text: options.prompt }],
+          },
+        ],
+        store: false,
+        stream: true,
+      }),
+    });
+    if (!response.ok) {
+      const detail = await codexErrorDetail(response);
+      throw new Error(`Codex Responses request failed with status ${response.status}${detail}`);
+    }
+    responseText = await response.text();
+  } catch (error) {
+    if (timedOut || (error instanceof Error && error.name === "AbortError")) {
+      throw new Error(`Codex Responses request timed out after ${timeoutMs} ms`);
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  const parsed = parseCodexSseResponse(await response.text());
+  const parsed = parseCodexSseResponse(responseText);
   const usage = normalizeTokenUsage(parsed.payload);
   return {
     text: parsed.text,

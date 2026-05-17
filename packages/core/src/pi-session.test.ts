@@ -1110,6 +1110,34 @@ describe("runCodexResponsesTurn", () => {
     ).rejects.toThrow("Codex Responses request failed with status 400: Invalid input shape");
   });
 
+  test("aborts Codex Responses requests when the turn timeout elapses", async () => {
+    const fakeFetch = (async (
+      _url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      const signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      runCodexResponsesTurn({
+        credential: {
+          authType: "codex-oauth",
+          accessToken: "access-token",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+        },
+        fetchImpl: fakeFetch,
+        prompt: "Reply OK",
+        provider: { provider: "openai-codex", model: "gpt-5.4" },
+        timeoutMs: 1,
+      })
+    ).rejects.toThrow("Codex Responses request timed out after 1 ms");
+  });
+
   test("omits ChatGPT account header when the OAuth token has no account id", async () => {
     const calls: Array<{ url: string; init: Parameters<typeof fetch>[1] | undefined }> = [];
     const fakeFetch = (async (url, init) => {

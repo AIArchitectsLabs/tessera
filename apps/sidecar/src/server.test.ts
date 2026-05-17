@@ -4,19 +4,14 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  WorkflowCapabilityInventorySchema,
-  WorkflowRunAssignmentPlanSchema,
-  type WorkflowRunResult,
-} from "@tessera/contracts";
-import {
   type GraphRunStore,
+  type PlaybookGraphAgentAdapterInput,
   compilePlaybookGraph,
   createOptionalCapabilityManager,
   createPlaybookGraphCache,
 } from "@tessera/core";
 import type { GraphPlaybookRegistryEntry } from "./graph-playbook-registry.js";
 import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
-import { createWorkflowCheckpointStore } from "./workflow-store.js";
 
 type RecordedFetchCall = {
   url: string;
@@ -26,14 +21,6 @@ type RecordedFetchCall = {
 const originalServe = Bun.serve;
 const originalMemoryDisabled = process.env.TESSERA_MEMORY_DISABLED;
 const originalGraphRunWorker = process.env.TESSERA_GRAPH_RUN_WORKER;
-let isPlaybookRunPreferenceAssignmentPlanValidationError:
-  | typeof import("./server.js").isPlaybookRunPreferenceAssignmentPlanValidationError
-  | undefined;
-let attachPlaybookMemoryShadow: typeof import("./server.js").attachPlaybookMemoryShadow | undefined;
-let buildPlaybookRunPreference: typeof import("./server.js").buildPlaybookRunPreference | undefined;
-let buildWorkflowExecutionOptions:
-  | typeof import("./server.js").buildWorkflowExecutionOptions
-  | undefined;
 let createServerMemoryRuntime: typeof import("./server.js").createServerMemoryRuntime | undefined;
 let handleMemoryForget: typeof import("./server.js").handleMemoryForget | undefined;
 let handleMemoryReviewDecision: typeof import("./server.js").handleMemoryReviewDecision | undefined;
@@ -61,6 +48,7 @@ let handlePlaybookGet: typeof import("./server.js").handlePlaybookGet | undefine
 let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefined;
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
+let graphRunWorkspaceContext: typeof import("./server.js").graphRunWorkspaceContext | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let resolveGoogleWorkspaceCliEnv:
   | typeof import("./server.js").resolveGoogleWorkspaceCliEnv
@@ -80,9 +68,6 @@ beforeAll(async () => {
 
   try {
     const serverModule = await import("./server.js");
-    attachPlaybookMemoryShadow = serverModule.attachPlaybookMemoryShadow;
-    buildPlaybookRunPreference = serverModule.buildPlaybookRunPreference;
-    buildWorkflowExecutionOptions = serverModule.buildWorkflowExecutionOptions;
     createServerMemoryRuntime = serverModule.createServerMemoryRuntime;
     handleMemoryForget = serverModule.handleMemoryForget;
     handleMemoryReviewDecision = serverModule.handleMemoryReviewDecision;
@@ -102,8 +87,7 @@ beforeAll(async () => {
     handlePlaybookList = serverModule.handlePlaybookList;
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
-    isPlaybookRunPreferenceAssignmentPlanValidationError =
-      serverModule.isPlaybookRunPreferenceAssignmentPlanValidationError;
+    graphRunWorkspaceContext = serverModule.graphRunWorkspaceContext;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
     refreshCodexOAuthCredential = serverModule.refreshCodexOAuthCredential;
     resolveGoogleWorkspaceCliEnv = serverModule.resolveGoogleWorkspaceCliEnv;
@@ -481,6 +465,42 @@ export default definePlaybook({
 });
 
 describe("graph run endpoints", () => {
+  test("builds bounded workspace context for graph agents", async () => {
+    expect(graphRunWorkspaceContext).toBeDefined();
+    if (!graphRunWorkspaceContext) throw new Error("graphRunWorkspaceContext was not loaded");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-yumi-workspace-"));
+    try {
+      await writeGraphPackageFile(
+        workspaceRoot,
+        "Yumi_Weekly_Status_Digest_2026-05-11.md",
+        [
+          "# Yumi Weekly Status Digest",
+          "",
+          "Customer Ops shipped renewal follow-ups and a partner launch plan.",
+          "Open item: confirm rollout owners before Friday.",
+        ].join("\n")
+      );
+      await writeGraphPackageFile(
+        workspaceRoot,
+        "notes/roadmap.txt",
+        "Dashboard follow-up: summarize workspace activity even when provider tools are unavailable."
+      );
+
+      const context = await graphRunWorkspaceContext({
+        input: { workspaceRoot },
+      } as unknown as PlaybookGraphAgentAdapterInput);
+
+      expect(context).toContain("Workspace root:");
+      expect(context).toContain("Recent workspace files:");
+      expect(context).toContain("Yumi_Weekly_Status_Digest_2026-05-11.md");
+      expect(context).toContain("notes/roadmap.txt");
+      expect(context).toContain("Workspace excerpts:");
+      expect(context).toContain("Customer Ops shipped renewal follow-ups");
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test("creates and reads a graph run from an inline compiled graph", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunGet).toBeDefined();
@@ -979,6 +999,72 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("creates built-in graph runs from bundled registry references", async () => {
+    expect(handlePlaybookList).toBeDefined();
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-empty-graph-cache-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const listResponse = await handlePlaybookList?.(
+        new Request("http://localhost/playbooks", { method: "GET" })
+      );
+      expect(listResponse?.status).toBe(200);
+      const list = (await listResponse?.json()) as {
+        playbooks: Array<{ id: string; graphHash?: string }>;
+      };
+      const salesMeetingBrief = list.playbooks.find(
+        (playbook) => playbook.id === "sales.meeting-brief"
+      );
+      expect(salesMeetingBrief?.graphHash).toMatch(/^sha256:/);
+      const graphHash = salesMeetingBrief?.graphHash;
+      if (!graphHash) throw new Error("Expected built-in graphHash");
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: "sales.meeting-brief",
+            graphHash,
+            agentId: "default",
+            input: {
+              company: "Acme Corp",
+              stakeholder: "Dana Lee",
+              meetingDate: "2026-05-17",
+              objective: "Prepare renewal discussion.",
+              sources: ["web"],
+              approvalTarget: "meeting-prep",
+              workspaceRoot: "/tmp/workspace",
+            },
+            workspaceRoot: "/tmp/workspace",
+          }),
+        }),
+        { store, cacheRoot }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: {
+          playbookId: string;
+          snapshot: { graphHash: string; sourceFiles?: Record<string, string> };
+        };
+        queue: Array<{ nodeKind: string; status: string }>;
+      };
+      expect(detail.run.playbookId).toBe("sales.meeting-brief");
+      expect(detail.run.snapshot.graphHash).toBe(graphHash);
+      expect(detail.run.snapshot.sourceFiles?.["prompts/draft-brief.md"]).toContain(
+        "sales meeting brief"
+      );
+      expect(detail.queue[0]).toMatchObject({ nodeKind: "agent", status: "queued" });
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(cacheRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   test("drains deterministic nodes when an adapter is explicitly provided", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
@@ -1294,6 +1380,113 @@ describe("graph run endpoints", () => {
       ]);
       expect(detail.artifacts.map((artifact) => artifact.artifactId)).toEqual(["draft", "ticket"]);
     } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("preserves provider token usage in graph agent artifacts", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const originalFetch = globalThis.fetch;
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-usage",
+        version: "0.1.0",
+        name: "Agent Usage Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "Draft the customer follow-up.",
+            output: { artifact: "draft" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    globalThis.fetch = (async () =>
+      new Response(
+        [
+          `data: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              output: [
+                {
+                  content: [
+                    {
+                      type: "output_text",
+                      text: "Draft complete.",
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 1200,
+                output_tokens: 340,
+                total_tokens: 1540,
+              },
+            },
+          })}`,
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }
+      )) as unknown as typeof fetch;
+
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { account: "Acme" },
+          }),
+        }),
+        {
+          store,
+          agentProvider: { provider: "openai-codex", model: "gpt-5.4" },
+          credential: {
+            authType: "codex-oauth",
+            accessToken: "access-token",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        artifacts: Array<{ artifactId: string; value: unknown }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.artifacts[0]?.artifactId).toBe("draft");
+      expect(detail.artifacts[0]?.value).toMatchObject({
+        status: "completed",
+        text: "Draft complete.",
+        usage: {
+          inputTokens: 1200,
+          outputTokens: 340,
+          totalTokens: 1540,
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
     }
@@ -1712,6 +1905,80 @@ describe("graph run endpoints", () => {
       await expect(readFile(join(workspaceRoot, "out/draft.json"), "utf8")).resolves.toBe(
         `${JSON.stringify({ title: "Draft", sections: ["intro", "proof"] }, null, 2)}\n`
       );
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("materializes templated markdown artifact paths from graph agent output", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.workspace-markdown-materialize",
+        version: "0.1.0",
+        name: "Workspace Markdown Materialize Graph",
+        artifacts: { brief: { schema: "schemas/brief.schema.json" } },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "script",
+            run: "scripts/draft.ts",
+            inputs: {},
+            outputArtifact: "brief",
+            onSuccess: "writeBrief",
+          },
+          {
+            id: "writeBrief",
+            kind: "artifactWrite",
+            artifact: "brief",
+            path: "Sales Meeting Brief - {{inputs.company}}.md",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            input: { company: "FOMORA/West" },
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { text: "# Meeting brief\n\nDiscuss expansion.", boundaryViolations: 0 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(detail.run.status).toBe("completed");
+      expect(detail.queue.find((entry) => entry.nodeId === "writeBrief")?.status).toBe("succeeded");
+      await expect(
+        readFile(join(workspaceRoot, "Sales Meeting Brief - FOMORA West.md"), "utf8")
+      ).resolves.toBe("# Meeting brief\n\nDiscuss expansion.\n");
     } finally {
       store.close();
       await Promise.all([
@@ -2194,6 +2461,247 @@ describe("graph run endpoints", () => {
         { store }
       );
       expect(redundantResumeResponse?.status).toBe(409);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approving context drift requeues stale agent work before draining", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-drift",
+        version: "0.1.0",
+        name: "Agent Drift Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft the brief.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const originalContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-a:fingerprint",
+    };
+    const changedContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-b:fingerprint",
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            executionContext: originalContext,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: created.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      if (!claimed) throw new Error("Missing claimed queue entry");
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+
+      const workerResult = await drainGraphRunWorkQueue({
+        store,
+        now: () => "2026-05-15T00:00:02.000Z",
+        executionContext: changedContext,
+        agentAdapter() {
+          throw new Error("agent should not run before context approval");
+        },
+      });
+
+      expect(workerResult).toMatchObject({ blocked: 1, drained: 1, errors: [] });
+      expect((await store.getRun(created.run.runId))?.blockedReason).toContain(
+        "execution context changed"
+      );
+      expect((await store.getQueue(created.run.runId))[0]?.status).toBe("running");
+
+      let calls = 0;
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_context_change",
+            executionContext: changedContext,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          now: () => "2026-05-15T00:00:03.000Z",
+          agentAdapter() {
+            calls += 1;
+            return { status: "completed", text: "ready" };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.queue[0]?.status).toBe("succeeded");
+      expect(calls).toBe(1);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("retrying interrupted work clears stale context blocks before draining", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-retry-context",
+        version: "0.1.0",
+        name: "Agent Retry Context Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft the brief.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const originalContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-a:fingerprint",
+    };
+    const changedContext = {
+      provider: "openai:gpt-5.4",
+      account: "acct-b:fingerprint",
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            executionContext: originalContext,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const [entry] = await store.getQueue(created.run.runId);
+      const run = await store.getRun(created.run.runId);
+      if (!run || !entry) throw new Error("Missing graph run");
+      await store.updateQueueEntry({
+        ...entry,
+        status: "interrupted",
+        attempt: 1,
+        updatedAt: "2026-05-15T00:00:02.000Z",
+      });
+      await store.updateRun({
+        ...run,
+        status: "blocked",
+        currentQueueEntryId: entry.queueEntryId,
+        blockedReason:
+          "Graph execution context changed; expected sha256:old, got sha256:new. Approval is required before continuing.",
+        updatedAt: "2026-05-15T00:00:02.000Z",
+      });
+
+      let calls = 0;
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "retry_interrupted",
+            queueEntryId: entry.queueEntryId,
+            executionContext: changedContext,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          now: () => "2026-05-15T00:00:03.000Z",
+          agentAdapter() {
+            calls += 1;
+            return { status: "completed", text: "ready" };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: {
+          status: string;
+          blockedReason?: string;
+          executionContext?: { fingerprints: Record<string, unknown> };
+        };
+        queue: Array<{ status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.run.blockedReason).toBeUndefined();
+      expect(resumed.run.executionContext?.fingerprints.account).toBe("acct-b:fingerprint");
+      expect(resumed.queue[0]?.status).toBe("succeeded");
+      expect(calls).toBe(1);
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
@@ -3037,55 +3545,6 @@ describe("graph run endpoints", () => {
       await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
-
-  test("graph worker leaves legacy workflow rows unchanged in the shared database", async () => {
-    expect(handleGraphRunCreate).toBeDefined();
-    expect(drainGraphRunWorkQueue).toBeDefined();
-    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
-    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
-    const graphStore = createPlaybookGraphRunStore(dbPath);
-    const workflowStore = createWorkflowCheckpointStore(dbPath);
-    const legacyRun: WorkflowRunResult = {
-      runId: "legacy-run-1",
-      workflowId: "demo.write-approval",
-      status: "blocked",
-      currentStepId: "writeProbe",
-      input: { message: "hello" },
-      outputs: { ping: { message: "pong" } },
-      sourceGaps: [],
-      startedAt: "2026-05-15T00:00:00.000Z",
-      updatedAt: "2026-05-15T00:00:00.000Z",
-    };
-    try {
-      workflowStore.save(legacyRun);
-      const before = workflowStore.get(legacyRun.runId);
-      expect(before).toEqual(legacyRun);
-      if (!before) throw new Error("Missing seeded legacy workflow run");
-
-      const response = await handleGraphRunCreate?.(
-        new Request("http://localhost/graph-runs", {
-          method: "POST",
-          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
-        }),
-        { store: graphStore }
-      );
-      const created = (await response?.json()) as { run: { runId: string } };
-      await drainGraphRunWorkQueue({
-        store: graphStore,
-        scriptAdapter() {
-          return { ok: true };
-        },
-      });
-
-      expect((await graphStore.getRun(created.run.runId))?.status).toBe("completed");
-      expect(workflowStore.get(legacyRun.runId)).toEqual(before);
-      expect(workflowStore.list()).toEqual([before]);
-    } finally {
-      graphStore.close();
-      workflowStore.close();
-      await rm(dirname(dbPath), { recursive: true, force: true });
-    }
-  });
 });
 
 describe("built-in graph playbook projection", () => {
@@ -3131,12 +3590,13 @@ describe("built-in graph playbook projection", () => {
       expect.arrayContaining([
         expect.objectContaining({ id: "draftBrief", kind: "agent" }),
         expect.objectContaining({ id: "approveBrief", kind: "tool" }),
+        expect.objectContaining({ id: "writeBrief", kind: "tool" }),
       ])
     );
   });
 });
 
-describe("playbook run preference save error mapping", () => {
+describe("sidecar utility handlers", () => {
   test("installs an optional capability binary through the explicit sidecar install handler", async () => {
     expect(handleCapabilityBinary).toBeDefined();
     expect(handleCapabilityBinaryInstall).toBeDefined();
@@ -3666,187 +4126,6 @@ describe("playbook run preference save error mapping", () => {
 
     expect(runtime?.memoryStore).toBeUndefined();
     expect(runtime?.memoryStatus.mode).toBe("disabled");
-  });
-
-  test("server stamps stored preference metadata from a save request", () => {
-    expect(buildPlaybookRunPreference).toBeDefined();
-    const preference = buildPlaybookRunPreference?.(
-      "sales.meeting-brief",
-      {
-        workspaceRoot: "/tmp/workspace",
-        assignmentPlan: {
-          resolverVersion: 1,
-          createdAt: "2026-05-11T00:00:00.000Z",
-          assignments: {
-            draftBrief: {
-              stepId: "draftBrief",
-              agentId: "default",
-              agentLabel: "Tessera",
-              skillCapabilities: [],
-              toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
-              integrationCapabilities: [],
-            },
-          },
-        },
-      },
-      new Date("2026-05-12T00:00:00.000Z")
-    );
-
-    expect(preference).toMatchObject({
-      workspaceRoot: "/tmp/workspace",
-      playbookId: "sales.meeting-brief",
-      updatedAt: "2026-05-12T00:00:00.000Z",
-    });
-  });
-
-  test("treats assignment plan validation failures as client recoverable", () => {
-    expect(isPlaybookRunPreferenceAssignmentPlanValidationError).toBeDefined();
-    expect(
-      isPlaybookRunPreferenceAssignmentPlanValidationError?.(
-        new Error("Assignment for step draft is stale or does not match the current inventory")
-      )
-    ).toBe(true);
-    expect(
-      isPlaybookRunPreferenceAssignmentPlanValidationError?.(
-        new Error("Assignment plan includes unknown step: draft")
-      )
-    ).toBe(true);
-    expect(isPlaybookRunPreferenceAssignmentPlanValidationError?.(new Error("boom"))).toBe(false);
-  });
-
-  test("builds workflow execution options with the resolved assignment plan and runtime credential", () => {
-    expect(buildWorkflowExecutionOptions).toBeDefined();
-    const capabilityInventory = WorkflowCapabilityInventorySchema.parse({
-      agents: [
-        {
-          id: "default",
-          label: "Tessera",
-          fingerprint: "ui-b58c78b6",
-          model: { provider: "openai-codex", model: "gpt-5.4" },
-          modelCapabilities: [],
-          dataPolicies: [],
-          skillCapabilities: ["skill.planning"],
-          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
-        },
-      ],
-      integrations: [],
-    });
-    const assignmentPlan = WorkflowRunAssignmentPlanSchema.parse({
-      resolverVersion: 1,
-      createdAt: "2026-05-12T00:00:00.000Z",
-      assignments: {
-        draftBrief: {
-          stepId: "draftBrief",
-          provider: { provider: "openai-codex", model: "gpt-5.4" },
-          skillCapabilities: [],
-          toolCapabilities: [],
-          integrationCapabilities: [],
-        },
-      },
-    });
-    const options = buildWorkflowExecutionOptions?.({
-      assignmentPlan,
-      capabilityInventory,
-      credential: {
-        authType: "codex-oauth",
-        accessToken: "access-token",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-      },
-    });
-
-    expect(options?.assignmentPlan).toEqual(assignmentPlan);
-    expect(options?.capabilityInventory).toEqual(capabilityInventory);
-    expect(options?.agentCredential).toEqual({
-      authType: "codex-oauth",
-      accessToken: "access-token",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-    });
-  });
-
-  test("attaches playbook memory shadow recall without changing run outputs", async () => {
-    expect(attachPlaybookMemoryShadow).toBeDefined();
-    const run = {
-      runId: "run-shadow",
-      workflowId: "ops.weekly-status-digest",
-      status: "completed" as const,
-      input: { workspaceRoot: "/workspace/acme" },
-      outputs: { draft: "original output" },
-      sourceGaps: [],
-      events: [],
-      completedAt: "2026-05-13T00:00:00.000Z",
-    };
-
-    const withShadow = await attachPlaybookMemoryShadow?.(run, {
-      async recallForPlaybookRun() {
-        return {
-          mode: "workspace" as const,
-          timedOut: false,
-          items: [
-            {
-              memoryId: "memory-playbook-lesson",
-              scope: "playbook" as const,
-              type: "lesson" as const,
-              title: "Prior lesson",
-              body: "Check blocked items first.",
-              confidence: 0.91,
-              freshness: "fresh" as const,
-              sourceRefs: [{ type: "event", id: "memory-event-1" }],
-              reason: "Prior playbook memory for this workflow.",
-            },
-          ],
-          trace: {
-            query: "ops.weekly-status-digest",
-            workspaceKey: "workspace:one",
-            candidateCount: 1,
-            selectedCount: 1,
-            omittedReasons: [],
-            durationMs: 1,
-          },
-        };
-      },
-    });
-
-    expect(withShadow?.outputs).toEqual(run.outputs);
-    const shadowEvent = withShadow?.events?.find(
-      (event) => event.metadata && "memoryShadow" in event.metadata
-    );
-    expect(shadowEvent?.message).toBe("Playbook memory shadow recall evaluated");
-    expect(shadowEvent?.metadata?.memoryShadow).toMatchObject({
-      trace: {
-        selectedCount: 1,
-      },
-      items: [{ memoryId: "memory-playbook-lesson" }],
-    });
-  });
-
-  test("playbook memory shadow failure records an omitted reason instead of throwing", async () => {
-    expect(attachPlaybookMemoryShadow).toBeDefined();
-    const run = {
-      runId: "run-shadow-failed",
-      workflowId: "ops.weekly-status-digest",
-      status: "completed" as const,
-      input: { workspaceRoot: "/workspace/acme" },
-      sourceGaps: [],
-      events: [],
-      completedAt: "2026-05-13T00:00:00.000Z",
-    };
-
-    const withShadow = await attachPlaybookMemoryShadow?.(run, {
-      async recallForPlaybookRun() {
-        throw new Error("memory unavailable");
-      },
-    });
-
-    const shadowEvent = withShadow?.events?.find(
-      (event) => event.metadata && "memoryShadow" in event.metadata
-    );
-    expect(shadowEvent?.metadata?.memoryShadow).toMatchObject({
-      items: [],
-      trace: {
-        selectedCount: 0,
-        omittedReasons: ["playbook memory shadow recall failed"],
-      },
-    });
   });
 });
 
