@@ -189,6 +189,29 @@ class MemoryGraphRunStore implements GraphRunStore {
     return true;
   }
 
+  async bumpHeartbeat(input: {
+    runId: string;
+    queueEntryId: string;
+    leaseId: string;
+    now: string;
+  }): Promise<boolean> {
+    const entry = this.queue.get(input.queueEntryId);
+    if (
+      !entry ||
+      entry.runId !== input.runId ||
+      entry.status !== "running" ||
+      entry.leaseId !== input.leaseId
+    ) {
+      return false;
+    }
+    this.queue.set(entry.queueEntryId, {
+      ...entry,
+      lastHeartbeatAt: input.now,
+      updatedAt: input.now,
+    });
+    return true;
+  }
+
   async listArtifactVersions(runId: string): Promise<PlaybookGraphArtifactVersion[]> {
     return [...this.artifacts.values()].filter((version) => version.runId === runId);
   }
@@ -2184,5 +2207,61 @@ describe("slice-0.5 timeout matrix", () => {
 
   test("heartbeat staleness threshold is 45s", () => {
     expect(HEARTBEAT_STALENESS_MS).toBe(45_000);
+  });
+});
+
+describe("MemoryGraphRunStore.bumpHeartbeat (test-double behavior)", () => {
+  test("updates lastHeartbeatAt only when lease matches", async () => {
+    const store = new MemoryGraphRunStore();
+    const now = "2026-05-18T12:00:00.000Z";
+    const entry: PlaybookGraphQueueEntry = {
+      schemaVersion: 1,
+      queueEntryId: "qe-1",
+      runId: "run-1",
+      nodeId: "n",
+      nodePath: "n",
+      nodeKind: "agent",
+      status: "running",
+      dependsOn: [],
+      producesArtifacts: [],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 1,
+      runtimeId: "rt-1",
+      leaseId: "lease-1",
+      claimedAt: now,
+      leaseExpiresAt: "2026-05-18T12:00:30.000Z",
+      createdAt: now,
+      updatedAt: now,
+    };
+    await store.upsertQueueEntry(entry);
+
+    expect(
+      await store.bumpHeartbeat({
+        runId: "run-1",
+        queueEntryId: "qe-1",
+        leaseId: "lease-1",
+        now: "2026-05-18T12:00:10.000Z",
+      })
+    ).toBe(true);
+
+    expect((await store.getQueue("run-1"))[0].lastHeartbeatAt).toBe(
+      "2026-05-18T12:00:10.000Z"
+    );
+
+    expect(
+      await store.bumpHeartbeat({
+        runId: "run-1",
+        queueEntryId: "qe-1",
+        leaseId: "lease-stale",
+        now: "2026-05-18T12:00:20.000Z",
+      })
+    ).toBe(false);
+
+    expect((await store.getQueue("run-1"))[0].lastHeartbeatAt).toBe(
+      "2026-05-18T12:00:10.000Z"
+    );
   });
 });

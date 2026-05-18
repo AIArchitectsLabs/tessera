@@ -104,6 +104,12 @@ export interface GraphRunStore {
     leaseId: string;
     now: string;
   }): Promise<boolean>;
+  bumpHeartbeat(input: {
+    runId: string;
+    queueEntryId: string;
+    leaseId: string;
+    now: string;
+  }): Promise<boolean>;
 
   listArtifactVersions(runId: string): Promise<PlaybookGraphArtifactVersion[]>;
   addArtifactVersion(version: PlaybookGraphArtifactVersion): Promise<void>;
