@@ -2019,6 +2019,8 @@ export type PlaybookGraphRecoveryPolicy = z.infer<typeof PlaybookGraphRecoveryPo
 
 export const PlaybookGraphAttentionCodeSchema = z.enum([
   "stale_lease",
+  "stale_heartbeat",
+  "hard_timeout",
   "hard_timeout_observed",
   "lost_worker",
   "ambiguous_recovery",
@@ -2090,6 +2092,7 @@ export const PlaybookGraphQueueEntrySchema = z
     leaseId: z.string().min(1).optional(),
     claimedAt: z.string().datetime().optional(),
     leaseExpiresAt: z.string().datetime().optional(),
+    lastHeartbeatAt: z.string().datetime().optional(),
     blockedReason: z.string().min(1).optional(),
     error: z.string().min(1).optional(),
     createdAt: z.string().datetime(),
@@ -2513,6 +2516,15 @@ export const PlaybookGraphRunCreateRequestSchema = z
     }
   });
 export type PlaybookGraphRunCreateRequest = z.infer<typeof PlaybookGraphRunCreateRequestSchema>;
+
+export const PlaybookGraphRunDrainRequestSchema = z
+  .object({
+    executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
+    agentProvider: AgentProviderConfigSchema.optional(),
+    credential: ModelRuntimeCredentialSchema.optional(),
+  })
+  .strict();
+export type PlaybookGraphRunDrainRequest = z.infer<typeof PlaybookGraphRunDrainRequestSchema>;
 
 export const PlaybookGraphRunDetailSchema = z
   .object({

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PlaybookGraphArtifactVersionSchema,
+  PlaybookGraphAttentionEvidenceSchema,
   PlaybookGraphBranchItemSchema,
   PlaybookGraphExecutionContextSchema,
   PlaybookGraphMaterializationTargetSchema,
@@ -814,5 +815,69 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
         executionContext: { apiKey: "nope" },
       })
     ).toThrow(/secret-bearing/);
+  });
+});
+
+describe("PlaybookGraphAttentionEvidenceSchema slice-0.5 codes", () => {
+  test("accepts stale_heartbeat with thresholdMs and lastHeartbeatAt", () => {
+    const evidence = PlaybookGraphAttentionEvidenceSchema.parse({
+      code: "stale_heartbeat",
+      reason: "Heartbeat older than 45s",
+      observedAt: "2026-05-18T12:00:45.000Z",
+      previousQueueStatus: "running",
+      thresholdMs: 45_000,
+      lastHeartbeatAt: "2026-05-18T11:59:55.000Z",
+      recoveryDecision: "needs_attention",
+    });
+    expect(evidence.code).toBe("stale_heartbeat");
+    expect(evidence.thresholdMs).toBe(45_000);
+  });
+
+  test("accepts hard_timeout with thresholdMs and lastClaimedAt", () => {
+    const evidence = PlaybookGraphAttentionEvidenceSchema.parse({
+      code: "hard_timeout",
+      reason: "Step exceeded hard timeout of 1800000ms",
+      observedAt: "2026-05-18T12:30:00.000Z",
+      previousQueueStatus: "running",
+      thresholdMs: 1_800_000,
+      lastClaimedAt: "2026-05-18T12:00:00.000Z",
+      recoveryDecision: "needs_attention",
+    });
+    expect(evidence.code).toBe("hard_timeout");
+  });
+});
+
+describe("PlaybookGraphQueueEntrySchema lastHeartbeatAt", () => {
+  test("accepts optional lastHeartbeatAt", () => {
+    const entry = PlaybookGraphQueueEntrySchema.parse({
+      schemaVersion: 1,
+      queueEntryId: "qe",
+      runId: "run",
+      nodeId: "n",
+      nodePath: "n",
+      nodeKind: "agent",
+      status: "running",
+      createdAt: "2026-05-18T12:00:00.000Z",
+      updatedAt: "2026-05-18T12:00:10.000Z",
+      lastHeartbeatAt: "2026-05-18T12:00:10.000Z",
+    });
+    expect(entry.lastHeartbeatAt).toBe("2026-05-18T12:00:10.000Z");
+  });
+
+  test("lastHeartbeatAt rejects non-datetime values", () => {
+    expect(() =>
+      PlaybookGraphQueueEntrySchema.parse({
+        schemaVersion: 1,
+        queueEntryId: "qe",
+        runId: "run",
+        nodeId: "n",
+        nodePath: "n",
+        nodeKind: "agent",
+        status: "running",
+        createdAt: "2026-05-18T12:00:00.000Z",
+        updatedAt: "2026-05-18T12:00:00.000Z",
+        lastHeartbeatAt: "not-a-date",
+      })
+    ).toThrow();
   });
 });
