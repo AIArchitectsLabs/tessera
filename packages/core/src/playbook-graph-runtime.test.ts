@@ -13,6 +13,7 @@ import type {
 import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
 import {
   type GraphRunStore,
+  HEARTBEAT_STALENESS_MS,
   createGraphNodeMemoKeyParts,
   createPlaybookGraphExecutionContextPin,
   createPlaybookGraphMemoKey,
@@ -20,7 +21,10 @@ import {
   createPlaybookGraphRun,
   createPlaybookGraphSnapshot,
   drainPlaybookGraphRun,
+  hardTimeoutMs,
+  heartbeatCadenceMs,
   parsePinnedCompiledGraph,
+  softTimeoutMs,
 } from "./playbook-graph-runtime.js";
 
 class MemoryGraphRunStore implements GraphRunStore {
@@ -2158,5 +2162,27 @@ describe("drainPlaybookGraphRun", () => {
 
     expect(result.run.status).toBe("needs_repair");
     expect(result.run.repairReason).toContain("hash mismatch");
+  });
+});
+
+describe("slice-0.5 timeout matrix", () => {
+  test("agent has the longest soft and hard windows", () => {
+    expect(softTimeoutMs("agent")).toBe(5 * 60_000);
+    expect(hardTimeoutMs("agent")).toBe(30 * 60_000);
+  });
+
+  test("tool has middle window", () => {
+    expect(softTimeoutMs("tool")).toBe(2 * 60_000);
+    expect(hardTimeoutMs("tool")).toBe(10 * 60_000);
+  });
+
+  test("humanReview and parallelMap have no enforced timeout", () => {
+    expect(softTimeoutMs("humanReview")).toBeUndefined();
+    expect(hardTimeoutMs("humanReview")).toBeUndefined();
+    expect(heartbeatCadenceMs("parallelMap")).toBeUndefined();
+  });
+
+  test("heartbeat staleness threshold is 45s", () => {
+    expect(HEARTBEAT_STALENESS_MS).toBe(45_000);
   });
 });

@@ -29,6 +29,39 @@ const TERMINAL_SUCCESS_QUEUE_STATUSES = new Set(["succeeded", "memoized", "skipp
 const TERMINAL_GRAPH_TARGETS = new Set(["completed", "failed", "denied"]);
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "denied", "needs_repair"]);
 
+export const HEARTBEAT_STALENESS_MS = 45_000;
+
+type TimeoutKind = PlaybookGraphQueueEntry["nodeKind"];
+
+interface NodeKindTimeouts {
+  heartbeatMs?: number;
+  softMs?: number;
+  hardMs?: number;
+}
+
+const NODE_KIND_TIMEOUTS: Record<TimeoutKind, NodeKindTimeouts> = {
+  script: { heartbeatMs: 10_000, softMs: 30_000, hardMs: 2 * 60_000 },
+  condition: { heartbeatMs: 10_000, softMs: 5_000, hardMs: 30_000 },
+  join: { heartbeatMs: 10_000, softMs: 5_000, hardMs: 30_000 },
+  tool: { heartbeatMs: 10_000, softMs: 2 * 60_000, hardMs: 10 * 60_000 },
+  agent: { heartbeatMs: 10_000, softMs: 5 * 60_000, hardMs: 30 * 60_000 },
+  artifactWrite: { heartbeatMs: 10_000, softMs: 30_000, hardMs: 2 * 60_000 },
+  humanReview: {},
+  parallelMap: {},
+};
+
+export function heartbeatCadenceMs(kind: TimeoutKind): number | undefined {
+  return NODE_KIND_TIMEOUTS[kind].heartbeatMs;
+}
+
+export function softTimeoutMs(kind: TimeoutKind): number | undefined {
+  return NODE_KIND_TIMEOUTS[kind].softMs;
+}
+
+export function hardTimeoutMs(kind: TimeoutKind): number | undefined {
+  return NODE_KIND_TIMEOUTS[kind].hardMs;
+}
+
 export interface GraphRunStaleLeaseRecoveryResult {
   inspected: number;
   autoRequeued: number;
