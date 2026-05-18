@@ -7,6 +7,7 @@ import {
   PlaybookGraphMaterializationTargetSchema,
   PlaybookGraphMemoKeyPartsSchema,
   PlaybookGraphNodeMemoSchema,
+  PlaybookGraphOperationKindSchema,
   PlaybookGraphOperationRecordSchema,
   PlaybookGraphQueueEntrySchema,
   PlaybookGraphResumeActionSpecSchema,
@@ -879,5 +880,16 @@ describe("PlaybookGraphQueueEntrySchema lastHeartbeatAt", () => {
         lastHeartbeatAt: "not-a-date",
       })
     ).toThrow();
+  });
+});
+
+describe("PlaybookGraphOperationKindSchema slice-0.5", () => {
+  test("accepts soft_timeout_observed and hard_timeout_observed kinds", () => {
+    expect(PlaybookGraphOperationKindSchema.parse("soft_timeout_observed")).toBe(
+      "soft_timeout_observed"
+    );
+    expect(PlaybookGraphOperationKindSchema.parse("hard_timeout_observed")).toBe(
+      "hard_timeout_observed"
+    );
   });
 });

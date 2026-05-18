@@ -2159,6 +2159,8 @@ export const PlaybookGraphOperationKindSchema = z.enum([
   "retry_needs_attention",
   "repair",
   "git_milestone",
+  "soft_timeout_observed",
+  "hard_timeout_observed",
 ]);
 export type PlaybookGraphOperationKind = z.infer<typeof PlaybookGraphOperationKindSchema>;
 
