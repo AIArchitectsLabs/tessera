@@ -582,7 +582,37 @@ function playbookOutputValue(kind: string, runOutputs: Record<string, unknown>):
     return values.find(isAgentDraftOutput) ?? values.find((value) => filePathFromValue(value));
   }
 
-  return undefined;
+  return runOutputs[kind];
+}
+
+function playbookOutputArtifactPath(kind: string, value: unknown): string | null {
+  if (
+    kind === "meetingBrief" ||
+    kind === "businessBrief" ||
+    kind === "statusDigest" ||
+    filePathFromValue(value)
+  ) {
+    return filePathFromValue(value);
+  }
+
+  return null;
+}
+
+function visiblePlaybookOutputs(
+  outputs: Array<{ kind: string; label: string }>,
+  runOutputs: Record<string, unknown>
+): Array<{ kind: string; label: string }> {
+  const declaredOutputs = outputs.filter((output) =>
+    shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
+  );
+  if (declaredOutputs.length > 0) return declaredOutputs;
+
+  return Object.entries(runOutputs).flatMap(([kind, value]) => {
+    if (!shouldShowResultOutput(kind, value) || !playbookOutputArtifactPath(kind, value)) {
+      return [];
+    }
+    return [{ kind, label: artifactLabel(kind) }];
+  });
 }
 
 function playbookOutputSummary(
@@ -2635,9 +2665,7 @@ function GuidedResult({
     : run.status === "completed" && isDashboard
       ? "Here's what changed, what's at risk, and what needs follow-up."
       : (resultSub[run.status] ?? "");
-  const visibleOutputs = outputs.filter((output) =>
-    shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
-  );
+  const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs);
 
   async function openArtifact(path: string) {
     if (!workspaceRoot) return;
@@ -2706,12 +2734,7 @@ function GuidedResult({
         <div className="mb-6 space-y-3">
           {visibleOutputs.map((output) => {
             const value = playbookOutputValue(output.kind, runOutputs);
-            const artifactPath =
-              output.kind === "meetingBrief" ||
-              output.kind === "businessBrief" ||
-              output.kind === "statusDigest"
-                ? filePathFromValue(value)
-                : null;
+            const artifactPath = playbookOutputArtifactPath(output.kind, value);
             const summary = playbookOutputSummary(
               output.kind,
               value,
@@ -2850,25 +2873,16 @@ function DetailsPanel({
   const outputRows = useMemo(() => {
     const outputs = playbookForRun?.outputs ?? [];
     const runOutputs = run?.outputs ?? {};
-    return outputs
-      .filter((output) =>
-        shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
-      )
-      .map((output) => {
-        const value = playbookOutputValue(output.kind, runOutputs);
-        const artifactPath =
-          output.kind === "meetingBrief" ||
-          output.kind === "businessBrief" ||
-          output.kind === "statusDigest"
-            ? filePathFromValue(value)
-            : null;
-        return {
-          key: output.kind,
-          label: output.label,
-          path: artifactPath,
-          summary: playbookOutputSummary(output.kind, value, sourceGaps.length, artifactPath),
-        };
-      });
+    return visiblePlaybookOutputs(outputs, runOutputs).map((output) => {
+      const value = playbookOutputValue(output.kind, runOutputs);
+      const artifactPath = playbookOutputArtifactPath(output.kind, value);
+      return {
+        key: output.kind,
+        label: output.label,
+        path: artifactPath,
+        summary: playbookOutputSummary(output.kind, value, sourceGaps.length, artifactPath),
+      };
+    });
   }, [playbookForRun?.outputs, run?.outputs, sourceGaps.length]);
 
   const runStepGroups = useMemo(() => {

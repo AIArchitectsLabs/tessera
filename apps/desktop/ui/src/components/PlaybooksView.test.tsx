@@ -762,6 +762,88 @@ const completedGraphRunDetail = {
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
+const seoCompletedGraphRunDetail = {
+  run: {
+    ...completedGraphRunDetail.run,
+    runId: "graph-run-seo-completed",
+    playbookId: importedPlaybook.id,
+    input: {
+      topic: "AI workspace governance for finance teams",
+    },
+    snapshot: {
+      ...completedGraphRunDetail.run.snapshot,
+      playbookId: importedPlaybook.id,
+      packageVersion: importedPlaybook.packageVersion,
+      snapshotJson: JSON.stringify({
+        graph: {
+          artifacts: {
+            finalArticle: {
+              schema: "schemas/finalArticle.schema.json",
+              materialize: "outputs/final-article.md",
+            },
+            articleScorecard: {
+              schema: "schemas/articleScorecard.schema.json",
+            },
+            finalOutputManifest: {
+              schema: "schemas/finalOutputManifest.schema.json",
+              materialize: "outputs/final-output-manifest.md",
+            },
+          },
+          nodes: [],
+        },
+      }),
+    },
+    updatedAt: "2026-05-18T12:33:00.000Z",
+    completedAt: "2026-05-18T12:33:00.000Z",
+  },
+  queue: [],
+  branchItems: [],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "finalArticle",
+      versionId: "final-article-v1",
+      producerQueueEntryId: "queue-final-article",
+      nodePath: "finalArticle",
+      contentHash: "sha256:final-article",
+      value: {
+        text: "# AI workspace governance for finance teams\n\nA practical governance article.",
+      },
+      createdAt: "2026-05-18T12:32:00.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "articleScorecard",
+      versionId: "article-scorecard-v1",
+      producerQueueEntryId: "queue-scorecard",
+      nodePath: "articleScorecard",
+      contentHash: "sha256:article-scorecard",
+      value: {
+        overall: 92,
+        pass: true,
+      },
+      createdAt: "2026-05-18T12:32:30.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "finalOutputManifest",
+      versionId: "final-output-manifest-v1",
+      producerQueueEntryId: "queue-manifest",
+      nodePath: "finalOutputManifest",
+      contentHash: "sha256:final-output-manifest",
+      value: {
+        text: "Final article and publication checklist are ready.",
+      },
+      createdAt: "2026-05-18T12:33:00.000Z",
+    },
+  ],
+  reviews: [],
+  operations: [],
+} satisfies PlaybookGraphRunDetail;
+
 const dashboardRun = {
   runId: "run-dashboard",
   workflowId: "ops.activity-snapshot",
@@ -910,14 +992,16 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         runs:
           args?.playbookId === dashboardPlaybook.id
             ? [dashboardGraphRunDetail.run]
-            : args?.playbookId === playbook.id
-              ? [
-                  completedGraphRunDetail.run,
-                  graphRunDetail.run,
-                  ...(includeContextDriftRun ? [contextDriftGraphRunDetail.run] : []),
-                  ...(includeInterruptedRun ? [interruptedGraphRunDetail.run] : []),
-                ]
-              : [dashboardGraphRunDetail.run, completedGraphRunDetail.run, graphRunDetail.run],
+            : args?.playbookId === importedPlaybook.id
+              ? [seoCompletedGraphRunDetail.run]
+              : args?.playbookId === playbook.id
+                ? [
+                    completedGraphRunDetail.run,
+                    graphRunDetail.run,
+                    ...(includeContextDriftRun ? [contextDriftGraphRunDetail.run] : []),
+                    ...(includeInterruptedRun ? [interruptedGraphRunDetail.run] : []),
+                  ]
+                : [dashboardGraphRunDetail.run, completedGraphRunDetail.run, graphRunDetail.run],
       } satisfies PlaybookGraphRunListResult;
     case "graph_run_review_surface":
       return args?.runId === contextDriftGraphRunDetail.run.runId
@@ -934,17 +1018,27 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
                 branches: [],
                 actions: [],
               }
-            : args?.runId === completedGraphRunDetail.run.runId
+            : args?.runId === seoCompletedGraphRunDetail.run.runId
               ? {
                   schemaVersion: 1,
-                  detail: completedGraphRunDetail,
+                  detail: seoCompletedGraphRunDetail,
                   activeArtifacts: [],
                   artifactTimeline: [],
                   timeline: [],
                   branches: [],
                   actions: [],
                 }
-              : (graphRunSurfaceOverride ?? graphRunSurface);
+              : args?.runId === completedGraphRunDetail.run.runId
+                ? {
+                    schemaVersion: 1,
+                    detail: completedGraphRunDetail,
+                    activeArtifacts: [],
+                    artifactTimeline: [],
+                    timeline: [],
+                    branches: [],
+                    actions: [],
+                  }
+                : (graphRunSurfaceOverride ?? graphRunSurface);
     case "graph_run_git_milestone_preview":
       return {
         schemaVersion: 1,
@@ -1291,6 +1385,46 @@ describe("PlaybooksView", () => {
       expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
         workspaceRoot: "/tmp/workspace",
         path: "Sales Meeting Brief - FOMORA.md",
+      });
+    });
+  });
+
+  test("shows materialized graph artifacts when playbook output declarations are empty", async () => {
+    includeImportedPlaybook = true;
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected SEO run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getByText(/outputs\/final-article\.md/)).toBeTruthy();
+      expect(view.getAllByText("Final Output Manifest").length).toBeGreaterThan(0);
+      expect(view.getByText(/outputs\/final-output-manifest\.md/)).toBeTruthy();
+      expect(view.queryByText("Article Scorecard")).toBeNull();
+    });
+
+    const artifactCard = view.getAllByTitle("Open artifact")[0];
+    if (!artifactCard) throw new Error("Expected artifact card");
+    fireEvent.click(artifactCard);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
+        workspaceRoot: "/tmp/workspace",
+        path: "outputs/final-article.md",
       });
     });
   });
