@@ -76,6 +76,15 @@ describe("createWorkspaceGuard", () => {
     );
   });
 
+  test("allows creating files inside missing nested workspace directories", async () => {
+    const root = await makeWorkspace();
+    const guard = await createWorkspaceGuard(root);
+
+    await expect(
+      guard.resolveInsideWorkspaceForCreate("SEO GEO Blog Article/Briefs/content-brief.md")
+    ).resolves.toBe(join(root, "SEO GEO Blog Article", "Briefs", "content-brief.md"));
+  });
+
   test("rejects creating a new file outside the workspace", async () => {
     const root = await makeWorkspace();
     const guard = await createWorkspaceGuard(root);
@@ -83,5 +92,17 @@ describe("createWorkspaceGuard", () => {
     await expect(guard.resolveInsideWorkspaceForCreate("../new-file.ts")).rejects.toBeInstanceOf(
       WorkspaceBoundaryError
     );
+  });
+
+  test("rejects creating through a missing child of an escaping symlink", async () => {
+    const root = await makeWorkspace();
+    const outside = join(root, "..", "outside-dir");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, join(root, "src", "outside-dir-link"));
+    const guard = await createWorkspaceGuard(root);
+
+    await expect(
+      guard.resolveInsideWorkspaceForCreate("src/outside-dir-link/new-file.ts")
+    ).rejects.toBeInstanceOf(WorkspaceBoundaryError);
   });
 });

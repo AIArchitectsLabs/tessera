@@ -1377,6 +1377,7 @@ export interface GraphRunHandlerOptions {
   leaseRenewalMs?: number;
   maxSteps?: number;
   executionContext?: Record<string, unknown>;
+  blockOnMissingAdapters?: boolean;
   agentProfile?: AgentProfile;
   agentProvider?: AgentProviderConfig;
   credential?: ModelRuntimeCredential;
@@ -2562,18 +2563,26 @@ async function maybeDrainGraphRun(
   const toolPolicies = graphRunDefaultToolPolicies(options);
   const toolCapabilities = graphRunDefaultToolCapabilities(options);
   if (!scriptAdapter && !artifactWriteAdapter && !agentAdapter && !toolAdapter) return false;
+  const queuedEntries = (await store.getQueue(runId)).filter((entry) => entry.status === "queued");
+  if (
+    queuedEntries.length > 0 &&
+    queuedEntries.every((entry) =>
+      graphRunQueuedEntryRequiresUnavailableAdapter(entry, {
+        scriptAdapter: Boolean(scriptAdapter),
+        artifactWriteAdapter: Boolean(artifactWriteAdapter),
+        agentAdapter: Boolean(agentAdapter),
+        toolAdapter: Boolean(toolAdapter),
+      })
+    )
+  ) {
+    return false;
+  }
   if (!scriptAdapter && !agentAdapter && !artifactWriteAdapter && toolAdapter) {
-    const queuedEntries = (await store.getQueue(runId)).filter(
-      (entry) => entry.status === "queued"
-    );
     if (queuedEntries.length === 0 || queuedEntries.some((entry) => entry.nodeKind !== "tool")) {
       return false;
     }
   }
   if (!scriptAdapter && artifactWriteAdapter) {
-    const queuedEntries = (await store.getQueue(runId)).filter(
-      (entry) => entry.status === "queued"
-    );
     if (
       queuedEntries.length === 0 ||
       queuedEntries.some((entry) => entry.nodeKind !== "artifactWrite")
@@ -2589,6 +2598,9 @@ async function maybeDrainGraphRun(
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
     leaseRenewalMs: graphRunLeaseRenewalMs(options),
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+    ...(options.blockOnMissingAdapters !== undefined
+      ? { blockOnMissingAdapters: options.blockOnMissingAdapters }
+      : {}),
     ...(options.executionContext !== undefined
       ? { executionContext: options.executionContext }
       : {}),
@@ -2600,6 +2612,29 @@ async function maybeDrainGraphRun(
     ...(artifactWriteAdapter ? { artifactWriteAdapter } : {}),
   });
   return true;
+}
+
+function graphRunQueuedEntryRequiresUnavailableAdapter(
+  entry: PlaybookGraphQueueEntry,
+  adapters: {
+    scriptAdapter: boolean;
+    artifactWriteAdapter: boolean;
+    agentAdapter: boolean;
+    toolAdapter: boolean;
+  }
+): boolean {
+  switch (entry.nodeKind) {
+    case "agent":
+      return !adapters.agentAdapter;
+    case "artifactWrite":
+      return !adapters.artifactWriteAdapter;
+    case "script":
+      return !adapters.scriptAdapter;
+    case "tool":
+      return !adapters.toolAdapter;
+    default:
+      return false;
+  }
 }
 
 async function maybeBlockGraphRunForExecutionContextDrift(
@@ -2691,6 +2726,7 @@ export async function drainGraphRunWorkQueue(
     ...options,
     runtimeId,
     leaseRenewalMs: graphRunLeaseRenewalMs(options),
+    blockOnMissingAdapters: options.blockOnMissingAdapters ?? false,
   };
   const result: GraphRunWorkQueueDrainResult = {
     inspected: 0,

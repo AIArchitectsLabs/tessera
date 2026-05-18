@@ -1846,6 +1846,69 @@ describe("drainPlaybookGraphRun", () => {
     expect(store.memos.size).toBe(0);
   });
 
+  test("missing agent adapters can leave work queued for another runtime", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        start: "plan",
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "agent",
+          },
+          {
+            id: "agent",
+            kind: "agent",
+            prompt: "prompts/write.md",
+            inputs: { plan: { artifact: "plan" } },
+            tools: [],
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-agent-deferred",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const deferred = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "worker-runtime",
+      store,
+      blockOnMissingAdapters: false,
+      scriptAdapter() {
+        return { title: "Plan" };
+      },
+    });
+
+    const deferredQueue = await store.getQueue(run.runId);
+    expect(deferred.run.status).toBe("running");
+    expect(deferred.run.blockedReason).toBeUndefined();
+    expect(deferredQueue.find((entry) => entry.nodeId === "plan")?.status).toBe("succeeded");
+    expect(deferredQueue.find((entry) => entry.nodeId === "agent")?.status).toBe("queued");
+
+    const completed = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "request-runtime",
+      store,
+      scriptAdapter() {
+        return { title: "Plan" };
+      },
+      agentAdapter() {
+        return { status: "completed", text: "Done" };
+      },
+    });
+
+    expect(completed.run.status).toBe("completed");
+    expect((await store.getQueue(run.runId)).find((entry) => entry.nodeId === "agent")?.status).toBe(
+      "succeeded"
+    );
+  });
+
   test("artifactWrite blocks durably when no adapter is provided", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({

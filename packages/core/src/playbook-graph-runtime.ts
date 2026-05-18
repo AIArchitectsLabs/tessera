@@ -175,6 +175,7 @@ export interface PlaybookGraphRuntimeOptions {
   leaseRenewalMs?: number;
   maxSteps?: number;
   executionContext?: unknown;
+  blockOnMissingAdapters?: boolean;
   scriptAdapter?: (input: PlaybookGraphScriptAdapterInput) => Promise<unknown> | unknown;
   agentAdapter?: (input: PlaybookGraphAgentAdapterInput) => Promise<unknown> | unknown;
   toolAdapter?: (input: PlaybookGraphToolAdapterInput) => Promise<unknown> | unknown;
@@ -774,6 +775,31 @@ function parallelMapItems(
     throw new Error(`parallelMap items must resolve to an array: ${node.id}`);
   }
   return value;
+}
+
+async function releaseMissingAdapterQueueEntry(input: {
+  options: PlaybookGraphRuntimeOptions;
+  run: PlaybookGraphRunRecord;
+  queueEntry: PlaybookGraphQueueEntry;
+  now: string;
+}): Promise<PlaybookGraphRunRecord> {
+  await input.options.store.updateQueueEntry({
+    ...input.queueEntry,
+    status: "queued",
+    runtimeId: undefined,
+    leaseId: undefined,
+    claimedAt: undefined,
+    leaseExpiresAt: undefined,
+    updatedAt: input.now,
+  });
+  const run = {
+    ...input.run,
+    status: "running" as const,
+    currentQueueEntryId: input.queueEntry.queueEntryId,
+    updatedAt: input.now,
+  };
+  await input.options.store.updateRun(run);
+  return run;
 }
 
 function createParallelMapBranchWork(input: {
@@ -1387,6 +1413,16 @@ export async function drainPlaybookGraphRun(
     }
 
     if (node.kind === "artifactWrite" && !options.artifactWriteAdapter) {
+      if (options.blockOnMissingAdapters === false) {
+        const updatedAt = now();
+        run = await releaseMissingAdapterQueueEntry({
+          options,
+          run,
+          queueEntry,
+          now: updatedAt,
+        });
+        return { run, executed };
+      }
       const updatedAt = now();
       const blocked = {
         ...queueEntry,
@@ -1412,6 +1448,16 @@ export async function drainPlaybookGraphRun(
     }
 
     if (node.kind === "agent" && !options.agentAdapter) {
+      if (options.blockOnMissingAdapters === false) {
+        const updatedAt = now();
+        run = await releaseMissingAdapterQueueEntry({
+          options,
+          run,
+          queueEntry,
+          now: updatedAt,
+        });
+        return { run, executed };
+      }
       const updatedAt = now();
       const blocked = {
         ...queueEntry,
