@@ -224,6 +224,7 @@ export interface PlaybookGraphRuntimeOptions {
   now?: () => string;
   leaseMs?: number;
   leaseRenewalMs?: number;
+  heartbeatMs?: number;
   maxSteps?: number;
   executionContext?: unknown;
   blockOnMissingAdapters?: boolean;
@@ -291,6 +292,40 @@ async function withQueueLeaseRenewal<T>(
       });
   }, leaseRenewalMs);
 
+  try {
+    return await work();
+  } finally {
+    stopped = true;
+    clearInterval(timer);
+  }
+}
+
+async function withHeartbeatTicker<T>(
+  options: PlaybookGraphRuntimeOptions,
+  queueEntry: PlaybookGraphQueueEntry,
+  now: () => string,
+  work: () => Promise<T> | T
+): Promise<T> {
+  const cadence = options.heartbeatMs ?? heartbeatCadenceMs(queueEntry.nodeKind);
+  if (!cadence || !queueEntry.leaseId || queueEntry.status !== "running") {
+    return work();
+  }
+  const leaseId = queueEntry.leaseId;
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (stopped) return;
+    const at = now();
+    void options.store
+      .bumpHeartbeat({
+        runId: queueEntry.runId,
+        queueEntryId: queueEntry.queueEntryId,
+        leaseId,
+        now: at,
+      })
+      .catch(() => {
+        // Heartbeat is best-effort observability; reaper is authoritative.
+      });
+  }, cadence);
   try {
     return await work();
   } finally {
@@ -1631,7 +1666,8 @@ export async function drainPlaybookGraphRun(
     let branchUpdates: PlaybookGraphBranchItem[] = [];
     let extraQueueEntries: PlaybookGraphQueueEntry[] = [];
     try {
-      output = await withQueueLeaseRenewal(options, queueEntry, leaseMs, now, async () => {
+      output = await withQueueLeaseRenewal(options, queueEntry, leaseMs, now, () =>
+        withHeartbeatTicker(options, queueEntry, now, async () => {
         if (node.kind === "script") {
           if (!options.scriptAdapter) {
             throw new Error("Script adapter is required for graph script nodes");
@@ -1710,7 +1746,8 @@ export async function drainPlaybookGraphRun(
           };
         }
         return {};
-      });
+      })
+      );
     } catch (error) {
       const updatedAt = now();
       const failed = {

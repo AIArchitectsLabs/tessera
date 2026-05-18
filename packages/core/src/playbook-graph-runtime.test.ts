@@ -2186,6 +2186,52 @@ describe("drainPlaybookGraphRun", () => {
     expect(result.run.status).toBe("needs_repair");
     expect(result.run.repairReason).toContain("hash mismatch");
   });
+
+  test("heartbeat ticker bumps lastHeartbeatAt while adapter runs", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-hb",
+      now: "2026-05-18T12:00:00.000Z",
+    });
+
+    const heartbeats: string[] = [];
+    const bumpHeartbeat = store.bumpHeartbeat.bind(store);
+    store.bumpHeartbeat = async (input) => {
+      heartbeats.push(input.now);
+      return bumpHeartbeat(input);
+    };
+
+    let tick = 0;
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "rt-hb",
+      store,
+      leaseMs: 30_000,
+      leaseRenewalMs: 5,
+      heartbeatMs: 5,
+      now: () => `2026-05-18T12:00:${String(tick++).padStart(2, "0")}.000Z`,
+      async scriptAdapter() {
+        await new Promise((r) => setTimeout(r, 40));
+        return { ok: true };
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(heartbeats.length).toBeGreaterThan(0);
+  });
 });
 
 describe("slice-0.5 timeout matrix", () => {
