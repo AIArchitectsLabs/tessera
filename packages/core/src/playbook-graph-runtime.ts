@@ -225,6 +225,7 @@ export interface PlaybookGraphRuntimeOptions {
   leaseMs?: number;
   leaseRenewalMs?: number;
   heartbeatMs?: number;
+  softTimeoutMs?: (kind: PlaybookGraphQueueEntry["nodeKind"]) => number | undefined;
   maxSteps?: number;
   executionContext?: unknown;
   blockOnMissingAdapters?: boolean;
@@ -307,11 +308,15 @@ async function withHeartbeatTicker<T>(
   work: () => Promise<T> | T
 ): Promise<T> {
   const cadence = options.heartbeatMs ?? heartbeatCadenceMs(queueEntry.nodeKind);
+  const softMs =
+    options.softTimeoutMs?.(queueEntry.nodeKind) ?? softTimeoutMs(queueEntry.nodeKind);
   if (!cadence || !queueEntry.leaseId || queueEntry.status !== "running") {
     return work();
   }
   const leaseId = queueEntry.leaseId;
+  const claimedAtMs = queueEntry.claimedAt ? Date.parse(queueEntry.claimedAt) : Date.now();
   let stopped = false;
+  let softObserved = false;
   const timer = setInterval(() => {
     if (stopped) return;
     const at = now();
@@ -322,9 +327,28 @@ async function withHeartbeatTicker<T>(
         leaseId,
         now: at,
       })
-      .catch(() => {
-        // Heartbeat is best-effort observability; reaper is authoritative.
-      });
+      .catch(() => {});
+    if (!softObserved && softMs && Date.parse(at) - claimedAtMs >= softMs) {
+      softObserved = true;
+      void options.store
+        .addOperationRecord({
+          schemaVersion: 1,
+          operationRecordId: `${queueEntry.queueEntryId}:soft-timeout:v${queueEntry.attempt}`,
+          operationAttemptId: `${queueEntry.queueEntryId}:soft-timeout:v${queueEntry.attempt}`,
+          runId: queueEntry.runId,
+          actionSpecId: "system.timeout.soft",
+          kind: "soft_timeout_observed",
+          status: "succeeded",
+          operatorIntent: "Step running longer than expected",
+          queueEntryId: queueEntry.queueEntryId,
+          affectedArtifactIds: [],
+          affectedReviewEventIds: [],
+          affectedQueueEntryIds: [queueEntry.queueEntryId],
+          createdAt: at,
+          completedAt: at,
+        })
+        .catch(() => {});
+    }
   }, cadence);
   try {
     return await work();

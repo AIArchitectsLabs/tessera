@@ -2187,6 +2187,55 @@ describe("drainPlaybookGraphRun", () => {
     expect(result.run.repairReason).toContain("hash mismatch");
   });
 
+  test("soft timeout records a single observation when first crossed", async () => {
+  const store = new MemoryGraphRunStore();
+  const run = await createPlaybookGraphRun({
+    compiledGraph: compiledGraph({
+      nodes: [
+        {
+          id: "plan",
+          kind: "script",
+          run: "scripts/plan.ts",
+          inputs: {},
+          outputArtifact: "plan",
+          onSuccess: "completed",
+        },
+      ],
+    }),
+    store,
+    runId: "run-soft",
+    now: "2026-05-18T12:00:00.000Z",
+  });
+
+  let tick = 0;
+  const result = await drainPlaybookGraphRun({
+    runId: run.runId,
+    runtimeId: "rt-soft",
+    store,
+    leaseMs: 30_000,
+    leaseRenewalMs: 5,
+    heartbeatMs: 5,
+    softTimeoutMs: () => 10,
+    now: (() => {
+      let ms = 0;
+      return () => {
+        const t = new Date(Date.parse("2026-05-18T12:00:00.000Z") + ms);
+        ms += 5;
+        return t.toISOString();
+      };
+    })(),
+    async scriptAdapter() {
+      await new Promise((r) => setTimeout(r, 60));
+      return { ok: true };
+    },
+  });
+  expect(result.run.status).toBe("completed");
+  const ops = await store.listOperationRecords(run.runId);
+  const soft = ops.filter((op) => op.kind === "soft_timeout_observed");
+  expect(soft.length).toBe(1);
+  expect(soft[0].queueEntryId).toBeDefined();
+});
+
   test("heartbeat ticker bumps lastHeartbeatAt while adapter runs", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
