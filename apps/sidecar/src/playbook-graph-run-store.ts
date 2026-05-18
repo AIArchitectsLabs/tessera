@@ -99,6 +99,15 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     CREATE INDEX IF NOT EXISTS playbook_graph_queue_run_status_idx
       ON playbook_graph_queue (run_id, status, updated_at);
 
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_playbook_updated_idx
+      ON playbook_graph_runs (playbook_id, updated_at DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_status_updated_idx
+      ON playbook_graph_runs (status, updated_at DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_playbook_status_updated_idx
+      ON playbook_graph_runs (playbook_id, status, updated_at DESC, run_id DESC);
+
     CREATE TABLE IF NOT EXISTS playbook_graph_branch_items (
       branch_item_id TEXT PRIMARY KEY NOT NULL,
       run_id TEXT NOT NULL,
@@ -168,8 +177,26 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   const listRuns = db.prepare<PayloadRow, []>(
     "SELECT payload FROM playbook_graph_runs ORDER BY updated_at DESC, run_id DESC"
   );
+  const listRunsLimited = db.prepare<PayloadRow, [number]>(
+    "SELECT payload FROM playbook_graph_runs ORDER BY updated_at DESC, run_id DESC LIMIT ?"
+  );
   const listRunsByPlaybook = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? ORDER BY updated_at DESC, run_id DESC"
+  );
+  const listRunsByPlaybookLimited = db.prepare<PayloadRow, [string, number]>(
+    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
+  );
+  const listRunsByStatus = db.prepare<PayloadRow, [string]>(
+    "SELECT payload FROM playbook_graph_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC"
+  );
+  const listRunsByStatusLimited = db.prepare<PayloadRow, [string, number]>(
+    "SELECT payload FROM playbook_graph_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
+  );
+  const listRunsByPlaybookAndStatus = db.prepare<PayloadRow, [string, string]>(
+    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? AND status = ? ORDER BY updated_at DESC, run_id DESC"
+  );
+  const listRunsByPlaybookAndStatusLimited = db.prepare<PayloadRow, [string, string, number]>(
+    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? AND status = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
   );
   const saveQueue = db.prepare(`
     INSERT INTO playbook_graph_queue (
@@ -601,12 +628,26 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       writeRun(run);
     },
     async listRuns(filter) {
-      const rows = filter?.playbookId ? listRunsByPlaybook.all(filter.playbookId) : listRuns.all();
+      const limit = filter?.limit;
+      const rows =
+        filter?.playbookId && filter.status
+          ? limit
+            ? listRunsByPlaybookAndStatusLimited.all(filter.playbookId, filter.status, limit)
+            : listRunsByPlaybookAndStatus.all(filter.playbookId, filter.status)
+          : filter?.playbookId
+            ? limit
+              ? listRunsByPlaybookLimited.all(filter.playbookId, limit)
+              : listRunsByPlaybook.all(filter.playbookId)
+            : filter?.status
+              ? limit
+                ? listRunsByStatusLimited.all(filter.status, limit)
+                : listRunsByStatus.all(filter.status)
+              : limit
+                ? listRunsLimited.all(limit)
+                : listRuns.all();
       return rows.flatMap((row) => {
         const run = parseRun(row);
-        if (!run) return [];
-        if (filter?.status && run.status !== filter.status) return [];
-        return [run];
+        return run ? [run] : [];
       });
     },
     async getQueue(runId) {

@@ -1084,6 +1084,32 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("keeps initial Playbooks visit to catalog and run summaries", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Sales Meeting Brief").length).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      const selectedRunListCalls = invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === "graph_run_list" &&
+          (args as { playbookId?: string } | undefined)?.playbookId === playbook.id
+      );
+      expect(selectedRunListCalls).toHaveLength(1);
+      expect(
+        selectedRunListCalls[0]?.[1] as { playbookId?: string; limit?: number } | undefined
+      ).toMatchObject({
+        playbookId: playbook.id,
+        limit: 10,
+      });
+    });
+    expect(invoke.mock.calls.some(([command]) => command === "graph_run_review_surface")).toBe(
+      false
+    );
+  });
+
   test("does not crash when legacy model settings miss the selected provider", async () => {
     modelSettings.selectedProvider = "openai-codex";
     Reflect.deleteProperty(

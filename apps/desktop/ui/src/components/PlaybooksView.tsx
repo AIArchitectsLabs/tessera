@@ -97,6 +97,9 @@ const ctaCopyMap: Record<string, string> = {
   "ops.activity-snapshot": "Create snapshot",
 };
 
+const PLAYBOOK_RUN_LIST_LIMIT = 10;
+const PLAYBOOK_HISTORY_LIMIT = 10;
+
 const resultHeadline: Partial<Record<PlaybookRunDetail["status"], (name: string) => string>> = {
   completed: (name) => `${name} is ready.`,
   denied: () => "Run stopped.",
@@ -2887,7 +2890,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [showDetails, setShowDetails] = useState(false);
   const [loadingPlaybooks, setLoadingPlaybooks] = useState(true);
   const [playbooksLoaded, setPlaybooksLoaded] = useState(false);
-  const [loadingSetup, setLoadingSetup] = useState(false);
   const [running, setRunning] = useState(false);
   const [importingPlaybook, setImportingPlaybook] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -2901,7 +2903,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   );
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
   const runListRequestRef = useRef(0);
-  const graphRunListRequestRef = useRef(0);
 
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase || !!p.graphHash),
@@ -3014,7 +3015,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }, []);
 
   const loadSetup = useCallback(async () => {
-    setLoadingSetup(true);
     setSetupError(null);
     try {
       const [loadedModelSettings, loadedIntegrationSettings, loadedAgentProfiles] =
@@ -3028,8 +3028,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setAgentProfiles(loadedAgentProfiles.profiles);
     } catch (loadError) {
       setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
-    } finally {
-      setLoadingSetup(false);
     }
   }, []);
 
@@ -3042,43 +3040,61 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }, []);
 
-  const loadRuns = useCallback(
-    async (playbookId?: string | null) => {
-      const requestId = ++runListRequestRef.current;
-      setError(null);
-      if (!playbookId) {
-        setRuns([]);
-        setSelectedRunId(null);
+  const loadRuns = useCallback(async (playbookId?: string | null) => {
+    const requestId = ++runListRequestRef.current;
+    setError(null);
+    setGraphRunError(null);
+    if (!playbookId) {
+      setRuns([]);
+      setGraphRuns([]);
+      setSelectedRunId(null);
+      setSelectedRunDetail(null);
+      setSelectedGraphRunId(null);
+      setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
+      return;
+    }
+
+    try {
+      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
+        playbookId,
+        limit: PLAYBOOK_RUN_LIST_LIMIT,
+      });
+      if (requestId !== runListRequestRef.current) return;
+
+      const nextGraphRuns = result.runs.filter((run) => run.playbookId === playbookId);
+      const playbookRuns = nextGraphRuns.map((run) => graphRunRecordToPlaybookRunDetail(run, null));
+      setGraphRuns(nextGraphRuns);
+      setRuns(playbookRuns);
+      setSelectedRunId((current) => {
+        if (current && playbookRuns.some((run) => run.runId === current)) return current;
         setSelectedRunDetail(null);
-        return;
-      }
-
-      try {
-        const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
-          playbookId,
-        });
-        if (requestId !== runListRequestRef.current) return;
-
-        const playbookRuns = result.runs
-          .filter((run) => run.playbookId === playbookId)
-          .map((run) => graphRunRecordToPlaybookRunDetail(run, selectedPlaybookForUi));
-        setRuns(playbookRuns);
-        setSelectedRunId((current) => {
-          if (current && playbookRuns.some((run) => run.runId === current)) return current;
-          setSelectedRunDetail(null);
-          return null;
-        });
-      } catch (loadError) {
-        if (requestId !== runListRequestRef.current) return;
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
-      }
-    },
-    [selectedPlaybookForUi]
-  );
+        return null;
+      });
+      setSelectedGraphRunId((current) => {
+        if (current && nextGraphRuns.some((run) => run.runId === current)) return current;
+        setSelectedGraphRunDetail(null);
+        setSelectedGraphRunSurface(null);
+        return null;
+      });
+    } catch (loadError) {
+      if (requestId !== runListRequestRef.current) return;
+      setRuns([]);
+      setGraphRuns([]);
+      setSelectedRunDetail(null);
+      setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
+      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
+    }
+  }, []);
 
   const loadRunHistory = useCallback(async () => {
     try {
-      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list");
+      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
+        status: "completed",
+        limit: PLAYBOOK_HISTORY_LIMIT,
+      });
       setRunHistory(result.runs.map((run) => graphRunRecordToPlaybookRunDetail(run, null)));
     } catch {
       setRunHistory([]);
@@ -3103,38 +3119,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     [selectedPlaybookForUi]
   );
 
-  const loadGraphRuns = useCallback(async (playbookId?: string | null) => {
-    const requestId = ++graphRunListRequestRef.current;
-    setGraphRunError(null);
-    if (!playbookId) {
-      setGraphRuns([]);
-      setSelectedGraphRunId(null);
-      setSelectedGraphRunDetail(null);
-      setSelectedGraphRunSurface(null);
-      return;
-    }
-
-    try {
-      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
-        playbookId,
-      });
-      if (requestId !== graphRunListRequestRef.current) return;
-      setGraphRuns(result.runs);
-      setSelectedGraphRunId((current) => {
-        if (current && result.runs.some((run) => run.runId === current)) return current;
-        setSelectedGraphRunDetail(null);
-        setSelectedGraphRunSurface(null);
-        return result.runs[0]?.runId ?? null;
-      });
-    } catch (loadError) {
-      if (requestId !== graphRunListRequestRef.current) return;
-      setGraphRuns([]);
-      setSelectedGraphRunDetail(null);
-      setSelectedGraphRunSurface(null);
-      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
-
   const loadGraphRunDetail = useCallback(
     async (runId: string) => {
       try {
@@ -3156,9 +3140,16 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
 
   useEffect(() => {
     void loadPlaybooks();
+  }, [loadPlaybooks]);
+
+  useEffect(() => {
+    if (!playbooksLoaded) return;
     void loadSetup();
-    void loadRunHistory();
-  }, [loadPlaybooks, loadRunHistory, loadSetup]);
+    const timeout = setTimeout(() => {
+      void loadRunHistory();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [loadRunHistory, loadSetup, playbooksLoaded]);
 
   useEffect(() => {
     if (selectedPlaybookId) {
@@ -3173,25 +3164,22 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }, [loadRuns, selectedPlaybookId]);
 
   useEffect(() => {
-    void loadGraphRuns(selectedPlaybookId);
-  }, [loadGraphRuns, selectedPlaybookId]);
-
-  useEffect(() => {
     if (!selectedRunId) {
       setSelectedRunDetail(null);
+      setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
       return;
     }
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
 
   useEffect(() => {
+    if (!showDetails) return;
     if (!selectedGraphRunId) {
-      setSelectedGraphRunDetail(null);
-      setSelectedGraphRunSurface(null);
       return;
     }
     void loadGraphRunDetail(selectedGraphRunId);
-  }, [loadGraphRunDetail, selectedGraphRunId]);
+  }, [loadGraphRunDetail, selectedGraphRunId, showDetails]);
 
   useEffect(() => {
     if (!refreshNotice) return;
@@ -3249,7 +3237,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     void loadSetup();
     void loadRunHistory();
     void loadRuns(selectedPlaybookId);
-    void loadGraphRuns(selectedPlaybookId);
     if (selectedPlaybookId) {
       void loadPlaybookDetail(selectedPlaybookId);
     }
@@ -3261,7 +3248,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
   }, [
     loadGraphRunDetail,
-    loadGraphRuns,
     loadPlaybookDetail,
     loadPlaybooks,
     loadRunDetail,
@@ -3302,12 +3288,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setSelectedRunDetail(null);
       setSelectedGraphRunId(null);
       setSelectedGraphRunDetail(null);
-      await Promise.all([
-        loadPlaybookDetail(imported.id),
-        loadRuns(imported.id),
-        loadGraphRuns(imported.id),
-        loadRunHistory(),
-      ]);
+      await Promise.all([loadPlaybookDetail(imported.id), loadRuns(imported.id), loadRunHistory()]);
       const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
       setRefreshNotice(`${imported.name} ${imported.status}.${warningCopy}`.trim());
     } catch (importError) {
@@ -3315,7 +3296,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     } finally {
       setImportingPlaybook(false);
     }
-  }, [loadGraphRuns, loadPlaybookDetail, loadRunHistory, loadRuns]);
+  }, [loadPlaybookDetail, loadRunHistory, loadRuns]);
 
   async function startRun(
     inputOverride?: Record<string, unknown>,
@@ -3363,7 +3344,6 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       ]);
       setSelectedRunId(run.runId);
       setSelectedRunDetail(run);
-      setSelectedGraphRunId(detail.run.runId);
       setSelectedGraphRunDetail(detail);
       await loadGraphRunDetail(detail.run.runId);
     } catch (runError) {
@@ -3498,8 +3478,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
         setShowStartForm(true);
         setSelectedRunId(null);
         setSelectedRunDetail(null);
+        setSelectedGraphRunId(null);
+        setSelectedGraphRunDetail(null);
+        setSelectedGraphRunSurface(null);
         if (!isSamePlaybook) {
           setRuns([]);
+          setGraphRuns([]);
         }
       }}
     >
@@ -3533,7 +3517,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
                 size="icon"
                 className="h-8 w-8 rounded-full"
                 onClick={() => void importPlaybook()}
-                disabled={loadingPlaybooks || loadingSetup || running || importingPlaybook}
+                disabled={loadingPlaybooks || running || importingPlaybook}
                 title="Import playbook"
               >
                 {importingPlaybook ? (
@@ -3548,7 +3532,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
                 size="icon"
                 className="h-8 w-8 rounded-full"
                 onClick={refreshAll}
-                disabled={loadingPlaybooks || loadingSetup || running || importingPlaybook}
+                disabled={loadingPlaybooks || running || importingPlaybook}
                 title="Refresh"
               >
                 <RefreshCw size={14} />

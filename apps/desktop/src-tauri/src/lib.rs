@@ -1682,6 +1682,7 @@ async fn graph_run_list(
     state: State<'_, SidecarHandle>,
     playbook_id: Option<String>,
     status: Option<String>,
+    limit: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let mut params = Vec::new();
     if let Some(playbook_id) = playbook_id {
@@ -1689,6 +1690,9 @@ async fn graph_run_list(
     }
     if let Some(status) = status {
         params.push(format!("status={}", percent_encode(&status)));
+    }
+    if let Some(limit) = limit {
+        params.push(format!("limit={}", limit));
     }
     let path = if params.is_empty() {
         "/graph-runs".to_string()

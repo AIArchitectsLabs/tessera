@@ -2656,6 +2656,18 @@ describe("graph run endpoints", () => {
       );
       expect(((await listResponse?.json()) as { runs: unknown[] }).runs).toHaveLength(1);
 
+      const limitedListResponse = await handleGraphRunList?.(
+        new Request("http://localhost/graph-runs?status=blocked&limit=1"),
+        { store }
+      );
+      expect(((await limitedListResponse?.json()) as { runs: unknown[] }).runs).toHaveLength(1);
+
+      const invalidLimitResponse = await handleGraphRunList?.(
+        new Request("http://localhost/graph-runs?limit=0"),
+        { store }
+      );
+      expect(invalidLimitResponse?.status).toBe(400);
+
       const resumeResponse = await handleGraphRunResume?.(
         new Request(`http://localhost/graph-runs/${detail.run.runId}/resume`, {
           method: "POST",

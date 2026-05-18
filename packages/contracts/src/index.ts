@@ -1938,6 +1938,7 @@ export const PlaybookGraphRunListFilterSchema = z
   .object({
     playbookId: SafePlaybookIdSchema.optional(),
     status: PlaybookGraphRunStatusSchema.optional(),
+    limit: z.number().int().positive().max(100).optional(),
   })
   .strict();
 export type PlaybookGraphRunListFilter = z.infer<typeof PlaybookGraphRunListFilterSchema>;
