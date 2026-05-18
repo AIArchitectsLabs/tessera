@@ -12,7 +12,7 @@ import type {
   PlaybookListResult,
   PlaybookRunDetail,
 } from "@tessera/contracts";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { JSDOM } from "jsdom";
 import React from "react";
 
@@ -1170,7 +1170,7 @@ mock.module("@tauri-apps/plugin-dialog", () => ({
 
 const { PlaybooksView } = await import("./PlaybooksView");
 
-function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
+function renderPlaybooksView(workspaceRoot: string | null = "/tmp/workspace") {
   return render(
     React.createElement(PlaybooksView, {
       onWorkspaceSelect: mock(() => undefined),
@@ -1382,6 +1382,31 @@ describe("PlaybooksView", () => {
 
     const artifactCard = view.getByTitle("Open artifact");
     fireEvent.click(artifactCard);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
+        workspaceRoot: "/tmp/workspace",
+        path: "Sales Meeting Brief - FOMORA.md",
+      });
+    });
+  });
+
+  test("opens completed graph artifacts from the run workspace when none is selected", async () => {
+    const view = renderPlaybooksView(null);
+
+    await waitFor(() => {
+      expect(view.getByText(/May 9/)).toBeTruthy();
+    });
+
+    const runButton = view.getByText(/May 9/).closest("button");
+    if (!runButton) throw new Error("Expected run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText(/Sales Meeting Brief - FOMORA\.md/)).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByTitle("Open artifact"));
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
@@ -1746,6 +1771,11 @@ describe("PlaybooksView", () => {
       expect(view.getByText("What Tessera is asking you to approve")).toBeTruthy();
       expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
     });
+
+    const detailsPane = view.getByText("Run summary").closest("aside");
+    if (!detailsPane) throw new Error("Expected details pane");
+    expect(within(detailsPane).queryByText(/A practical brief for the article/)).toBeNull();
+    expect(within(detailsPane).queryByText(/# Content Brief/)).toBeNull();
   });
 
   test("refreshes review evidence after approving from the main review card", async () => {

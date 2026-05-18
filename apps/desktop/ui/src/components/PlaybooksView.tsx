@@ -444,9 +444,11 @@ function runStatusCopy(run: PlaybookRunDetail): string {
 function ReviewEvidenceBlock({
   evidence,
   compact,
+  hideArtifactPreview,
 }: {
   evidence: ReviewEvidence;
   compact?: boolean;
+  hideArtifactPreview?: boolean;
 }) {
   const score = evidence.scorecard;
   const scoreTone =
@@ -491,7 +493,7 @@ function ReviewEvidenceBlock({
         </div>
       ) : null}
 
-      {evidence.artifactPreview ? (
+      {evidence.artifactPreview && !hideArtifactPreview ? (
         <div
           className={cn(
             "whitespace-pre-wrap text-sm leading-6",
@@ -797,6 +799,12 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
     paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
   }
   return paths;
+}
+
+function graphRunWorkspaceRoot(detail: PlaybookGraphRunDetail | null): string | null {
+  return detail?.run.materialization?.kind === "workspace"
+    ? detail.run.materialization.workspaceRoot
+    : null;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
@@ -1510,6 +1518,8 @@ function GraphRuntimeSection({
   const [payloadError, setPayloadError] = useState<string | null>(null);
   const [gitPreview, setGitPreview] = useState<PlaybookGraphGitMilestonePreview | null>(null);
   const [gitPreviewError, setGitPreviewError] = useState<string | null>(null);
+  const [openingArtifactPath, setOpeningArtifactPath] = useState<string | null>(null);
+  const [artifactOpenError, setArtifactOpenError] = useState<string | null>(null);
   const selectedRunId = detail?.run.runId;
   const visibleActions = (surface?.actions ?? []).filter(
     (action) => action.decision !== "edit_input"
@@ -1518,6 +1528,20 @@ function GraphRuntimeSection({
     detail?.run.materialization?.kind === "workspace"
       ? detail.run.materialization.workspaceRoot
       : undefined;
+  const artifactPaths = detail ? graphRunArtifactWritePaths(detail) : new Map<string, string>();
+
+  async function openGraphArtifact(path: string) {
+    if (!workspaceRoot) return;
+    setArtifactOpenError(null);
+    setOpeningArtifactPath(path);
+    try {
+      await invoke("workspace_file_open", { workspaceRoot, path });
+    } catch (openError) {
+      setArtifactOpenError(openError instanceof Error ? openError.message : String(openError));
+    } finally {
+      setOpeningArtifactPath(null);
+    }
+  }
 
   const updatePayloadDraft = (actionId: string, path: string, value: string) => {
     setPayloadDrafts((current) => ({
@@ -1764,22 +1788,38 @@ function GraphRuntimeSection({
 
             {(surface?.activeArtifacts.length ?? 0) > 0 ? (
               <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
-                {surface?.activeArtifacts.map((artifact) => (
-                  <div
-                    key={`${artifact.artifactId}:${artifact.versionId}`}
-                    className="px-3 py-2 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-foreground">{artifact.artifactId}</span>
-                      <span className="text-muted-foreground">
-                        {artifact.producerStatus ?? "unknown"}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-muted-foreground">
-                      {summarizeValue(artifact.value)}
-                    </div>
-                  </div>
-                ))}
+                {surface?.activeArtifacts.map((artifact) => {
+                  const artifactPath = artifactPaths.get(artifact.artifactId) ?? null;
+                  const canOpen = !!workspaceRoot && !!artifactPath;
+                  const Container = canOpen ? "button" : "div";
+                  return (
+                    <Container
+                      key={`${artifact.artifactId}:${artifact.versionId}`}
+                      type={canOpen ? "button" : undefined}
+                      disabled={canOpen ? openingArtifactPath === artifactPath : undefined}
+                      title={canOpen ? "Open artifact" : undefined}
+                      onClick={canOpen ? () => void openGraphArtifact(artifactPath) : undefined}
+                      className={cn(
+                        "block w-full px-3 py-2 text-left text-xs",
+                        canOpen &&
+                          "cursor-pointer transition-colors hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-foreground">{artifact.artifactId}</span>
+                        <span className="text-muted-foreground">
+                          {artifact.producerStatus ?? "unknown"}
+                        </span>
+                      </div>
+                      {artifactPath ? (
+                        <div className="mt-0.5 text-muted-foreground">{artifactPath}</div>
+                      ) : null}
+                    </Container>
+                  );
+                })}
+                {artifactOpenError ? (
+                  <div className="px-3 py-2 text-xs text-red-700">{artifactOpenError}</div>
+                ) : null}
               </div>
             ) : null}
 
@@ -2465,6 +2505,7 @@ function GuidedReview({
   reviewEvidence,
   productView,
   workspaceRoot,
+  artifactWorkspaceRoot,
   onApprove,
   onStop,
   onViewDetails,
@@ -2475,6 +2516,7 @@ function GuidedReview({
   reviewEvidence: ReviewEvidence | null;
   productView: PlaybookRunProductView | null;
   workspaceRoot: string | null;
+  artifactWorkspaceRoot: string | null;
   onApprove: () => void;
   onStop: () => void;
   onViewDetails: () => void;
@@ -2500,15 +2542,16 @@ function GuidedReview({
     productState === "retry_available" ? "What happens if you retry" : "What happens next";
   const [openingArtifact, setOpeningArtifact] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
-  const canOpenArtifact = !!workspaceRoot && !!reviewEvidence?.artifactPath;
+  const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
+  const canOpenArtifact = !!openWorkspaceRoot && !!reviewEvidence?.artifactPath;
 
   async function openReviewArtifact() {
-    if (!workspaceRoot || !reviewEvidence?.artifactPath) return;
+    if (!openWorkspaceRoot || !reviewEvidence?.artifactPath) return;
     setOpeningArtifact(true);
     setOpenError(null);
     try {
       await invoke("workspace_file_open", {
-        workspaceRoot,
+        workspaceRoot: openWorkspaceRoot,
         path: reviewEvidence.artifactPath,
       });
     } catch (error) {
@@ -2625,6 +2668,7 @@ function GuidedResult({
   playbook,
   playbookDetail,
   workspaceRoot,
+  artifactWorkspaceRoot,
   dashboardLayout,
   refreshing,
   refreshNotice,
@@ -2636,6 +2680,7 @@ function GuidedResult({
   playbook: PlaybookSummary | PlaybookDetail | null;
   playbookDetail: PlaybookDetail | null;
   workspaceRoot: string | null;
+  artifactWorkspaceRoot: string | null;
   dashboardLayout: DashboardLayout | null;
   refreshing: boolean;
   refreshNotice: string | null;
@@ -2660,6 +2705,7 @@ function GuidedResult({
   const runInput = run.input ?? {};
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
+  const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
   const isDashboard = isDashboardPlaybook(playbookDetail ?? playbook);
   const sub = blockedWithoutApproval
     ? "Tessera cannot continue this run until the underlying setup problem is fixed."
@@ -2669,11 +2715,11 @@ function GuidedResult({
   const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs);
 
   async function openArtifact(path: string) {
-    if (!workspaceRoot) return;
+    if (!openWorkspaceRoot) return;
     setOpenError(null);
     setOpeningPath(path);
     try {
-      await invoke("workspace_file_open", { workspaceRoot, path });
+      await invoke("workspace_file_open", { workspaceRoot: openWorkspaceRoot, path });
     } catch (error) {
       setOpenError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2742,7 +2788,7 @@ function GuidedResult({
               sourceGaps.length,
               artifactPath
             );
-            const canOpen = !!artifactPath && !!workspaceRoot;
+            const canOpen = !!artifactPath && !!openWorkspaceRoot;
             const Container = canOpen ? "button" : "div";
             const includeSourceNote =
               output.kind === "meetingBrief" ||
@@ -2881,10 +2927,9 @@ function DetailsPanel({
         key: output.kind,
         label: output.label,
         path: artifactPath,
-        summary: playbookOutputSummary(output.kind, value, sourceGaps.length, artifactPath),
       };
     });
-  }, [playbookForRun?.outputs, run?.outputs, sourceGaps.length]);
+  }, [playbookForRun?.outputs, run?.outputs]);
 
   const runStepGroups = useMemo(() => {
     if (!run?.steps?.length) return [];
@@ -2955,7 +3000,7 @@ function DetailsPanel({
             {reviewEvidence ? (
               <Section title="Needs review" subtitle="What Tessera is asking you to approve">
                 <div className="rounded-md border border-border bg-background px-3 py-3 text-xs">
-                  <ReviewEvidenceBlock evidence={reviewEvidence} />
+                  <ReviewEvidenceBlock evidence={reviewEvidence} hideArtifactPreview />
                 </div>
               </Section>
             ) : run.status === "blocked" && !run.approval ? (
@@ -2976,9 +3021,6 @@ function DetailsPanel({
                       <div className="font-medium text-foreground">{output.label}</div>
                       {output.path ? (
                         <div className="mt-0.5 text-muted-foreground">{output.path}</div>
-                      ) : null}
-                      {output.summary ? (
-                        <div className="mt-1 text-muted-foreground">{output.summary}</div>
                       ) : null}
                     </div>
                   ))}
@@ -4018,6 +4060,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             reviewEvidence={selectedReviewEvidence}
             productView={selectedGraphRunSurface?.productView ?? null}
             workspaceRoot={workspaceRoot}
+            artifactWorkspaceRoot={graphRunWorkspaceRoot(selectedGraphRunDetail)}
             onApprove={() => void resumeRun("approve")}
             onStop={() => void resumeRun("deny")}
             onViewDetails={() => setShowDetails(true)}
@@ -4029,6 +4072,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             playbook={selectedPlaybookForUi}
             playbookDetail={selectedPlaybookDetail}
             workspaceRoot={workspaceRoot}
+            artifactWorkspaceRoot={graphRunWorkspaceRoot(selectedGraphRunDetail)}
             dashboardLayout={dashboardLayout}
             refreshing={refreshing}
             refreshNotice={refreshNotice}

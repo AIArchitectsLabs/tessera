@@ -157,6 +157,8 @@ const invoke = async (command: string, args?: Record<string, unknown>) => {
           },
         ],
       } satisfies SkillListResult;
+    case "workspace_file_open":
+      return null;
     default:
       throw new Error(`Unexpected invoke command: ${command}`);
   }
@@ -362,6 +364,81 @@ describe("TaskDetail composer", () => {
 
     expect(view.getByText("Context Item 14")).toBeTruthy();
     expect(view.queryByRole("button", { name: "+10 more context items." })).toBeNull();
+  });
+
+  test("opens context artifacts in the system viewer", async () => {
+    const { view } = renderTaskDetail({
+      task: {
+        ...taskDetail(),
+        artifacts: [
+          {
+            id: "artifact-1",
+            taskId: "task-1",
+            kind: "text",
+            title: "Brief artifact",
+            path: "outputs/brief.md",
+            createdAt: "2026-05-07T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    fireEvent.click(view.getByTitle("Open artifact"));
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some(
+          (call) =>
+            call.command === "workspace_file_open" &&
+            call.args?.workspaceRoot === "/tmp/workspace" &&
+            call.args?.path === "outputs/brief.md"
+        )
+      ).toBe(true);
+    });
+  });
+
+  test("opens turn artifacts in the system viewer", async () => {
+    const { view } = renderTaskDetail({
+      task: {
+        ...taskDetail(),
+        turns: [
+          {
+            id: "turn-1",
+            taskId: "task-1",
+            role: "agent",
+            content: "Done",
+            status: "completed",
+            createdAt: "2026-05-07T00:00:00.000Z",
+          },
+        ],
+        artifacts: [
+          {
+            id: "artifact-1",
+            taskId: "task-1",
+            turnId: "turn-1",
+            kind: "text",
+            title: "Draft file",
+            path: "outputs/draft.md",
+            createdAt: "2026-05-07T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    const artifactCard = view.getAllByTitle("Open artifact")[0];
+    if (!artifactCard) throw new Error("Expected artifact card");
+    fireEvent.click(artifactCard);
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some(
+          (call) =>
+            call.command === "workspace_file_open" &&
+            call.args?.workspaceRoot === "/tmp/workspace" &&
+            call.args?.path === "outputs/draft.md"
+        )
+      ).toBe(true);
+    });
   });
 
   test("autocompletes a highlighted slash skill without sending the message", async () => {

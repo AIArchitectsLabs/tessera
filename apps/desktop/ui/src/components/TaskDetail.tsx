@@ -85,6 +85,7 @@ export function TaskDetail({
   workspaceRoot,
 }: TaskDetailProps) {
   const [content, setContent] = useState("");
+  const [artifactOpenError, setArtifactOpenError] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const isBusy = sendingTurn || creatingTask;
   const canSend = Boolean(content.trim() && !isBusy && (task || workspaceRoot));
@@ -116,6 +117,19 @@ export function TaskDetail({
       await onCreateTask(content.trim(), agentId || "default", agentLabel || "Tessera");
     }
     setContent("");
+  }
+
+  async function handleArtifactOpen(artifact: TaskArtifact) {
+    if (!task?.workspaceRoot || !artifact.path) return;
+    setArtifactOpenError(null);
+    try {
+      await invoke("workspace_file_open", {
+        workspaceRoot: task.workspaceRoot,
+        path: artifact.path,
+      });
+    } catch (error) {
+      setArtifactOpenError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (loading) {
@@ -228,6 +242,12 @@ export function TaskDetail({
         </div>
       )}
 
+      {artifactOpenError ? (
+        <div className="border-b border-red-200 bg-red-50 px-6 py-2 text-sm text-red-700">
+          {artifactOpenError}
+        </div>
+      ) : null}
+
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Chat area */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -254,6 +274,7 @@ export function TaskDetail({
                           <TurnTimeline
                             artifacts={turnArtifacts}
                             isRunning={turn.status === "running"}
+                            onArtifactOpen={handleArtifactOpen}
                           />
                         )}
                         {(!isAgent || turn.role === "system") && (
@@ -304,7 +325,12 @@ export function TaskDetail({
         </div>
 
         {/* Right-side detail pane */}
-        <TaskSidePane task={task} onSkillRemove={onSkillRemove} onTodoUpdate={onTodoUpdate} />
+        <TaskSidePane
+          task={task}
+          onArtifactOpen={handleArtifactOpen}
+          onSkillRemove={onSkillRemove}
+          onTodoUpdate={onTodoUpdate}
+        />
       </div>
 
       {task.clarify && <ClarifyDialog clarify={task.clarify} onSubmit={onClarifyResolve} />}
@@ -861,10 +887,12 @@ function AgentInfoPopover({
 
 function TaskSidePane({
   task,
+  onArtifactOpen,
   onSkillRemove,
   onTodoUpdate,
 }: {
   task: TaskDetailType;
+  onArtifactOpen: (artifact: TaskArtifact) => void;
   onSkillRemove: (skillId: string) => Promise<void>;
   onTodoUpdate: (operation: TodoOperation) => Promise<void>;
 }) {
@@ -940,26 +968,11 @@ function TaskSidePane({
         {task.artifacts.length > 0 ? (
           <div className="space-y-2">
             {visibleArtifacts.map((artifact) => (
-              <div
+              <ArtifactContextCard
                 key={artifact.id}
-                className="rounded-xl border border-border bg-secondary/20 px-3 py-2"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground">
-                    <FileText size={16} />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {artifact.title}
-                    </div>
-                    {artifact.contentPreview && (
-                      <p className="mt-0.5 break-words text-xs text-muted-foreground">
-                        {artifact.contentPreview}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
+                artifact={artifact}
+                onArtifactOpen={onArtifactOpen}
+              />
             ))}
             {hiddenArtifactCount > 0 && (
               <button
@@ -981,6 +994,44 @@ function TaskSidePane({
         )}
       </SidePaneSection>
     </aside>
+  );
+}
+
+function ArtifactContextCard({
+  artifact,
+  onArtifactOpen,
+}: {
+  artifact: TaskArtifact;
+  onArtifactOpen: (artifact: TaskArtifact) => void;
+}) {
+  const canOpen = !!artifact.path;
+  const Container = canOpen ? "button" : "div";
+
+  return (
+    <Container
+      type={canOpen ? "button" : undefined}
+      title={canOpen ? "Open artifact" : undefined}
+      onClick={canOpen ? () => onArtifactOpen(artifact) : undefined}
+      className={cn(
+        "w-full rounded-xl border border-border bg-secondary/20 px-3 py-2 text-left",
+        canOpen &&
+          "cursor-pointer transition-colors hover:border-foreground/30 hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground">
+          <FileText size={16} />
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">{artifact.title}</div>
+          {artifact.contentPreview && (
+            <p className="mt-0.5 break-words text-xs text-muted-foreground">
+              {artifact.contentPreview}
+            </p>
+          )}
+        </div>
+      </div>
+    </Container>
   );
 }
 
@@ -1236,7 +1287,15 @@ function formatRelativeTime(dateStr: string): string {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 }
 
-function TurnTimeline({ artifacts, isRunning }: { artifacts: TaskArtifact[]; isRunning: boolean }) {
+function TurnTimeline({
+  artifacts,
+  isRunning,
+  onArtifactOpen,
+}: {
+  artifacts: TaskArtifact[];
+  isRunning: boolean;
+  onArtifactOpen: (artifact: TaskArtifact) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   if (artifacts.length === 0 && !isRunning) return null;
@@ -1256,19 +1315,38 @@ function TurnTimeline({ artifacts, isRunning }: { artifacts: TaskArtifact[]; isR
           {hiddenCount} previous tool calls
         </button>
       )}
-      {visibleArtifacts.map((artifact) => (
-        <div key={artifact.id} className="flex items-start gap-2 text-muted-foreground">
-          <span className="shrink-0 mt-1.5">
-            <Bot size={14} className="opacity-50" />
-          </span>
-          <div className="bg-secondary/30 border border-border/50 rounded-md px-3 py-1.5 flex-1 min-w-0 text-xs">
-            <div className="truncate font-semibold">{artifact.title}</div>
-            {artifact.contentPreview && (
-              <div className="truncate opacity-75 mt-0.5">{artifact.contentPreview}</div>
+      {visibleArtifacts.map((artifact) => {
+        const canOpen = !!artifact.path;
+        const Container = canOpen ? "button" : "div";
+        return (
+          <Container
+            key={artifact.id}
+            type={canOpen ? "button" : undefined}
+            title={canOpen ? "Open artifact" : undefined}
+            onClick={canOpen ? () => onArtifactOpen(artifact) : undefined}
+            className={cn(
+              "flex w-full items-start gap-2 text-left text-muted-foreground",
+              canOpen && "cursor-pointer"
             )}
-          </div>
-        </div>
-      ))}
+          >
+            <span className="shrink-0 mt-1.5">
+              <Bot size={14} className="opacity-50" />
+            </span>
+            <span
+              className={cn(
+                "bg-secondary/30 border border-border/50 rounded-md px-3 py-1.5 flex-1 min-w-0 text-xs",
+                canOpen &&
+                  "transition-colors hover:border-foreground/30 hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              )}
+            >
+              <span className="block truncate font-semibold">{artifact.title}</span>
+              {artifact.contentPreview && (
+                <span className="block truncate opacity-75 mt-0.5">{artifact.contentPreview}</span>
+              )}
+            </span>
+          </Container>
+        );
+      })}
       {isRunning && (
         <div className="flex items-center gap-2 text-muted-foreground mt-2 px-1">
           <ThinkingAnimation />
