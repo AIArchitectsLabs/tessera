@@ -222,9 +222,6 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   const queuedEntries = db.prepare<QueuePayloadRow, [string]>(
     "SELECT queue_entry_id, status, payload FROM playbook_graph_queue WHERE run_id = ? AND status = 'queued' ORDER BY updated_at ASC, queue_entry_id ASC"
   );
-  const getQueueStatus = db.prepare<{ status: string } | null, [string]>(
-    "SELECT status FROM playbook_graph_queue WHERE queue_entry_id = ?"
-  );
   const getQueuePayload = db.prepare<PayloadRow | null, [string]>(
     "SELECT payload FROM playbook_graph_queue WHERE queue_entry_id = ?"
   );
@@ -359,9 +356,22 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   }
 
   function dependenciesSatisfied(entry: PlaybookGraphQueueEntry): boolean {
-    for (const dependencyId of entry.dependsOn) {
-      const row = getQueueStatus.get(dependencyId);
-      if (!row || !QUEUE_SUCCESS_STATUSES.has(row.status)) return false;
+    const dependencies = entry.dependsOn.map((dependencyId) =>
+      parseQueue(getQueuePayload.get(dependencyId))
+    );
+    const dependencyArtifacts = new Set(
+      dependencies.flatMap((dependency) => dependency?.producesArtifacts ?? [])
+    );
+    const unresolvedDependencyArtifacts = entry.declaredConsumesArtifacts.some(
+      (artifactId) =>
+        dependencyArtifacts.has(artifactId) &&
+        !entry.consumesArtifacts.some((artifact) => artifact.artifactId === artifactId)
+    );
+    if (unresolvedDependencyArtifacts) {
+      return false;
+    }
+    for (const dependency of dependencies) {
+      if (!dependency || !QUEUE_SUCCESS_STATUSES.has(dependency.status)) return false;
     }
     for (const artifact of entry.consumesArtifacts) {
       const artifactRow = getArtifactPayload.get(
@@ -767,6 +777,72 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
         input.now
       );
       return result.changes;
+    },
+    async recoverStaleQueueLeases(input) {
+      let inspected = 0;
+      let autoRequeued = 0;
+      let needsAttention = 0;
+      for (const entry of getQueue.all(input.runId).flatMap((row) => {
+        const parsed = parseQueue(row);
+        return parsed ? [parsed] : [];
+      })) {
+        if (
+          entry.status !== "running" ||
+          !entry.leaseExpiresAt ||
+          entry.leaseExpiresAt > input.now
+        ) {
+          continue;
+        }
+        inspected += 1;
+        const reason =
+          "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
+        const attentionEvidence = {
+          code: "stale_lease" as const,
+          reason,
+          observedAt: input.now,
+          previousQueueStatus: "running" as const,
+          ...(entry.runtimeId ? { lastRuntimeId: entry.runtimeId } : {}),
+          ...(entry.leaseId ? { lastLeaseId: entry.leaseId } : {}),
+          ...(entry.claimedAt ? { lastClaimedAt: entry.claimedAt } : {}),
+          leaseExpiredAt: entry.leaseExpiresAt,
+          recoveryDecision:
+            entry.recoveryPolicy === "rerun_if_no_success_memo"
+              ? ("auto_requeued" as const)
+              : ("needs_attention" as const),
+        };
+        if (entry.recoveryPolicy === "rerun_if_no_success_memo") {
+          writeQueue({
+            ...entry,
+            status: "queued",
+            runtimeId: undefined,
+            leaseId: undefined,
+            claimedAt: undefined,
+            leaseExpiresAt: undefined,
+            blockedReason: undefined,
+            error: undefined,
+            completedAt: undefined,
+            attentionEvidence,
+            updatedAt: input.now,
+          });
+          autoRequeued += 1;
+        } else {
+          writeQueue({
+            ...entry,
+            status: "needs_attention",
+            runtimeId: undefined,
+            leaseId: undefined,
+            claimedAt: undefined,
+            leaseExpiresAt: undefined,
+            blockedReason: reason,
+            error: undefined,
+            completedAt: undefined,
+            attentionEvidence,
+            updatedAt: input.now,
+          });
+          needsAttention += 1;
+        }
+      }
+      return { inspected, autoRequeued, needsAttention, interrupted: 0 };
     },
     async checkpointNodeSuccess(input) {
       checkpointTransaction(input);

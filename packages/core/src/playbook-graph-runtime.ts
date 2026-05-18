@@ -29,6 +29,13 @@ const TERMINAL_SUCCESS_QUEUE_STATUSES = new Set(["succeeded", "memoized", "skipp
 const TERMINAL_GRAPH_TARGETS = new Set(["completed", "failed", "denied"]);
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "denied", "needs_repair"]);
 
+export interface GraphRunStaleLeaseRecoveryResult {
+  inspected: number;
+  autoRequeued: number;
+  needsAttention: number;
+  interrupted: number;
+}
+
 export interface GraphRunStore {
   createRun(run: PlaybookGraphRunRecord): Promise<void>;
   createRunWithQueue(input: {
@@ -98,6 +105,11 @@ export interface GraphRunStore {
     now: string;
     interruptedAt: string;
   }): Promise<number>;
+  recoverStaleQueueLeases(input: {
+    runId: string;
+    runtimeId: string;
+    now: string;
+  }): Promise<GraphRunStaleLeaseRecoveryResult>;
 
   checkpointNodeSuccess(input: {
     run: PlaybookGraphRunRecord;
@@ -350,7 +362,6 @@ export function createPlaybookGraphMemoKey(parts: PlaybookGraphMemoKeyParts): st
 }
 
 function outputArtifacts(node: PlaybookGraphNode): string[] {
-  if (node.kind === "parallelMap") return [];
   if ("outputArtifact" in node && typeof node.outputArtifact === "string") {
     return [node.outputArtifact];
   }
@@ -439,6 +450,17 @@ function inputArtifactIds(node: PlaybookGraphNode): string[] {
   return [...refs].sort();
 }
 
+function artifactBindingState(
+  declaredConsumesArtifacts: string[],
+  consumesArtifacts: PlaybookGraphArtifactVersionRef[]
+): PlaybookGraphQueueEntry["artifactBindingState"] {
+  if (declaredConsumesArtifacts.length === 0) return "resolved";
+  const resolvedIds = new Set(consumesArtifacts.map((artifact) => artifact.artifactId));
+  return declaredConsumesArtifacts.every((artifactId) => resolvedIds.has(artifactId))
+    ? "resolved"
+    : "unresolved";
+}
+
 function latestArtifactRefsById(
   versions: PlaybookGraphArtifactVersion[]
 ): Map<string, PlaybookGraphArtifactVersionRef> {
@@ -515,7 +537,8 @@ export function createPlaybookGraphQueueEntry(input: {
   artifactVersions?: PlaybookGraphArtifactVersion[];
 }): PlaybookGraphQueueEntry {
   const latestRefs = latestArtifactRefsById(input.artifactVersions ?? []);
-  const consumesArtifacts = inputArtifactIds(input.node).flatMap((artifactId) => {
+  const declaredConsumesArtifacts = inputArtifactIds(input.node);
+  const consumesArtifacts = declaredConsumesArtifacts.flatMap((artifactId) => {
     const ref = latestRefs.get(artifactId);
     return ref ? [ref] : [];
   });
@@ -530,7 +553,9 @@ export function createPlaybookGraphQueueEntry(input: {
     status: "queued",
     dependsOn: input.dependsOn ?? [],
     producesArtifacts: outputArtifacts(input.node),
+    declaredConsumesArtifacts,
     consumesArtifacts,
+    artifactBindingState: artifactBindingState(declaredConsumesArtifacts, consumesArtifacts),
     recoveryPolicy:
       input.node.kind === "script" || input.node.kind === "condition" || input.node.kind === "join"
         ? "rerun_if_no_success_memo"
@@ -566,16 +591,20 @@ function refreshQueueEntryArtifactRefs(input: {
     now: input.entry.createdAt,
   });
   if (
+    stringArraysEqual(input.entry.declaredConsumesArtifacts, fresh.declaredConsumesArtifacts) &&
     artifactRefsEqual(input.entry.consumesArtifacts, fresh.consumesArtifacts) &&
     stringArraysEqual(input.entry.producesArtifacts, fresh.producesArtifacts) &&
-    input.entry.recoveryPolicy === fresh.recoveryPolicy
+    input.entry.recoveryPolicy === fresh.recoveryPolicy &&
+    input.entry.artifactBindingState === fresh.artifactBindingState
   ) {
     return input.entry;
   }
   return PlaybookGraphQueueEntrySchema.parse({
     ...input.entry,
     producesArtifacts: fresh.producesArtifacts,
+    declaredConsumesArtifacts: fresh.declaredConsumesArtifacts,
     consumesArtifacts: fresh.consumesArtifacts,
+    artifactBindingState: fresh.artifactBindingState,
     recoveryPolicy: fresh.recoveryPolicy,
     nodeMemoKey: undefined,
     updatedAt: input.now,
@@ -601,6 +630,33 @@ async function preserveExistingQueueDurability(input: {
       nodeMemoKey: undefined,
     });
   });
+}
+
+async function refreshQueuedArtifactBindings(input: {
+  store: GraphRunStore;
+  compiled: CompiledPlaybookGraph;
+  run: PlaybookGraphRunRecord;
+  now: string;
+}): Promise<number> {
+  const queue = await input.store.getQueue(input.run.runId);
+  const artifactVersions = activeArtifactVersions(
+    await input.store.listArtifactVersions(input.run.runId),
+    queue
+  );
+  let updated = 0;
+  for (const entry of queue) {
+    if (entry.status !== "queued") continue;
+    const refreshed = refreshQueueEntryArtifactRefs({
+      entry,
+      node: findNode(input.compiled.graph, entry.nodeId),
+      artifactVersions,
+      now: input.now,
+    });
+    if (refreshed === entry) continue;
+    await input.store.updateQueueEntry(refreshed);
+    updated += 1;
+  }
+  return updated;
 }
 
 function latestArtifactValues(versions: PlaybookGraphArtifactVersion[]): Record<string, unknown> {
@@ -1042,7 +1098,8 @@ async function enqueueReadyParallelMapFanIns(input: {
             (version) =>
               version.artifactId === node.outputArtifact &&
               version.producerQueueEntryId === parent.queueEntryId &&
-              version.versionId === `${parent.queueEntryId}:${node.outputArtifact}:fan-in`
+              version.versionId ===
+                `${parent.queueEntryId}:${node.outputArtifact}:fan-in:v${parent.attempt}`
           );
     const existingFanIn = queue.some((entry) =>
       target === "completed" || target === "failed" || target === "denied"
@@ -1060,7 +1117,7 @@ async function enqueueReadyParallelMapFanIns(input: {
               schemaVersion: 1 as const,
               runId: run.runId,
               artifactId: node.outputArtifact,
-              versionId: `${parent.queueEntryId}:${node.outputArtifact}:fan-in`,
+              versionId: `${parent.queueEntryId}:${node.outputArtifact}:fan-in:v${parent.attempt}`,
               producerQueueEntryId: parent.queueEntryId,
               nodePath: parent.nodePath,
               contentHash: hashUnknown(fanInValue),
@@ -1199,12 +1256,11 @@ export async function drainPlaybookGraphRun(
     return { run, executed: 0 };
   }
 
-  const interruptedAt = now();
-  await options.store.markStaleQueueLeasesInterrupted({
+  const recoveredAt = now();
+  await options.store.recoverStaleQueueLeases({
     runId: run.runId,
     runtimeId: options.runtimeId,
-    now: interruptedAt,
-    interruptedAt,
+    now: recoveredAt,
   });
 
   let executed = 0;
@@ -1220,6 +1276,16 @@ export async function drainPlaybookGraphRun(
       };
       await options.store.updateRun(run);
       return { run, executed };
+    }
+
+    const bindingRefreshes = await refreshQueuedArtifactBindings({
+      store: options.store,
+      compiled,
+      run,
+      now: now(),
+    });
+    if (bindingRefreshes > 0) {
+      continue;
     }
 
     const claimedAt = now();
@@ -1248,18 +1314,25 @@ export async function drainPlaybookGraphRun(
         continue;
       }
       const queue = await options.store.getQueue(run.runId);
-      const hasBlocked = queue.some(
-        (entry) => entry.status === "blocked" || entry.status === "interrupted"
-      );
+      const hasNeedsAttention = queue.some((entry) => entry.status === "needs_attention");
+      const hasBlocked = queue.some((entry) => entry.status === "blocked");
+      const hasInterrupted = queue.some((entry) => entry.status === "interrupted");
       const hasActive = queue.some(
         (entry) =>
           entry.status === "queued" ||
           entry.status === "running" ||
           entry.status === "blocked" ||
-          entry.status === "interrupted"
+          entry.status === "interrupted" ||
+          entry.status === "needs_attention"
       );
-      if (hasBlocked && run.status !== "blocked" && run.status !== "interrupted") {
+      if (hasNeedsAttention && run.status !== "needs_attention") {
+        run = { ...run, status: "needs_attention", updatedAt: now() };
+        await options.store.updateRun(run);
+      } else if (hasBlocked && run.status !== "blocked") {
         run = { ...run, status: "blocked", updatedAt: now() };
+        await options.store.updateRun(run);
+      } else if (hasInterrupted && run.status !== "interrupted") {
+        run = { ...run, status: "interrupted", updatedAt: now() };
         await options.store.updateRun(run);
       } else if (!hasActive && run.status !== "completed") {
         const completedAt = now();
@@ -1679,20 +1752,22 @@ export async function drainPlaybookGraphRun(
       branchUpdates = [...branchUpdates, completeBranchItem(branchItem, "completed", completedAt)];
     }
     const activeRunId = run.runId;
-    const newArtifactVersions = outputArtifacts(node).map((artifactId) => {
-      const value = output;
-      return {
-        schemaVersion: 1 as const,
-        runId: activeRunId,
-        artifactId,
-        versionId: `${queueEntry.queueEntryId}:${artifactId}:v${queueEntry.attempt}`,
-        producerQueueEntryId: queueEntry.queueEntryId,
-        nodePath: queueEntry.nodePath,
-        contentHash: hashUnknown(value),
-        value,
-        createdAt: completedAt,
-      };
-    });
+    const newArtifactVersions = (node.kind === "parallelMap" ? [] : outputArtifacts(node)).map(
+      (artifactId) => {
+        const value = output;
+        return {
+          schemaVersion: 1 as const,
+          runId: activeRunId,
+          artifactId,
+          versionId: `${queueEntry.queueEntryId}:${artifactId}:v${queueEntry.attempt}`,
+          producerQueueEntryId: queueEntry.queueEntryId,
+          nodePath: queueEntry.nodePath,
+          contentHash: hashUnknown(value),
+          value,
+          createdAt: completedAt,
+        };
+      }
+    );
     const artifactRefsForMemo = newArtifactVersions.map((version) => ({
       artifactId: version.artifactId,
       versionId: version.versionId,

@@ -220,6 +220,7 @@ const graphRunDetail = {
       status: "blocked",
       dependsOn: [],
       producesArtifacts: [],
+      declaredConsumesArtifacts: ["briefScorecard"],
       consumesArtifacts: [
         {
           artifactId: "briefScorecard",
@@ -227,6 +228,7 @@ const graphRunDetail = {
           contentHash: "sha256:brief-scorecard",
         },
       ],
+      artifactBindingState: "resolved",
       recoveryPolicy: "block_for_review",
       attempt: 0,
       createdAt: "2026-05-15T00:00:00.000Z",
@@ -434,6 +436,7 @@ const articleReviewGraphRunDetail = {
       status: "blocked",
       dependsOn: ["queue-review"],
       producesArtifacts: [],
+      declaredConsumesArtifacts: ["articleScorecard"],
       consumesArtifacts: [
         {
           artifactId: "articleScorecard",
@@ -441,6 +444,7 @@ const articleReviewGraphRunDetail = {
           contentHash: "sha256:article-scorecard",
         },
       ],
+      artifactBindingState: "resolved",
       recoveryPolicy: "block_for_review",
       attempt: 0,
       createdAt: "2026-05-15T00:03:00.000Z",
@@ -546,7 +550,9 @@ const contextDriftGraphRunDetail = {
       status: "queued",
       dependsOn: [],
       producesArtifacts: [],
+      declaredConsumesArtifacts: [],
       consumesArtifacts: [],
+      artifactBindingState: "resolved",
       recoveryPolicy: "rerun_if_no_success_memo",
       attempt: 0,
       createdAt: "2026-05-16T00:00:00.000Z",
@@ -606,7 +612,9 @@ const interruptedGraphRunDetail = {
       status: "interrupted",
       dependsOn: [],
       producesArtifacts: ["meetingBrief"],
+      declaredConsumesArtifacts: [],
       consumesArtifacts: [],
+      artifactBindingState: "resolved",
       recoveryPolicy: "block_for_review",
       attempt: 1,
       createdAt: "2026-05-18T00:00:00.000Z",
@@ -674,9 +682,11 @@ const completedGraphRunDetail = {
       status: "succeeded",
       dependsOn: [],
       producesArtifacts: [],
+      declaredConsumesArtifacts: ["meetingBrief"],
       consumesArtifacts: [
         { artifactId: "meetingBrief", versionId: "brief-v1", contentHash: "sha256:meeting-brief" },
       ],
+      artifactBindingState: "resolved",
       recoveryPolicy: "rerun_if_no_success_memo",
       attempt: 0,
       createdAt: "2026-05-09T07:16:00.000Z",

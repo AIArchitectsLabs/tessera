@@ -1403,6 +1403,7 @@ export interface GraphRunInterruptedRecoveryResult {
   interrupted: number;
   requeued: number;
   blocked: number;
+  needsAttention: number;
 }
 
 export interface GraphRunWorkQueueDrainResult {
@@ -1464,6 +1465,8 @@ function graphRunOperationKind(decision: string): PlaybookGraphOperationKind {
       return "edit_review";
     case "retry_interrupted":
       return "retry_interrupted";
+    case "retry_needs_attention":
+      return "retry_needs_attention";
     case "approve_repair":
     case "retry_repair":
       return "repair";
@@ -2075,7 +2078,9 @@ async function graphRunDetail(
     run,
     queue: await store.getQueue(runId),
     branchItems: await store.listBranchItems(runId),
-    artifacts: await store.listArtifactVersions(runId),
+    artifacts: (await store.listArtifactVersions(runId)).sort((left, right) =>
+      graphArtifactSortKey(left).localeCompare(graphArtifactSortKey(right))
+    ),
     reviews: await store.listReviewEvents(runId),
     operations: await store.listOperationRecords(runId),
   });
@@ -2435,6 +2440,24 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
       })
     );
   }
+  for (const entry of detail.queue.filter((entry) => entry.status === "needs_attention")) {
+    actions.push(
+      actionSpec({
+        schemaVersion: 1,
+        actionId: `${entry.queueEntryId}:retry_needs_attention`,
+        decision: "retry_needs_attention",
+        label: "Retry",
+        description: entry.attentionEvidence?.reason ?? entry.blockedReason,
+        queueEntryId: entry.queueEntryId,
+        nodePath: entry.nodePath,
+        nodeKind: entry.nodeKind,
+        allowedRunStatuses: ["needs_attention", "running", "blocked"],
+        allowedQueueStatuses: ["needs_attention"],
+        sideEffect: "resume",
+        requiresWorkspace: entry.nodeKind === "artifactWrite",
+      })
+    );
+  }
   if (
     detail.run.status === "blocked" &&
     detail.run.blockedReason?.includes("execution context changed")
@@ -2565,6 +2588,7 @@ async function maybeDrainGraphRun(
   if (!scriptAdapter && !artifactWriteAdapter && !agentAdapter && !toolAdapter) return false;
   const queuedEntries = (await store.getQueue(runId)).filter((entry) => entry.status === "queued");
   if (
+    options.blockOnMissingAdapters === false &&
     queuedEntries.length > 0 &&
     queuedEntries.every((entry) =>
       graphRunQueuedEntryRequiresUnavailableAdapter(entry, {
@@ -2659,37 +2683,79 @@ export async function recoverGraphRunInterruptedWork(
 ): Promise<GraphRunInterruptedRecoveryResult> {
   const store = options.store ?? graphRunStore;
   const recoveredAt = graphRunNow(options);
-  const interrupted = await store.markStaleQueueLeasesInterrupted({
+  const recovered = await store.recoverStaleQueueLeases({
     runId,
     runtimeId: options.runtimeId ?? sidecarGraphRunRuntimeId("worker"),
     now: recoveredAt,
-    interruptedAt: recoveredAt,
   });
   const run = await store.getRun(runId);
-  if (!run) return { interrupted, requeued: 0, blocked: 0 };
+  if (!run) {
+    return {
+      interrupted: recovered.inspected,
+      requeued: recovered.autoRequeued,
+      blocked: recovered.needsAttention,
+      needsAttention: recovered.needsAttention,
+    };
+  }
 
   const interruptedEntries = (await store.getQueue(runId)).filter(
     (entry) => entry.status === "interrupted"
   );
   let requeued = 0;
+  let needsAttention = recovered.needsAttention;
   for (const entry of interruptedEntries) {
-    if (entry.recoveryPolicy !== "rerun_if_no_success_memo") continue;
+    if (entry.recoveryPolicy === "rerun_if_no_success_memo") {
+      await store.updateQueueEntry({
+        ...entry,
+        status: "queued",
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        blockedReason: undefined,
+        error: undefined,
+        completedAt: undefined,
+        attentionEvidence: {
+          code: "stale_lease",
+          reason:
+            entry.blockedReason ??
+            "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.",
+          observedAt: recoveredAt,
+          previousQueueStatus: "interrupted",
+          recoveryDecision: "auto_requeued",
+        },
+        updatedAt: recoveredAt,
+      });
+      requeued += 1;
+      continue;
+    }
     await store.updateQueueEntry({
       ...entry,
-      status: "queued",
+      status: "needs_attention",
       runtimeId: undefined,
       leaseId: undefined,
       claimedAt: undefined,
       leaseExpiresAt: undefined,
-      blockedReason: undefined,
+      blockedReason:
+        entry.blockedReason ??
+        "Tessera stopped while this step was running and needs a retry decision.",
       error: undefined,
       completedAt: undefined,
+      attentionEvidence: {
+        code: "ambiguous_recovery",
+        reason:
+          entry.blockedReason ??
+          "Tessera stopped while this step was running and needs a retry decision.",
+        observedAt: recoveredAt,
+        previousQueueStatus: "interrupted",
+        recoveryDecision: "needs_attention",
+      },
       updatedAt: recoveredAt,
     });
-    requeued += 1;
+    needsAttention += 1;
   }
 
-  if (requeued > 0) {
+  if (recovered.autoRequeued + requeued > 0) {
     const firstRequeued = interruptedEntries.find(
       (entry) => entry.recoveryPolicy === "rerun_if_no_success_memo"
     );
@@ -2702,6 +2768,12 @@ export async function recoverGraphRunInterruptedWork(
       completedAt: undefined,
       updatedAt: recoveredAt,
     });
+  } else if (needsAttention > 0 && run.status !== "needs_attention") {
+    await store.updateRun({
+      ...run,
+      status: "needs_attention",
+      updatedAt: recoveredAt,
+    });
   } else if (interruptedEntries.length > 0 && run.status !== "interrupted") {
     await store.updateRun({
       ...run,
@@ -2711,9 +2783,10 @@ export async function recoverGraphRunInterruptedWork(
   }
 
   return {
-    interrupted,
-    requeued,
-    blocked: interruptedEntries.length - requeued,
+    interrupted: recovered.inspected + interruptedEntries.length,
+    requeued: recovered.autoRequeued + requeued,
+    blocked: needsAttention,
+    needsAttention,
   };
 }
 
@@ -3245,7 +3318,10 @@ function requeueGraphQueueEntry(
     completedAt: undefined,
     nodeMemoKey: undefined,
     producesArtifacts: refreshed?.producesArtifacts ?? entry.producesArtifacts,
+    declaredConsumesArtifacts:
+      refreshed?.declaredConsumesArtifacts ?? entry.declaredConsumesArtifacts,
     consumesArtifacts: refreshed?.consumesArtifacts ?? entry.consumesArtifacts,
+    artifactBindingState: refreshed?.artifactBindingState ?? entry.artifactBindingState,
     recoveryPolicy: refreshed?.recoveryPolicy ?? entry.recoveryPolicy,
     updatedAt: now,
   };
@@ -3746,33 +3822,50 @@ export async function handleGraphRunResume(
         updatedAt: now,
       };
       shouldDrain = true;
-    } else if (parsed.data.decision === "retry_interrupted") {
+    } else if (
+      parsed.data.decision === "retry_interrupted" ||
+      parsed.data.decision === "retry_needs_attention"
+    ) {
       const queue = await store.getQueue(runId);
-      const interrupted = queue.find(
+      const retryableStatus =
+        parsed.data.decision === "retry_needs_attention" ? "needs_attention" : "interrupted";
+      const retryable = queue.find(
         (entry) =>
-          entry.status === "interrupted" &&
+          entry.status === retryableStatus &&
           (!parsed.data.queueEntryId || entry.queueEntryId === parsed.data.queueEntryId)
       );
-      if (!interrupted) {
-        return Response.json({ error: "No interrupted queue entry to retry" }, { status: 409 });
+      if (!retryable) {
+        return Response.json(
+          { error: `No ${retryableStatus} queue entry to retry` },
+          { status: 409 }
+        );
       }
       mutation.queueEntries.push({
-        ...interrupted,
+        ...retryable,
         status: "queued",
         runtimeId: undefined,
         leaseId: undefined,
         claimedAt: undefined,
         leaseExpiresAt: undefined,
+        attentionEvidence: {
+          ...(retryable.attentionEvidence ?? {
+            code: "ambiguous_recovery" as const,
+            reason: retryable.blockedReason ?? "Retry requested for recoverable graph work.",
+            observedAt: now,
+            recoveryDecision: "retry_requested" as const,
+          }),
+          recoveryDecision: "retry_requested" as const,
+        },
         updatedAt: now,
         blockedReason: undefined,
         error: undefined,
         completedAt: undefined,
       });
-      affectedQueueEntryIds.add(interrupted.queueEntryId);
+      affectedQueueEntryIds.add(retryable.queueEntryId);
       mutation.run = {
         ...run,
         status: "running",
-        currentQueueEntryId: interrupted.queueEntryId,
+        currentQueueEntryId: retryable.queueEntryId,
         ...(executionContext !== undefined
           ? { executionContext: createPlaybookGraphExecutionContextPin(executionContext) }
           : {}),

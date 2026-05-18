@@ -1885,6 +1885,7 @@ export const PlaybookGraphRunStatusSchema = z.enum([
   "running",
   "blocked",
   "interrupted",
+  "needs_attention",
   "completed",
   "failed",
   "denied",
@@ -1899,6 +1900,7 @@ export const PlaybookGraphQueueStatusSchema = z.enum([
   "succeeded",
   "blocked",
   "interrupted",
+  "needs_attention",
   "failed",
   "skipped",
 ]);
@@ -2015,6 +2017,48 @@ export const PlaybookGraphRecoveryPolicySchema = z.enum([
 ]);
 export type PlaybookGraphRecoveryPolicy = z.infer<typeof PlaybookGraphRecoveryPolicySchema>;
 
+export const PlaybookGraphAttentionCodeSchema = z.enum([
+  "stale_lease",
+  "hard_timeout_observed",
+  "lost_worker",
+  "ambiguous_recovery",
+  "manual_mark_worker_lost",
+  "cancellation_requested",
+]);
+export type PlaybookGraphAttentionCode = z.infer<typeof PlaybookGraphAttentionCodeSchema>;
+
+export const PlaybookGraphRecoveryDecisionSchema = z.enum([
+  "auto_requeued",
+  "needs_attention",
+  "continued_waiting",
+  "retry_requested",
+  "force_failed",
+  "cancel_requested",
+]);
+export type PlaybookGraphRecoveryDecision = z.infer<typeof PlaybookGraphRecoveryDecisionSchema>;
+
+export const PlaybookGraphAttentionEvidenceSchema = z
+  .object({
+    code: PlaybookGraphAttentionCodeSchema,
+    reason: z.string().min(1),
+    observedAt: z.string().datetime(),
+    previousQueueStatus: z.enum(["running", "interrupted"]).optional(),
+    lastRuntimeId: z.string().min(1).optional(),
+    lastLeaseId: z.string().min(1).optional(),
+    lastClaimedAt: z.string().datetime().optional(),
+    leaseExpiredAt: z.string().datetime().optional(),
+    thresholdMs: z.number().int().positive().optional(),
+    lastHeartbeatAt: z.string().datetime().optional(),
+    recoveryDecision: PlaybookGraphRecoveryDecisionSchema,
+  })
+  .strict();
+export type PlaybookGraphAttentionEvidence = z.infer<typeof PlaybookGraphAttentionEvidenceSchema>;
+
+export const PlaybookGraphArtifactBindingStateSchema = z.enum(["resolved", "unresolved", "stale"]);
+export type PlaybookGraphArtifactBindingState = z.infer<
+  typeof PlaybookGraphArtifactBindingStateSchema
+>;
+
 export const PlaybookGraphQueueEntrySchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -2035,8 +2079,11 @@ export const PlaybookGraphQueueEntrySchema = z
     status: PlaybookGraphQueueStatusSchema,
     dependsOn: z.array(z.string().min(1)).default([]),
     producesArtifacts: z.array(z.string().min(1)).default([]),
+    declaredConsumesArtifacts: z.array(z.string().min(1)).default([]),
     consumesArtifacts: z.array(PlaybookGraphArtifactVersionRefSchema).default([]),
+    artifactBindingState: PlaybookGraphArtifactBindingStateSchema.default("resolved"),
     recoveryPolicy: PlaybookGraphRecoveryPolicySchema.default("rerun_if_no_success_memo"),
+    attentionEvidence: PlaybookGraphAttentionEvidenceSchema.optional(),
     nodeMemoKey: Sha256DigestSchema.optional(),
     attempt: z.number().int().nonnegative().default(0),
     runtimeId: z.string().min(1).optional(),
@@ -2106,6 +2153,7 @@ export const PlaybookGraphOperationKindSchema = z.enum([
   "edit_artifact",
   "edit_review",
   "retry_interrupted",
+  "retry_needs_attention",
   "repair",
   "git_milestone",
 ]);
@@ -2199,6 +2247,7 @@ export const PlaybookGraphResumeDecisionSchema = z
       "deny",
       "request_changes",
       "retry_interrupted",
+      "retry_needs_attention",
       "approve_context_change",
       "approve_repair",
       "retry_repair",
@@ -2526,6 +2575,7 @@ export type PlaybookListResult = z.infer<typeof PlaybookListResultSchema>;
 export const WorkflowRunStatusSchema = z.enum([
   "running",
   "blocked",
+  "needs_attention",
   "completed",
   "denied",
   "failed",
@@ -2563,7 +2613,16 @@ export const WorkflowRunStepRecordSchema = z.object({
   label: z.string().min(1),
   kind: z.enum(["tool", "agent"]),
   phase: z.string().min(1),
-  status: z.enum(["queued", "running", "succeeded", "blocked", "failed", "denied", "skipped"]),
+  status: z.enum([
+    "queued",
+    "running",
+    "succeeded",
+    "blocked",
+    "needs_attention",
+    "failed",
+    "denied",
+    "skipped",
+  ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   durationMs: z.number().int().nonnegative().optional(),

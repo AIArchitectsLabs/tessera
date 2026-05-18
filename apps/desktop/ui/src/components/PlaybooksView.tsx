@@ -55,6 +55,7 @@ interface PlaybooksViewProps {
 const statusCopy: Record<PlaybookRunDetail["status"], string> = {
   running: "In progress",
   blocked: "Needs review",
+  needs_attention: "Needs attention",
   completed: "Ready",
   denied: "Stopped",
   failed: "Needs attention",
@@ -63,6 +64,7 @@ const statusCopy: Record<PlaybookRunDetail["status"], string> = {
 const statusClass: Record<PlaybookRunDetail["status"], string> = {
   running: "border-blue-200 bg-blue-50 text-blue-700",
   blocked: "border-amber-200 bg-amber-50 text-amber-700",
+  needs_attention: "border-orange-200 bg-orange-50 text-orange-700",
   completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
   denied: "border-zinc-200 bg-zinc-100 text-zinc-600",
   failed: "border-red-200 bg-red-50 text-red-700",
@@ -73,6 +75,7 @@ const graphStatusCopy: Record<PlaybookGraphRunDetail["run"]["status"], string> =
   running: "Running",
   blocked: "Blocked",
   interrupted: "Interrupted",
+  needs_attention: "Needs attention",
   completed: "Completed",
   failed: "Failed",
   denied: "Denied",
@@ -84,6 +87,7 @@ const graphStatusClass: Record<PlaybookGraphRunDetail["run"]["status"], string> 
   running: "border-blue-200 bg-blue-50 text-blue-700",
   blocked: "border-amber-200 bg-amber-50 text-amber-700",
   interrupted: "border-orange-200 bg-orange-50 text-orange-700",
+  needs_attention: "border-orange-200 bg-orange-50 text-orange-700",
   completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
   failed: "border-red-200 bg-red-50 text-red-700",
   denied: "border-zinc-200 bg-zinc-100 text-zinc-600",
@@ -104,6 +108,7 @@ const resultHeadline: Partial<Record<PlaybookRunDetail["status"], (name: string)
   completed: (name) => `${name} is ready.`,
   denied: () => "Run stopped.",
   failed: () => "Needs attention.",
+  needs_attention: () => "Needs attention.",
   blocked: () => "Waiting for your review.",
 };
 
@@ -111,6 +116,7 @@ const resultSub: Partial<Record<PlaybookRunDetail["status"], string>> = {
   completed: "Tessera finished preparing what you asked for.",
   denied: "You stopped the run before it finished. Nothing was changed.",
   failed: "Tessera ran into a problem and could not finish this run.",
+  needs_attention: "This run needs a recovery decision before it can continue.",
   blocked: "This run needs a decision before it can continue.",
 };
 
@@ -138,6 +144,7 @@ function stepIcon(status: WorkflowRunStepRecord["status"]) {
   if (status === "succeeded") return <CheckCircle2 size={16} className="text-emerald-600" />;
   if (status === "running") return <Loader2 size={16} className="animate-spin text-blue-600" />;
   if (status === "blocked") return <AlertTriangle size={16} className="text-amber-600" />;
+  if (status === "needs_attention") return <AlertTriangle size={16} className="text-orange-600" />;
   return <Clock3 size={16} className="text-muted-foreground" />;
 }
 
@@ -145,6 +152,7 @@ function stepStatusLabel(status: WorkflowRunStepRecord["status"]): string {
   if (status === "succeeded") return "Done";
   if (status === "running") return "Working";
   if (status === "blocked") return "Waiting for your review";
+  if (status === "needs_attention") return "Needs attention";
   if (status === "failed") return "Needs attention";
   if (status === "denied") return "Stopped";
   return "Not started";
@@ -599,6 +607,7 @@ function workflowStatusFromGraph(
   if (status === "completed") return "completed";
   if (status === "blocked") return "blocked";
   if (status === "interrupted") return "blocked";
+  if (status === "needs_attention") return "needs_attention";
   if (status === "denied") return "denied";
   if (status === "failed" || status === "needs_repair") {
     return "failed";
@@ -611,6 +620,7 @@ function workflowStepStatusFromGraph(
 ): WorkflowRunStepRecord["status"] {
   if (status === "succeeded" || status === "memoized") return "succeeded";
   if (status === "blocked") return "blocked";
+  if (status === "needs_attention") return "needs_attention";
   if (status === "failed" || status === "interrupted") return "failed";
   if (status === "skipped") return "skipped";
   return "running";
@@ -760,7 +770,12 @@ function graphRunApproval(
   detail: PlaybookGraphRunDetail | null,
   playbook: PlaybookSummary | PlaybookDetail | null
 ): PlaybookRunDetail["approval"] {
-  if (!detail || (detail.run.status !== "blocked" && detail.run.status !== "interrupted")) {
+  if (
+    !detail ||
+    (detail.run.status !== "blocked" &&
+      detail.run.status !== "interrupted" &&
+      detail.run.status !== "needs_attention")
+  ) {
     return undefined;
   }
   if (detail.run.blockedReason?.includes("execution context changed")) {
@@ -807,6 +822,32 @@ function graphRunApproval(
         interruptedEntry.blockedReason ??
         `Tessera stopped while working on ${stepLabel}. This can happen if the app or sidecar restarted during the step.`,
       reasonCode: "graph_interrupted_retry",
+    };
+  }
+  const attentionEntry = detail.queue.find((entry) => entry.status === "needs_attention");
+  if (attentionEntry) {
+    const stepLabel = titleFromId(attentionEntry.nodeId);
+    return {
+      toolId: "graph.retryNeedsAttention",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+        queueEntryId: attentionEntry.queueEntryId,
+        stepLabel,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview:
+        attentionEntry.attentionEvidence?.reason ??
+        attentionEntry.blockedReason ??
+        `Tessera needs a recovery decision before retrying ${stepLabel}.`,
+      reasonCode: "graph_needs_attention_retry",
     };
   }
   const reviewEntry = detail.queue.find(
@@ -3447,7 +3488,9 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           ? "approve_context_change"
           : selectedRun.approval?.reasonCode === "graph_interrupted_retry"
             ? "retry_interrupted"
-            : "approve";
+            : selectedRun.approval?.reasonCode === "graph_needs_attention_retry"
+              ? "retry_needs_attention"
+              : "approve";
       const actionDecision = decision === "approve" ? approvalDecision : "deny";
       const action = selectedGraphRunSurface?.actions.find(
         (item) => item.decision === actionDecision

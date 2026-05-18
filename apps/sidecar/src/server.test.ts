@@ -4158,6 +4158,72 @@ describe("graph run endpoints", () => {
       await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
+
+  test("background graph worker flags unsafe stale leases as needs attention", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.updateQueueEntry({
+        ...claimed,
+        recoveryPolicy: "block_for_review",
+      });
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+      let calls = 0;
+
+      const result = await drainGraphRunWorkQueue({
+        store,
+        runtimeId: "worker-runtime",
+        now: () => "2026-05-15T00:00:02.000Z",
+        scriptAdapter() {
+          calls += 1;
+          return { ok: true };
+        },
+      });
+
+      const queueEntry = (await store.getQueue(detail.run.runId))[0];
+      expect(result).toMatchObject({
+        inspected: 1,
+        recovered: 1,
+        requeued: 0,
+        blocked: 1,
+        errors: [],
+      });
+      expect(calls).toBe(0);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("needs_attention");
+      expect(queueEntry?.status).toBe("needs_attention");
+      expect(queueEntry?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
 });
 
 describe("built-in graph playbook projection", () => {

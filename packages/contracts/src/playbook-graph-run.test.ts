@@ -100,6 +100,11 @@ describe("PlaybookGraphRunRecordSchema", () => {
       status: "interrupted",
       blockedReason: "stale runtime lease",
     });
+    const attention = PlaybookGraphRunRecordSchema.parse({
+      ...running,
+      status: "needs_attention",
+      blockedReason: "stale lease needs recovery",
+    });
     const repair = PlaybookGraphRunRecordSchema.parse({
       ...running,
       status: "needs_repair",
@@ -110,6 +115,7 @@ describe("PlaybookGraphRunRecordSchema", () => {
     expect(running.materialization?.workspaceRoot).toBe("/tmp/tessera-workspace");
     expect(running.executionContext?.executionContextHash).toBe("sha256:context");
     expect(interrupted.status).toBe("interrupted");
+    expect(attention.status).toBe("needs_attention");
     expect(repair.repairReason).toBe("snapshot hash mismatch");
   });
 });
@@ -183,6 +189,7 @@ describe("PlaybookGraphQueueEntrySchema", () => {
       status: "running",
       dependsOn: ["queue-plan"],
       producesArtifacts: ["scorecard"],
+      declaredConsumesArtifacts: ["brief"],
       consumesArtifacts: [
         {
           artifactId: "brief",
@@ -190,6 +197,7 @@ describe("PlaybookGraphQueueEntrySchema", () => {
           contentHash: "sha256:brief",
         },
       ],
+      artifactBindingState: "resolved",
       recoveryPolicy: "rerun_if_no_success_memo",
       nodeMemoKey: "sha256:memo",
       attempt: 1,
@@ -202,7 +210,41 @@ describe("PlaybookGraphQueueEntrySchema", () => {
     });
 
     expect(entry.status).toBe("running");
+    expect(entry.declaredConsumesArtifacts).toEqual(["brief"]);
+    expect(entry.artifactBindingState).toBe("resolved");
     expect(entry.consumesArtifacts[0]?.versionId).toBe("artifact-version-1");
+  });
+
+  test("accepts needs-attention entries with recovery evidence", () => {
+    const entry = PlaybookGraphQueueEntrySchema.parse({
+      schemaVersion: 1,
+      queueEntryId: "queue-1",
+      runId: "run-1",
+      nodeId: "score",
+      nodePath: "score",
+      nodeKind: "script",
+      status: "needs_attention",
+      declaredConsumesArtifacts: ["brief"],
+      consumesArtifacts: [],
+      artifactBindingState: "unresolved",
+      attentionEvidence: {
+        code: "stale_lease",
+        reason: "Lease expired while the app was offline.",
+        observedAt: later,
+        previousQueueStatus: "running",
+        lastRuntimeId: "runtime-1",
+        lastLeaseId: "lease-1",
+        lastClaimedAt: now,
+        leaseExpiredAt: later,
+        recoveryDecision: "needs_attention",
+      },
+      createdAt: now,
+      updatedAt: later,
+    });
+
+    expect(entry.status).toBe("needs_attention");
+    expect(entry.attentionEvidence?.code).toBe("stale_lease");
+    expect(entry.attentionEvidence?.recoveryDecision).toBe("needs_attention");
   });
 
   test("rejects malformed node paths", () => {
@@ -331,6 +373,21 @@ describe("PlaybookGraphResumeDecisionSchema", () => {
       decision: "retry_interrupted",
       payload: {},
       executionContext: { provider: "openai:gpt-5.4" },
+    });
+  });
+
+  test("accepts needs-attention retry decisions", () => {
+    expect(
+      PlaybookGraphResumeDecisionSchema.parse({
+        runId: "run-1",
+        queueEntryId: "queue-1",
+        decision: "retry_needs_attention",
+      })
+    ).toEqual({
+      runId: "run-1",
+      queueEntryId: "queue-1",
+      decision: "retry_needs_attention",
+      payload: {},
     });
   });
 
@@ -688,6 +745,24 @@ describe("PlaybookGraphResumeActionSpecSchema", () => {
       "value",
     ]);
     expect(action.invalidatesDownstream).toBe(true);
+  });
+
+  test("accepts needs-attention retry action metadata", () => {
+    const action = PlaybookGraphResumeActionSpecSchema.parse({
+      schemaVersion: 1,
+      actionId: "queue-1:retry_needs_attention",
+      decision: "retry_needs_attention",
+      label: "Retry",
+      queueEntryId: "queue-1",
+      nodePath: "score",
+      nodeKind: "script",
+      allowedRunStatuses: ["needs_attention"],
+      allowedQueueStatuses: ["needs_attention"],
+      sideEffect: "resume",
+    });
+
+    expect(action.allowedRunStatuses).toEqual(["needs_attention"]);
+    expect(action.allowedQueueStatuses).toEqual(["needs_attention"]);
   });
 
   test("rejects action specs without allowed run statuses", () => {

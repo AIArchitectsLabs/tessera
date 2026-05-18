@@ -87,6 +87,15 @@ class MemoryGraphRunStore implements GraphRunStore {
     for (const entry of queue) {
       if (entry.runId !== input.runId || entry.status !== "queued") continue;
       const dependencies = entry.dependsOn.map((id) => this.queue.get(id));
+      const dependencyArtifacts = new Set(
+        dependencies.flatMap((dependency) => dependency?.producesArtifacts ?? [])
+      );
+      const unresolvedDependencyArtifacts = entry.declaredConsumesArtifacts.some(
+        (artifactId) =>
+          dependencyArtifacts.has(artifactId) &&
+          !entry.consumesArtifacts.some((artifact) => artifact.artifactId === artifactId)
+      );
+      if (unresolvedDependencyArtifacts) continue;
       if (
         dependencies.some(
           (dependency) =>
@@ -269,6 +278,80 @@ class MemoryGraphRunStore implements GraphRunStore {
       }
     }
     return count;
+  }
+
+  async recoverStaleQueueLeases(input: {
+    runId: string;
+    runtimeId: string;
+    now: string;
+  }): Promise<{
+    inspected: number;
+    autoRequeued: number;
+    needsAttention: number;
+    interrupted: number;
+  }> {
+    let inspected = 0;
+    let autoRequeued = 0;
+    let needsAttention = 0;
+    for (const entry of this.queue.values()) {
+      if (
+        entry.runId !== input.runId ||
+        entry.status !== "running" ||
+        !entry.leaseExpiresAt ||
+        entry.leaseExpiresAt > input.now
+      ) {
+        continue;
+      }
+      inspected += 1;
+      const reason =
+        "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
+      const attentionEvidence = {
+        code: "stale_lease" as const,
+        reason,
+        observedAt: input.now,
+        previousQueueStatus: "running" as const,
+        ...(entry.runtimeId ? { lastRuntimeId: entry.runtimeId } : {}),
+        ...(entry.leaseId ? { lastLeaseId: entry.leaseId } : {}),
+        ...(entry.claimedAt ? { lastClaimedAt: entry.claimedAt } : {}),
+        leaseExpiredAt: entry.leaseExpiresAt,
+        recoveryDecision:
+          entry.recoveryPolicy === "rerun_if_no_success_memo"
+            ? ("auto_requeued" as const)
+            : ("needs_attention" as const),
+      };
+      if (entry.recoveryPolicy === "rerun_if_no_success_memo") {
+        this.queue.set(entry.queueEntryId, {
+          ...entry,
+          status: "queued",
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          blockedReason: undefined,
+          error: undefined,
+          completedAt: undefined,
+          attentionEvidence,
+          updatedAt: input.now,
+        });
+        autoRequeued += 1;
+      } else {
+        this.queue.set(entry.queueEntryId, {
+          ...entry,
+          status: "needs_attention",
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          blockedReason: reason,
+          error: undefined,
+          completedAt: undefined,
+          attentionEvidence,
+          updatedAt: input.now,
+        });
+        needsAttention += 1;
+      }
+    }
+    return { inspected, autoRequeued, needsAttention, interrupted: 0 };
   }
 
   async checkpointNodeSuccess(input: {
@@ -737,6 +820,80 @@ describe("drainPlaybookGraphRun", () => {
     expect(scoreEntry?.queueEntryId).toBe("run-1:plan/score");
     expect(scoreEntry?.consumesArtifacts).toEqual([
       expect.objectContaining({ artifactId: "plan" }),
+    ]);
+  });
+
+  test("refreshes unresolved artifact bindings before claiming dependent queued work", async () => {
+    const store = new MemoryGraphRunStore();
+    const graph = compiledGraph();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: graph,
+      store,
+      runId: "run-unresolved-binding",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const planEntry = (await store.getQueue(run.runId))[0];
+    if (!planEntry) throw new Error("Missing plan queue entry");
+    const dependentNode = graph.graph.nodes.find((node) => node.id === "score");
+    if (!dependentNode) throw new Error("Missing score node");
+    await store.updateQueueEntry({
+      ...planEntry,
+      status: "succeeded",
+      updatedAt: "2026-05-15T00:00:01.000Z",
+      completedAt: "2026-05-15T00:00:01.000Z",
+    });
+    await store.upsertQueueEntry(
+      createPlaybookGraphQueueEntry({
+        runId: run.runId,
+        node: dependentNode,
+        nodePath: "plan/score",
+        dependsOn: [planEntry.queueEntryId],
+        now: "2026-05-15T00:00:01.000Z",
+      })
+    );
+    await store.addArtifactVersion({
+      schemaVersion: 1,
+      runId: run.runId,
+      artifactId: "plan",
+      versionId: `${planEntry.queueEntryId}:plan:v1`,
+      producerQueueEntryId: planEntry.queueEntryId,
+      nodePath: planEntry.nodePath,
+      contentHash: "sha256:plan",
+      value: { title: "Plan" },
+      createdAt: "2026-05-15T00:00:01.000Z",
+    });
+    await store.updateRun({
+      ...run,
+      status: "running",
+      currentQueueEntryId: undefined,
+      updatedAt: "2026-05-15T00:00:01.000Z",
+    });
+    const calls: string[] = [];
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-binding",
+      store,
+      now: (() => {
+        let tick = 2;
+        return () => `2026-05-15T00:00:${String(tick++).padStart(2, "0")}.000Z`;
+      })(),
+      scriptAdapter({ node }) {
+        calls.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const scoreEntry = (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "score");
+    expect(result.run.status).toBe("completed");
+    expect(calls).toEqual(["score"]);
+    expect(scoreEntry?.artifactBindingState).toBe("resolved");
+    expect(scoreEntry?.consumesArtifacts).toEqual([
+      expect.objectContaining({
+        artifactId: "plan",
+        versionId: `${planEntry.queueEntryId}:plan:v1`,
+        contentHash: "sha256:plan",
+      }),
     ]);
   });
 
@@ -1814,6 +1971,45 @@ describe("drainPlaybookGraphRun", () => {
     expect(await store.listArtifactVersions(run.runId)).toEqual([]);
   });
 
+  test("adapter timeout errors checkpoint failed state through the active claim", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-timeout-failure",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-timeout-failure",
+      store,
+      scriptAdapter() {
+        throw new Error("Graph script timed out after 5000ms: scripts/plan.ts");
+      },
+    });
+
+    const failedEntry = (await store.getQueue(run.runId))[0];
+    expect(result.run.status).toBe("failed");
+    expect(result.run.error).toContain("timed out");
+    expect(failedEntry?.status).toBe("failed");
+    expect(failedEntry?.runtimeId).toBeUndefined();
+    expect(failedEntry?.attentionEvidence).toBeUndefined();
+    expect(await store.listArtifactVersions(run.runId)).toEqual([]);
+    expect(store.memos.size).toBe(0);
+  });
+
   test("agent nodes block durably when no adapter is provided", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
@@ -1904,9 +2100,9 @@ describe("drainPlaybookGraphRun", () => {
     });
 
     expect(completed.run.status).toBe("completed");
-    expect((await store.getQueue(run.runId)).find((entry) => entry.nodeId === "agent")?.status).toBe(
-      "succeeded"
-    );
+    expect(
+      (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "agent")?.status
+    ).toBe("succeeded");
   });
 
   test("artifactWrite blocks durably when no adapter is provided", async () => {

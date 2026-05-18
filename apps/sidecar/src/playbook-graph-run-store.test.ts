@@ -241,9 +241,11 @@ describe("createPlaybookGraphRunStore", () => {
       nodePath: "dependent",
       status: "queued",
       dependsOn: [base.queueEntryId],
+      declaredConsumesArtifacts: ["plan"],
       consumesArtifacts: [
         { artifactId: "plan", versionId: "artifact-version-1", contentHash: "sha256:plan" },
       ],
+      artifactBindingState: "resolved",
       createdAt: later,
       updatedAt: later,
     });
@@ -268,6 +270,80 @@ describe("createPlaybookGraphRunStore", () => {
       contentHash: "sha256:plan",
       value: { ok: true },
       createdAt: later,
+    });
+
+    expect(
+      (
+        await store.claimNextQueuedEntry({
+          runId: run.runId,
+          runtimeId: "runtime-1",
+          leaseId: "lease-1",
+          leaseExpiresAt: later,
+          now,
+        })
+      )?.queueEntryId
+    ).toBe("queue-dependent");
+    store.close();
+  });
+
+  test("does not claim queued entries while declared artifact bindings are unresolved", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph(),
+      store,
+      runId: "run-1",
+      now,
+    });
+    const base = (await store.getQueue(run.runId))[0];
+    if (!base) throw new Error("Missing queue entry");
+    await store.updateQueueEntry({ ...base, status: "succeeded", updatedAt: now });
+    await store.upsertQueueEntry({
+      ...base,
+      queueEntryId: "queue-dependent",
+      nodeId: "dependent",
+      nodePath: "dependent",
+      status: "queued",
+      dependsOn: [base.queueEntryId],
+      declaredConsumesArtifacts: ["plan"],
+      consumesArtifacts: [],
+      artifactBindingState: "unresolved",
+      createdAt: later,
+      updatedAt: later,
+    });
+
+    expect(
+      await store.claimNextQueuedEntry({
+        runId: run.runId,
+        runtimeId: "runtime-1",
+        leaseId: "lease-1",
+        leaseExpiresAt: later,
+        now,
+      })
+    ).toBeUndefined();
+
+    await store.addArtifactVersion({
+      schemaVersion: 1,
+      runId: run.runId,
+      artifactId: "plan",
+      versionId: "artifact-version-1",
+      producerQueueEntryId: base.queueEntryId,
+      nodePath: "plan",
+      contentHash: "sha256:plan",
+      value: { ok: true },
+      createdAt: later,
+    });
+    const dependent = (await store.getQueue(run.runId)).find(
+      (entry) => entry.queueEntryId === "queue-dependent"
+    );
+    if (!dependent) throw new Error("Missing dependent queue entry");
+    await store.updateQueueEntry({
+      ...dependent,
+      consumesArtifacts: [
+        { artifactId: "plan", versionId: "artifact-version-1", contentHash: "sha256:plan" },
+      ],
+      artifactBindingState: "resolved",
+      updatedAt: later,
     });
 
     expect(
@@ -366,6 +442,52 @@ describe("createPlaybookGraphRunStore", () => {
       })
     ).toBe(1);
     expect((await store.getQueue(run.runId))[0]?.status).toBe("interrupted");
+    store.close();
+  });
+
+  test("recovers stale leases by requeueing safe work and flagging manual attention", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const safe = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-old",
+      leaseId: "lease-old",
+      leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      now,
+    });
+    if (!safe) throw new Error("Missing safe claim");
+    await store.upsertQueueEntry({
+      ...safe,
+      queueEntryId: "queue-manual",
+      nodeId: "agent",
+      nodePath: "agent",
+      nodeKind: "agent",
+      status: "running",
+      recoveryPolicy: "block_for_review",
+      runtimeId: "runtime-old",
+      leaseId: "lease-manual",
+      claimedAt: now,
+      leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    expect(
+      await store.recoverStaleQueueLeases({
+        runId: run.runId,
+        runtimeId: "runtime-new",
+        now: "2026-05-15T00:00:02.000Z",
+      })
+    ).toEqual({ inspected: 2, autoRequeued: 1, needsAttention: 1, interrupted: 0 });
+
+    const queue = await store.getQueue(run.runId);
+    const safeRecovered = queue.find((entry) => entry.queueEntryId === safe.queueEntryId);
+    const manual = queue.find((entry) => entry.queueEntryId === "queue-manual");
+    expect(safeRecovered?.status).toBe("queued");
+    expect(safeRecovered?.attentionEvidence?.recoveryDecision).toBe("auto_requeued");
+    expect(manual?.status).toBe("needs_attention");
+    expect(manual?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
+    expect(manual?.runtimeId).toBeUndefined();
     store.close();
   });
 
