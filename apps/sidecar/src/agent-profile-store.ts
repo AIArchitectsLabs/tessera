@@ -9,6 +9,7 @@ import {
   SkillIdSchema,
   type ToolPolicyPreset,
 } from "@tessera/contracts";
+import { configureSidecarSqlite } from "./sqlite.js";
 
 export interface AgentProfileStore {
   close(): void;
@@ -106,6 +107,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath, { create: true, strict: true });
+  configureSidecarSqlite(db, dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_profiles (
       id TEXT PRIMARY KEY NOT NULL,

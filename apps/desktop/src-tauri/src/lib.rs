@@ -1644,6 +1644,26 @@ async fn playbook_get(
 }
 
 #[tauri::command]
+async fn playbook_import(
+    state: State<'_, SidecarHandle>,
+    zip_path: String,
+) -> Result<serde_json::Value, String> {
+    let zip_path = zip_path.trim();
+    if zip_path.is_empty() {
+        return Err("zip_path is required".to_string());
+    }
+    if !std::path::Path::new(zip_path).is_absolute() {
+        return Err("zip_path must be an absolute path".to_string());
+    }
+    let body = serde_json::json!({ "zipPath": zip_path });
+    let json = state
+        .post("/graph-playbooks/import", &body.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn graph_run_create(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
@@ -2828,6 +2848,7 @@ pub fn run() {
             model_settings_get,
             model_settings_save,
             playbook_get,
+            playbook_import,
             playbook_list,
             sidecar_ping,
             skill_get,

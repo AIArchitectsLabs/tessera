@@ -47,9 +47,11 @@ installDom();
 const playbook = {
   id: "sales.meeting-brief",
   version: 1,
+  packageVersion: "0.1.0",
   name: "Sales Meeting Brief",
   description: "Prepare for a customer or prospect meeting",
   graphHash: "sha256:graph",
+  sourceHash: "sha256:source",
   category: "Sales",
   businessUseCase: "Prepare for a customer or prospect meeting",
   requiredCapabilities: [],
@@ -73,9 +75,11 @@ const playbook = {
 const dashboardPlaybook = {
   id: "ops.activity-snapshot",
   version: 1,
+  packageVersion: "0.1.0",
   name: "Activity Snapshot",
   description: "Refreshable dashboard of recent workspace activity.",
   graphHash: "sha256:dashboard-graph",
+  sourceHash: "sha256:dashboard-source",
   category: "Operations",
   businessUseCase: "Latest workspace update",
   requiredCapabilities: [],
@@ -110,6 +114,23 @@ const dashboardPlaybook = {
   steps: [],
   stepCount: 1,
   phases: ["Summarize"],
+} satisfies PlaybookDetail;
+
+const importedPlaybook = {
+  id: "content.seo-blog",
+  version: 1,
+  packageVersion: "0.1.0",
+  name: "Imported SEO Blog Article",
+  description: "Imported archive playbook",
+  graphHash: "sha256:imported-graph",
+  sourceHash: "sha256:imported-source",
+  requiredCapabilities: [],
+  optionalCapabilities: [],
+  inputs: {},
+  outputs: [],
+  steps: [],
+  stepCount: 1,
+  phases: ["Draft"],
 } satisfies PlaybookDetail;
 
 const completedRun = {
@@ -189,7 +210,13 @@ const graphRunDetail = {
       status: "blocked",
       dependsOn: [],
       producesArtifacts: [],
-      consumesArtifacts: [],
+      consumesArtifacts: [
+        {
+          artifactId: "briefScorecard",
+          versionId: "brief-scorecard-v1",
+          contentHash: "sha256:brief-scorecard",
+        },
+      ],
       recoveryPolicy: "block_for_review",
       attempt: 0,
       createdAt: "2026-05-15T00:00:00.000Z",
@@ -209,14 +236,31 @@ const graphRunSurface = {
   activeArtifacts: [
     {
       schemaVersion: 1,
-      artifactId: "brief",
-      versionId: "brief-v2",
-      producerQueueEntryId: "queue-review",
-      producerStatus: "blocked",
-      nodePath: "draft/review",
-      contentHash: "sha256:brief",
-      value: { title: "Active brief" },
-      createdAt: "2026-05-15T00:01:00.000Z",
+      artifactId: "contentBrief",
+      versionId: "content-brief-v1",
+      producerQueueEntryId: "queue-draft",
+      producerStatus: "succeeded",
+      nodePath: "draft",
+      contentHash: "sha256:content-brief",
+      value: {
+        text: "# Content Brief\n\n## Title\nActive brief\n\n## Thesis\nA practical brief for the article.",
+      },
+      createdAt: "2026-05-15T00:00:30.000Z",
+    },
+    {
+      schemaVersion: 1,
+      artifactId: "briefScorecard",
+      versionId: "brief-scorecard-v1",
+      producerQueueEntryId: "queue-score",
+      producerStatus: "succeeded",
+      nodePath: "draft/score",
+      contentHash: "sha256:brief-scorecard",
+      value: {
+        overall: 60,
+        pass: false,
+        findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+      },
+      createdAt: "2026-05-15T00:00:45.000Z",
     },
   ],
   artifactTimeline: [
@@ -234,15 +278,33 @@ const graphRunSurface = {
     },
     {
       schemaVersion: 1,
-      artifactId: "brief",
-      versionId: "brief-v2",
-      producerQueueEntryId: "queue-review",
-      producerStatus: "blocked",
-      nodePath: "draft/review",
-      contentHash: "sha256:brief",
+      artifactId: "contentBrief",
+      versionId: "content-brief-v1",
+      producerQueueEntryId: "queue-draft",
+      producerStatus: "succeeded",
+      nodePath: "draft",
+      contentHash: "sha256:content-brief",
       active: true,
-      value: { title: "Active brief" },
-      createdAt: "2026-05-15T00:01:00.000Z",
+      value: {
+        text: "# Content Brief\n\n## Title\nActive brief\n\n## Thesis\nA practical brief for the article.",
+      },
+      createdAt: "2026-05-15T00:00:30.000Z",
+    },
+    {
+      schemaVersion: 1,
+      artifactId: "briefScorecard",
+      versionId: "brief-scorecard-v1",
+      producerQueueEntryId: "queue-score",
+      producerStatus: "succeeded",
+      nodePath: "draft/score",
+      contentHash: "sha256:brief-scorecard",
+      active: true,
+      value: {
+        overall: 60,
+        pass: false,
+        findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+      },
+      createdAt: "2026-05-15T00:00:45.000Z",
     },
   ],
   timeline: [
@@ -311,6 +373,110 @@ const graphRunSurface = {
       sideEffect: "invalidate_downstream",
       destructive: false,
       invalidatesDownstream: true,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+  ],
+} satisfies PlaybookGraphRunReviewSurface;
+
+const graphReviewQueueEntry = graphRunDetail.queue[0];
+if (!graphReviewQueueEntry) throw new Error("Expected graph review queue fixture");
+
+const articleReviewGraphRunDetail = {
+  ...graphRunDetail,
+  run: {
+    ...graphRunDetail.run,
+    status: "blocked",
+    currentQueueEntryId: "queue-final-review",
+    blockedReason: "human review required",
+    updatedAt: "2026-05-15T00:03:00.000Z",
+  },
+  queue: [
+    {
+      ...graphReviewQueueEntry,
+      status: "succeeded",
+      completedAt: "2026-05-15T00:02:00.000Z",
+      updatedAt: "2026-05-15T00:02:00.000Z",
+    },
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-final-review",
+      runId: "graph-run-1",
+      nodeId: "finalReview",
+      nodePath: "draftArticle/reviewArticle/scoreArticle/finalReview",
+      nodeKind: "humanReview",
+      status: "blocked",
+      dependsOn: ["queue-review"],
+      producesArtifacts: [],
+      consumesArtifacts: [
+        {
+          artifactId: "articleScorecard",
+          versionId: "article-scorecard-v1",
+          contentHash: "sha256:article-scorecard",
+        },
+      ],
+      recoveryPolicy: "block_for_review",
+      attempt: 0,
+      createdAt: "2026-05-15T00:03:00.000Z",
+      updatedAt: "2026-05-15T00:03:00.000Z",
+      blockedReason: "human review required",
+    },
+  ],
+} satisfies PlaybookGraphRunDetail;
+
+const articleReviewGraphRunSurface = {
+  schemaVersion: 1,
+  detail: articleReviewGraphRunDetail,
+  activeArtifacts: [
+    {
+      schemaVersion: 1,
+      artifactId: "articleDraft",
+      versionId: "article-draft-v1",
+      producerQueueEntryId: "queue-draft-article",
+      producerStatus: "succeeded",
+      nodePath: "draftArticle",
+      contentHash: "sha256:article-draft",
+      value: {
+        text: "# Article Draft\n\nA complete article draft based on the approved brief.",
+      },
+      createdAt: "2026-05-15T00:02:30.000Z",
+    },
+    {
+      schemaVersion: 1,
+      artifactId: "articleScorecard",
+      versionId: "article-scorecard-v1",
+      producerQueueEntryId: "queue-score-article",
+      producerStatus: "succeeded",
+      nodePath: "scoreArticle",
+      contentHash: "sha256:article-scorecard",
+      value: {
+        overall: 84,
+        pass: true,
+        findings: ["Article is ready for final source summary."],
+      },
+      createdAt: "2026-05-15T00:02:45.000Z",
+    },
+  ],
+  artifactTimeline: [],
+  timeline: [],
+  branches: [],
+  actions: [
+    {
+      schemaVersion: 1,
+      actionId: "queue-final-review:approve",
+      decision: "approve",
+      label: "Approve",
+      queueEntryId: "queue-final-review",
+      nodePath: "draftArticle/reviewArticle/scoreArticle/finalReview",
+      nodeKind: "humanReview",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [],
+      sideEffect: "resume",
+      destructive: false,
+      invalidatesDownstream: false,
       requiresExecutionContext: false,
       requiresProvider: false,
       requiresCredential: false,
@@ -616,13 +782,39 @@ const integrationSettings: IntegrationSettingsRead = {
 
 let includeContextDriftRun = false;
 let includeInterruptedRun = false;
+let includeImportedPlaybook = false;
+let playbookListOverride: Promise<PlaybookListResult> | null = null;
+let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   switch (command) {
     case "playbook_list":
-      return { playbooks: [playbook, dashboardPlaybook] } satisfies PlaybookListResult;
+      if (playbookListOverride) return playbookListOverride;
+      return {
+        playbooks: [
+          playbook,
+          dashboardPlaybook,
+          ...(includeImportedPlaybook ? [importedPlaybook] : []),
+        ],
+      } satisfies PlaybookListResult;
     case "playbook_get":
-      return args?.playbookId === dashboardPlaybook.id ? dashboardPlaybook : playbook;
+      return args?.playbookId === dashboardPlaybook.id
+        ? dashboardPlaybook
+        : args?.playbookId === importedPlaybook.id
+          ? importedPlaybook
+          : playbook;
+    case "playbook_import":
+      includeImportedPlaybook = true;
+      return {
+        schemaVersion: 1,
+        status: "installed",
+        id: importedPlaybook.id,
+        version: "0.1.0",
+        name: importedPlaybook.name,
+        graphHash: importedPlaybook.graphHash,
+        sourceHash: importedPlaybook.sourceHash,
+        warnings: [],
+      };
     case "graph_run_list":
       return {
         runs:
@@ -662,7 +854,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
                   branches: [],
                   actions: [],
                 }
-              : graphRunSurface;
+              : (graphRunSurfaceOverride ?? graphRunSurface);
     case "graph_run_git_milestone_preview":
       return {
         schemaVersion: 1,
@@ -707,6 +899,10 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         } satisfies PlaybookGraphRunDetail;
       }
       const { blockedReason: _blockedReason, ...run } = graphRunDetail.run;
+      if ((args?.request as { decision?: string } | undefined)?.decision === "approve") {
+        graphRunSurfaceOverride = articleReviewGraphRunSurface;
+        return articleReviewGraphRunDetail;
+      }
       return {
         ...graphRunDetail,
         run: {
@@ -780,8 +976,10 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke,
 }));
 
+const openMock = mock<() => Promise<string | null>>(async () => "/tmp/reference.playbook.zip");
+
 mock.module("@tauri-apps/plugin-dialog", () => ({
-  open: mock(async () => "/tmp/selected-workspace"),
+  open: openMock,
 }));
 
 const { PlaybooksView } = await import("./PlaybooksView");
@@ -797,8 +995,13 @@ function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
 
 beforeEach(() => {
   invoke.mockClear();
+  openMock.mockClear();
+  openMock.mockImplementation(async () => "/tmp/reference.playbook.zip");
   includeContextDriftRun = false;
   includeInterruptedRun = false;
+  includeImportedPlaybook = false;
+  playbookListOverride = null;
+  graphRunSurfaceOverride = null;
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -812,6 +1015,23 @@ afterEach(() => {
 });
 
 describe("PlaybooksView", () => {
+  test("shows a stable loading state while playbooks load", async () => {
+    let resolvePlaybooks: (result: PlaybookListResult) => void = () => undefined;
+    playbookListOverride = new Promise((resolve) => {
+      resolvePlaybooks = resolve;
+    });
+    const view = renderPlaybooksView();
+
+    expect(view.getByLabelText("Loading playbooks")).toBeTruthy();
+    expect(view.getByTestId("playbook-catalog").className).toContain("overflow-y-auto");
+
+    resolvePlaybooks({ playbooks: [playbook, dashboardPlaybook] });
+
+    await waitFor(() => {
+      expect(view.getAllByText("Sales Meeting Brief").length).toBeGreaterThan(0);
+    });
+  });
+
   test("shows the current workspace in the playbooks sidebar", async () => {
     const view = renderPlaybooksView();
 
@@ -900,6 +1120,7 @@ describe("PlaybooksView", () => {
         request: {
           playbookId: "sales.meeting-brief",
           graphHash: "sha256:graph",
+          sourceHash: "sha256:source",
           agentId: "analyst",
           workspaceRoot: "/tmp/workspace",
           drainDeterministic: true,
@@ -1007,7 +1228,7 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getByText("Your review is needed")).toBeTruthy();
-      expect(view.getByText(/interrupted before this run finished/)).toBeTruthy();
+      expect(view.getByText(/stopped while working on Draft/)).toBeTruthy();
     });
 
     fireEvent.click(view.getByRole("button", { name: "Approve" }));
@@ -1028,6 +1249,64 @@ describe("PlaybooksView", () => {
         },
       });
     });
+  });
+
+  test("shows prepared artifact evidence before approving human review runs", async () => {
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected human review run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Content Brief")).toBeTruthy();
+      expect(view.getByText("60/100")).toBeTruthy();
+      expect(
+        view.getByText("Brief needs stronger thesis, sources, or outline coverage.")
+      ).toBeTruthy();
+      expect(view.getByText(/A practical brief for the article/)).toBeTruthy();
+      expect(view.getByRole("button", { name: "Approve brief" })).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "View details" }));
+
+    await waitFor(() => {
+      expect(view.getAllByText("Needs review").length).toBeGreaterThan(0);
+      expect(view.getByText("What Tessera is asking you to approve")).toBeTruthy();
+      expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
+    });
+  });
+
+  test("refreshes review evidence after approving from the main review card", async () => {
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected human review run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByRole("button", { name: "Approve brief" })).toBeTruthy();
+      expect(view.getByText("Content Brief")).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Approve brief" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Article Draft")).toBeTruthy();
+      expect(view.getByText("84/100")).toBeTruthy();
+      expect(view.getByText("Article is ready for final source summary.")).toBeTruthy();
+    });
+    expect(
+      view.queryByText("Brief needs stronger thesis, sources, or outline coverage.")
+    ).toBeNull();
   });
 
   test("renders graph review surface actions and submits action payloads", async () => {
@@ -1071,8 +1350,8 @@ describe("PlaybooksView", () => {
     });
 
     await waitFor(() => {
-      expect(view.getByText(/Active brief/)).toBeTruthy();
-      expect(view.getByText("Artifact timeline: 2 versions · 1 active")).toBeTruthy();
+      expect(view.getAllByText(/Active brief/).length).toBeGreaterThan(0);
+      expect(view.getByText("Artifact timeline: 3 versions · 2 active")).toBeTruthy();
       expect(view.getAllByText("human review required").length).toBeGreaterThan(0);
     });
 
@@ -1177,5 +1456,45 @@ describe("PlaybooksView", () => {
       expect(view.getByText("7")).toBeTruthy();
       expect(view.getByRole("button", { name: /Refresh snapshot/i })).toBeTruthy();
     });
+  });
+
+  test("imports a playbook archive and selects the imported playbook", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByTitle("Import playbook")).toBeTruthy();
+    });
+    fireEvent.click(view.getByTitle("Import playbook"));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith({
+        multiple: false,
+        filters: [{ name: "Playbook archive", extensions: ["playbook", "zip"] }],
+      });
+      expect(
+        invoke.mock.calls.some(
+          ([command, args]) =>
+            command === "playbook_import" &&
+            (args as Record<string, unknown>).zipPath === "/tmp/reference.playbook.zip"
+        )
+      ).toBe(true);
+      expect(view.getByText("Imported SEO Blog Article installed.")).toBeTruthy();
+      expect(view.getAllByText("Imported archive playbook").length).toBeGreaterThan(0);
+    });
+  });
+
+  test("canceling playbook import leaves state unchanged", async () => {
+    openMock.mockImplementation(async () => null);
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByTitle("Import playbook")).toBeTruthy();
+    });
+    fireEvent.click(view.getByTitle("Import playbook"));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalled();
+    });
+    expect(invoke.mock.calls.some(([command]) => command === "playbook_import")).toBe(false);
   });
 });

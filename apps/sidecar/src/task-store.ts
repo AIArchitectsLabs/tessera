@@ -28,6 +28,7 @@ import {
   type TaskUpdateRequest,
   type TodoOperation,
 } from "@tessera/contracts";
+import { configureSidecarSqlite } from "./sqlite.js";
 
 export interface CreateArtifactInput {
   taskId: string;
@@ -263,6 +264,7 @@ export function createTaskStore(dbPath: string): TaskStore {
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath, { create: true, strict: true });
+  configureSidecarSqlite(db, dbPath);
   db.exec(
     `CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY NOT NULL,

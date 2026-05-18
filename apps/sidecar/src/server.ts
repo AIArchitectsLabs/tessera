@@ -14,6 +14,7 @@ import {
   type CompiledPlaybookGraph,
   CompiledPlaybookGraphSchema,
   DashboardLayoutSchema,
+  GraphPlaybookImportResultSchema,
   InboxCancelRequestSchema,
   InboxCreateRequestSchema,
   InboxListResultSchema,
@@ -58,7 +59,10 @@ import {
   type TaskSkillActivation,
   TaskUpdateRequestSchema,
   TodoOperationSchema,
+  type WorkflowCapability,
+  WorkflowCapabilitySchema,
   type WorkflowOutputDeclaration,
+  WorkflowOutputDeclarationSchema,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
@@ -105,8 +109,10 @@ import {
   resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
+import { importGraphPlaybookArchive } from "./graph-playbook-importer.js";
 import {
   type GraphPlaybookRegistryEntry,
+  loadInstalledGraphPlaybookCatalog,
   loadInstalledGraphPlaybookRegistry,
 } from "./graph-playbook-registry.js";
 import { createInboxStore } from "./inbox-store.js";
@@ -256,9 +262,16 @@ interface GraphPlaybookRegistryState {
 }
 
 const installedGraphPlaybookRegistryState: GraphPlaybookRegistryState = { entries: [] };
+const installedGraphPlaybookCatalogState: GraphPlaybookRegistryState = { entries: [] };
 
-export interface BuiltInGraphPlaybookRegistryEntry extends GraphPlaybookRegistryEntry {
+export interface BuiltInGraphPlaybookRegistryEntry {
   kind: "built-in";
+  id: string;
+  packageVersion: string;
+  name: string;
+  graphHash: string;
+  sourceHash: string;
+  installedRoot: string;
   compiled: CompiledPlaybookGraph;
   sourceFiles: Record<string, string>;
 }
@@ -274,14 +287,20 @@ export async function refreshInstalledGraphPlaybookRegistry(
     installRoot?: string;
     cacheRoot?: string;
     state?: GraphPlaybookRegistryState;
+    catalogState?: GraphPlaybookRegistryState;
   } = {}
 ): Promise<GraphPlaybookRegistryEntry[]> {
   const state = options.state ?? installedGraphPlaybookRegistryState;
+  const catalogState = options.catalogState ?? installedGraphPlaybookCatalogState;
+  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
+  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
   const entries = await loadInstalledGraphPlaybookRegistry({
-    installRoot: options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT,
-    cacheRoot: options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT,
+    installRoot,
+    cacheRoot,
   });
+  const catalogEntries = await loadInstalledGraphPlaybookCatalog({ installRoot, cacheRoot });
   state.entries = entries;
+  catalogState.entries = catalogEntries;
   return entries;
 }
 
@@ -309,9 +328,10 @@ export async function refreshBuiltInGraphPlaybookRegistry(
   const entries = loaded.map((entry) => ({
     kind: "built-in" as const,
     id: entry.compiled.graph.id,
-    version: entry.compiled.graph.version,
+    packageVersion: entry.compiled.graph.version,
     name: entry.compiled.graph.name,
     graphHash: entry.compiled.metadata.graphHash,
+    sourceHash: entry.compiled.metadata.sourceHash,
     installedRoot: entry.root,
     compiled: entry.compiled,
     sourceFiles: entry.sourceFiles,
@@ -421,53 +441,103 @@ function graphMetadataArray<T>(metadata: Record<string, unknown> | undefined, ke
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function graphMetadataStringArray(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string[] {
+  return graphMetadataArray<unknown>(metadata, key).filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+}
+
+function graphPlaybookCapabilities(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): WorkflowCapability[] {
+  const capabilities: WorkflowCapability[] = [];
+  const seen = new Set<WorkflowCapability>();
+
+  for (const value of graphMetadataStringArray(metadata, key)) {
+    const parsed = WorkflowCapabilitySchema.safeParse(value);
+    let normalized: WorkflowCapability | undefined;
+    if (parsed.success) {
+      normalized = parsed.data;
+    } else {
+      const baseCapability = WorkflowCapabilitySchema.safeParse(value.split(".")[0]);
+      normalized = baseCapability.success ? baseCapability.data : undefined;
+    }
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    capabilities.push(normalized);
+  }
+
+  return capabilities;
+}
+
 function graphPlaybookVersion(version: string): number {
   const parsed = Number.parseInt(version, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function graphPlaybookOutputs(
-  entry: BuiltInGraphPlaybookRegistryEntry
-): WorkflowOutputDeclaration[] {
-  return graphMetadataArray<WorkflowOutputDeclaration>(
-    entry.compiled.graph.metadata,
-    "outputs"
-  ).map((output) => {
-    if (output.kind !== "dashboard" || !output.layout) return output;
-    const layoutSource = entry.sourceFiles[output.layout];
-    if (!layoutSource) return output;
+interface GraphPlaybookProjectionSource {
+  kind: "built-in" | "imported";
+  id: string;
+  packageVersion: string;
+  graphHash: string;
+  sourceHash: string;
+  installedRoot: string;
+  compiled: CompiledPlaybookGraph;
+  sourceFiles: Record<string, string>;
+}
+
+function graphPlaybookOutputs(entry: GraphPlaybookProjectionSource): WorkflowOutputDeclaration[] {
+  return graphMetadataArray<unknown>(entry.compiled.graph.metadata, "outputs").flatMap((output) => {
+    const parsed = WorkflowOutputDeclarationSchema.safeParse(output);
+    if (!parsed.success) return [];
+    const declaration = parsed.data;
+    if (declaration.kind !== "dashboard" || !declaration.layout) return [declaration];
+    const layoutSource = entry.sourceFiles[declaration.layout];
+    if (!layoutSource) return [declaration];
     try {
-      return {
-        ...output,
-        layoutData: DashboardLayoutSchema.parse(JSON.parse(layoutSource)),
-      };
+      return [
+        {
+          ...declaration,
+          layoutData: DashboardLayoutSchema.parse(JSON.parse(layoutSource)),
+        },
+      ];
     } catch {
-      return output;
+      return [declaration];
     }
   });
 }
 
-function graphPlaybookSummary(entry: BuiltInGraphPlaybookRegistryEntry): PlaybookSummary {
+function graphPlaybookSummary(entry: GraphPlaybookProjectionSource): PlaybookSummary {
   const graph = entry.compiled.graph;
   const metadata = graph.metadata;
   return PlaybookSummarySchema.parse({
     id: graph.id,
     version: graphPlaybookVersion(graph.version),
+    packageVersion: entry.packageVersion,
     name: graph.name,
     description: graph.description,
     graphHash: entry.graphHash,
+    sourceHash: entry.sourceHash,
     category: typeof metadata?.category === "string" ? metadata.category : undefined,
     businessUseCase:
-      typeof metadata?.businessUseCase === "string" ? metadata.businessUseCase : undefined,
-    requiredCapabilities: graphMetadataArray(metadata, "requiredCapabilities"),
-    optionalCapabilities: graphMetadataArray(metadata, "optionalCapabilities"),
+      typeof metadata?.businessUseCase === "string"
+        ? metadata.businessUseCase
+        : entry.kind === "imported"
+          ? (graph.description ?? graph.name)
+          : undefined,
+    requiredCapabilities: graphPlaybookCapabilities(metadata, "requiredCapabilities"),
+    optionalCapabilities: graphPlaybookCapabilities(metadata, "optionalCapabilities"),
     outputs: graphPlaybookOutputs(entry),
     stepCount: graph.nodes.length,
-    phases: graphMetadataArray<string>(metadata, "phases"),
+    phases: graphMetadataStringArray(metadata, "phases"),
   });
 }
 
-function graphPlaybookDetail(entry: BuiltInGraphPlaybookRegistryEntry) {
+function graphPlaybookDetail(entry: GraphPlaybookProjectionSource) {
   const summary = graphPlaybookSummary(entry);
   return PlaybookDetailSchema.parse({
     ...summary,
@@ -516,6 +586,37 @@ async function builtInGraphPlaybookByHash(
   return (await builtInGraphPlaybooks()).find(
     (entry) => entry.id === playbookId && entry.graphHash === graphHash
   );
+}
+
+async function importedGraphPlaybookProjection(
+  entry: GraphPlaybookRegistryEntry
+): Promise<GraphPlaybookProjectionSource | undefined> {
+  const packageFiles = await readPlaybookGraphPackage(entry.installedRoot);
+  const sourceHash = hashPlaybookSourceFiles(packageFiles.sourceFiles);
+  if (sourceHash !== entry.sourceHash) {
+    return undefined;
+  }
+  return {
+    kind: "imported",
+    id: entry.id,
+    packageVersion: entry.packageVersion,
+    graphHash: entry.graphHash,
+    sourceHash: entry.sourceHash,
+    installedRoot: entry.installedRoot,
+    compiled: entry.compiled,
+    sourceFiles: packageFiles.sourceFiles,
+  };
+}
+
+async function importedGraphPlaybookCatalog(
+  state?: GraphPlaybookRegistryState
+): Promise<GraphPlaybookProjectionSource[]> {
+  const catalogState = state ?? installedGraphPlaybookCatalogState;
+  if (state === undefined) {
+    await refreshInstalledGraphPlaybookRegistry();
+  }
+  const projections = await Promise.all(catalogState.entries.map(importedGraphPlaybookProjection));
+  return projections.filter((entry): entry is GraphPlaybookProjectionSource => entry !== undefined);
 }
 
 async function resolveCapabilityBinary(options: {
@@ -1073,6 +1174,7 @@ interface GraphPlaybookInstallHandlerOptions {
   installRoot?: string;
   cacheRoot?: string;
   state?: GraphPlaybookRegistryState;
+  catalogState?: GraphPlaybookRegistryState;
   compilerVersion?: string;
   scriptSdkVersion?: string;
 }
@@ -1099,6 +1201,8 @@ function graphPlaybookInstallErrorStatus(error: unknown): number {
     message.startsWith("Graph playbook entrypoint must default-export") ||
     message.startsWith("Graph playbook literals") ||
     message.startsWith("Invalid graph playbook package") ||
+    message.startsWith("Invalid graph playbook archive") ||
+    message.startsWith("Invalid zip archive") ||
     message.startsWith("Invalid TypeScript in graph playbook package source") ||
     message.startsWith("Lockfiles are not allowed") ||
     message.startsWith("Graph playbook package") ||
@@ -1112,6 +1216,9 @@ function graphPlaybookInstallErrorStatus(error: unknown): number {
     message.startsWith("package.json") ||
     message.startsWith("Playbook graph references missing") ||
     message.startsWith("Symlink resolves outside") ||
+    message.startsWith("Unsupported zip archive") ||
+    message.startsWith("Unsupported zip compression method") ||
+    message.startsWith("Zip archive exceeds") ||
     error instanceof TypeError ||
     (error instanceof Error && error.name === "ZodError")
   ) {
@@ -1156,6 +1263,7 @@ export async function handleGraphPlaybookInstall(
       installRoot,
       cacheRoot,
       ...(options.state ? { state: options.state } : {}),
+      ...(options.catalogState ? { catalogState: options.catalogState } : {}),
     });
 
     return Response.json({
@@ -1171,11 +1279,60 @@ export async function handleGraphPlaybookInstall(
   }
 }
 
+export async function handleGraphPlaybookImport(
+  req: Request,
+  options: GraphPlaybookInstallHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const zipPath = typeof input.zipPath === "string" ? input.zipPath.trim() : "";
+  if (!zipPath) {
+    return Response.json({ error: "zipPath is required" }, { status: 400 });
+  }
+
+  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
+  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
+
+  try {
+    const builtIns = await builtInGraphPlaybooks();
+    const imported = await importGraphPlaybookArchive({
+      zipPath,
+      installRoot,
+      cacheRoot,
+      builtInIds: builtIns.map((entry) => entry.id),
+      compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+      scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+    });
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot,
+      cacheRoot,
+      ...(options.state ? { state: options.state } : {}),
+      ...(options.catalogState ? { catalogState: options.catalogState } : {}),
+    });
+
+    return Response.json(GraphPlaybookImportResultSchema.parse(imported));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: message }, { status: graphPlaybookInstallErrorStatus(error) });
+  }
+}
+
 const GRAPH_RUN_WORKER_ACTIVE_STATUSES = new Set<PlaybookGraphRunRecord["status"]>([
   "queued",
   "running",
   "interrupted",
 ]);
+const DEFAULT_GRAPH_RUN_LEASE_MS = 30_000;
 const DEFAULT_GRAPH_RUN_WORKER_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_GRAPH_RUN_WORKER_LEASE_RENEWAL_MS = 10_000;
 
@@ -1359,6 +1516,14 @@ function graphRunOperationTerminalTime(startedAt: string, options: GraphRunHandl
   const terminalAt = graphRunNow(options);
   if (terminalAt > startedAt) return terminalAt;
   return new Date(Date.parse(startedAt) + 1).toISOString();
+}
+
+function graphRunLeaseRenewalMs(
+  options: Pick<GraphRunHandlerOptions, "leaseMs" | "leaseRenewalMs">
+): number {
+  if (options.leaseRenewalMs !== undefined) return options.leaseRenewalMs;
+  const leaseMs = options.leaseMs ?? DEFAULT_GRAPH_RUN_LEASE_MS;
+  return Math.max(1, Math.min(DEFAULT_GRAPH_RUN_WORKER_LEASE_RENEWAL_MS, Math.floor(leaseMs / 3)));
 }
 
 function graphRunPayloadWorkspaceRoot(payload: Record<string, unknown>): string | undefined {
@@ -2360,7 +2525,7 @@ async function maybeDrainGraphRun(
     store,
     ...(options.now ? { now: options.now } : {}),
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
-    ...(options.leaseRenewalMs !== undefined ? { leaseRenewalMs: options.leaseRenewalMs } : {}),
+    leaseRenewalMs: graphRunLeaseRenewalMs(options),
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
     ...(options.executionContext !== undefined
       ? { executionContext: options.executionContext }
@@ -2463,7 +2628,7 @@ export async function drainGraphRunWorkQueue(
   const workerOptions: GraphRunHandlerOptions = {
     ...options,
     runtimeId,
-    leaseRenewalMs: options.leaseRenewalMs ?? DEFAULT_GRAPH_RUN_WORKER_LEASE_RENEWAL_MS,
+    leaseRenewalMs: graphRunLeaseRenewalMs(options),
   };
   const result: GraphRunWorkQueueDrainResult = {
     inspected: 0,
@@ -2578,7 +2743,8 @@ async function installedGraphRunSourceFiles(
   let entry = state.entries.find(
     (candidate) =>
       candidate.id === compiledGraph.metadata.playbookId &&
-      candidate.graphHash === compiledGraph.metadata.graphHash
+      candidate.graphHash === compiledGraph.metadata.graphHash &&
+      candidate.sourceHash === compiledGraph.metadata.sourceHash
   );
 
   if (!entry) {
@@ -2590,7 +2756,8 @@ async function installedGraphRunSourceFiles(
     entry = refreshed.find(
       (candidate) =>
         candidate.id === compiledGraph.metadata.playbookId &&
-        candidate.graphHash === compiledGraph.metadata.graphHash
+        candidate.graphHash === compiledGraph.metadata.graphHash &&
+        candidate.sourceHash === compiledGraph.metadata.sourceHash
     );
   }
   if (!entry) return undefined;
@@ -2623,20 +2790,21 @@ async function graphRunCompiledGraphFromReference(
   input: {
     playbookId?: string | undefined;
     graphHash?: string | undefined;
+    sourceHash?: string | undefined;
   },
   options: GraphRunHandlerOptions
 ): Promise<CompiledPlaybookGraph | undefined> {
   const playbookId = input.playbookId ?? "";
   const graphHash = input.graphHash ?? "";
-  if (!playbookId || !graphHash) return undefined;
+  const sourceHash = input.sourceHash ?? "";
+  if (!playbookId || !graphHash || !sourceHash) return undefined;
 
-  const cached = await createPlaybookGraphCache(options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT).get(
-    playbookId,
-    graphHash
-  );
-  if (cached) return cached;
+  const cache = createPlaybookGraphCache(options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT);
+  const cachedSource = await cache.getSource(playbookId, graphHash, sourceHash);
+  if (cachedSource) return cachedSource;
 
-  return (await builtInGraphPlaybookByHash(playbookId, graphHash))?.compiled;
+  const builtIn = await builtInGraphPlaybookByHash(playbookId, graphHash);
+  return builtIn?.sourceHash === sourceHash ? builtIn.compiled : undefined;
 }
 
 export async function handleGraphRunCreate(
@@ -3692,27 +3860,49 @@ export async function handleGraphRunResume(
   }
 }
 
-export async function handlePlaybookList(req: Request): Promise<Response> {
+interface PlaybookCatalogHandlerOptions {
+  catalogState?: GraphPlaybookRegistryState;
+}
+
+export async function handlePlaybookList(
+  req: Request,
+  options: PlaybookCatalogHandlerOptions = {}
+): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const builtIns = await builtInGraphPlaybooks();
+  const imported = await importedGraphPlaybookCatalog(options.catalogState);
   return Response.json(
     PlaybookListResultSchema.parse({
-      playbooks: builtIns.map((entry) => graphPlaybookSummary(entry)),
+      playbooks: [
+        ...builtIns.map((entry) => graphPlaybookSummary(entry)),
+        ...imported.map((entry) => graphPlaybookSummary(entry)),
+      ],
     })
   );
 }
 
-export async function handlePlaybookGet(req: Request, playbookId: string): Promise<Response> {
+export async function handlePlaybookGet(
+  req: Request,
+  playbookId: string,
+  options: PlaybookCatalogHandlerOptions = {}
+): Promise<Response> {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const entry = await builtInGraphPlaybook(playbookId);
-  if (!entry) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
-  return Response.json(graphPlaybookDetail(entry));
+  const imported =
+    entry === undefined
+      ? (await importedGraphPlaybookCatalog(options.catalogState)).find(
+          (candidate) => candidate.id === playbookId
+        )
+      : undefined;
+  const projection = entry ?? imported;
+  if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+  return Response.json(graphPlaybookDetail(projection));
 }
 
 function handleInboxList(req: Request): Response {
@@ -4696,6 +4886,10 @@ const server = Bun.serve({
 
     if (pathname === "/graph-playbooks/install") {
       return handleGraphPlaybookInstall(req);
+    }
+
+    if (pathname === "/graph-playbooks/import") {
+      return handleGraphPlaybookImport(req);
     }
 
     if (pathname === "/graph-runs") {

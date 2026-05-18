@@ -7,6 +7,7 @@ describe("playbook UI helpers", () => {
     const playbook: PlaybookSummary = {
       id: "sales.meeting-brief",
       version: 1,
+      packageVersion: "0.1.0",
       name: "Sales Meeting Brief",
       description: "Creates a source-aware customer meeting brief.",
       businessUseCase: "Prepare for a customer or prospect meeting",
@@ -56,7 +57,7 @@ describe("playbook UI helpers", () => {
   test("keeps non-playbook approval previews readable", () => {
     const run = {
       runId: "run-1",
-      workflowId: "demo.write-approval",
+      workflowId: "sales.meeting-brief",
       status: "blocked",
       input: {},
       approval: {
@@ -82,10 +83,69 @@ describe("playbook UI helpers", () => {
     });
   });
 
+  test("describes graph human reviews as review checkpoints", () => {
+    const run = {
+      runId: "run-1",
+      workflowId: "reference.seo-geo-blog-article",
+      status: "blocked",
+      input: {},
+      approval: {
+        toolId: "graph.humanReview",
+        args: { queueEntryId: "queue-review" },
+        capability: "write",
+        risk: {
+          mutates: false,
+          destructive: false,
+          external: false,
+          reversible: true,
+          dryRunSupported: false,
+        },
+        preview: "Review the generated brief before continuing.",
+        reasonCode: "graph_human_review",
+      },
+      sourceGaps: [],
+    } satisfies PlaybookRunDetail;
+
+    expect(playbookApprovalCopy(run, null)).toEqual({
+      prepared: "Review the generated brief before continuing.",
+      approve: "Tessera will record your approval and continue this run.",
+    });
+  });
+
+  test("describes interrupted graph steps with the step name", () => {
+    const run = {
+      runId: "run-1",
+      workflowId: "reference.seo-geo-blog-article",
+      status: "blocked",
+      input: {},
+      approval: {
+        toolId: "graph.retryInterrupted",
+        args: { stepLabel: "Draft Article" },
+        capability: "write",
+        risk: {
+          mutates: false,
+          destructive: false,
+          external: false,
+          reversible: true,
+          dryRunSupported: false,
+        },
+        preview: "Tessera stopped while working on Draft Article.",
+        reasonCode: "graph_interrupted_retry",
+      },
+      sourceGaps: [],
+    } satisfies PlaybookRunDetail;
+
+    expect(playbookApprovalCopy(run, null)).toEqual({
+      prepared: "Tessera stopped while working on Draft Article.",
+      approve: "Tessera will retry Draft Article and continue the run.",
+    });
+  });
+
   test("detects dashboard playbooks by output kind", () => {
     const playbook: PlaybookSummary = {
       id: "ops.activity-snapshot",
       version: 1,
+      packageVersion: "0.1.0",
       name: "Activity Snapshot",
       optionalCapabilities: [],
       requiredCapabilities: [],

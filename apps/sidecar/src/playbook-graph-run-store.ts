@@ -21,6 +21,7 @@ import {
   PlaybookGraphRunRecordSchema,
 } from "@tessera/contracts";
 import { type GraphRunStore, parsePinnedCompiledGraph, stableJsonStringify } from "@tessera/core";
+import { configureSidecarSqlite } from "./sqlite.js";
 
 type PayloadRow = { payload: string };
 type QueuePayloadRow = {
@@ -70,6 +71,7 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath, { create: true, strict: true });
+  configureSidecarSqlite(db, dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS playbook_graph_runs (
       run_id TEXT PRIMARY KEY NOT NULL,
@@ -264,6 +266,7 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
         payload = json_set(
           json_remove(payload, '$.runtimeId', '$.leaseId', '$.claimedAt', '$.leaseExpiresAt'),
           '$.status', 'interrupted',
+          '$.blockedReason', 'Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.',
           '$.updatedAt', ?
         ),
         updated_at = ?

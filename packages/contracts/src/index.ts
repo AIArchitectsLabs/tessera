@@ -1820,6 +1820,14 @@ export const PlaybookGraphPackageManifestSchema = z
   .strict();
 export type PlaybookGraphPackageManifest = z.infer<typeof PlaybookGraphPackageManifestSchema>;
 
+export const GraphPlaybookImportStatusSchema = z.enum([
+  "installed",
+  "updated",
+  "unchanged",
+  "archived",
+]);
+export type GraphPlaybookImportStatus = z.infer<typeof GraphPlaybookImportStatusSchema>;
+
 export const PlaybookGraphCompileMetadataSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -1853,6 +1861,24 @@ const Sha256DigestSchema = z
   .string()
   .min(1)
   .regex(/^sha256:/, "Expected a sha256-prefixed digest");
+const StrictSha256DigestSchema = z
+  .string()
+  .min(1)
+  .regex(/^sha256:[a-f0-9]{64}$/, "Expected a sha256-prefixed hex digest");
+
+export const GraphPlaybookImportResultSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: GraphPlaybookImportStatusSchema,
+    id: SafePlaybookIdSchema,
+    version: z.string().min(1),
+    name: z.string().min(1),
+    graphHash: StrictSha256DigestSchema,
+    sourceHash: StrictSha256DigestSchema,
+    warnings: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type GraphPlaybookImportResult = z.infer<typeof GraphPlaybookImportResultSchema>;
 
 export const PlaybookGraphRunStatusSchema = z.enum([
   "queued",
@@ -2403,6 +2429,7 @@ export const PlaybookGraphRunCreateRequestSchema = z
     sourceFiles: z.record(z.string()).optional(),
     playbookId: SafePlaybookIdSchema.optional(),
     graphHash: Sha256DigestSchema.optional(),
+    sourceHash: Sha256DigestSchema.optional(),
     drainDeterministic: z.boolean().default(false),
     workspaceRoot: z.string().min(1).optional(),
     executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
@@ -2413,17 +2440,25 @@ export const PlaybookGraphRunCreateRequestSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const hasCompiledGraph = value.compiledGraph !== undefined;
-    const hasCacheRef = value.playbookId !== undefined || value.graphHash !== undefined;
+    const hasCacheRef =
+      value.playbookId !== undefined ||
+      value.graphHash !== undefined ||
+      value.sourceHash !== undefined;
     if (hasCompiledGraph === hasCacheRef) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Provide either compiledGraph or playbookId plus graphHash",
+        message: "Provide either compiledGraph or playbookId plus graphHash plus sourceHash",
       });
     }
-    if (hasCacheRef && (value.playbookId === undefined || value.graphHash === undefined)) {
+    if (
+      hasCacheRef &&
+      (value.playbookId === undefined ||
+        value.graphHash === undefined ||
+        value.sourceHash === undefined)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Cache reference requires both playbookId and graphHash",
+        message: "Cache reference requires playbookId, graphHash, and sourceHash",
       });
     }
   });
@@ -2458,9 +2493,11 @@ export type PlaybookGraphRunReviewSurface = z.infer<typeof PlaybookGraphRunRevie
 export const PlaybookSummarySchema = z.object({
   id: z.string().min(1),
   version: z.number().int().positive(),
+  packageVersion: z.string().min(1).default("1"),
   name: z.string().min(1),
   description: z.string().optional(),
   graphHash: Sha256DigestSchema.optional(),
+  sourceHash: Sha256DigestSchema.optional(),
   category: z.string().min(1).optional(),
   businessUseCase: z.string().min(1).optional(),
   requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
@@ -2538,7 +2575,7 @@ export const WorkflowRunStepRecordSchema = z.object({
 export type WorkflowRunStepRecord = z.infer<typeof WorkflowRunStepRecordSchema>;
 
 export const WorkflowRunRequestSchema = z.object({
-  workflowId: z.string().min(1).default("demo.write-approval"),
+  workflowId: z.string().min(1).default("sales.meeting-brief"),
   input: z.record(z.unknown()).default({}),
   capabilityInventory: WorkflowCapabilityInventorySchema.optional(),
   assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),

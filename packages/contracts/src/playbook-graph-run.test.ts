@@ -710,6 +710,7 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
       PlaybookGraphRunCreateRequestSchema.parse({
         playbookId: "content.seo-blog",
         graphHash: "sha256:graph",
+        sourceHash: "sha256:source",
         workspaceRoot: "/tmp/tessera-workspace",
         executionContext: { provider: "openai:gpt-5.4" },
       })
@@ -717,6 +718,7 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
       input: {},
       playbookId: "content.seo-blog",
       graphHash: "sha256:graph",
+      sourceHash: "sha256:source",
       drainDeterministic: false,
       workspaceRoot: "/tmp/tessera-workspace",
       executionContext: { provider: "openai:gpt-5.4" },
@@ -733,6 +735,7 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
       PlaybookGraphRunCreateRequestSchema.parse({
         playbookId: "content.seo-blog",
         graphHash: "sha256:graph",
+        sourceHash: "sha256:source",
         executionContext: { apiKey: "nope" },
       })
     ).toThrow(/secret-bearing/);

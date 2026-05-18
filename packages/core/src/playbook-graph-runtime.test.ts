@@ -261,6 +261,8 @@ class MemoryGraphRunStore implements GraphRunStore {
           leaseId: undefined,
           claimedAt: undefined,
           leaseExpiresAt: undefined,
+          blockedReason:
+            "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.",
           updatedAt: input.interruptedAt,
         });
         count += 1;
@@ -659,6 +661,45 @@ describe("drainPlaybookGraphRun", () => {
     expect(calls).toBe(1);
   });
 
+  test("does not treat an omitted execution context as drift", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-context-omitted",
+      now: "2026-05-15T00:00:00.000Z",
+      executionContext: {
+        provider: "openai:gpt-5.4",
+        account: "acct-a:fingerprint",
+      },
+    });
+    let calls = 0;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-context-omitted",
+      store,
+      scriptAdapter() {
+        calls += 1;
+        return { ok: true };
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(calls).toBe(1);
+  });
+
   test("executes deterministic script nodes through persisted queue state", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
@@ -1046,6 +1087,90 @@ describe("drainPlaybookGraphRun", () => {
     });
   });
 
+  test("resolves dynamic node payload values before adapter execution", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          lookup: { schema: "schemas/lookup.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            branch: {
+              start: "lookup",
+              nodes: [
+                {
+                  id: "lookup",
+                  kind: "tool",
+                  capability: "tool.workspace.read",
+                  args: {
+                    path: "{{branchItem.path}}",
+                    label: "read {{inputs.locale}} {{branchItem.path}}",
+                    firstPath: "{{artifacts.items.0.path}}",
+                    item: "{{branchItem}}",
+                  },
+                  outputArtifact: "lookup",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-dynamic-values",
+      now: "2026-05-15T00:00:00.000Z",
+      input: { locale: "en-US" },
+    });
+    const calls: unknown[] = [];
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-dynamic-values",
+      store,
+      toolCapabilities: ["tool.workspace.read"],
+      toolPolicies: {
+        "tool.workspace.read": {
+          capability: "tool.workspace.read",
+          idempotent: true,
+          sideEffect: "read",
+        },
+      },
+      scriptAdapter() {
+        return [{ path: "alpha.md" }];
+      },
+      toolAdapter({ node }) {
+        calls.push(node.args);
+        return node.args;
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(calls).toEqual([
+      {
+        path: "alpha.md",
+        label: "read en-US alpha.md",
+        firstPath: "alpha.md",
+        item: { path: "alpha.md" },
+      },
+    ]);
+    const lookup = (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "lookup");
+    expect(lookup?.consumesArtifacts).toEqual([expect.objectContaining({ artifactId: "items" })]);
+  });
+
   test("blocks tool nodes without an explicit execution policy", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
@@ -1088,6 +1213,7 @@ describe("drainPlaybookGraphRun", () => {
         artifacts: {
           items: { schema: "schemas/items.schema.json" },
           scorecard: { schema: "schemas/scorecard.schema.json" },
+          mapResults: { schema: "schemas/map-results.schema.json" },
         },
         start: "items",
         nodes: [
@@ -1103,6 +1229,7 @@ describe("drainPlaybookGraphRun", () => {
             id: "map",
             kind: "parallelMap",
             items: { artifact: "items", path: "$" },
+            outputArtifact: "mapResults",
             branch: {
               start: "scoreItem",
               nodes: [
@@ -1121,7 +1248,7 @@ describe("drainPlaybookGraphRun", () => {
           {
             id: "done",
             kind: "join",
-            inputs: ["scorecard"],
+            inputs: ["mapResults"],
             onSuccess: "completed",
           },
         ],
@@ -1155,6 +1282,172 @@ describe("drainPlaybookGraphRun", () => {
       "run-map:items/map/item:0/scoreItem",
       "run-map:items/map/item:1/scoreItem",
       "run-map:items/map/done",
+    ]);
+    const mapResults = (await store.listArtifactVersions(run.runId)).find(
+      (version) => version.artifactId === "mapResults"
+    );
+    expect(mapResults?.producerQueueEntryId).toBe("run-map:items/map");
+    expect(mapResults?.value).toEqual([
+      expect.objectContaining({
+        branchItem: expect.objectContaining({ index: 0, value: { id: "a" } }),
+        output: { item: { id: "a" } },
+        artifactVersion: expect.objectContaining({ artifactId: "scorecard" }),
+      }),
+      expect.objectContaining({
+        branchItem: expect.objectContaining({ index: 1, value: { id: "b" } }),
+        output: { item: { id: "b" } },
+        artifactVersion: expect.objectContaining({ artifactId: "scorecard" }),
+      }),
+    ]);
+  });
+
+  test("parallelMap fan-in is idempotent for terminal targets", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          mapResults: { schema: "schemas/map-results.schema.json" },
+          scorecard: { schema: "schemas/scorecard.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            outputArtifact: "mapResults",
+            branch: {
+              start: "scoreItem",
+              nodes: [
+                {
+                  id: "scoreItem",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "scorecard",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-map-terminal",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const first = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-map-terminal-1",
+      store,
+      scriptAdapter({ node, input }) {
+        if (node.id === "items") return [{ id: "a" }];
+        return { item: input.branchItem };
+      },
+    });
+    const second = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-map-terminal-2",
+      store,
+      scriptAdapter() {
+        throw new Error("terminal fan-in should not rerun");
+      },
+    });
+
+    expect(first.run.status).toBe("completed");
+    expect(second.run.status).toBe("completed");
+    expect(
+      (await store.listArtifactVersions(run.runId)).filter(
+        (version) => version.artifactId === "mapResults"
+      )
+    ).toHaveLength(1);
+  });
+
+  test("parallelMap fan-in uses the final output from multi-step branches", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          first: { schema: "schemas/first.schema.json" },
+          final: { schema: "schemas/final.schema.json" },
+          mapResults: { schema: "schemas/map-results.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            outputArtifact: "mapResults",
+            branch: {
+              start: "firstStep",
+              nodes: [
+                {
+                  id: "firstStep",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "first",
+                  onSuccess: "finalStep",
+                },
+                {
+                  id: "finalStep",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "final",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-map-multi-step",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-map-multi-step",
+      store,
+      scriptAdapter({ node, input }) {
+        if (node.id === "items") return [{ id: "a" }];
+        return { nodeId: node.id, item: input.branchItem };
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    const fanIn = (await store.listArtifactVersions(run.runId)).find(
+      (version) => version.artifactId === "mapResults"
+    );
+    expect(fanIn?.value).toEqual([
+      expect.objectContaining({
+        output: { nodeId: "finalStep", item: { id: "a" } },
+        artifactVersion: expect.objectContaining({ artifactId: "final" }),
+      }),
     ]);
   });
 

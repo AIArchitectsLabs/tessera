@@ -10,10 +10,8 @@ const BUILTIN_GRAPH_PLAYBOOKS_DIR = join(import.meta.dir, "builtin-graph-playboo
 
 export const BUILTIN_GRAPH_PLAYBOOK_ROOTS: Record<string, string> = {
   "customer.renewal-risk-review": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "customer.renewal-risk-review"),
-  "demo.write-approval": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "demo.write-approval"),
   "ops.activity-snapshot": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.activity-snapshot"),
   "operations.weekly-status-digest": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.weekly-status-digest"),
-  "ops.weekly-update": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "ops.weekly-update"),
   "sales.meeting-brief": join(BUILTIN_GRAPH_PLAYBOOKS_DIR, "sales.meeting-brief"),
 };
 

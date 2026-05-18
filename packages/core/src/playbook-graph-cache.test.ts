@@ -74,6 +74,38 @@ describe("createPlaybookGraphCache", () => {
     expect(latest?.metadata.graphHash).toBe(second.metadata.graphHash);
   });
 
+  test("preserves compiled graphs with the same graph hash and different source hashes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tessera-graph-cache-"));
+    const cache = createPlaybookGraphCache(root);
+    const first = compiled();
+    const second = {
+      ...first,
+      metadata: {
+        ...first.metadata,
+        sourceHash: `sha256:${"b".repeat(64)}`,
+        compiledAt: "2026-05-15T00:00:00.001Z",
+      },
+    };
+
+    await cache.save(first);
+    await cache.save(second);
+
+    await expect(
+      cache.getSource(
+        first.metadata.playbookId,
+        first.metadata.graphHash,
+        first.metadata.sourceHash
+      )
+    ).resolves.toMatchObject({ metadata: { sourceHash: first.metadata.sourceHash } });
+    await expect(
+      cache.getSource(
+        second.metadata.playbookId,
+        second.metadata.graphHash,
+        second.metadata.sourceHash
+      )
+    ).resolves.toMatchObject({ metadata: { sourceHash: second.metadata.sourceHash } });
+  });
+
   test("writes artifact and latest JSON as pretty output with trailing newline", async () => {
     const root = await mkdtemp(join(tmpdir(), "tessera-graph-cache-"));
     const cache = createPlaybookGraphCache(root);

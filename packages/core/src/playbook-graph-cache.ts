@@ -19,6 +19,20 @@ function artifactPath(root: string, playbookId: string, graphHash: string): stri
   return join(root, cacheSegment(playbookId), `${cacheSegment(graphHash)}.json`);
 }
 
+function sourceArtifactPath(
+  root: string,
+  playbookId: string,
+  graphHash: string,
+  sourceHash: string
+): string {
+  return join(
+    root,
+    cacheSegment(playbookId),
+    cacheSegment(graphHash),
+    `${cacheSegment(sourceHash)}.json`
+  );
+}
+
 function latestPath(root: string, playbookId: string): string {
   return join(root, cacheSegment(playbookId), "latest.json");
 }
@@ -53,6 +67,11 @@ async function writeJsonFile(path: string, content: string): Promise<void> {
 
 export interface PlaybookGraphCache {
   get(playbookId: string, graphHash: string): Promise<CompiledPlaybookGraph | undefined>;
+  getSource(
+    playbookId: string,
+    graphHash: string,
+    sourceHash: string
+  ): Promise<CompiledPlaybookGraph | undefined>;
   getLatest(playbookId: string): Promise<CompiledPlaybookGraph | undefined>;
   save(compiled: CompiledPlaybookGraph): Promise<string>;
 }
@@ -67,6 +86,18 @@ export function createPlaybookGraphCache(root: string): PlaybookGraphCache {
 
       const parsedArtifact = CompiledPlaybookGraphSchema.safeParse(artifact);
       return parsedArtifact.success ? parsedArtifact.data : undefined;
+    },
+    async getSource(playbookId, graphHash, sourceHash) {
+      const sourceArtifact = await readJsonFile<unknown>(
+        sourceArtifactPath(root, playbookId, graphHash, sourceHash)
+      );
+      if (sourceArtifact) {
+        const parsedSourceArtifact = CompiledPlaybookGraphSchema.safeParse(sourceArtifact);
+        if (parsedSourceArtifact.success) return parsedSourceArtifact.data;
+      }
+
+      const artifact = await cache.get(playbookId, graphHash);
+      return artifact?.metadata.sourceHash === sourceHash ? artifact : undefined;
     },
     async getLatest(playbookId) {
       const metadata = await readJsonFile<unknown>(latestPath(root, playbookId));
@@ -87,11 +118,19 @@ export function createPlaybookGraphCache(root: string): PlaybookGraphCache {
       await mkdir(playbookDir, { recursive: true });
 
       const artifact = artifactPath(root, parsed.metadata.playbookId, parsed.metadata.graphHash);
+      const sourceArtifact = sourceArtifactPath(
+        root,
+        parsed.metadata.playbookId,
+        parsed.metadata.graphHash,
+        parsed.metadata.sourceHash
+      );
       const latest = latestPath(root, parsed.metadata.playbookId);
       const artifactContent = `${JSON.stringify(parsed, null, 2)}\n`;
       const latestContent = `${JSON.stringify(parsed.metadata, null, 2)}\n`;
 
       await writeJsonFile(artifact, artifactContent);
+      await mkdir(dirname(sourceArtifact), { recursive: true });
+      await writeJsonFile(sourceArtifact, artifactContent);
       await writeJsonFile(latest, latestContent);
 
       return artifact;

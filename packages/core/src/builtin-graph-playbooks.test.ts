@@ -7,10 +7,8 @@ import { readPlaybookGraphPackage } from "./playbook-graph-package.js";
 
 const BUILTIN_IDS = [
   "customer.renewal-risk-review",
-  "demo.write-approval",
   "operations.weekly-status-digest",
   "ops.activity-snapshot",
-  "ops.weekly-update",
   "sales.meeting-brief",
 ];
 

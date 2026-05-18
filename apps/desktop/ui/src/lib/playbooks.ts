@@ -38,9 +38,25 @@ export function playbookApprovalCopy(
   }
 
   if (run.approval?.reasonCode === "graph_interrupted_retry") {
+    const step = approvalArg(run, "stepLabel");
     return {
-      prepared: "Tessera was interrupted before this run finished.",
-      approve: "Tessera will retry the interrupted step and continue the run.",
+      prepared:
+        run.approval.preview ??
+        (step
+          ? `Tessera stopped while working on ${step}.`
+          : "Tessera stopped while working on this run."),
+      approve: step
+        ? `Tessera will retry ${step} and continue the run.`
+        : "Tessera will retry the interrupted step and continue the run.",
+    };
+  }
+
+  if (run.approval?.reasonCode === "graph_human_review") {
+    return {
+      prepared:
+        run.approval.preview ??
+        "Tessera paused at a review checkpoint. Review what it prepared before continuing.",
+      approve: "Tessera will record your approval and continue this run.",
     };
   }
 

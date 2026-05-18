@@ -55,7 +55,7 @@ describe("workflow contracts", () => {
 
     const result = WorkflowRunResultSchema.parse({
       runId: "run-1",
-      workflowId: "demo.write-approval",
+      workflowId: "sales.meeting-brief",
       status: "blocked",
       currentStepId: "writeProbe",
       input: { target: "lead", value: "qualified" },
@@ -156,7 +156,7 @@ describe("workflow contracts", () => {
       runs: [
         {
           runId: "run-1",
-          workflowId: "demo.write-approval",
+          workflowId: "sales.meeting-brief",
           status: "blocked",
           currentStepId: "writeProbe",
           input: { target: "lead", value: "qualified" },
@@ -172,9 +172,10 @@ describe("workflow contracts", () => {
     const playbooks = PlaybookListResultSchema.parse({
       playbooks: [
         {
-          id: "ops.weekly-update",
+          id: "operations.weekly-status-digest",
           version: 1,
-          name: "Weekly Update",
+          packageVersion: "0.1.0",
+          name: "Weekly Status Digest",
           description: "Prepare a weekly update",
           stepCount: 2,
           phases: ["Collect", "Draft"],
@@ -225,8 +226,35 @@ describe("workflow contracts", () => {
       ],
     });
 
-    expect(run.playbook?.name).toBe("Weekly Update");
+    expect(run.playbook?.name).toBe("Weekly Status Digest");
     expect(run.steps?.[0]?.phase).toBe("Collect");
     expect(run.events?.[0]?.status).toBe("succeeded");
+  });
+
+  test("distinguishes graph package versions while preserving numeric version compatibility", () => {
+    const playbooks = PlaybookListResultSchema.parse({
+      playbooks: [
+        {
+          id: "operations.weekly-status-digest",
+          version: 1,
+          packageVersion: "0.1.0",
+          name: "Weekly Status Digest",
+          stepCount: 2,
+        },
+        {
+          id: "operations.weekly-status-digest",
+          version: 1,
+          packageVersion: "0.2.0",
+          name: "Weekly Status Digest",
+          stepCount: 2,
+        },
+      ],
+    });
+
+    expect(playbooks.playbooks.map((playbook) => playbook.version)).toEqual([1, 1]);
+    expect(playbooks.playbooks.map((playbook) => playbook.packageVersion)).toEqual([
+      "0.1.0",
+      "0.2.0",
+    ]);
   });
 });

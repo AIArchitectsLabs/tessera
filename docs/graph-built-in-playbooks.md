@@ -10,7 +10,6 @@ Each playbook gets one folder with a stable package id:
 
 | Example path | Purpose |
 | --- | --- |
-| [`packages/core/src/builtin-graph-playbooks/demo.write-approval/`](../packages/core/src/builtin-graph-playbooks/demo.write-approval/) | Minimal script-only built-in |
 | [`packages/core/src/builtin-graph-playbooks/customer.renewal-risk-review/`](../packages/core/src/builtin-graph-playbooks/customer.renewal-risk-review/) | Review flow with `humanReview` and `artifactWrite` |
 | [`packages/core/src/builtin-graph-playbooks/ops.weekly-status-digest/`](../packages/core/src/builtin-graph-playbooks/ops.weekly-status-digest/) | Review flow with evidence sources |
 | [`packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/) | Dashboard output example |
@@ -39,7 +38,7 @@ The package reader only collects those source files plus `manifest.json`. It ign
 - `description`
 - `entrypoint` (`playbook.ts` by default)
 
-See [`ops.activity-snapshot/manifest.json`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/manifest.json) and [`demo.write-approval/manifest.json`](../packages/core/src/builtin-graph-playbooks/demo.write-approval/manifest.json) for the current shape.
+See [`ops.activity-snapshot/manifest.json`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/manifest.json) and [`sales.meeting-brief/manifest.json`](../packages/core/src/builtin-graph-playbooks/sales.meeting-brief/manifest.json) for the current shape.
 
 `playbook.ts` is the compiled graph source of truth. It exports one default object with the core graph fields:
 
@@ -70,7 +69,6 @@ Keep supporting files under the matching subdirectory and reference them by pack
 Examples:
 
 - [`ops.activity-snapshot/prompts/draft-snapshot.md`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/prompts/draft-snapshot.md)
-- [`ops.weekly-update/scripts/stageDraft.ts`](../packages/core/src/builtin-graph-playbooks/ops.weekly-update/scripts/stageDraft.ts)
 - [`sales.meeting-brief/schemas/meetingBrief.schema.json`](../packages/core/src/builtin-graph-playbooks/sales.meeting-brief/schemas/meetingBrief.schema.json)
 - [`ops.activity-snapshot/layouts/dashboard.json`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/layouts/dashboard.json)
 

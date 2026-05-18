@@ -14,6 +14,7 @@ import {
   InboxSnoozeRequestSchema,
   type InboxStatus,
 } from "@tessera/contracts";
+import { configureSidecarSqlite } from "./sqlite.js";
 
 export interface InboxListFilter {
   status?: InboxStatus;
@@ -115,6 +116,7 @@ export function createInboxStore(dbPath: string): InboxStore {
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const db = new Database(dbPath, { create: true, strict: true });
+  configureSidecarSqlite(db, dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS inbox_messages (
       id TEXT PRIMARY KEY NOT NULL,

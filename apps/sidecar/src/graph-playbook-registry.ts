@@ -6,10 +6,12 @@ import { createPlaybookGraphCache, hashPlaybookGraph } from "@tessera/core";
 
 export interface GraphPlaybookRegistryEntry {
   id: string;
-  version: string;
+  packageVersion: string;
   name: string;
   graphHash: string;
+  sourceHash: string;
   installedRoot: string;
+  compiled: CompiledPlaybookGraph;
 }
 
 interface FileError extends Error {
@@ -141,23 +143,87 @@ export async function loadInstalledGraphPlaybookRegistry(options: {
         continue;
       }
 
-      const compiled = await cache.get(metadata.playbookId, metadata.graphHash);
+      const compiled = await cache.getSource(
+        metadata.playbookId,
+        metadata.graphHash,
+        metadata.sourceHash
+      );
       if (compiled === undefined || !compiledGraphMatchesInstallMetadata(compiled, metadata)) {
         continue;
       }
 
       entries.push({
         id: metadata.playbookId,
-        version: metadata.packageVersion,
+        packageVersion: metadata.packageVersion,
         name: compiled.graph.name,
         graphHash: metadata.graphHash,
+        sourceHash: metadata.sourceHash,
         installedRoot,
+        compiled,
       });
     }
   }
 
   return entries.sort((left, right) => {
     const idComparison = compareStrings(left.id, right.id);
-    return idComparison === 0 ? compareStrings(left.version, right.version) : idComparison;
+    return idComparison === 0
+      ? compareStrings(left.packageVersion, right.packageVersion)
+      : idComparison;
   });
+}
+
+export async function loadInstalledGraphPlaybookCatalog(options: {
+  installRoot: string;
+  cacheRoot: string;
+}): Promise<GraphPlaybookRegistryEntry[]> {
+  const cache = createPlaybookGraphCache(options.cacheRoot);
+  const entries: GraphPlaybookRegistryEntry[] = [];
+  const playbookDirs = await readDirectory(options.installRoot);
+
+  for (const playbookDir of playbookDirs) {
+    if (!playbookDir.isDirectory()) {
+      continue;
+    }
+
+    const playbookRoot = join(options.installRoot, playbookDir.name);
+    const metadata = parseInstallMetadata(await readJson(join(playbookRoot, "latest.json")));
+    if (metadata === undefined || playbookDir.name !== cacheSegment(metadata.playbookId)) {
+      continue;
+    }
+
+    const installedRoot = join(playbookRoot, cacheSegment(metadata.packageVersion));
+    const installedMetadata = parseInstallMetadata(
+      await readJson(join(installedRoot, "install.json"))
+    );
+    if (
+      installedMetadata === undefined ||
+      installedMetadata.playbookId !== metadata.playbookId ||
+      installedMetadata.packageVersion !== metadata.packageVersion ||
+      installedMetadata.graphHash !== metadata.graphHash ||
+      installedMetadata.sourceHash !== metadata.sourceHash
+    ) {
+      continue;
+    }
+
+    const compiled = await cache.getSource(
+      metadata.playbookId,
+      metadata.graphHash,
+      metadata.sourceHash
+    );
+    if (compiled === undefined || !compiledGraphMatchesInstallMetadata(compiled, metadata)) {
+      continue;
+    }
+
+    entries.push({
+      id: metadata.playbookId,
+      packageVersion: metadata.packageVersion,
+      name: compiled.graph.name,
+      graphHash: metadata.graphHash,
+      sourceHash: metadata.sourceHash,
+      installedRoot,
+      compiled,
+    });
+  }
+
+  return entries.sort((left, right) => compareStrings(left.id, right.id));
 }

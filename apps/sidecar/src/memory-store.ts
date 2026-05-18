@@ -12,6 +12,7 @@ import {
   MemorySchema,
   type MemoryScope,
 } from "@tessera/contracts";
+import { configureSidecarSqlite } from "./sqlite.js";
 
 export interface MemoryDocumentInput {
   id: string;
@@ -264,6 +265,7 @@ export function createMemoryStore(dbPath: string): MemoryStore {
   }
 
   const db = new Database(dbPath, { create: true, strict: true });
+  configureSidecarSqlite(db, dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_events (

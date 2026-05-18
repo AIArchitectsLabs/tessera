@@ -280,9 +280,15 @@ export function createPlaybookGraphExecutionContextPin(
 
 export function playbookGraphExecutionContextDriftReason(
   run: PlaybookGraphRunRecord,
-  executionContext: unknown
+  executionContext: unknown | undefined
 ): string | undefined {
-  if (!run.executionContext || TERMINAL_RUN_STATUSES.has(run.status)) return undefined;
+  if (
+    executionContext === undefined ||
+    !run.executionContext ||
+    TERMINAL_RUN_STATUSES.has(run.status)
+  ) {
+    return undefined;
+  }
   const active = createPlaybookGraphExecutionContextPin(executionContext);
   if (active.executionContextHash === run.executionContext.executionContextHash) return undefined;
   return `Graph execution context changed; expected ${run.executionContext.executionContextHash}, got ${active.executionContextHash}. Approval is required before continuing.`;
@@ -363,6 +369,13 @@ function shouldMemoizeNode(
 }
 
 function collectArtifactIds(value: unknown, refs: Set<string>): void {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\{\{\s*artifacts\.([A-Za-z0-9_.:-]+)/g)) {
+      const artifactId = match[1]?.split(".")[0];
+      if (artifactId) refs.add(artifactId);
+    }
+    return;
+  }
   if (Array.isArray(value)) {
     for (const item of value) collectArtifactIds(item, refs);
     return;
@@ -382,6 +395,8 @@ function inputArtifactIds(node: PlaybookGraphNode): string[] {
   const refs = new Set<string>();
   if (node.kind === "script" || node.kind === "agent") {
     collectArtifactIds(node.inputs, refs);
+  } else if (node.kind === "tool") {
+    collectArtifactIds(node.args, refs);
   } else if (node.kind === "parallelMap") {
     collectArtifactIds(node.items, refs);
   } else if (node.kind === "humanReview") {
@@ -615,10 +630,100 @@ function readJsonPath(value: unknown, path: string): unknown {
   if (!path.startsWith("$.")) return undefined;
   let cursor = value;
   for (const segment of path.slice(2).split(".")) {
-    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
+    if (Array.isArray(cursor)) {
+      const index = Number(segment);
+      if (!Number.isInteger(index) || index < 0) return undefined;
+      cursor = cursor[index];
+      continue;
+    }
+    if (!cursor || typeof cursor !== "object") return undefined;
     cursor = (cursor as Record<string, unknown>)[segment];
   }
   return cursor;
+}
+
+function valueAtPath(value: unknown, path: string): unknown {
+  return readJsonPath(value, path === "" ? "$" : `$.${path}`);
+}
+
+function templateValue(input: {
+  expression: string;
+  runInput: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+  branchItem?: PlaybookGraphBranchItem;
+}): unknown {
+  if (input.expression === "branchItem") return input.branchItem?.value;
+  if (input.expression.startsWith("branchItem.")) {
+    return valueAtPath(input.branchItem?.value, input.expression.slice("branchItem.".length));
+  }
+  if (input.expression === "inputs") return input.runInput;
+  if (input.expression.startsWith("inputs.")) {
+    return valueAtPath(input.runInput, input.expression.slice("inputs.".length));
+  }
+  if (input.expression === "artifacts") return input.artifacts;
+  if (input.expression.startsWith("artifacts.")) {
+    const [, artifactId, ...path] = input.expression.split(".");
+    return valueAtPath(input.artifacts[artifactId ?? ""], path.join("."));
+  }
+  return undefined;
+}
+
+function resolveGraphValue(input: {
+  value: unknown;
+  runInput: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+  branchItem?: PlaybookGraphBranchItem;
+}): unknown {
+  if (typeof input.value === "string") {
+    const exact = input.value.match(/^\{\{\s*([A-Za-z0-9_.:-]+)\s*\}\}$/);
+    if (exact?.[1]) {
+      return templateValue({ ...input, expression: exact[1] });
+    }
+    return input.value.replace(/\{\{\s*([A-Za-z0-9_.:-]+)\s*\}\}/g, (_match, expression) => {
+      const resolved = templateValue({ ...input, expression });
+      return resolved === undefined || resolved === null ? "" : String(resolved);
+    });
+  }
+  if (Array.isArray(input.value)) {
+    return input.value.map((value) => resolveGraphValue({ ...input, value }));
+  }
+  if (!input.value || typeof input.value !== "object") return input.value;
+
+  const record = input.value as Record<string, unknown>;
+  if (typeof record.artifact === "string") {
+    return readJsonPath(input.artifacts[record.artifact], String(record.path ?? "$"));
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, resolveGraphValue({ ...input, value })])
+  );
+}
+
+function resolveNodePayload<T extends PlaybookGraphNode>(input: {
+  node: T;
+  runInput: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+  branchItem?: PlaybookGraphBranchItem;
+}): T {
+  if (input.node.kind === "script") {
+    return {
+      ...input.node,
+      inputs: resolveGraphValue({ ...input, value: input.node.inputs }) as Record<string, unknown>,
+    };
+  }
+  if (input.node.kind === "tool") {
+    return {
+      ...input.node,
+      args: resolveGraphValue({ ...input, value: input.node.args }) as Record<string, unknown>,
+    };
+  }
+  if (input.node.kind === "agent") {
+    return {
+      ...input.node,
+      inputs: resolveGraphValue({ ...input, value: input.node.inputs }) as Record<string, unknown>,
+    };
+  }
+  return input.node;
 }
 
 function successTarget(node: PlaybookGraphNode, artifacts: Record<string, unknown>): string {
@@ -722,6 +827,44 @@ function completeBranchItem(
     status,
     updatedAt: now,
   });
+}
+
+function parallelMapFanInValue(input: {
+  parent: PlaybookGraphQueueEntry;
+  children: PlaybookGraphBranchItem[];
+  artifactVersions: PlaybookGraphArtifactVersion[];
+}): unknown {
+  return [...input.children]
+    .sort(
+      (left, right) =>
+        left.index - right.index || left.branchItemId.localeCompare(right.branchItemId)
+    )
+    .map((child) => {
+      const branchVersions = input.artifactVersions.filter((version) =>
+        version.nodePath.startsWith(`${child.nodePath}/`)
+      );
+      const output = branchVersions.at(-1);
+      return {
+        branchItem: {
+          branchItemId: child.branchItemId,
+          index: child.index,
+          itemHash: child.itemHash,
+          nodePath: child.nodePath,
+          status: child.status,
+          value: child.value,
+        },
+        output: output?.value ?? null,
+        artifactVersion: output
+          ? {
+              artifactId: output.artifactId,
+              versionId: output.versionId,
+              producerQueueEntryId: output.producerQueueEntryId,
+              contentHash: output.contentHash,
+            }
+          : null,
+        parentQueueEntryId: input.parent.queueEntryId,
+      };
+    });
 }
 
 function advanceTarget(input: {
@@ -839,19 +982,49 @@ async function enqueueReadyParallelMapFanIns(input: {
     }
 
     const target = successTarget(node, artifacts);
+    const existingFanInArtifact =
+      node.outputArtifact === undefined
+        ? undefined
+        : artifactVersions.find(
+            (version) =>
+              version.artifactId === node.outputArtifact &&
+              version.producerQueueEntryId === parent.queueEntryId &&
+              version.versionId === `${parent.queueEntryId}:${node.outputArtifact}:fan-in`
+          );
     const existingFanIn = queue.some((entry) =>
       target === "completed" || target === "failed" || target === "denied"
         ? false
         : entry.nodePath === childPlaybookGraphNodePath(parent.nodePath, target)
     );
-    if (existingFanIn) continue;
+    if (existingFanIn || existingFanInArtifact) continue;
 
+    const fanInValue = parallelMapFanInValue({ parent, children, artifactVersions });
+    const fanInArtifactVersions: PlaybookGraphArtifactVersion[] =
+      node.outputArtifact === undefined
+        ? []
+        : [
+            {
+              schemaVersion: 1 as const,
+              runId: run.runId,
+              artifactId: node.outputArtifact,
+              versionId: `${parent.queueEntryId}:${node.outputArtifact}:fan-in`,
+              producerQueueEntryId: parent.queueEntryId,
+              nodePath: parent.nodePath,
+              contentHash: hashUnknown(fanInValue),
+              value: fanInValue,
+              createdAt: input.now,
+            },
+          ];
+    for (const version of fanInArtifactVersions) {
+      await input.store.addArtifactVersion(version);
+    }
+    const artifactVersionsAfterFanIn = [...artifactVersions, ...fanInArtifactVersions];
     const advanced = advanceTarget({
       compiled: input.compiled,
       run,
       queueEntry: parent,
       target,
-      artifactVersions,
+      artifactVersions: artifactVersionsAfterFanIn,
       now: input.now,
     });
     if (advanced.queueEntry) {
@@ -945,8 +1118,9 @@ export async function drainPlaybookGraphRun(
 ): Promise<PlaybookGraphRuntimeResult> {
   const now = options.now ?? nowIso;
   const leaseMs = options.leaseMs ?? 30_000;
-  let run = await options.store.getRun(options.runId);
-  if (!run) throw new Error(`Unknown graph run: ${options.runId}`);
+  const initialRun = await options.store.getRun(options.runId);
+  if (!initialRun) throw new Error(`Unknown graph run: ${options.runId}`);
+  let run: PlaybookGraphRunRecord = initialRun;
 
   let compiled: CompiledPlaybookGraph;
   try {
@@ -1010,7 +1184,13 @@ export async function drainPlaybookGraphRun(
         run,
         now: now(),
       });
-      if (fanInRun.updatedAt !== run.updatedAt || fanInRun.status !== run.status) {
+      if (
+        fanInRun.updatedAt !== run.updatedAt ||
+        fanInRun.status !== run.status ||
+        fanInRun.currentQueueEntryId !== run.currentQueueEntryId ||
+        fanInRun.completedAt !== run.completedAt ||
+        fanInRun.error !== run.error
+      ) {
         run = fanInRun;
         continue;
       }
@@ -1256,6 +1436,12 @@ export async function drainPlaybookGraphRun(
 
     const artifacts = latestArtifactValues(artifactVersions);
     const claimedRun = run;
+    const resolvedNode = resolveNodePayload({
+      node,
+      runInput: claimedRun.input,
+      artifacts,
+      ...(branchItem ? { branchItem } : {}),
+    });
     let output: unknown;
     let branchUpdates: PlaybookGraphBranchItem[] = [];
     let extraQueueEntries: PlaybookGraphQueueEntry[] = [];
@@ -1267,7 +1453,7 @@ export async function drainPlaybookGraphRun(
           }
           return options.scriptAdapter({
             run: claimedRun,
-            node,
+            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "script" }>,
             queueEntry,
             input: branchInput(claimedRun.input, branchItem),
             artifacts,
@@ -1280,7 +1466,7 @@ export async function drainPlaybookGraphRun(
           }
           return options.agentAdapter({
             run: claimedRun,
-            node,
+            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "agent" }>,
             queueEntry,
             input: branchInput(claimedRun.input, branchItem),
             artifacts,
@@ -1296,7 +1482,7 @@ export async function drainPlaybookGraphRun(
           }
           return options.toolAdapter({
             run: claimedRun,
-            node,
+            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "tool" }>,
             queueEntry,
             input: branchInput(claimedRun.input, branchItem),
             artifacts,
@@ -1464,18 +1650,21 @@ export async function drainPlaybookGraphRun(
       completedAt,
     };
     const artifactVersionsAfterSuccess = [...artifactVersions, ...newArtifactVersions];
-    const advanced = advanceTarget({
-      compiled,
-      run,
-      queueEntry: succeeded,
-      target: successTarget(node, {
-        ...artifacts,
-        ...Object.fromEntries(newArtifactVersions.map((v) => [v.artifactId, v.value])),
-      }),
-      artifactVersions: artifactVersionsAfterSuccess,
-      now: completedAt,
-      ...(branchItem ? { branchItem } : {}),
-    });
+    const advanced =
+      node.kind === "parallelMap"
+        ? { run }
+        : advanceTarget({
+            compiled,
+            run,
+            queueEntry: succeeded,
+            target: successTarget(node, {
+              ...artifacts,
+              ...Object.fromEntries(newArtifactVersions.map((v) => [v.artifactId, v.value])),
+            }),
+            artifactVersions: artifactVersionsAfterSuccess,
+            now: completedAt,
+            ...(branchItem ? { branchItem } : {}),
+          });
     run = advanced.run;
     const queueEntriesForCheckpoint = await preserveExistingQueueDurability({
       store: options.store,

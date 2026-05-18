@@ -31,6 +31,7 @@ let handleCapabilityBinaryInstall:
   | typeof import("./server.js").handleCapabilityBinaryInstall
   | undefined;
 let handleGraphPlaybookInstall: typeof import("./server.js").handleGraphPlaybookInstall | undefined;
+let handleGraphPlaybookImport: typeof import("./server.js").handleGraphPlaybookImport | undefined;
 let handleGraphRunCreate: typeof import("./server.js").handleGraphRunCreate | undefined;
 let handleGraphRunGet: typeof import("./server.js").handleGraphRunGet | undefined;
 let handleGraphRunList: typeof import("./server.js").handleGraphRunList | undefined;
@@ -76,6 +77,7 @@ beforeAll(async () => {
     handleCapabilityBinary = serverModule.handleCapabilityBinary;
     handleCapabilityBinaryInstall = serverModule.handleCapabilityBinaryInstall;
     handleGraphPlaybookInstall = serverModule.handleGraphPlaybookInstall;
+    handleGraphPlaybookImport = serverModule.handleGraphPlaybookImport;
     handleGraphRunCreate = serverModule.handleGraphRunCreate;
     handleGraphRunGet = serverModule.handleGraphRunGet;
     handleGraphRunList = serverModule.handleGraphRunList;
@@ -99,6 +101,77 @@ beforeAll(async () => {
 
 function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
+}
+
+const crcTable = new Uint32Array(256);
+for (let index = 0; index < 256; index += 1) {
+  let crc = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  crcTable[index] = crc >>> 0;
+}
+
+function crc32(data: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc = (crcTable[(crc ^ byte) & 0xff] ?? 0) ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function writeZipArchive(
+  root: string,
+  entries: Record<string, string | Buffer>
+): Promise<string> {
+  const archiveName = `archive-${Date.now()}-${Math.random().toString(16).slice(2)}.playbook`;
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+
+  for (const [path, value] of Object.entries(entries)) {
+    const content = typeof value === "string" ? Buffer.from(value, "utf8") : value;
+    const name = Buffer.from(path, "utf8");
+    const crc = crc32(content);
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(content.length, 18);
+    local.writeUInt32LE(content.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    name.copy(local, 30);
+
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(content.length, 20);
+    central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    name.copy(central, 46);
+
+    locals.push(local, content);
+    centrals.push(central);
+    offset += local.length + content.length;
+  }
+
+  const centralDirectory = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(Object.keys(entries).length, 8);
+  eocd.writeUInt16LE(Object.keys(entries).length, 10);
+  eocd.writeUInt32LE(centralDirectory.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  const zipPath = join(root, archiveName);
+  await writeFile(zipPath, Buffer.concat([...locals, centralDirectory, eocd]));
+  return zipPath;
 }
 
 async function writeGraphPackageFile(
@@ -157,6 +230,56 @@ export default definePlaybook(${JSON.stringify(graph, null, 2)});
     scriptBody || "export default async function score() {}\n"
   );
   await writeGraphPackageFile(root, "schemas/scorecard.schema.json", '{"type":"object"}\n');
+}
+
+function graphPackageArchiveEntries(options: {
+  id?: string;
+  version: string;
+  name?: string;
+  metadata?: Record<string, unknown>;
+  scriptBody?: string;
+  prefix?: string;
+}): Record<string, string | Buffer> {
+  const id = options.id ?? "content.seo-blog";
+  const name = options.name ?? "SEO Blog Article";
+  const prefix = options.prefix ? `${options.prefix.replace(/\/$/, "")}/` : "";
+  const graph = {
+    schemaVersion: 1,
+    id,
+    version: options.version,
+    name,
+    ...(options.metadata ? { metadata: options.metadata } : {}),
+    start: "score",
+    artifacts: {
+      scorecard: { schema: "./schemas/scorecard.schema.json" },
+    },
+    nodes: [
+      {
+        id: "score",
+        kind: "script",
+        run: "./scripts/score.ts",
+        inputs: {},
+        outputArtifact: "scorecard",
+        onSuccess: "completed",
+      },
+    ],
+  };
+  return {
+    [`${prefix}manifest.json`]: JSON.stringify({
+      schemaVersion: 1,
+      id,
+      version: options.version,
+      name,
+      entrypoint: "playbook.ts",
+    }),
+    [`${prefix}playbook.ts`]: `import { definePlaybook } from "@tessera/plugin-sdk";
+export default definePlaybook(${JSON.stringify(graph, null, 2)});
+`,
+    [`${prefix}scripts/score.ts`]:
+      options.scriptBody ?? "export default async function score() { return { ok: true }; }\n",
+    [`${prefix}schemas/scorecard.schema.json`]: '{"type":"object"}\n',
+    [`${prefix}assets/icon.png`]: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  };
 }
 
 function testCompiledGraphSourceFiles(scriptSource = "export default function score() {}\n") {
@@ -310,17 +433,18 @@ describe("graph playbook install endpoint", () => {
       expect(typeof payload.sourceHash).toBe("string");
       const graphHash = String(payload.graphHash);
       expect(state.entries).toEqual([
-        {
+        expect.objectContaining({
           id: "content.seo-blog",
-          version: "0.1.0",
+          packageVersion: "0.1.0",
           name: "SEO Blog Article",
           graphHash,
+          sourceHash: payload.sourceHash,
           installedRoot: join(
             installRoot,
             `v-${Buffer.from("content.seo-blog", "utf8").toString("base64url")}`,
             `v-${Buffer.from("0.1.0", "utf8").toString("base64url")}`
           ),
-        },
+        }),
       ]);
     } finally {
       await Promise.all(
@@ -457,6 +581,218 @@ export default definePlaybook({
     } finally {
       await Promise.all(
         [firstSourceRoot, secondSourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+});
+
+describe("graph playbook import endpoint", () => {
+  test("imports an archive and exposes the latest playbook in list/get", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    const catalogState: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      const zipPath = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({
+          version: "0.1.0",
+          name: "Imported SEO Blog Article",
+          prefix: "playbook",
+        })
+      );
+
+      const response = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const imported = (await response?.json()) as Record<string, unknown>;
+      expect(imported).toMatchObject({
+        schemaVersion: 1,
+        status: "installed",
+        id: "content.seo-blog",
+        version: "0.1.0",
+        name: "Imported SEO Blog Article",
+        warnings: [],
+      });
+      expect(catalogState.entries).toHaveLength(1);
+
+      const listResponse = await handlePlaybookList?.(new Request("http://localhost/playbooks"), {
+        catalogState,
+      });
+      expect(listResponse?.status).toBe(200);
+      const list = (await listResponse?.json()) as { playbooks: Array<Record<string, unknown>> };
+      expect(list.playbooks.find((item) => item.id === "content.seo-blog")).toMatchObject({
+        name: "Imported SEO Blog Article",
+        packageVersion: "0.1.0",
+        businessUseCase: "Imported SEO Blog Article",
+      });
+
+      const getResponse = await handlePlaybookGet?.(
+        new Request("http://localhost/playbooks/content.seo-blog"),
+        "content.seo-blog",
+        { catalogState }
+      );
+      expect(getResponse?.status).toBe(200);
+      const detail = (await getResponse?.json()) as Record<string, unknown>;
+      expect(detail).toMatchObject({
+        id: "content.seo-blog",
+        packageVersion: "0.1.0",
+        name: "Imported SEO Blog Article",
+      });
+    } finally {
+      await Promise.all(
+        [archiveRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("lists imported graph playbooks with graph-native metadata", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    const catalogState: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      const zipPath = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({
+          id: "reference.seo-geo-blog-article",
+          version: "0.1.0",
+          name: "SEO/GEO Blog Article Reference Playbook",
+          metadata: {
+            requiredCapabilities: ["web.search", "web.fetch"],
+            outputs: ["finalArticle", "articleScorecard", "sourceSummary", "finalOutputManifest"],
+            phases: ["Intake", "Research", "Brief"],
+          },
+        })
+      );
+
+      const importResponse = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(importResponse?.status).toBe(200);
+
+      const listResponse = await handlePlaybookList?.(new Request("http://localhost/playbooks"), {
+        catalogState,
+      });
+      expect(listResponse?.status).toBe(200);
+      const list = (await listResponse?.json()) as { playbooks: Array<Record<string, unknown>> };
+      expect(
+        list.playbooks.find((item) => item.id === "reference.seo-geo-blog-article")
+      ).toMatchObject({
+        name: "SEO/GEO Blog Article Reference Playbook",
+        requiredCapabilities: ["web"],
+        phases: ["Intake", "Research", "Brief"],
+      });
+    } finally {
+      await Promise.all(
+        [archiveRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("returns 409 for built-in id collisions and same-version source conflicts", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    const catalogState: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      const builtInCollision = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({ id: "sales.meeting-brief", version: "0.1.0" })
+      );
+      const first = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({ version: "0.1.0", scriptBody: "export default () => 1;\n" })
+      );
+      const changed = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({ version: "0.1.0", scriptBody: "export default () => 2;\n" })
+      );
+
+      const collisionResponse = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath: builtInCollision }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(collisionResponse?.status).toBe(409);
+
+      await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath: first }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      const conflictResponse = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath: changed }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(conflictResponse?.status).toBe(409);
+    } finally {
+      await Promise.all(
+        [archiveRoot, installRoot, cacheRoot].map((root) =>
           rm(root, { recursive: true, force: true })
         )
       );
@@ -975,6 +1311,7 @@ describe("graph run endpoints", () => {
           body: JSON.stringify({
             playbookId: compiled.metadata.playbookId,
             graphHash: compiled.metadata.graphHash,
+            sourceHash: compiled.metadata.sourceHash,
           }),
         }),
         { store, cacheRoot }
@@ -1011,14 +1348,16 @@ describe("graph run endpoints", () => {
       );
       expect(listResponse?.status).toBe(200);
       const list = (await listResponse?.json()) as {
-        playbooks: Array<{ id: string; graphHash?: string }>;
+        playbooks: Array<{ id: string; graphHash?: string; sourceHash?: string }>;
       };
       const salesMeetingBrief = list.playbooks.find(
         (playbook) => playbook.id === "sales.meeting-brief"
       );
       expect(salesMeetingBrief?.graphHash).toMatch(/^sha256:/);
       const graphHash = salesMeetingBrief?.graphHash;
+      const sourceHash = salesMeetingBrief?.sourceHash;
       if (!graphHash) throw new Error("Expected built-in graphHash");
+      if (!sourceHash) throw new Error("Expected built-in sourceHash");
 
       const response = await handleGraphRunCreate?.(
         new Request("http://localhost/graph-runs", {
@@ -1026,6 +1365,7 @@ describe("graph run endpoints", () => {
           body: JSON.stringify({
             playbookId: "sales.meeting-brief",
             graphHash,
+            sourceHash,
             agentId: "default",
             input: {
               company: "Acme Corp",
@@ -1137,6 +1477,7 @@ describe("graph run endpoints", () => {
       const installed = (await installResponse?.json()) as {
         id: string;
         graphHash: string;
+        sourceHash: string;
       };
 
       const response = await handleGraphRunCreate?.(
@@ -1145,6 +1486,7 @@ describe("graph run endpoints", () => {
           body: JSON.stringify({
             playbookId: installed.id,
             graphHash: installed.graphHash,
+            sourceHash: installed.sourceHash,
             input: { topic: "production scripts" },
             drainDeterministic: true,
           }),
@@ -1169,6 +1511,103 @@ describe("graph run endpoints", () => {
       store.close();
       await Promise.all(
         [dirname(dbPath), sourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("uses latest catalog source when archived imports share a graph hash", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    expect(handlePlaybookList).toBeDefined();
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state = { entries: [] as GraphPlaybookRegistryEntry[] };
+    const catalogState = { entries: [] as GraphPlaybookRegistryEntry[] };
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const latestArchive = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({
+          version: "0.2.0",
+          scriptBody: "export default () => ({ source: 'latest' });\n",
+        })
+      );
+      const archivedArchive = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({
+          version: "0.1.0",
+          scriptBody: "export default () => ({ source: 'archived' });\n",
+        })
+      );
+
+      await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath: latestArchive }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      const archivedResponse = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ zipPath: archivedArchive }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(archivedResponse?.status).toBe(200);
+      await expect(archivedResponse?.json()).resolves.toMatchObject({ status: "archived" });
+
+      const listResponse = await handlePlaybookList?.(new Request("http://localhost/playbooks"), {
+        catalogState,
+      });
+      const list = (await listResponse?.json()) as {
+        playbooks: Array<{ id: string; graphHash?: string; sourceHash?: string }>;
+      };
+      const visible = list.playbooks.find((playbook) => playbook.id === "content.seo-blog");
+      expect(visible?.graphHash).toMatch(/^sha256:/);
+      expect(visible?.sourceHash).toMatch(/^sha256:/);
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: visible?.id,
+            graphHash: visible?.graphHash,
+            sourceHash: visible?.sourceHash,
+            drainDeterministic: true,
+          }),
+        }),
+        { store, installRoot, cacheRoot, graphPlaybookRegistryState: catalogState }
+      );
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { snapshot: { sourceFiles?: Record<string, string> } };
+        artifacts: Array<{ value: unknown }>;
+      };
+      expect(detail.artifacts[0]?.value).toEqual({ source: "latest" });
+      expect(detail.run.snapshot.sourceFiles?.["scripts/score.ts"]).toContain("latest");
+    } finally {
+      store.close();
+      await Promise.all(
+        [dirname(dbPath), archiveRoot, installRoot, cacheRoot].map((root) =>
           rm(root, { recursive: true, force: true })
         )
       );
@@ -2708,6 +3147,104 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("request resume renews long-running agent leases while draining", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-long-resume",
+        version: "0.1.0",
+        name: "Long Resume Agent Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft the article.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const [entry] = await store.getQueue(created.run.runId);
+      const run = await store.getRun(created.run.runId);
+      if (!run || !entry) throw new Error("Missing graph run");
+      await store.updateQueueEntry({
+        ...entry,
+        status: "interrupted",
+        blockedReason: "stale runtime lease",
+        updatedAt: new Date().toISOString(),
+      });
+      await store.updateRun({
+        ...run,
+        status: "interrupted",
+        currentQueueEntryId: entry.queueEntryId,
+        updatedAt: new Date().toISOString(),
+      });
+
+      let calls = 0;
+      const resumeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "retry_interrupted",
+            queueEntryId: entry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          leaseMs: 40,
+          async agentAdapter() {
+            calls += 1;
+            await new Promise((resolve) => setTimeout(resolve, 90));
+            return { status: "completed", text: "ready" };
+          },
+        }
+      );
+
+      expect(resumeResponse?.status).toBe(200);
+      const resumed = (await resumeResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ status: string }>;
+      };
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.queue[0]?.status).toBe("succeeded");
+      expect(calls).toBe(1);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("approves repair continuations without changing the pinned snapshot", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
@@ -3549,16 +4086,16 @@ describe("graph run endpoints", () => {
 
 describe("built-in graph playbook projection", () => {
   test("lists built-in playbooks from graph packages with stable metadata", async () => {
-    const response = await handlePlaybookList?.(new Request("http://localhost/playbooks"));
+    const response = await handlePlaybookList?.(new Request("http://localhost/playbooks"), {
+      catalogState: { entries: [] },
+    });
     expect(response?.status).toBe(200);
     const body = (await response?.json()) as { playbooks: Array<Record<string, unknown>> };
 
     expect(body.playbooks.map((playbook) => playbook.id)).toEqual([
       "customer.renewal-risk-review",
-      "demo.write-approval",
       "operations.weekly-status-digest",
       "ops.activity-snapshot",
-      "ops.weekly-update",
       "sales.meeting-brief",
     ]);
     expect(

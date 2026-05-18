@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installGraphPlaybookPackage } from "@tessera/core";
-import { loadInstalledGraphPlaybookRegistry } from "./graph-playbook-registry.js";
+import {
+  loadInstalledGraphPlaybookCatalog,
+  loadInstalledGraphPlaybookRegistry,
+} from "./graph-playbook-registry.js";
 
 const tempRoots: string[] = [];
 
@@ -109,20 +112,64 @@ describe("loadInstalledGraphPlaybookRegistry", () => {
     const entries = await loadInstalledGraphPlaybookRegistry({ installRoot, cacheRoot });
 
     expect(entries).toEqual([
-      {
+      expect.objectContaining({
         id: "content.brief",
-        version: "0.1.0",
+        packageVersion: "0.1.0",
         name: "Content Brief",
         graphHash: second.compiled.metadata.graphHash,
+        sourceHash: second.compiled.metadata.sourceHash,
         installedRoot: second.installedRoot,
-      },
-      {
+        compiled: second.compiled,
+      }),
+      expect.objectContaining({
         id: "content.seo-blog",
-        version: "0.2.0",
+        packageVersion: "0.2.0",
         name: "SEO Blog Article",
         graphHash: first.compiled.metadata.graphHash,
+        sourceHash: first.compiled.metadata.sourceHash,
         installedRoot: first.installedRoot,
-      },
+        compiled: first.compiled,
+      }),
+    ]);
+  });
+
+  test("loads only latest catalog entries by id", async () => {
+    const installRoot = await makeRoot("tessera-sidecar-graph-install-");
+    const cacheRoot = await makeRoot("tessera-sidecar-graph-cache-");
+    const firstSource = await makeRoot("tessera-sidecar-graph-source-");
+    const secondSource = await makeRoot("tessera-sidecar-graph-source-");
+
+    await writePackage(firstSource, "content.seo-blog", "0.1.0", "SEO Blog Article");
+    await writePackage(secondSource, "content.seo-blog", "0.2.0", "SEO Blog Article v2");
+    await installGraphPlaybookPackage({
+      sourceRoot: firstSource,
+      installRoot,
+      cacheRoot,
+      compilerVersion: "sidecar-test",
+      scriptSdkVersion: "sidecar-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const latest = await installGraphPlaybookPackage({
+      sourceRoot: secondSource,
+      installRoot,
+      cacheRoot,
+      compilerVersion: "sidecar-test",
+      scriptSdkVersion: "sidecar-test",
+      compiledAt: "2026-05-15T00:00:01.000Z",
+    });
+
+    const registry = await loadInstalledGraphPlaybookRegistry({ installRoot, cacheRoot });
+    const catalog = await loadInstalledGraphPlaybookCatalog({ installRoot, cacheRoot });
+
+    expect(registry).toHaveLength(2);
+    expect(catalog).toEqual([
+      expect.objectContaining({
+        id: "content.seo-blog",
+        packageVersion: "0.2.0",
+        name: "SEO Blog Article v2",
+        graphHash: latest.compiled.metadata.graphHash,
+        sourceHash: latest.compiled.metadata.sourceHash,
+      }),
     ]);
   });
 
@@ -145,6 +192,15 @@ describe("loadInstalledGraphPlaybookRegistry", () => {
         cacheRoot,
         cacheSegment("content.seo-blog"),
         `${cacheSegment(installed.compiled.metadata.graphHash)}.json`
+      ),
+      { force: true }
+    );
+    await rm(
+      join(
+        cacheRoot,
+        cacheSegment("content.seo-blog"),
+        cacheSegment(installed.compiled.metadata.graphHash),
+        `${cacheSegment(installed.compiled.metadata.sourceHash)}.json`
       ),
       { force: true }
     );
@@ -171,7 +227,8 @@ describe("loadInstalledGraphPlaybookRegistry", () => {
     const artifactPath = join(
       cacheRoot,
       cacheSegment("content.seo-blog"),
-      `${cacheSegment(installed.compiled.metadata.graphHash)}.json`
+      cacheSegment(installed.compiled.metadata.graphHash),
+      `${cacheSegment(installed.compiled.metadata.sourceHash)}.json`
     );
     const artifact = JSON.parse(await readFile(artifactPath, "utf8")) as typeof installed.compiled;
     await writeFile(

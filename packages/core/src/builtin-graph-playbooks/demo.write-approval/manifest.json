@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "id": "demo.write-approval",
-  "version": "1",
-  "name": "Demo Write Approval",
-  "description": "Proves deterministic workflow execution with HITL pause/resume.",
-  "entrypoint": "playbook.ts"
-}

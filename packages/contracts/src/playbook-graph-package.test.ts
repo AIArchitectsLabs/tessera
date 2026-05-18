@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PlaybookGraphPackageManifestSchema } from "./index.js";
+import { GraphPlaybookImportResultSchema, PlaybookGraphPackageManifestSchema } from "./index.js";
 
 describe("PlaybookGraphPackageManifestSchema", () => {
   test("accepts a minimal manifest", () => {
@@ -78,6 +78,46 @@ describe("PlaybookGraphPackageManifestSchema", () => {
         version: "1.0.0",
         name: "Demo Package",
         extra: true,
+      })
+    ).toThrow();
+  });
+});
+
+describe("GraphPlaybookImportResultSchema", () => {
+  test("accepts import statuses and defaults warnings", () => {
+    const parsed = GraphPlaybookImportResultSchema.parse({
+      schemaVersion: 1,
+      status: "installed",
+      id: "content.seo-blog",
+      version: "0.1.0",
+      name: "SEO Blog Article",
+      graphHash: `sha256:${"a".repeat(64)}`,
+      sourceHash: `sha256:${"b".repeat(64)}`,
+    });
+
+    expect(parsed.warnings).toEqual([]);
+    for (const status of ["updated", "unchanged", "archived"] as const) {
+      expect(GraphPlaybookImportResultSchema.parse({ ...parsed, status }).status).toBe(status);
+    }
+  });
+
+  test("rejects invalid graph and source hashes", () => {
+    const input = {
+      schemaVersion: 1,
+      status: "installed",
+      id: "content.seo-blog",
+      version: "0.1.0",
+      name: "SEO Blog Article",
+      graphHash: "sha256:not-hex",
+      sourceHash: `sha256:${"b".repeat(64)}`,
+    };
+
+    expect(() => GraphPlaybookImportResultSchema.parse(input)).toThrow();
+    expect(() =>
+      GraphPlaybookImportResultSchema.parse({
+        ...input,
+        graphHash: `sha256:${"a".repeat(64)}`,
+        sourceHash: "not-sha",
       })
     ).toThrow();
   });
