@@ -588,9 +588,30 @@ async function builtInGraphPlaybookByHash(
   );
 }
 
+function graphPlaybookNeedsSourceFiles(compiled: CompiledPlaybookGraph): boolean {
+  return graphMetadataArray<unknown>(compiled.graph.metadata, "outputs").some((output) => {
+    if (!output || typeof output !== "object" || Array.isArray(output)) return false;
+    const declaration = output as Record<string, unknown>;
+    return declaration.kind === "dashboard" && typeof declaration.layout === "string";
+  });
+}
+
 async function importedGraphPlaybookProjection(
   entry: GraphPlaybookRegistryEntry
 ): Promise<GraphPlaybookProjectionSource | undefined> {
+  if (!graphPlaybookNeedsSourceFiles(entry.compiled)) {
+    return {
+      kind: "imported",
+      id: entry.id,
+      packageVersion: entry.packageVersion,
+      graphHash: entry.graphHash,
+      sourceHash: entry.sourceHash,
+      installedRoot: entry.installedRoot,
+      compiled: entry.compiled,
+      sourceFiles: {},
+    };
+  }
+
   const packageFiles = await readPlaybookGraphPackage(entry.installedRoot);
   const sourceHash = hashPlaybookSourceFiles(packageFiles.sourceFiles);
   if (sourceHash !== entry.sourceHash) {
@@ -617,6 +638,18 @@ async function importedGraphPlaybookCatalog(
   }
   const projections = await Promise.all(catalogState.entries.map(importedGraphPlaybookProjection));
   return projections.filter((entry): entry is GraphPlaybookProjectionSource => entry !== undefined);
+}
+
+async function importedGraphPlaybookById(
+  playbookId: string,
+  state?: GraphPlaybookRegistryState
+): Promise<GraphPlaybookProjectionSource | undefined> {
+  const catalogState = state ?? installedGraphPlaybookCatalogState;
+  if (state === undefined && catalogState.entries.length === 0) {
+    await refreshInstalledGraphPlaybookRegistry();
+  }
+  const entry = catalogState.entries.find((candidate) => candidate.id === playbookId);
+  return entry ? importedGraphPlaybookProjection(entry) : undefined;
 }
 
 async function resolveCapabilityBinary(options: {
@@ -1552,8 +1585,41 @@ function renderGraphArtifactWritePath(path: string, input: Record<string, unknow
 function textValueFromArtifact(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const text = (value as Record<string, unknown>).text;
-  return typeof text === "string" && text.trim().length > 0 ? text : undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ["text", "markdown", "bodyMarkdown", "content", "body", "summary"]) {
+    const text = record[key];
+    if (typeof text === "string" && text.trim().length > 0) return text;
+  }
+
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  const thesis = typeof record.thesis === "string" ? record.thesis.trim() : "";
+  const audiencePromise =
+    typeof record.audiencePromise === "string" ? record.audiencePromise.trim() : "";
+  const outline = Array.isArray(record.outline) ? record.outline : [];
+  const sections = [
+    title ? `# ${title}` : "",
+    thesis ? `## Thesis\n\n${thesis}` : "",
+    audiencePromise ? `## Audience Promise\n\n${audiencePromise}` : "",
+    outline.length > 0
+      ? [
+          "## Outline",
+          ...outline.flatMap((item) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+            const outlineItem = item as Record<string, unknown>;
+            const heading =
+              typeof outlineItem.heading === "string" ? outlineItem.heading.trim() : "";
+            const points = Array.isArray(outlineItem.points)
+              ? outlineItem.points.filter((point): point is string => typeof point === "string")
+              : [];
+            return [
+              heading ? `### ${heading}` : "",
+              points.length > 0 ? points.map((point) => `- ${point}`).join("\n") : "",
+            ].filter(Boolean);
+          }),
+        ].join("\n\n")
+      : "",
+  ].filter(Boolean);
+  return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
 function formatGraphArtifactWriteContent(value: unknown, path: string): string {
@@ -3896,9 +3962,7 @@ export async function handlePlaybookGet(
   const entry = await builtInGraphPlaybook(playbookId);
   const imported =
     entry === undefined
-      ? (await importedGraphPlaybookCatalog(options.catalogState)).find(
-          (candidate) => candidate.id === playbookId
-        )
+      ? await importedGraphPlaybookById(playbookId, options.catalogState)
       : undefined;
   const projection = entry ?? imported;
   if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });

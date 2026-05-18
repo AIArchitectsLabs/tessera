@@ -123,6 +123,7 @@ interface ReviewEvidence {
   checkpointLabel: string;
   artifactLabel: string;
   artifactPreview: string | null;
+  artifactPath: string | null;
   scorecardLabel: string | null;
   scorecard: ReviewScorecardSummary | null;
   preparedSummary: string;
@@ -334,6 +335,7 @@ function reviewEvidenceFromSurface(
   const artifact = preparedArtifact ?? scorecardArtifact ?? null;
   if (!artifact) return null;
 
+  const artifactPaths = graphRunArtifactWritePaths(surface.detail);
   const label = artifactLabel(artifact.artifactId);
   const preview = artifactPreviewText(artifact.value);
   const scoreText =
@@ -346,6 +348,7 @@ function reviewEvidenceFromSurface(
     checkpointLabel: titleFromId(reviewEntry.nodeId),
     artifactLabel: label,
     artifactPreview: preview,
+    artifactPath: artifactPaths.get(artifact.artifactId) ?? null,
     scorecardLabel: scorecardArtifact ? artifactLabel(scorecardArtifact.artifactId) : null,
     scorecard,
     preparedSummary: `Tessera prepared ${label.toLowerCase()} for review.${scoreText}`,
@@ -645,6 +648,20 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
       .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
       .map((entry) => entry.nodeId)
   );
+  const materializedArtifactIds = new Set(detail.artifacts.map((artifact) => artifact.artifactId));
+  const artifactDeclarations = (graph as Record<string, unknown>).artifacts;
+  if (artifactDeclarations && typeof artifactDeclarations === "object") {
+    for (const [artifactId, declaration] of Object.entries(
+      artifactDeclarations as Record<string, unknown>
+    )) {
+      if (!materializedArtifactIds.has(artifactId)) continue;
+      if (!declaration || typeof declaration !== "object" || Array.isArray(declaration)) continue;
+      const materialize = (declaration as Record<string, unknown>).materialize;
+      if (typeof materialize === "string" && materialize.trim()) {
+        paths.set(artifactId, renderGraphArtifactWritePath(materialize, detail.run.input));
+      }
+    }
+  }
   for (const node of nodes) {
     if (!node || typeof node !== "object" || Array.isArray(node)) continue;
     const candidate = node as Record<string, unknown>;
@@ -2233,6 +2250,7 @@ function GuidedReview({
   run,
   playbook,
   reviewEvidence,
+  workspaceRoot,
   onApprove,
   onStop,
   onViewDetails,
@@ -2241,6 +2259,7 @@ function GuidedReview({
   run: PlaybookRunDetail;
   playbook: PlaybookSummary | PlaybookDetail | null;
   reviewEvidence: ReviewEvidence | null;
+  workspaceRoot: string | null;
   onApprove: () => void;
   onStop: () => void;
   onViewDetails: () => void;
@@ -2249,6 +2268,25 @@ function GuidedReview({
   const approvalCopy = playbookApprovalCopy(run, playbook);
   const preparedCopy = reviewEvidence?.preparedSummary ?? approvalCopy.prepared;
   const approveCopy = reviewEvidence?.approveSummary ?? approvalCopy.approve;
+  const [openingArtifact, setOpeningArtifact] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const canOpenArtifact = !!workspaceRoot && !!reviewEvidence?.artifactPath;
+
+  async function openReviewArtifact() {
+    if (!workspaceRoot || !reviewEvidence?.artifactPath) return;
+    setOpeningArtifact(true);
+    setOpenError(null);
+    try {
+      await invoke("workspace_file_open", {
+        workspaceRoot,
+        path: reviewEvidence.artifactPath,
+      });
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningArtifact(false);
+    }
+  }
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -2288,6 +2326,19 @@ function GuidedReview({
         </div>
 
         <div className="mt-6 flex gap-3">
+          {canOpenArtifact ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 rounded-md px-5"
+              onClick={() => void openReviewArtifact()}
+              disabled={openingArtifact}
+            >
+              {openingArtifact ? <Loader2 size={14} className="animate-spin" /> : null}
+              Open {reviewEvidence.artifactLabel.toLowerCase()}
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="sm"
@@ -2318,6 +2369,7 @@ function GuidedReview({
             View details
           </Button>
         </div>
+        {openError ? <p className="mt-3 text-xs text-red-700">{openError}</p> : null}
       </div>
     </div>
   );
@@ -3638,6 +3690,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
             run={selectedRun}
             playbook={selectedPlaybookForUi}
             reviewEvidence={selectedReviewEvidence}
+            workspaceRoot={workspaceRoot}
             onApprove={() => void resumeRun("approve")}
             onStop={() => void resumeRun("deny")}
             onViewDetails={() => setShowDetails(true)}

@@ -2353,6 +2353,70 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("materializes declared artifact paths when artifacts are produced", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.declared-materialize",
+        version: "0.1.0",
+        name: "Declared Materialize Graph",
+        artifacts: {
+          brief: { schema: "schemas/brief.schema.json", materialize: "outputs/brief.md" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "script",
+            run: "scripts/draft.ts",
+            inputs: {},
+            outputArtifact: "brief",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return { markdown: "# Content brief\n\nA concise reviewable brief." };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as { run: { status: string } };
+      expect(detail.run.status).toBe("completed");
+      await expect(readFile(join(workspaceRoot, "outputs/brief.md"), "utf8")).resolves.toBe(
+        "# Content brief\n\nA concise reviewable brief.\n"
+      );
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   test("materializes templated markdown artifact paths from graph agent output", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");

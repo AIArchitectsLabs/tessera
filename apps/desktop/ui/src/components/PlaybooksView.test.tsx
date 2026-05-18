@@ -168,6 +168,16 @@ const graphRunDetail = {
       schemaVersion: 1,
       snapshotJson: JSON.stringify({
         graph: {
+          artifacts: {
+            contentBrief: {
+              schema: "schemas/contentBrief.schema.json",
+              materialize: "outputs/content-brief.md",
+            },
+            articleDraft: {
+              schema: "schemas/articleDraft.schema.json",
+              materialize: "outputs/article-draft.md",
+            },
+          },
           nodes: [
             {
               id: "writeBrief",
@@ -225,7 +235,21 @@ const graphRunDetail = {
     },
   ],
   branchItems: [],
-  artifacts: [],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-1",
+      artifactId: "contentBrief",
+      versionId: "content-brief-v1",
+      producerQueueEntryId: "queue-draft",
+      nodePath: "draft",
+      contentHash: "sha256:content-brief",
+      value: {
+        text: "# Content Brief\n\n## Title\nActive brief\n\n## Thesis\nA practical brief for the article.",
+      },
+      createdAt: "2026-05-15T00:00:30.000Z",
+    },
+  ],
   reviews: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
@@ -422,6 +446,22 @@ const articleReviewGraphRunDetail = {
       createdAt: "2026-05-15T00:03:00.000Z",
       updatedAt: "2026-05-15T00:03:00.000Z",
       blockedReason: "human review required",
+    },
+  ],
+  artifacts: [
+    ...graphRunDetail.artifacts,
+    {
+      schemaVersion: 1,
+      runId: "graph-run-1",
+      artifactId: "articleDraft",
+      versionId: "article-draft-v1",
+      producerQueueEntryId: "queue-draft-article",
+      nodePath: "draftArticle",
+      contentHash: "sha256:article-draft",
+      value: {
+        text: "# Article Draft\n\nA complete article draft based on the approved brief.",
+      },
+      createdAt: "2026-05-15T00:02:30.000Z",
     },
   ],
 } satisfies PlaybookGraphRunDetail;
@@ -967,6 +1007,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
           },
         ],
       } satisfies AgentProfileListResult;
+    case "workspace_file_open":
+      return null;
     default:
       throw new Error(`Unexpected invoke command: ${command}`);
   }
@@ -1269,7 +1311,19 @@ describe("PlaybooksView", () => {
         view.getByText("Brief needs stronger thesis, sources, or outline coverage.")
       ).toBeTruthy();
       expect(view.getByText(/A practical brief for the article/)).toBeTruthy();
+      expect(view.getByRole("button", { name: "Open content brief" })).toBeTruthy();
       expect(view.getByRole("button", { name: "Approve brief" })).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Open content brief" }));
+    await waitFor(() => {
+      expect(
+        invoke.mock.calls.some(
+          ([command, args]) =>
+            command === "workspace_file_open" &&
+            (args as Record<string, unknown>)?.path === "outputs/content-brief.md"
+        )
+      ).toBe(true);
     });
 
     fireEvent.click(view.getByRole("button", { name: "View details" }));
@@ -1303,6 +1357,7 @@ describe("PlaybooksView", () => {
       expect(view.getByText("Article Draft")).toBeTruthy();
       expect(view.getByText("84/100")).toBeTruthy();
       expect(view.getByText("Article is ready for final source summary.")).toBeTruthy();
+      expect(view.getByRole("button", { name: "Open article draft" })).toBeTruthy();
     });
     expect(
       view.queryByText("Brief needs stronger thesis, sources, or outline coverage.")

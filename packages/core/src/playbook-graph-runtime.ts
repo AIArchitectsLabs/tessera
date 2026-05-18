@@ -359,6 +359,33 @@ function outputArtifacts(node: PlaybookGraphNode): string[] {
   return [];
 }
 
+async function materializeDeclaredArtifacts(
+  compiled: CompiledPlaybookGraph,
+  options: PlaybookGraphRuntimeOptions,
+  run: PlaybookGraphRunRecord,
+  queueEntry: PlaybookGraphQueueEntry,
+  versions: PlaybookGraphArtifactVersion[]
+): Promise<void> {
+  if (!options.artifactWriteAdapter || versions.length === 0) return;
+
+  for (const artifactVersion of versions) {
+    const declaration = compiled.graph.artifacts[artifactVersion.artifactId];
+    if (!declaration?.materialize) continue;
+    await options.artifactWriteAdapter({
+      run,
+      queueEntry,
+      artifactVersion,
+      value: artifactVersion.value,
+      node: {
+        id: `${queueEntry.nodeId}.${artifactVersion.artifactId}.materialize`,
+        kind: "artifactWrite",
+        artifact: artifactVersion.artifactId,
+        path: declaration.materialize,
+      },
+    });
+  }
+}
+
 function shouldMemoizeNode(
   node: PlaybookGraphNode,
   toolPolicy: PlaybookGraphToolExecutionPolicy | undefined
@@ -1625,6 +1652,7 @@ export async function drainPlaybookGraphRun(
       versionId: version.versionId,
       contentHash: version.contentHash,
     }));
+    await materializeDeclaredArtifacts(compiled, options, run, queueEntry, newArtifactVersions);
     const nodeMemo: PlaybookGraphNodeMemo | undefined = shouldMemoizeNode(node, toolPolicy)
       ? {
           schemaVersion: 1,
