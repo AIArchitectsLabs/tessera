@@ -312,6 +312,7 @@ class MemoryGraphRunStore implements GraphRunStore {
     runId: string;
     runtimeId: string;
     now: string;
+    hardTimeoutMs?: (kind: PlaybookGraphQueueEntry["nodeKind"]) => number | undefined;
   }): Promise<{
     inspected: number;
     autoRequeued: number;
@@ -322,26 +323,48 @@ class MemoryGraphRunStore implements GraphRunStore {
     let autoRequeued = 0;
     let needsAttention = 0;
     for (const entry of this.queue.values()) {
-      if (
-        entry.runId !== input.runId ||
-        entry.status !== "running" ||
-        !entry.leaseExpiresAt ||
-        entry.leaseExpiresAt > input.now
-      ) {
+      if (entry.runId !== input.runId || entry.status !== "running") {
         continue;
       }
+      const leaseExpired = !!entry.leaseExpiresAt && entry.leaseExpiresAt <= input.now;
+      const heartbeatStaleMs =
+        entry.lastHeartbeatAt && Date.parse(input.now) - Date.parse(entry.lastHeartbeatAt);
+      const heartbeatStale =
+        typeof heartbeatStaleMs === "number" && heartbeatStaleMs > HEARTBEAT_STALENESS_MS;
+      const hardMs = input.hardTimeoutMs?.(entry.nodeKind);
+      const hardCrossed =
+        typeof hardMs === "number" &&
+        !!entry.claimedAt &&
+        Date.parse(input.now) - Date.parse(entry.claimedAt) > hardMs;
+      if (!leaseExpired && !heartbeatStale && !hardCrossed) continue;
       inspected += 1;
+      const code = hardCrossed
+        ? ("hard_timeout" as const)
+        : heartbeatStale
+          ? ("stale_heartbeat" as const)
+          : ("stale_lease" as const);
+      const thresholdMs = hardCrossed
+        ? hardMs
+        : heartbeatStale
+          ? HEARTBEAT_STALENESS_MS
+          : undefined;
       const reason =
-        "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
+        code === "hard_timeout"
+          ? `Step exceeded hard timeout of ${hardMs}ms`
+          : code === "stale_heartbeat"
+            ? "Worker stopped emitting heartbeats; presumed lost"
+            : "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
       const attentionEvidence = {
-        code: "stale_lease" as const,
+        code,
         reason,
         observedAt: input.now,
         previousQueueStatus: "running" as const,
         ...(entry.runtimeId ? { lastRuntimeId: entry.runtimeId } : {}),
         ...(entry.leaseId ? { lastLeaseId: entry.leaseId } : {}),
         ...(entry.claimedAt ? { lastClaimedAt: entry.claimedAt } : {}),
-        leaseExpiredAt: entry.leaseExpiresAt,
+        ...(entry.leaseExpiresAt && leaseExpired ? { leaseExpiredAt: entry.leaseExpiresAt } : {}),
+        ...(thresholdMs ? { thresholdMs } : {}),
+        ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
         recoveryDecision:
           entry.recoveryPolicy === "rerun_if_no_success_memo"
             ? ("auto_requeued" as const)
@@ -377,6 +400,25 @@ class MemoryGraphRunStore implements GraphRunStore {
           updatedAt: input.now,
         });
         needsAttention += 1;
+      }
+      if (code === "hard_timeout") {
+        this.operations.push({
+          schemaVersion: 1,
+          operationRecordId: `${entry.queueEntryId}:hard-timeout:v${entry.attempt}`,
+          operationAttemptId: `${entry.queueEntryId}:hard-timeout:v${entry.attempt}`,
+          runId: entry.runId,
+          actionSpecId: "system.timeout.hard",
+          kind: "hard_timeout_observed",
+          status: "succeeded",
+          operatorIntent: "Step exceeded hard timeout",
+          queueEntryId: entry.queueEntryId,
+          affectedArtifactIds: [],
+          affectedReviewEventIds: [],
+          affectedQueueEntryIds: [entry.queueEntryId],
+          createdAt: input.now,
+          completedAt: input.now,
+          ...(thresholdMs ? { redactedPayloadSummary: `thresholdMs=${thresholdMs}` } : {}),
+        });
       }
     }
     return { inspected, autoRequeued, needsAttention, interrupted: 0 };
@@ -1750,11 +1792,11 @@ describe("drainPlaybookGraphRun", () => {
     expect(branchInputs).toEqual([{ id: "a" }, { id: "b" }]);
   });
 
-  test("parallelMap enforces branch limits before fan-out", async () => {
+  test("parallelMap enforces generated item limits before fan-out", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
-        limits: { maxConcurrentBranches: 1 },
+        limits: { maxGeneratedItems: 1 },
         artifacts: {
           items: { schema: "schemas/items.schema.json" },
           scorecard: { schema: "schemas/scorecard.schema.json" },
@@ -1806,8 +1848,69 @@ describe("drainPlaybookGraphRun", () => {
     });
 
     expect(result.run.status).toBe("failed");
-    expect(result.run.error).toContain("maxConcurrentBranches");
+    expect(result.run.error).toContain("maxGeneratedItems");
     expect(await store.listBranchItems(run.runId)).toEqual([]);
+  });
+
+  test("parallelMap allows total items above the concurrency window", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        limits: { maxConcurrentBranches: 4, maxGeneratedItems: 10, maxTotalBranches: 10 },
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          scorecard: { schema: "schemas/scorecard.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            branch: {
+              start: "scoreItem",
+              nodes: [
+                {
+                  id: "scoreItem",
+                  kind: "script",
+                  run: "scripts/score.ts",
+                  inputs: {},
+                  outputArtifact: "scorecard",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-map-concurrent-window",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-map-concurrent-window",
+      store,
+      scriptAdapter({ node }) {
+        if (node.id === "items") {
+          return Array.from({ length: 8 }, (_, index) => ({ id: `item-${index}` }));
+        }
+        return {};
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(await store.listBranchItems(run.runId)).toHaveLength(8);
   });
 
   test("resume reuses memoized queue work instead of rerunning a completed script", async () => {
@@ -2189,53 +2292,53 @@ describe("drainPlaybookGraphRun", () => {
   });
 
   test("soft timeout records a single observation when first crossed", async () => {
-  const store = new MemoryGraphRunStore();
-  const run = await createPlaybookGraphRun({
-    compiledGraph: compiledGraph({
-      nodes: [
-        {
-          id: "plan",
-          kind: "script",
-          run: "scripts/plan.ts",
-          inputs: {},
-          outputArtifact: "plan",
-          onSuccess: "completed",
-        },
-      ],
-    }),
-    store,
-    runId: "run-soft",
-    now: "2026-05-18T12:00:00.000Z",
-  });
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-soft",
+      now: "2026-05-18T12:00:00.000Z",
+    });
 
-  let tick = 0;
-  const result = await drainPlaybookGraphRun({
-    runId: run.runId,
-    runtimeId: "rt-soft",
-    store,
-    leaseMs: 30_000,
-    leaseRenewalMs: 5,
-    heartbeatMs: 5,
-    softTimeoutMs: () => 10,
-    now: (() => {
-      let ms = 0;
-      return () => {
-        const t = new Date(Date.parse("2026-05-18T12:00:00.000Z") + ms);
-        ms += 5;
-        return t.toISOString();
-      };
-    })(),
-    async scriptAdapter() {
-      await new Promise((r) => setTimeout(r, 60));
-      return { ok: true };
-    },
+    const tick = 0;
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "rt-soft",
+      store,
+      leaseMs: 30_000,
+      leaseRenewalMs: 5,
+      heartbeatMs: 5,
+      softTimeoutMs: () => 10,
+      now: (() => {
+        let ms = 0;
+        return () => {
+          const t = new Date(Date.parse("2026-05-18T12:00:00.000Z") + ms);
+          ms += 5;
+          return t.toISOString();
+        };
+      })(),
+      async scriptAdapter() {
+        await new Promise((r) => setTimeout(r, 60));
+        return { ok: true };
+      },
+    });
+    expect(result.run.status).toBe("completed");
+    const ops = await store.listOperationRecords(run.runId);
+    const soft = ops.filter((op) => op.kind === "soft_timeout_observed");
+    expect(soft.length).toBe(1);
+    expect(soft[0]?.queueEntryId).toBeDefined();
   });
-  expect(result.run.status).toBe("completed");
-  const ops = await store.listOperationRecords(run.runId);
-  const soft = ops.filter((op) => op.kind === "soft_timeout_observed");
-  expect(soft.length).toBe(1);
-  expect(soft[0].queueEntryId).toBeDefined();
-});
 
   test("heartbeat ticker bumps lastHeartbeatAt while adapter runs", async () => {
     const store = new MemoryGraphRunStore();
@@ -2343,9 +2446,7 @@ describe("MemoryGraphRunStore.bumpHeartbeat (test-double behavior)", () => {
       })
     ).toBe(true);
 
-    expect((await store.getQueue("run-1"))[0].lastHeartbeatAt).toBe(
-      "2026-05-18T12:00:10.000Z"
-    );
+    expect((await store.getQueue("run-1"))[0]?.lastHeartbeatAt).toBe("2026-05-18T12:00:10.000Z");
 
     expect(
       await store.bumpHeartbeat({
@@ -2356,9 +2457,7 @@ describe("MemoryGraphRunStore.bumpHeartbeat (test-double behavior)", () => {
       })
     ).toBe(false);
 
-    expect((await store.getQueue("run-1"))[0].lastHeartbeatAt).toBe(
-      "2026-05-18T12:00:10.000Z"
-    );
+    expect((await store.getQueue("run-1"))[0]?.lastHeartbeatAt).toBe("2026-05-18T12:00:10.000Z");
   });
 });
 

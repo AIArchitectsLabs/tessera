@@ -148,6 +148,7 @@ export interface GraphRunStore {
     runId: string;
     runtimeId: string;
     now: string;
+    hardTimeoutMs?: (kind: PlaybookGraphQueueEntry["nodeKind"]) => number | undefined;
   }): Promise<GraphRunStaleLeaseRecoveryResult>;
 
   checkpointNodeSuccess(input: {
@@ -226,6 +227,7 @@ export interface PlaybookGraphRuntimeOptions {
   leaseRenewalMs?: number;
   heartbeatMs?: number;
   softTimeoutMs?: (kind: PlaybookGraphQueueEntry["nodeKind"]) => number | undefined;
+  hardTimeoutMs?: (kind: PlaybookGraphQueueEntry["nodeKind"]) => number | undefined;
   maxSteps?: number;
   executionContext?: unknown;
   blockOnMissingAdapters?: boolean;
@@ -308,8 +310,7 @@ async function withHeartbeatTicker<T>(
   work: () => Promise<T> | T
 ): Promise<T> {
   const cadence = options.heartbeatMs ?? heartbeatCadenceMs(queueEntry.nodeKind);
-  const softMs =
-    options.softTimeoutMs?.(queueEntry.nodeKind) ?? softTimeoutMs(queueEntry.nodeKind);
+  const softMs = options.softTimeoutMs?.(queueEntry.nodeKind) ?? softTimeoutMs(queueEntry.nodeKind);
   if (!cadence || !queueEntry.leaseId || queueEntry.status !== "running") {
     return work();
   }
@@ -1044,7 +1045,6 @@ function assertParallelMapLimits(input: {
   const checks = [
     ["maxGeneratedItems", limits.maxGeneratedItems],
     ["maxTotalBranches", limits.maxTotalBranches],
-    ["maxConcurrentBranches", limits.maxConcurrentBranches],
   ] as const;
   for (const [name, limit] of checks) {
     if (limit === undefined || input.itemCount <= limit) continue;
@@ -1389,6 +1389,7 @@ export async function drainPlaybookGraphRun(
     runId: run.runId,
     runtimeId: options.runtimeId,
     now: recoveredAt,
+    hardTimeoutMs: options.hardTimeoutMs ?? hardTimeoutMs,
   });
 
   let executed = 0;
@@ -1722,85 +1723,85 @@ export async function drainPlaybookGraphRun(
     try {
       output = await withQueueLeaseRenewal(options, queueEntry, leaseMs, now, () =>
         withHeartbeatTicker(options, queueEntry, now, async () => {
-        if (node.kind === "script") {
-          if (!options.scriptAdapter) {
-            throw new Error("Script adapter is required for graph script nodes");
+          if (node.kind === "script") {
+            if (!options.scriptAdapter) {
+              throw new Error("Script adapter is required for graph script nodes");
+            }
+            return options.scriptAdapter({
+              run: claimedRun,
+              node: resolvedNode as Extract<PlaybookGraphNode, { kind: "script" }>,
+              queueEntry,
+              input: branchInput(claimedRun.input, branchItem),
+              artifacts,
+              ...(branchItem ? { branchItem } : {}),
+            });
           }
-          return options.scriptAdapter({
-            run: claimedRun,
-            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "script" }>,
-            queueEntry,
-            input: branchInput(claimedRun.input, branchItem),
-            artifacts,
-            ...(branchItem ? { branchItem } : {}),
-          });
-        }
-        if (node.kind === "agent") {
-          if (!options.agentAdapter) {
-            throw new Error("Agent adapter is required for graph agent nodes");
+          if (node.kind === "agent") {
+            if (!options.agentAdapter) {
+              throw new Error("Agent adapter is required for graph agent nodes");
+            }
+            return options.agentAdapter({
+              run: claimedRun,
+              node: resolvedNode as Extract<PlaybookGraphNode, { kind: "agent" }>,
+              queueEntry,
+              input: branchInput(claimedRun.input, branchItem),
+              artifacts,
+              ...(claimedRun.snapshot.sourceFiles?.[node.prompt] === undefined
+                ? {}
+                : { prompt: claimedRun.snapshot.sourceFiles[node.prompt] }),
+              ...(branchItem ? { branchItem } : {}),
+            });
           }
-          return options.agentAdapter({
-            run: claimedRun,
-            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "agent" }>,
-            queueEntry,
-            input: branchInput(claimedRun.input, branchItem),
-            artifacts,
-            ...(claimedRun.snapshot.sourceFiles?.[node.prompt] === undefined
-              ? {}
-              : { prompt: claimedRun.snapshot.sourceFiles[node.prompt] }),
-            ...(branchItem ? { branchItem } : {}),
-          });
-        }
-        if (node.kind === "tool") {
-          if (!options.toolAdapter) {
-            throw new Error("Tool adapter is required for graph tool nodes");
+          if (node.kind === "tool") {
+            if (!options.toolAdapter) {
+              throw new Error("Tool adapter is required for graph tool nodes");
+            }
+            return options.toolAdapter({
+              run: claimedRun,
+              node: resolvedNode as Extract<PlaybookGraphNode, { kind: "tool" }>,
+              queueEntry,
+              input: branchInput(claimedRun.input, branchItem),
+              artifacts,
+              ...(branchItem ? { branchItem } : {}),
+            });
           }
-          return options.toolAdapter({
-            run: claimedRun,
-            node: resolvedNode as Extract<PlaybookGraphNode, { kind: "tool" }>,
-            queueEntry,
-            input: branchInput(claimedRun.input, branchItem),
-            artifacts,
-            ...(branchItem ? { branchItem } : {}),
-          });
-        }
-        if (node.kind === "parallelMap") {
-          const work = createParallelMapBranchWork({
-            compiled,
-            run: claimedRun,
-            node,
-            queueEntry,
-            artifactVersions,
-            artifacts,
-            now: now(),
-          });
-          branchUpdates = work.branchItems;
-          extraQueueEntries = work.queueEntries;
-          return { branchCount: work.branchItems.length };
-        }
-        if (node.kind === "artifactWrite") {
-          const artifactVersion = latestArtifactVersion(artifactVersions, node.artifact);
-          if (!artifactVersion) {
-            throw new Error(`Missing artifact version for artifactWrite: ${node.artifact}`);
+          if (node.kind === "parallelMap") {
+            const work = createParallelMapBranchWork({
+              compiled,
+              run: claimedRun,
+              node,
+              queueEntry,
+              artifactVersions,
+              artifacts,
+              now: now(),
+            });
+            branchUpdates = work.branchItems;
+            extraQueueEntries = work.queueEntries;
+            return { branchCount: work.branchItems.length };
           }
-          return options.artifactWriteAdapter?.({
-            run: claimedRun,
-            node,
-            queueEntry,
-            artifactVersion,
-            value: artifactVersion.value,
-          });
-        }
-        if (node.kind === "condition") {
-          return {
-            result: Object.is(
-              readJsonPath(artifacts[node.when.artifact], node.when.path),
-              node.when.equals
-            ),
-          };
-        }
-        return {};
-      })
+          if (node.kind === "artifactWrite") {
+            const artifactVersion = latestArtifactVersion(artifactVersions, node.artifact);
+            if (!artifactVersion) {
+              throw new Error(`Missing artifact version for artifactWrite: ${node.artifact}`);
+            }
+            return options.artifactWriteAdapter?.({
+              run: claimedRun,
+              node,
+              queueEntry,
+              artifactVersion,
+              value: artifactVersion.value,
+            });
+          }
+          if (node.kind === "condition") {
+            return {
+              result: Object.is(
+                readJsonPath(artifacts[node.when.artifact], node.when.path),
+                node.when.equals
+              ),
+            };
+          }
+          return {};
+        })
       );
     } catch (error) {
       const updatedAt = now();

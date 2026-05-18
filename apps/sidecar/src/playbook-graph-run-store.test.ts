@@ -485,9 +485,183 @@ describe("createPlaybookGraphRunStore", () => {
     const manual = queue.find((entry) => entry.queueEntryId === "queue-manual");
     expect(safeRecovered?.status).toBe("queued");
     expect(safeRecovered?.attentionEvidence?.recoveryDecision).toBe("auto_requeued");
+    expect(await store.listOperationRecords(run.runId)).toContainEqual(
+      expect.objectContaining({
+        actionSpecId: "system.recovery.auto_retry",
+        kind: "retry_needs_attention",
+        affectedQueueEntryIds: [safe.queueEntryId],
+      })
+    );
     expect(manual?.status).toBe("needs_attention");
     expect(manual?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
     expect(manual?.runtimeId).toBeUndefined();
+    store.close();
+  });
+
+  test("bumpHeartbeat updates lastHeartbeatAt when lease matches and no-ops otherwise", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      leaseId: "lease-A",
+      leaseExpiresAt: "2026-05-15T00:01:00.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+
+    expect(
+      await store.bumpHeartbeat({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        leaseId: "lease-A",
+        now: "2026-05-15T00:00:10.000Z",
+      })
+    ).toBe(true);
+    expect((await store.getQueue(run.runId))[0]?.lastHeartbeatAt).toBe("2026-05-15T00:00:10.000Z");
+    expect(
+      await store.bumpHeartbeat({
+        runId: run.runId,
+        queueEntryId: claimed.queueEntryId,
+        leaseId: "lease-stale",
+        now: "2026-05-15T00:00:20.000Z",
+      })
+    ).toBe(false);
+    expect((await store.getQueue(run.runId))[0]?.lastHeartbeatAt).toBe("2026-05-15T00:00:10.000Z");
+    store.close();
+  });
+
+  test("recoverStaleQueueLeases transitions stale-heartbeat work to needs_attention", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-old",
+      leaseId: "lease-old",
+      leaseExpiresAt: "2026-05-15T00:05:00.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+    await store.updateQueueEntry({
+      ...claimed,
+      recoveryPolicy: "block_for_review",
+      lastHeartbeatAt: "2026-05-15T00:00:10.000Z",
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+
+    const result = await store.recoverStaleQueueLeases({
+      runId: run.runId,
+      runtimeId: "runtime-new",
+      now: "2026-05-15T00:01:00.000Z",
+      hardTimeoutMs: () => 30 * 60_000,
+    });
+
+    expect(result.needsAttention).toBe(1);
+    const entry = (await store.getQueue(run.runId))[0];
+    expect(entry?.status).toBe("needs_attention");
+    expect(entry?.attentionEvidence?.code).toBe("stale_heartbeat");
+    expect(entry?.attentionEvidence?.thresholdMs).toBe(45_000);
+    store.close();
+  });
+
+  test("recoverStaleQueueLeases transitions hard-timeout work and emits operation record", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-old",
+      leaseId: "lease-old",
+      leaseExpiresAt: "2026-05-15T00:40:00.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+    await store.updateQueueEntry({
+      ...claimed,
+      nodeKind: "agent",
+      recoveryPolicy: "block_for_review",
+      claimedAt: "2026-05-15T00:00:00.000Z",
+      lastHeartbeatAt: "2026-05-15T00:30:59.000Z",
+      updatedAt: "2026-05-15T00:30:59.000Z",
+    });
+
+    const result = await store.recoverStaleQueueLeases({
+      runId: run.runId,
+      runtimeId: "runtime-new",
+      now: "2026-05-15T00:31:00.000Z",
+      hardTimeoutMs: (kind) => (kind === "agent" ? 30 * 60_000 : undefined),
+    });
+
+    expect(result.needsAttention).toBe(1);
+    const entry = (await store.getQueue(run.runId))[0];
+    expect(entry?.attentionEvidence?.code).toBe("hard_timeout");
+    expect(entry?.attentionEvidence?.thresholdMs).toBe(30 * 60_000);
+    const ops = await store.listOperationRecords(run.runId);
+    expect(ops.some((op) => op.kind === "hard_timeout_observed")).toBe(true);
+    store.close();
+  });
+
+  test("recoverStaleQueueLeases does not auto-requeue after budget or hard timeout", async () => {
+    const { dbPath, run } = await createRunAndQueue();
+    const store = createPlaybookGraphRunStore(dbPath);
+    const claimed = await store.claimNextQueuedEntry({
+      runId: run.runId,
+      runtimeId: "runtime-old",
+      leaseId: "lease-old",
+      leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      now,
+    });
+    if (!claimed) throw new Error("Missing claim");
+    await store.addOperationRecord({
+      schemaVersion: 1,
+      operationRecordId: `${claimed.queueEntryId}:auto-retry`,
+      operationAttemptId: `${claimed.queueEntryId}:auto-retry`,
+      runId: run.runId,
+      actionSpecId: "system.recovery.auto_retry",
+      kind: "retry_needs_attention",
+      status: "succeeded",
+      operatorIntent: "Automatically retry interrupted step",
+      queueEntryId: claimed.queueEntryId,
+      affectedArtifactIds: [],
+      affectedReviewEventIds: [],
+      affectedQueueEntryIds: [claimed.queueEntryId],
+      createdAt: "2026-05-15T00:00:00.500Z",
+      completedAt: "2026-05-15T00:00:00.500Z",
+    });
+
+    expect(
+      await store.recoverStaleQueueLeases({
+        runId: run.runId,
+        runtimeId: "runtime-new",
+        now: "2026-05-15T00:00:02.000Z",
+      })
+    ).toEqual({ inspected: 1, autoRequeued: 0, needsAttention: 1, interrupted: 0 });
+    expect((await store.getQueue(run.runId))[0]?.status).toBe("needs_attention");
+    expect((await store.getQueue(run.runId))[0]?.attentionEvidence?.recoveryDecision).toBe(
+      "needs_attention"
+    );
+
+    await store.updateQueueEntry({
+      ...claimed,
+      status: "running",
+      runtimeId: "runtime-old",
+      leaseId: "lease-hard",
+      claimedAt: "2026-05-15T00:00:00.000Z",
+      leaseExpiresAt: "2026-05-15T00:40:00.000Z",
+      attentionEvidence: undefined,
+      updatedAt: "2026-05-15T00:30:59.000Z",
+    });
+    const hardResult = await store.recoverStaleQueueLeases({
+      runId: run.runId,
+      runtimeId: "runtime-new",
+      now: "2026-05-15T00:31:00.000Z",
+      hardTimeoutMs: () => 30 * 60_000,
+    });
+
+    expect(hardResult).toMatchObject({ autoRequeued: 0, needsAttention: 1 });
+    const hardEntry = (await store.getQueue(run.runId))[0];
+    expect(hardEntry?.status).toBe("needs_attention");
+    expect(hardEntry?.attentionEvidence?.code).toBe("hard_timeout");
+    expect(hardEntry?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
     store.close();
   });
 

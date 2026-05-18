@@ -20,7 +20,12 @@ import {
   PlaybookGraphReviewEventSchema,
   PlaybookGraphRunRecordSchema,
 } from "@tessera/contracts";
-import { type GraphRunStore, parsePinnedCompiledGraph, stableJsonStringify } from "@tessera/core";
+import {
+  type GraphRunStore,
+  HEARTBEAT_STALENESS_MS,
+  parsePinnedCompiledGraph,
+  stableJsonStringify,
+} from "@tessera/core";
 import { configureSidecarSqlite } from "./sqlite.js";
 
 type PayloadRow = { payload: string };
@@ -161,6 +166,13 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     );
   `);
 
+  const queueColumns = db
+    .query<{ name: string }, []>("PRAGMA table_info(playbook_graph_queue)")
+    .all();
+  if (!queueColumns.some((column) => column.name === "last_heartbeat_at")) {
+    db.run("ALTER TABLE playbook_graph_queue ADD COLUMN last_heartbeat_at TEXT");
+  }
+
   const saveRun = db.prepare(`
     INSERT INTO playbook_graph_runs (run_id, playbook_id, status, snapshot_hash, payload, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -201,9 +213,9 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   const saveQueue = db.prepare(`
     INSERT INTO playbook_graph_queue (
       queue_entry_id, run_id, node_path, status, runtime_id, lease_id, lease_expires_at,
-      depends_on_json, consumes_artifacts_json, payload, updated_at
+      last_heartbeat_at, depends_on_json, consumes_artifacts_json, payload, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(queue_entry_id) DO UPDATE SET
       run_id = excluded.run_id,
       node_path = excluded.node_path,
@@ -211,6 +223,7 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       runtime_id = excluded.runtime_id,
       lease_id = excluded.lease_id,
       lease_expires_at = excluded.lease_expires_at,
+      last_heartbeat_at = excluded.last_heartbeat_at,
       depends_on_json = excluded.depends_on_json,
       consumes_artifacts_json = excluded.consumes_artifacts_json,
       payload = excluded.payload,
@@ -272,6 +285,16 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     )
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const bumpHeartbeatStatement = db.prepare(`
+    UPDATE playbook_graph_queue
+    SET last_heartbeat_at = ?,
+        updated_at = ?,
+        payload = json_set(payload, '$.lastHeartbeatAt', ?, '$.updatedAt', ?)
+    WHERE queue_entry_id = ?
+      AND run_id = ?
+      AND status = 'running'
+      AND lease_id = ?
+  `);
   const saveMemo = db.prepare(`
     INSERT INTO playbook_graph_node_memos (
       run_id, node_memo_key, queue_entry_id, node_path, payload, created_at
@@ -321,6 +344,7 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       parsed.runtimeId ?? null,
       parsed.leaseId ?? null,
       parsed.leaseExpiresAt ?? null,
+      parsed.lastHeartbeatAt ?? null,
       JSON.stringify(parsed.dependsOn),
       JSON.stringify(parsed.consumesArtifacts),
       JSON.stringify(parsed),
@@ -702,6 +726,18 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       });
       return true;
     },
+    async bumpHeartbeat(input) {
+      const result = bumpHeartbeatStatement.run(
+        input.now,
+        input.now,
+        input.now,
+        input.now,
+        input.queueEntryId,
+        input.runId,
+        input.leaseId
+      );
+      return result.changes === 1;
+    },
     async releaseQueueLease(input) {
       const entry = parseQueue(getQueuePayload.get(input.queueEntryId));
       if (
@@ -782,35 +818,91 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       let inspected = 0;
       let autoRequeued = 0;
       let needsAttention = 0;
+      const operationRecords = listOperations
+        .all(input.runId)
+        .map((row) => PlaybookGraphOperationRecordSchema.parse(parseJson<unknown>(row.payload)));
       for (const entry of getQueue.all(input.runId).flatMap((row) => {
         const parsed = parseQueue(row);
         return parsed ? [parsed] : [];
       })) {
-        if (
-          entry.status !== "running" ||
-          !entry.leaseExpiresAt ||
-          entry.leaseExpiresAt > input.now
-        ) {
-          continue;
-        }
+        if (entry.status !== "running") continue;
+
+        const leaseExpired = !!entry.leaseExpiresAt && entry.leaseExpiresAt <= input.now;
+        const heartbeatStaleMs =
+          entry.lastHeartbeatAt && Date.parse(input.now) - Date.parse(entry.lastHeartbeatAt);
+        const heartbeatStale =
+          typeof heartbeatStaleMs === "number" && heartbeatStaleMs > HEARTBEAT_STALENESS_MS;
+        const hardMs = input.hardTimeoutMs?.(entry.nodeKind);
+        const hardCrossed =
+          typeof hardMs === "number" &&
+          !!entry.claimedAt &&
+          Date.parse(input.now) - Date.parse(entry.claimedAt) > hardMs;
+
+        if (!leaseExpired && !heartbeatStale && !hardCrossed) continue;
+
         inspected += 1;
+
+        const code = hardCrossed
+          ? ("hard_timeout" as const)
+          : heartbeatStale
+            ? ("stale_heartbeat" as const)
+            : ("stale_lease" as const);
+        const thresholdMs = hardCrossed
+          ? hardMs
+          : heartbeatStale
+            ? HEARTBEAT_STALENESS_MS
+            : undefined;
         const reason =
-          "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
+          code === "hard_timeout"
+            ? `Step exceeded hard timeout of ${hardMs}ms`
+            : code === "stale_heartbeat"
+              ? "Worker stopped emitting heartbeats; presumed lost"
+              : "Tessera stopped while this step was running. This can happen if the app or sidecar restarted during the step.";
+        const alreadyAutoRetried = operationRecords.some(
+          (operation) =>
+            operation.kind === "retry_needs_attention" &&
+            operation.actionSpecId === "system.recovery.auto_retry" &&
+            operation.affectedQueueEntryIds.includes(entry.queueEntryId)
+        );
+        const shouldAutoRequeue =
+          entry.recoveryPolicy === "rerun_if_no_success_memo" &&
+          code !== "hard_timeout" &&
+          !alreadyAutoRetried;
         const attentionEvidence = {
-          code: "stale_lease" as const,
+          code,
           reason,
           observedAt: input.now,
           previousQueueStatus: "running" as const,
           ...(entry.runtimeId ? { lastRuntimeId: entry.runtimeId } : {}),
           ...(entry.leaseId ? { lastLeaseId: entry.leaseId } : {}),
           ...(entry.claimedAt ? { lastClaimedAt: entry.claimedAt } : {}),
-          leaseExpiredAt: entry.leaseExpiresAt,
-          recoveryDecision:
-            entry.recoveryPolicy === "rerun_if_no_success_memo"
-              ? ("auto_requeued" as const)
-              : ("needs_attention" as const),
+          ...(entry.leaseExpiresAt && leaseExpired ? { leaseExpiredAt: entry.leaseExpiresAt } : {}),
+          ...(thresholdMs ? { thresholdMs } : {}),
+          ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
+          recoveryDecision: shouldAutoRequeue
+            ? ("auto_requeued" as const)
+            : ("needs_attention" as const),
         };
-        if (entry.recoveryPolicy === "rerun_if_no_success_memo") {
+        if (shouldAutoRequeue) {
+          const operationRecord = PlaybookGraphOperationRecordSchema.parse({
+            schemaVersion: 1,
+            operationRecordId: `${entry.queueEntryId}:auto-retry`,
+            operationAttemptId: `${entry.queueEntryId}:auto-retry`,
+            runId: entry.runId,
+            actionSpecId: "system.recovery.auto_retry",
+            kind: "retry_needs_attention",
+            status: "succeeded",
+            operatorIntent: "Automatically retry interrupted step",
+            queueEntryId: entry.queueEntryId,
+            affectedArtifactIds: [],
+            affectedReviewEventIds: [],
+            affectedQueueEntryIds: [entry.queueEntryId],
+            createdAt: input.now,
+            completedAt: input.now,
+            redactedPayloadSummary: `attentionCode=${code}`,
+          });
+          writeOperationRecord(operationRecord);
+          operationRecords.push(operationRecord);
           writeQueue({
             ...entry,
             status: "queued",
@@ -840,6 +932,26 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
             updatedAt: input.now,
           });
           needsAttention += 1;
+        }
+
+        if (code === "hard_timeout") {
+          writeOperationRecord({
+            schemaVersion: 1,
+            operationRecordId: `${entry.queueEntryId}:hard-timeout:v${entry.attempt}`,
+            operationAttemptId: `${entry.queueEntryId}:hard-timeout:v${entry.attempt}`,
+            runId: entry.runId,
+            actionSpecId: "system.timeout.hard",
+            kind: "hard_timeout_observed",
+            status: "succeeded",
+            operatorIntent: "Step exceeded hard timeout",
+            queueEntryId: entry.queueEntryId,
+            affectedArtifactIds: [],
+            affectedReviewEventIds: [],
+            affectedQueueEntryIds: [entry.queueEntryId],
+            createdAt: input.now,
+            completedAt: input.now,
+            ...(thresholdMs ? { redactedPayloadSummary: `thresholdMs=${thresholdMs}` } : {}),
+          });
         }
       }
       return { inspected, autoRequeued, needsAttention, interrupted: 0 };

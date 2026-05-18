@@ -33,6 +33,7 @@ let handleCapabilityBinaryInstall:
 let handleGraphPlaybookInstall: typeof import("./server.js").handleGraphPlaybookInstall | undefined;
 let handleGraphPlaybookImport: typeof import("./server.js").handleGraphPlaybookImport | undefined;
 let handleGraphRunCreate: typeof import("./server.js").handleGraphRunCreate | undefined;
+let handleGraphRunDrain: typeof import("./server.js").handleGraphRunDrain | undefined;
 let handleGraphRunGet: typeof import("./server.js").handleGraphRunGet | undefined;
 let handleGraphRunList: typeof import("./server.js").handleGraphRunList | undefined;
 let handleGraphRunResume: typeof import("./server.js").handleGraphRunResume | undefined;
@@ -79,6 +80,7 @@ beforeAll(async () => {
     handleGraphPlaybookInstall = serverModule.handleGraphPlaybookInstall;
     handleGraphPlaybookImport = serverModule.handleGraphPlaybookImport;
     handleGraphRunCreate = serverModule.handleGraphRunCreate;
+    handleGraphRunDrain = serverModule.handleGraphRunDrain;
     handleGraphRunGet = serverModule.handleGraphRunGet;
     handleGraphRunList = serverModule.handleGraphRunList;
     handleGraphRunResume = serverModule.handleGraphRunResume;
@@ -990,7 +992,18 @@ describe("graph run endpoints", () => {
         activeArtifacts: Array<{ versionId: string; producerStatus?: string; value: unknown }>;
         artifactTimeline: Array<{ versionId: string; active: boolean; producerStatus?: string }>;
         timeline: Array<{ kind: string; artifactId?: string; synthetic: boolean }>;
-        actions: Array<{ decision: string; queueEntryId?: string; sideEffect: string }>;
+        actions: Array<{
+          decision: string;
+          label: string;
+          queueEntryId?: string;
+          sideEffect: string;
+        }>;
+        productView?: {
+          state: string;
+          title: string;
+          primaryAction?: { decision: string; label: string; queueEntryId?: string };
+          technicalSummary?: { internalStatus: string; queueEntryId?: string };
+        };
       };
       expect(surface.activeArtifacts).toHaveLength(1);
       expect(surface.activeArtifacts[0]).toMatchObject({
@@ -1015,12 +1028,29 @@ describe("graph run endpoints", () => {
         "edit_review",
         "request_changes",
       ]);
+      expect(surface.actions.find((action) => action.decision === "approve")).toMatchObject({
+        label: "Approve brief",
+        queueEntryId: reviewEntry.queueEntryId,
+      });
       expect(surface.actions.find((action) => action.decision === "request_changes")).toMatchObject(
         {
           queueEntryId: reviewEntry.queueEntryId,
           sideEffect: "invalidate_downstream",
         }
       );
+      expect(surface.productView).toMatchObject({
+        state: "waiting_for_review",
+        title: "Review needed",
+        primaryAction: {
+          decision: "approve",
+          label: "Approve brief",
+          queueEntryId: reviewEntry.queueEntryId,
+        },
+        technicalSummary: {
+          internalStatus: "blocked:blocked",
+          queueEntryId: reviewEntry.queueEntryId,
+        },
+      });
       expect({
         queue: (await store.getQueue(created.run.runId)).length,
         artifacts: (await store.listArtifactVersions(created.run.runId)).length,
@@ -2881,6 +2911,105 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("drain endpoint continues queued agent work with request runtime", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunDrain).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!handleGraphRunDrain) throw new Error("handleGraphRunDrain was not loaded");
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.agent-drain",
+        version: "0.1.0",
+        name: "Agent Drain",
+        artifacts: {
+          plan: { schema: "schemas/plan.schema.json" },
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "plan",
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "draft",
+          },
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: { plan: { artifact: "plan" } },
+            tools: [],
+            output: { artifact: "draft", schema: "schemas/draft.schema.json" },
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "scripts/plan.ts": "export default () => ({ title: 'Plan' });\n",
+        "prompts/draft.md": "Draft the plan.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+
+      await drainGraphRunWorkQueue({
+        store,
+        scriptAdapter() {
+          return { title: "Plan" };
+        },
+      });
+      const queuedDraft = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.nodeId === "draft"
+      );
+      expect(queuedDraft?.status).toBe("queued");
+
+      let agentCalls = 0;
+      const drainResponse = await handleGraphRunDrain(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/drain`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        created.run.runId,
+        {
+          store,
+          agentAdapter({ artifacts }) {
+            agentCalls += 1;
+            return { status: "completed", text: `Done: ${JSON.stringify(artifacts.plan)}` };
+          },
+        }
+      );
+
+      expect(drainResponse.status).toBe(200);
+      const drained = (await drainResponse.json()) as {
+        run: { status: string };
+        queue: Array<{ nodeId: string; status: string }>;
+      };
+      expect(agentCalls).toBe(1);
+      expect(drained.run.status).toBe("completed");
+      expect(drained.queue.find((entry) => entry.nodeId === "draft")?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("blocks graph work on execution context drift and resumes after approval", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
@@ -4159,7 +4288,7 @@ describe("graph run endpoints", () => {
     }
   });
 
-  test("background graph worker flags unsafe stale leases as needs attention", async () => {
+  test("background graph worker auto-recovers safe stale leases before surfacing user attention", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(drainGraphRunWorkQueue).toBeDefined();
     if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
@@ -4211,6 +4340,216 @@ describe("graph run endpoints", () => {
       expect(result).toMatchObject({
         inspected: 1,
         recovered: 1,
+        requeued: 1,
+        blocked: 0,
+        errors: [],
+      });
+      expect(calls).toBe(1);
+      expect((await store.getRun(detail.run.runId))?.status).toBe("completed");
+      expect(queueEntry?.status).toBe("succeeded");
+      expect(queueEntry?.attentionEvidence?.recoveryDecision).toBe("auto_requeued");
+      expect(await store.listOperationRecords(detail.run.runId)).toContainEqual(
+        expect.objectContaining({
+          actionSpecId: "system.recovery.auto_retry",
+          kind: "retry_needs_attention",
+          operatorIntent: "Automatically retry interrupted step",
+        })
+      );
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker surfaces retry after auto-recovery budget is exhausted", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.addOperationRecord({
+        schemaVersion: 1,
+        operationRecordId: `${claimed.queueEntryId}:auto-retry`,
+        operationAttemptId: `${claimed.queueEntryId}:auto-retry`,
+        runId: detail.run.runId,
+        actionSpecId: "system.recovery.auto_retry",
+        kind: "retry_needs_attention",
+        status: "succeeded",
+        operatorIntent: "Automatically retry interrupted step",
+        queueEntryId: claimed.queueEntryId,
+        affectedArtifactIds: [],
+        affectedReviewEventIds: [],
+        affectedQueueEntryIds: [claimed.queueEntryId],
+        createdAt: "2026-05-15T00:00:00.500Z",
+        completedAt: "2026-05-15T00:00:00.500Z",
+      });
+      await store.updateQueueEntry({
+        ...claimed,
+        recoveryPolicy: "block_for_review",
+      });
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+
+      const result = await drainGraphRunWorkQueue({
+        store,
+        runtimeId: "worker-runtime",
+        now: () => "2026-05-15T00:00:02.000Z",
+        scriptAdapter() {
+          return { ok: true };
+        },
+      });
+
+      const queueEntry = (await store.getQueue(detail.run.runId))[0];
+      expect(result).toMatchObject({
+        inspected: 1,
+        recovered: 1,
+        requeued: 0,
+        blocked: 1,
+        errors: [],
+      });
+      expect((await store.getRun(detail.run.runId))?.status).toBe("needs_attention");
+      expect(queueEntry?.status).toBe("needs_attention");
+      expect(queueEntry?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/review-surface`),
+        detail.run.runId,
+        { store }
+      );
+      const surface = (await surfaceResponse?.json()) as {
+        productView?: {
+          state: string;
+          title: string;
+          message: string;
+          primaryAction?: { decision: string; label: string; queueEntryId?: string };
+          technicalSummary?: { attentionCode?: string; internalStatus: string };
+        };
+      };
+      expect(surface.productView).toMatchObject({
+        state: "retry_available",
+        title: "Step interrupted",
+        message: "A playbook step was interrupted. Tessera can retry it.",
+        primaryAction: {
+          decision: "retry_needs_attention",
+          label: "Retry step",
+          queueEntryId: queueEntry?.queueEntryId,
+        },
+        technicalSummary: {
+          attentionCode: "stale_lease",
+          internalStatus: "needs_attention:needs_attention",
+        },
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker does not auto-recover non-read tool policies", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.external-tool",
+        version: "0.1.0",
+        name: "External Tool Graph",
+        artifacts: {
+          ticket: { schema: "schemas/ticket.schema.json" },
+        },
+        start: "ticket",
+        nodes: [
+          {
+            id: "ticket",
+            kind: "tool",
+            capability: "integration.crm.upsert",
+            args: {},
+            outputArtifact: "ticket",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:00:00.000Z",
+      });
+      let calls = 0;
+
+      const result = await drainGraphRunWorkQueue({
+        store,
+        runtimeId: "worker-runtime",
+        now: () => "2026-05-15T00:00:02.000Z",
+        toolAdapter() {
+          calls += 1;
+          return { ok: true };
+        },
+        toolPolicies: {
+          "integration.crm.upsert": {
+            capability: "integration.crm.upsert",
+            idempotent: true,
+            sideEffect: "external",
+          },
+        },
+        toolCapabilities: ["integration.crm.upsert"],
+      });
+
+      const queueEntry = (await store.getQueue(detail.run.runId))[0];
+      expect(result).toMatchObject({
+        inspected: 1,
+        recovered: 1,
         requeued: 0,
         blocked: 1,
         errors: [],
@@ -4219,6 +4558,141 @@ describe("graph run endpoints", () => {
       expect((await store.getRun(detail.run.runId))?.status).toBe("needs_attention");
       expect(queueEntry?.status).toBe("needs_attention");
       expect(queueEntry?.attentionEvidence?.recoveryDecision).toBe("needs_attention");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("projects retry product state for interrupted queue entries on blocked runs", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:00:01.000Z",
+      });
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.updateQueueEntry({
+        ...claimed,
+        status: "interrupted",
+        blockedReason: "worker interrupted",
+        updatedAt: "2026-05-15T00:00:02.000Z",
+      });
+      await store.updateRun({
+        ...run,
+        status: "blocked",
+        currentQueueEntryId: claimed.queueEntryId,
+        blockedReason: "worker interrupted",
+        updatedAt: "2026-05-15T00:00:02.000Z",
+      });
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/review-surface`),
+        detail.run.runId,
+        { store }
+      );
+      const surface = (await surfaceResponse?.json()) as {
+        productView?: {
+          state: string;
+          title: string;
+          primaryAction?: { decision: string; label: string; queueEntryId?: string };
+          technicalSummary?: { internalStatus: string };
+        };
+      };
+
+      expect(surface.productView).toMatchObject({
+        state: "retry_available",
+        title: "Step interrupted",
+        primaryAction: {
+          decision: "retry_interrupted",
+          label: "Retry step",
+          queueEntryId: claimed.queueEntryId,
+        },
+        technicalSummary: {
+          internalStatus: "blocked:interrupted",
+        },
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("background graph worker does not auto-recover hard timeouts", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(drainGraphRunWorkQueue).toBeDefined();
+    if (!drainGraphRunWorkQueue) throw new Error("drainGraphRunWorkQueue was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const claimed = await store.claimNextQueuedEntry({
+        runId: detail.run.runId,
+        runtimeId: "old-runtime",
+        leaseId: "old-lease",
+        now: "2026-05-15T00:00:00.000Z",
+        leaseExpiresAt: "2026-05-15T00:10:00.000Z",
+      });
+      const run = await store.getRun(detail.run.runId);
+      if (!run || !claimed) throw new Error("Missing claimed graph run");
+      await store.updateQueueEntry({
+        ...claimed,
+        recoveryPolicy: "block_for_review",
+        lastHeartbeatAt: "2026-05-15T00:02:59.000Z",
+      });
+      await store.updateRun({
+        ...run,
+        status: "running",
+        currentQueueEntryId: claimed.queueEntryId,
+        updatedAt: "2026-05-15T00:02:59.000Z",
+      });
+
+      const result = await drainGraphRunWorkQueue({
+        store,
+        runtimeId: "worker-runtime",
+        now: () => "2026-05-15T00:03:00.000Z",
+        scriptAdapter() {
+          return { ok: true };
+        },
+      });
+
+      const queueEntry = (await store.getQueue(detail.run.runId))[0];
+      expect(result).toMatchObject({
+        inspected: 1,
+        recovered: 1,
+        requeued: 0,
+        blocked: 1,
+        errors: [],
+      });
+      expect((await store.getRun(detail.run.runId))?.status).toBe("needs_attention");
+      expect(queueEntry?.status).toBe("needs_attention");
+      expect(queueEntry?.attentionEvidence?.code).toBe("hard_timeout");
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });

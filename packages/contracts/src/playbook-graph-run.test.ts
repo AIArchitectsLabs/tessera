@@ -16,6 +16,7 @@ import {
   PlaybookGraphRunRecordSchema,
   PlaybookGraphRunReviewSurfaceSchema,
   PlaybookGraphSnapshotSchema,
+  PlaybookRunProductViewSchema,
 } from "./index.js";
 
 const now = "2026-05-15T00:00:00.000Z";
@@ -816,6 +817,85 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
         executionContext: { apiKey: "nope" },
       })
     ).toThrow(/secret-bearing/);
+  });
+});
+
+describe("PlaybookRunProductViewSchema", () => {
+  test("accepts retry_available with a Retry step primary action", () => {
+    const view = PlaybookRunProductViewSchema.parse({
+      schemaVersion: 1,
+      state: "retry_available",
+      title: "Step interrupted",
+      message: "A research step was interrupted. Tessera can retry it.",
+      primaryAction: {
+        actionId: "qe:retry_needs_attention",
+        decision: "retry_needs_attention",
+        label: "Retry step",
+        queueEntryId: "qe",
+      },
+      technicalSummary: {
+        internalStatus: "needs_attention",
+        attentionCode: "stale_lease",
+        queueEntryId: "qe",
+        nodePath: "researchFanout/item:1/searchSources",
+        nodeKind: "tool",
+      },
+    });
+
+    expect(view.state).toBe("retry_available");
+    expect(view.primaryAction?.label).toBe("Retry step");
+  });
+
+  test("accepts waiting_for_review with artifact-specific approval copy", () => {
+    const view = PlaybookRunProductViewSchema.parse({
+      schemaVersion: 1,
+      state: "waiting_for_review",
+      title: "Review needed",
+      message: "Review the brief before Tessera continues.",
+      primaryAction: {
+        actionId: "qe:approve",
+        decision: "approve",
+        label: "Approve brief",
+        queueEntryId: "qe",
+      },
+      secondaryActions: [
+        {
+          actionId: "qe:deny",
+          decision: "deny",
+          label: "Stop run",
+          tone: "danger",
+          queueEntryId: "qe",
+        },
+      ],
+    });
+
+    expect(view.state).toBe("waiting_for_review");
+    expect(view.secondaryActions[0]?.label).toBe("Stop run");
+  });
+
+  test("rejects empty action labels and unknown product states", () => {
+    expect(() =>
+      PlaybookRunProductViewSchema.parse({
+        schemaVersion: 1,
+        state: "retry_available",
+        title: "Step interrupted",
+        message: "Retry available.",
+        primaryAction: {
+          actionId: "qe:retry",
+          decision: "retry_needs_attention",
+          label: "",
+        },
+      })
+    ).toThrow();
+
+    expect(() =>
+      PlaybookRunProductViewSchema.parse({
+        schemaVersion: 1,
+        state: "stale_lease",
+        title: "Internal status",
+        message: "Nope.",
+      })
+    ).toThrow();
   });
 });
 

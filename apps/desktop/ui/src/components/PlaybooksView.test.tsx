@@ -349,6 +349,26 @@ const graphRunSurface = {
     },
   ],
   branches: [],
+  productView: {
+    schemaVersion: 1,
+    state: "waiting_for_review",
+    title: "Review needed",
+    message: "Review what Tessera prepared before the run continues.",
+    primaryAction: {
+      actionId: "queue-review:approve",
+      label: "Approve brief",
+      tone: "primary",
+      decision: "approve",
+      queueEntryId: "queue-review",
+    },
+    secondaryActions: [],
+    technicalSummary: {
+      internalStatus: "blocked:blocked",
+      queueEntryId: "queue-review",
+      nodePath: "draft/review",
+      nodeKind: "humanReview",
+    },
+  },
   actions: [
     {
       schemaVersion: 1,
@@ -634,12 +654,32 @@ const interruptedGraphRunSurface = {
   artifactTimeline: [],
   timeline: [],
   branches: [],
+  productView: {
+    schemaVersion: 1,
+    state: "retry_available",
+    title: "Step interrupted",
+    message: "A playbook step was interrupted. Tessera can retry it.",
+    primaryAction: {
+      actionId: "queue-draft-interrupted:retry_interrupted",
+      label: "Retry step",
+      tone: "primary",
+      decision: "retry_interrupted",
+      queueEntryId: "queue-draft-interrupted",
+    },
+    secondaryActions: [],
+    technicalSummary: {
+      internalStatus: "blocked:interrupted",
+      queueEntryId: "queue-draft-interrupted",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+    },
+  },
   actions: [
     {
       schemaVersion: 1,
       actionId: "queue-draft-interrupted:retry_interrupted",
       decision: "retry_interrupted",
-      label: "Retry interrupted work",
+      label: "Retry step",
       queueEntryId: "queue-draft-interrupted",
       nodePath: "draftBrief",
       nodeKind: "agent",
@@ -1292,7 +1332,7 @@ describe("PlaybooksView", () => {
     });
   });
 
-  test("offers a simple retry review for interrupted graph runs", async () => {
+  test("offers a simple retry action for interrupted graph runs", async () => {
     includeInterruptedRun = true;
     const view = renderPlaybooksView();
 
@@ -1305,11 +1345,13 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByText("Your review is needed")).toBeTruthy();
-      expect(view.getByText(/stopped while working on Draft/)).toBeTruthy();
+      expect(view.getByText("Step interrupted")).toBeTruthy();
+      expect(view.getByText("A playbook step was interrupted. Tessera can retry it.")).toBeTruthy();
+      expect(view.getByText("What happens if you retry")).toBeTruthy();
+      expect(view.queryByText("What Tessera prepared")).toBeNull();
     });
 
-    fireEvent.click(view.getByRole("button", { name: "Approve" }));
+    fireEvent.click(view.getByRole("button", { name: "Retry step" }));
 
     await waitFor(() => {
       const resumeCall = invoke.mock.calls.find(
@@ -1327,6 +1369,205 @@ describe("PlaybooksView", () => {
         },
       });
     });
+  });
+
+  test("shows a soft-timeout badge for long-running graph work with fresh heartbeat", async () => {
+    const nowMs = Date.now();
+    const claimedAt = new Date(nowMs - 6 * 60_000).toISOString();
+    const lastHeartbeatAt = new Date(nowMs - 5_000).toISOString();
+    graphRunSurfaceOverride = {
+      ...graphRunSurface,
+      detail: {
+        ...graphRunDetail,
+        run: {
+          ...graphRunDetail.run,
+          status: "running",
+          currentQueueEntryId: "queue-draft-running",
+          updatedAt: lastHeartbeatAt,
+        },
+        queue: [
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-draft-running",
+            nodeId: "draft",
+            nodePath: "draft",
+            nodeKind: "agent",
+            status: "running",
+            runtimeId: "runtime-1",
+            leaseId: "lease-1",
+            claimedAt,
+            lastHeartbeatAt,
+            updatedAt: lastHeartbeatAt,
+          },
+        ],
+      },
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      actions: [],
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Running longer than expected")).toBeTruthy();
+    });
+  });
+
+  test("shows product-state retry copy for needs-attention evidence", async () => {
+    const cases = [
+      {
+        code: "stale_lease",
+        text: /lost track of this step/i,
+      },
+      {
+        code: "stale_heartbeat",
+        text: /stopped reporting progress/i,
+      },
+      {
+        code: "hard_timeout",
+        text: /ran longer than its hard time limit/i,
+      },
+    ] as const;
+
+    for (const item of cases) {
+      graphRunSurfaceOverride = {
+        ...graphRunSurface,
+        detail: {
+          ...graphRunDetail,
+          run: {
+            ...graphRunDetail.run,
+            status: "needs_attention",
+            currentQueueEntryId: "queue-needs-attention",
+          },
+          queue: [
+            {
+              ...graphReviewQueueEntry,
+              queueEntryId: "queue-needs-attention",
+              nodeId: "draft",
+              nodePath: "draft",
+              nodeKind: "agent",
+              status: "needs_attention",
+              blockedReason: "needs attention",
+              attentionEvidence: {
+                code: item.code,
+                reason: "needs attention",
+                observedAt: "2026-05-18T00:00:00.000Z",
+                previousQueueStatus: "running",
+                recoveryDecision: "needs_attention",
+              },
+              updatedAt: "2026-05-18T00:00:00.000Z",
+            },
+          ],
+        },
+        productView: {
+          schemaVersion: 1,
+          state: "retry_available",
+          title: "Step interrupted",
+          message: "A playbook step was interrupted. Tessera can retry it.",
+          primaryAction: {
+            actionId: "queue-needs-attention:retry_needs_attention",
+            label: "Retry step",
+            tone: "primary",
+            decision: "retry_needs_attention",
+            queueEntryId: "queue-needs-attention",
+          },
+          secondaryActions: [],
+          technicalSummary: {
+            internalStatus: "needs_attention:needs_attention",
+            attentionCode: item.code,
+            queueEntryId: "queue-needs-attention",
+            nodePath: "draft",
+            nodeKind: "agent",
+          },
+        },
+        actions: [
+          {
+            schemaVersion: 1,
+            actionId: "queue-other:retry_needs_attention",
+            decision: "retry_needs_attention",
+            label: "Retry other step",
+            queueEntryId: "queue-other",
+            nodePath: "other",
+            nodeKind: "agent",
+            allowedRunStatuses: ["needs_attention"],
+            allowedQueueStatuses: ["needs_attention"],
+            requiredPayloadFields: [],
+            sideEffect: "resume",
+            destructive: false,
+            invalidatesDownstream: false,
+            requiresExecutionContext: false,
+            requiresProvider: false,
+            requiresCredential: false,
+            requiresWorkspace: false,
+          },
+          {
+            schemaVersion: 1,
+            actionId: "queue-needs-attention:retry_needs_attention",
+            decision: "retry_needs_attention",
+            label: "Retry step",
+            queueEntryId: "queue-needs-attention",
+            nodePath: "draft",
+            nodeKind: "agent",
+            allowedRunStatuses: ["needs_attention"],
+            allowedQueueStatuses: ["needs_attention"],
+            requiredPayloadFields: [],
+            sideEffect: "resume",
+            destructive: false,
+            invalidatesDownstream: false,
+            requiresExecutionContext: false,
+            requiresProvider: false,
+            requiresCredential: false,
+            requiresWorkspace: false,
+          },
+        ],
+      };
+      const view = renderPlaybooksView();
+
+      let runButton: HTMLElement | null = null;
+      await waitFor(() => {
+        runButton = view.getByText(/May 15/).closest("button");
+        expect(runButton).toBeTruthy();
+      });
+      if (!runButton) throw new Error("Expected needs-attention run button");
+      fireEvent.click(runButton);
+
+      await waitFor(() => {
+        expect(view.getByText("Step interrupted")).toBeTruthy();
+        expect(
+          view.getByText("A playbook step was interrupted. Tessera can retry it.")
+        ).toBeTruthy();
+        expect(view.getByText("What happened")).toBeTruthy();
+        expect(view.getByText("What happens if you retry")).toBeTruthy();
+        expect(view.getByRole("button", { name: "Retry step" })).toBeTruthy();
+        expect(view.queryByText(item.text)).toBeNull();
+        expect(view.queryByText("What Tessera prepared")).toBeNull();
+        expect(view.queryByText("What happens if you approve")).toBeNull();
+      });
+      fireEvent.click(view.getByRole("button", { name: "Retry step" }));
+      await waitFor(() => {
+        const resumeCall = invoke.mock.calls.find(
+          ([command, args]) =>
+            command === "graph_run_resume" &&
+            (args as { runId?: string } | undefined)?.runId === "graph-run-1"
+        );
+        expect(resumeCall).toBeTruthy();
+        expect(resumeCall?.[1]).toMatchObject({
+          request: {
+            decision: "retry_needs_attention",
+            queueEntryId: "queue-needs-attention",
+          },
+        });
+      });
+      cleanup();
+    }
   });
 
   test("shows prepared artifact evidence before approving human review runs", async () => {

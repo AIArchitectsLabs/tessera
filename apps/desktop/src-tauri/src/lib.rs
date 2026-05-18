@@ -1678,6 +1678,21 @@ async fn graph_run_create(
 }
 
 #[tauri::command]
+async fn graph_run_drain(
+    app: AppHandle,
+    state: State<'_, SidecarHandle>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    let request = attach_default_workflow_execution(&app, serde_json::json!({})).await?;
+    let path = format!("/graph-runs/{}/drain", percent_encode(&run_id));
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn graph_run_list(
     state: State<'_, SidecarHandle>,
     playbook_id: Option<String>,
@@ -2812,6 +2827,7 @@ pub fn run() {
             agent_profile_delete,
             agent_profile_reset,
             graph_run_create,
+            graph_run_drain,
             graph_run_get,
             graph_run_git_milestone_commit,
             graph_run_git_milestone_preview,

@@ -2304,6 +2304,51 @@ export const PlaybookGraphResumeActionSpecSchema = z
   .strict();
 export type PlaybookGraphResumeActionSpec = z.infer<typeof PlaybookGraphResumeActionSpecSchema>;
 
+export const PlaybookRunProductStateSchema = z.enum([
+  "working",
+  "recovering",
+  "waiting_for_review",
+  "retry_available",
+  "failed",
+  "completed",
+  "restart_required",
+]);
+export type PlaybookRunProductState = z.infer<typeof PlaybookRunProductStateSchema>;
+
+export const PlaybookRunProductActionSchema = z
+  .object({
+    actionId: z.string().min(1),
+    label: z.string().min(1),
+    description: z.string().min(1).optional(),
+    tone: z.enum(["primary", "secondary", "danger"]).default("primary"),
+    decision: PlaybookGraphResumeDecisionSchema.shape.decision,
+    queueEntryId: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookRunProductAction = z.infer<typeof PlaybookRunProductActionSchema>;
+
+export const PlaybookRunProductViewSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    state: PlaybookRunProductStateSchema,
+    title: z.string().min(1),
+    message: z.string().min(1),
+    primaryAction: PlaybookRunProductActionSchema.optional(),
+    secondaryActions: z.array(PlaybookRunProductActionSchema).default([]),
+    technicalSummary: z
+      .object({
+        internalStatus: z.string().min(1),
+        attentionCode: PlaybookGraphAttentionCodeSchema.optional(),
+        queueEntryId: z.string().min(1).optional(),
+        nodePath: PlaybookGraphNodePathSchema.optional(),
+        nodeKind: PlaybookGraphQueueEntrySchema.shape.nodeKind.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type PlaybookRunProductView = z.infer<typeof PlaybookRunProductViewSchema>;
+
 export const PlaybookGraphActiveArtifactSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -2550,6 +2595,7 @@ export const PlaybookGraphRunReviewSurfaceSchema = z
     branches: z.array(PlaybookGraphBranchDrilldownGroupSchema).default([]),
     actions: z.array(PlaybookGraphResumeActionSpecSchema).default([]),
     gitMilestone: PlaybookGraphGitMilestonePreviewSchema.optional(),
+    productView: PlaybookRunProductViewSchema.optional(),
   })
   .strict();
 export type PlaybookGraphRunReviewSurface = z.infer<typeof PlaybookGraphRunReviewSurfaceSchema>;

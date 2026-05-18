@@ -121,11 +121,70 @@ const resultSub: Partial<Record<PlaybookRunDetail["status"], string>> = {
 };
 
 type GraphReviewArtifact = PlaybookGraphRunReviewSurface["activeArtifacts"][number];
+type PlaybookRunProductView = NonNullable<PlaybookGraphRunReviewSurface["productView"]>;
+type GraphQueueEntry = PlaybookGraphRunDetail["queue"][number];
+type GraphWorkflowStepRecord = WorkflowRunStepRecord & {
+  nodeKind?: GraphQueueEntry["nodeKind"];
+  claimedAt?: string;
+  lastHeartbeatAt?: string;
+};
 
 interface ReviewScorecardSummary {
   overall?: number;
   pass?: boolean;
   findings: string[];
+}
+
+const NODE_KIND_SOFT_MS: Record<GraphQueueEntry["nodeKind"], number | undefined> = {
+  script: 30_000,
+  condition: 5_000,
+  join: 5_000,
+  tool: 120_000,
+  agent: 300_000,
+  artifactWrite: 30_000,
+  humanReview: undefined,
+  parallelMap: undefined,
+};
+
+function softTimeoutCrossed(step: WorkflowRunStepRecord, now: number): boolean {
+  const graphStep = step as GraphWorkflowStepRecord;
+  if (
+    graphStep.status !== "running" ||
+    !graphStep.claimedAt ||
+    !graphStep.lastHeartbeatAt ||
+    !graphStep.nodeKind
+  ) {
+    return false;
+  }
+  const softMs = NODE_KIND_SOFT_MS[graphStep.nodeKind];
+  if (!softMs) return false;
+  return (
+    now - Date.parse(graphStep.lastHeartbeatAt) <= 45_000 &&
+    now - Date.parse(graphStep.claimedAt) >= softMs
+  );
+}
+
+function attentionEvidenceCopy(entry: GraphQueueEntry): string | undefined {
+  switch (entry.attentionEvidence?.code) {
+    case "stale_lease":
+      return "Tessera lost track of this step while it was running. You can retry or mark it failed.";
+    case "stale_heartbeat":
+      return "This step stopped reporting progress. It may be stuck inside a model or tool call.";
+    case "hard_timeout":
+      return "This step ran longer than its hard time limit. Retry or mark failed.";
+    case "hard_timeout_observed":
+      return "This step crossed its hard time limit.";
+    case "lost_worker":
+      return "The worker process for this step is no longer reachable.";
+    case "ambiguous_recovery":
+      return "Tessera could not determine how to recover this step automatically.";
+    case "manual_mark_worker_lost":
+      return "Marked as worker lost by a user.";
+    case "cancellation_requested":
+      return "Cancellation requested.";
+    default:
+      return undefined;
+  }
 }
 
 interface ReviewEvidence {
@@ -626,6 +685,15 @@ function workflowStepStatusFromGraph(
   return "running";
 }
 
+function graphRunHasQueuedRuntimeWork(detail: PlaybookGraphRunDetail): boolean {
+  if (detail.run.status !== "queued" && detail.run.status !== "running") return false;
+  return detail.queue.some(
+    (entry) =>
+      entry.status === "queued" &&
+      (entry.nodeKind === "agent" || entry.nodeKind === "artifactWrite")
+  );
+}
+
 function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, unknown> {
   if (!detail) return {};
   const latestByArtifact = new Map<string, PlaybookGraphRunDetail["artifacts"][number]>();
@@ -768,7 +836,8 @@ function dashboardLayoutFromPlaybook(
 
 function graphRunApproval(
   detail: PlaybookGraphRunDetail | null,
-  playbook: PlaybookSummary | PlaybookDetail | null
+  playbook: PlaybookSummary | PlaybookDetail | null,
+  productView?: PlaybookRunProductView | null
 ): PlaybookRunDetail["approval"] {
   if (
     !detail ||
@@ -777,6 +846,45 @@ function graphRunApproval(
       detail.run.status !== "needs_attention")
   ) {
     return undefined;
+  }
+  const productAction = productView?.primaryAction;
+  if (
+    productView?.state === "retry_available" &&
+    productAction &&
+    (productAction.decision === "retry_interrupted" ||
+      productAction.decision === "retry_needs_attention")
+  ) {
+    const retryEntry = productAction.queueEntryId
+      ? detail.queue.find((entry) => entry.queueEntryId === productAction.queueEntryId)
+      : detail.queue.find(
+          (entry) => entry.status === "interrupted" || entry.status === "needs_attention"
+        );
+    const stepLabel = retryEntry ? titleFromId(retryEntry.nodeId) : "this step";
+    return {
+      toolId:
+        productAction.decision === "retry_interrupted"
+          ? "graph.retryInterrupted"
+          : "graph.retryNeedsAttention",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+        ...(retryEntry?.queueEntryId ? { queueEntryId: retryEntry.queueEntryId } : {}),
+        stepLabel,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview: productView.message,
+      reasonCode:
+        productAction.decision === "retry_interrupted"
+          ? "graph_interrupted_retry"
+          : "graph_needs_attention_retry",
+    };
   }
   if (detail.run.blockedReason?.includes("execution context changed")) {
     return {
@@ -844,6 +952,7 @@ function graphRunApproval(
         dryRunSupported: false,
       },
       preview:
+        attentionEvidenceCopy(attentionEntry) ??
         attentionEntry.attentionEvidence?.reason ??
         attentionEntry.blockedReason ??
         `Tessera needs a recovery decision before retrying ${stepLabel}.`,
@@ -876,19 +985,23 @@ function graphRunApproval(
 
 function graphRunToPlaybookRunDetail(
   detail: PlaybookGraphRunDetail,
-  playbook: PlaybookSummary | PlaybookDetail | null
+  playbook: PlaybookSummary | PlaybookDetail | null,
+  productView?: PlaybookRunProductView | null
 ): PlaybookRunDetail {
   const outputs = graphRunOutputs(detail);
   const usage = graphRunUsage(detail);
-  const steps = detail.queue.map((entry) => ({
+  const steps: GraphWorkflowStepRecord[] = detail.queue.map((entry) => ({
     id: entry.nodeId,
     label: titleFromId(entry.nodeId),
     kind: entry.nodeKind === "agent" ? ("agent" as const) : ("tool" as const),
     phase: playbook?.phases?.[0] ?? "Run",
     status: workflowStepStatusFromGraph(entry.status),
     startedAt: entry.claimedAt ?? entry.createdAt,
-    completedAt: entry.completedAt,
-    error: entry.error,
+    nodeKind: entry.nodeKind,
+    ...(entry.completedAt ? { completedAt: entry.completedAt } : {}),
+    ...(entry.error ? { error: entry.error } : {}),
+    ...(entry.claimedAt ? { claimedAt: entry.claimedAt } : {}),
+    ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
   }));
 
   return {
@@ -901,7 +1014,7 @@ function graphRunToPlaybookRunDetail(
     outputs,
     ...(usage ? { usage } : {}),
     dashboardLayout: dashboardLayoutFromPlaybook(playbook) ?? undefined,
-    approval: graphRunApproval(detail, playbook),
+    approval: graphRunApproval(detail, playbook, productView),
     error: detail.run.error ?? detail.run.repairReason,
     startedAt: detail.run.startedAt,
     updatedAt: detail.run.updatedAt,
@@ -2254,6 +2367,7 @@ function GuidedPreparing({
   const name = playbook?.name ?? "this playbook";
   const steps = run?.steps ?? [];
   const phases = playbook?.phases ?? [];
+  const currentTime = Date.now();
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -2283,6 +2397,11 @@ function GuidedPreparing({
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   {stepStatusLabel(step.status)}
                 </div>
+                {softTimeoutCrossed(step, currentTime) ? (
+                  <div className="mt-1 text-xs font-medium text-amber-700">
+                    Running longer than expected
+                  </div>
+                ) : null}
               </div>
             </div>
           ))}
@@ -2313,6 +2432,7 @@ function GuidedReview({
   run,
   playbook,
   reviewEvidence,
+  productView,
   workspaceRoot,
   onApprove,
   onStop,
@@ -2322,6 +2442,7 @@ function GuidedReview({
   run: PlaybookRunDetail;
   playbook: PlaybookSummary | PlaybookDetail | null;
   reviewEvidence: ReviewEvidence | null;
+  productView: PlaybookRunProductView | null;
   workspaceRoot: string | null;
   onApprove: () => void;
   onStop: () => void;
@@ -2329,8 +2450,23 @@ function GuidedReview({
   running: boolean;
 }) {
   const approvalCopy = playbookApprovalCopy(run, playbook);
-  const preparedCopy = reviewEvidence?.preparedSummary ?? approvalCopy.prepared;
+  const productState = productView?.state ?? null;
+  const showReviewCopy = !productView || productState === "waiting_for_review";
+  const heading = productView?.title ?? "Your review is needed";
+  const preparedCopy =
+    reviewEvidence?.preparedSummary ??
+    (showReviewCopy ? (productView?.message ?? approvalCopy.prepared) : approvalCopy.prepared);
   const approveCopy = reviewEvidence?.approveSummary ?? approvalCopy.approve;
+  const primaryActionLabel =
+    productView?.primaryAction?.label ?? reviewEvidence?.approveLabel ?? "Approve";
+  const recoveryNextCopy =
+    productState === "retry_available"
+      ? "Tessera will retry this step and continue the run."
+      : productState === "restart_required"
+        ? "Restart Tessera, then start the playbook again."
+        : approveCopy;
+  const recoveryNextLabel =
+    productState === "retry_available" ? "What happens if you retry" : "What happens next";
   const [openingArtifact, setOpeningArtifact] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const canOpenArtifact = !!workspaceRoot && !!reviewEvidence?.artifactPath;
@@ -2365,23 +2501,38 @@ function GuidedReview({
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-900">
           <AlertTriangle size={16} />
-          Your review is needed
+          {heading}
         </div>
 
         <div className="space-y-4 text-sm text-amber-800">
-          <div>
-            <div className="font-medium">What Tessera prepared</div>
-            <p className="mt-1">{preparedCopy}</p>
-          </div>
-          {reviewEvidence ? (
-            <div className="border-t border-amber-200 pt-4">
-              <ReviewEvidenceBlock evidence={reviewEvidence} compact />
-            </div>
-          ) : null}
-          <div>
-            <div className="font-medium">What happens if you approve</div>
-            <p className="mt-1">{approveCopy}</p>
-          </div>
+          {showReviewCopy ? (
+            <>
+              <div>
+                <div className="font-medium">What Tessera prepared</div>
+                <p className="mt-1">{preparedCopy}</p>
+              </div>
+              {reviewEvidence ? (
+                <div className="border-t border-amber-200 pt-4">
+                  <ReviewEvidenceBlock evidence={reviewEvidence} compact />
+                </div>
+              ) : null}
+              <div>
+                <div className="font-medium">What happens if you approve</div>
+                <p className="mt-1">{approveCopy}</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div className="font-medium">What happened</div>
+                <p className="mt-1">{productView?.message ?? approvalCopy.prepared}</p>
+              </div>
+              <div>
+                <div className="font-medium">{recoveryNextLabel}</div>
+                <p className="mt-1">{recoveryNextCopy}</p>
+              </div>
+            </>
+          )}
           <div>
             <div className="font-medium">What happens if you stop</div>
             <p className="mt-1">The run stops here and nothing changes in your workspace.</p>
@@ -2410,7 +2561,7 @@ function GuidedReview({
             disabled={running}
           >
             {running ? <Loader2 size={14} className="animate-spin" /> : null}
-            {reviewEvidence?.approveLabel ?? "Approve"}
+            {primaryActionLabel}
           </Button>
           <Button
             type="button"
@@ -2984,6 +3135,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   );
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
   const runListRequestRef = useRef(0);
+  const graphRunDrainInFlightRef = useRef(new Map<string, Promise<PlaybookGraphRunDetail>>());
 
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase || !!p.graphHash),
@@ -3185,10 +3337,30 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const loadRunDetail = useCallback(
     async (runId: string) => {
       try {
-        const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+        let surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
           runId,
         });
-        const detail = graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi);
+        const queuedRunId = surface.detail.run.runId;
+        if (graphRunHasQueuedRuntimeWork(surface.detail)) {
+          const existingDrain = graphRunDrainInFlightRef.current.get(queuedRunId);
+          const drain =
+            existingDrain ??
+            invoke<PlaybookGraphRunDetail>("graph_run_drain", { runId: queuedRunId }).finally(
+              () => {
+                graphRunDrainInFlightRef.current.delete(queuedRunId);
+              }
+            );
+          if (!existingDrain) graphRunDrainInFlightRef.current.set(queuedRunId, drain);
+          await drain;
+          surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+            runId,
+          });
+        }
+        const detail = graphRunToPlaybookRunDetail(
+          surface.detail,
+          selectedPlaybookForUi,
+          surface.productView
+        );
         setSelectedGraphRunSurface(surface);
         setSelectedGraphRunDetail(surface.detail);
         setSelectedRunDetail(detail);
@@ -3203,12 +3375,30 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const loadGraphRunDetail = useCallback(
     async (runId: string) => {
       try {
-        const surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+        let surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
           runId,
         });
+        const queuedRunId = surface.detail.run.runId;
+        if (graphRunHasQueuedRuntimeWork(surface.detail)) {
+          const existingDrain = graphRunDrainInFlightRef.current.get(queuedRunId);
+          const drain =
+            existingDrain ??
+            invoke<PlaybookGraphRunDetail>("graph_run_drain", { runId: queuedRunId }).finally(
+              () => {
+                graphRunDrainInFlightRef.current.delete(queuedRunId);
+              }
+            );
+          if (!existingDrain) graphRunDrainInFlightRef.current.set(queuedRunId, drain);
+          await drain;
+          surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
+            runId,
+          });
+        }
         setSelectedGraphRunSurface(surface);
         setSelectedGraphRunDetail(surface.detail);
-        setSelectedRunDetail(graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi));
+        setSelectedRunDetail(
+          graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi, surface.productView)
+        );
         setGraphRuns((current) =>
           current.map((run) => (run.runId === surface.detail.run.runId ? surface.detail.run : run))
         );
@@ -3492,9 +3682,15 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
               ? "retry_needs_attention"
               : "approve";
       const actionDecision = decision === "approve" ? approvalDecision : "deny";
-      const action = selectedGraphRunSurface?.actions.find(
-        (item) => item.decision === actionDecision
-      );
+      const productActionId =
+        decision === "approve"
+          ? selectedGraphRunSurface?.productView?.primaryAction?.actionId
+          : null;
+      const action =
+        (productActionId
+          ? selectedGraphRunSurface?.actions.find((item) => item.actionId === productActionId)
+          : undefined) ??
+        selectedGraphRunSurface?.actions.find((item) => item.decision === actionDecision);
       const detail = await invoke<PlaybookGraphRunDetail>("graph_run_resume", {
         runId: selectedRun.runId,
         request: {
@@ -3802,6 +3998,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
             run={selectedRun}
             playbook={selectedPlaybookForUi}
             reviewEvidence={selectedReviewEvidence}
+            productView={selectedGraphRunSurface?.productView ?? null}
             workspaceRoot={workspaceRoot}
             onApprove={() => void resumeRun("approve")}
             onStop={() => void resumeRun("deny")}

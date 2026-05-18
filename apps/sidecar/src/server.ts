@@ -36,16 +36,20 @@ import {
   type PlaybookGraphOperationKind,
   type PlaybookGraphOperationRecord,
   type PlaybookGraphQueueEntry,
+  type PlaybookGraphResumeActionSpec,
   PlaybookGraphResumeActionSpecSchema,
   PlaybookGraphResumeDecisionSchema,
   type PlaybookGraphReviewEvent,
   PlaybookGraphRunCreateRequestSchema,
   PlaybookGraphRunDetailSchema,
+  PlaybookGraphRunDrainRequestSchema,
   PlaybookGraphRunListFilterSchema,
   PlaybookGraphRunListResultSchema,
   type PlaybookGraphRunRecord,
   PlaybookGraphRunReviewSurfaceSchema,
   PlaybookListResultSchema,
+  type PlaybookRunProductAction,
+  type PlaybookRunProductView,
   type PlaybookSummary,
   PlaybookSummarySchema,
   type ShellToolCall,
@@ -93,6 +97,7 @@ import {
   drainPlaybookGraphRun,
   executeAgentTurn,
   findCliCommand,
+  hardTimeoutMs,
   hashPlaybookSourceFiles,
   installGraphPlaybookPackage,
   loadBuiltInGraphPlaybookPackages,
@@ -101,6 +106,7 @@ import {
   playbookGraphExecutionContextDriftReason,
   readPlaybookGraphPackage,
   resolveSlashSkillInvocation,
+  softTimeoutMs,
   stableJsonStringify,
 } from "@tessera/core";
 import { createAgentProfileStore } from "./agent-profile-store.js";
@@ -1375,6 +1381,7 @@ export interface GraphRunHandlerOptions {
   now?: () => string;
   leaseMs?: number;
   leaseRenewalMs?: number;
+  heartbeatMs?: number;
   maxSteps?: number;
   executionContext?: Record<string, unknown>;
   blockOnMissingAdapters?: boolean;
@@ -2132,6 +2139,52 @@ function graphRunNodeForQueueEntry(
   }
 }
 
+function isAutoRecoverableToolNode(
+  node: PlaybookGraphNode | undefined,
+  toolPolicies: Record<string, PlaybookGraphToolExecutionPolicy>
+): boolean {
+  if (!node || node.kind !== "tool") return false;
+  const policy = toolPolicies[node.capability];
+  return policy?.idempotent === true && policy.sideEffect === "read";
+}
+
+function autoRecoveryOperationExists(
+  operations: PlaybookGraphOperationRecord[],
+  queueEntryId: string
+): boolean {
+  return operations.some(
+    (operation) =>
+      operation.kind === "retry_needs_attention" &&
+      operation.actionSpecId === "system.recovery.auto_retry" &&
+      operation.affectedQueueEntryIds.includes(queueEntryId)
+  );
+}
+
+function shouldAutoRecoverAttention(
+  entry: PlaybookGraphQueueEntry,
+  node: PlaybookGraphNode | undefined,
+  operations: PlaybookGraphOperationRecord[],
+  toolPolicies: Record<string, PlaybookGraphToolExecutionPolicy>
+): boolean {
+  if (entry.status !== "needs_attention") return false;
+  if (autoRecoveryOperationExists(operations, entry.queueEntryId)) return false;
+  const code = entry.attentionEvidence?.code;
+  if (code === "hard_timeout") return false;
+  if (entry.nodeKind === "artifactWrite" || entry.nodeKind === "humanReview") return false;
+  if (code === "stale_lease") {
+    return (
+      entry.nodeKind === "script" ||
+      entry.nodeKind === "condition" ||
+      entry.nodeKind === "join" ||
+      isAutoRecoverableToolNode(node, toolPolicies)
+    );
+  }
+  if (code === "stale_heartbeat") {
+    return entry.nodeKind === "script" || isAutoRecoverableToolNode(node, toolPolicies);
+  }
+  return false;
+}
+
 function graphRunActiveArtifactRows(
   detail: GraphRunDetail
 ): GraphRunReviewSurface["activeArtifacts"] {
@@ -2278,6 +2331,44 @@ function graphRunTimelineRows(detail: GraphRunDetail): GraphRunReviewSurface["ti
   );
 }
 
+function graphRunArtifactLabel(artifactId: string): string {
+  return artifactId
+    .replace(/Scorecard$/i, " scorecard")
+    .replace(/Brief$/i, " brief")
+    .replace(/Draft$/i, " draft")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[\s._-]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function graphReviewArtifactId(
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry,
+  node: PlaybookGraphNode | undefined
+): string | undefined {
+  return (
+    detail.reviews.find((event) => event.queueEntryId === entry.queueEntryId)?.artifactId ??
+    (node?.kind === "humanReview" ? node.artifact : undefined) ??
+    entry.consumesArtifacts[0]?.artifactId
+  );
+}
+
+function graphReviewApproveLabel(
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry,
+  node: PlaybookGraphNode | undefined
+): string {
+  const artifactId = graphReviewArtifactId(detail, entry, node);
+  if (!artifactId) return "Approve";
+  const label = graphRunArtifactLabel(artifactId).toLowerCase();
+  if (label.includes("brief")) return "Approve brief";
+  if (label.includes("article")) return "Approve article";
+  if (label.includes("draft")) return "Approve draft";
+  return "Approve";
+}
+
 function graphRunBranchGroups(
   detail: GraphRunDetail,
   activeArtifacts: GraphRunReviewSurface["activeArtifacts"]
@@ -2343,7 +2434,7 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
           schemaVersion: 1,
           actionId: `${entry.queueEntryId}:approve`,
           decision: "approve",
-          label: "Approve",
+          label: graphReviewApproveLabel(detail, entry, node),
           queueEntryId: entry.queueEntryId,
           nodePath: entry.nodePath,
           nodeKind: entry.nodeKind,
@@ -2429,7 +2520,7 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
         schemaVersion: 1,
         actionId: `${entry.queueEntryId}:retry_interrupted`,
         decision: "retry_interrupted",
-        label: "Retry interrupted work",
+        label: "Retry step",
         queueEntryId: entry.queueEntryId,
         nodePath: entry.nodePath,
         nodeKind: entry.nodeKind,
@@ -2446,7 +2537,7 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
         schemaVersion: 1,
         actionId: `${entry.queueEntryId}:retry_needs_attention`,
         decision: "retry_needs_attention",
-        label: "Retry",
+        label: "Retry step",
         description: entry.attentionEvidence?.reason ?? entry.blockedReason,
         queueEntryId: entry.queueEntryId,
         nodePath: entry.nodePath,
@@ -2522,6 +2613,138 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
   return actions.sort((left, right) => left.actionId.localeCompare(right.actionId));
 }
 
+function productActionFromSpec(
+  action: PlaybookGraphResumeActionSpec,
+  tone: PlaybookRunProductAction["tone"] = "primary"
+): PlaybookRunProductAction {
+  return {
+    actionId: action.actionId,
+    label: action.label,
+    ...(action.description ? { description: action.description } : {}),
+    tone,
+    decision: action.decision,
+    ...(action.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
+  };
+}
+
+function graphRunProductView(
+  detail: GraphRunDetail,
+  actions: PlaybookGraphResumeActionSpec[]
+): PlaybookRunProductView {
+  if (detail.run.status === "completed") {
+    return {
+      schemaVersion: 1,
+      state: "completed",
+      title: "Completed",
+      message: "Tessera finished this run.",
+      secondaryActions: [],
+      technicalSummary: { internalStatus: detail.run.status },
+    };
+  }
+  if (detail.run.status === "failed") {
+    return {
+      schemaVersion: 1,
+      state: "failed",
+      title: "Run failed",
+      message: detail.run.error ?? "Tessera could not finish this run.",
+      secondaryActions: [],
+      technicalSummary: { internalStatus: detail.run.status },
+    };
+  }
+
+  const attentionEntry = detail.queue.find((entry) => entry.status === "needs_attention");
+  if (attentionEntry) {
+    const retryAction = actions.find(
+      (action) =>
+        action.decision === "retry_needs_attention" &&
+        action.queueEntryId === attentionEntry.queueEntryId
+    );
+    return {
+      schemaVersion: 1,
+      state: "retry_available",
+      title: "Step interrupted",
+      message: "A playbook step was interrupted. Tessera can retry it.",
+      ...(retryAction ? { primaryAction: productActionFromSpec(retryAction) } : {}),
+      secondaryActions: [],
+      technicalSummary: {
+        internalStatus: `${detail.run.status}:${attentionEntry.status}`,
+        ...(attentionEntry.attentionEvidence?.code
+          ? { attentionCode: attentionEntry.attentionEvidence.code }
+          : {}),
+        queueEntryId: attentionEntry.queueEntryId,
+        nodePath: attentionEntry.nodePath,
+        nodeKind: attentionEntry.nodeKind,
+      },
+    };
+  }
+
+  const interruptedEntry = detail.queue.find((entry) => entry.status === "interrupted");
+  if (interruptedEntry || detail.run.status === "interrupted") {
+    const retryAction = interruptedEntry
+      ? actions.find(
+          (action) =>
+            action.decision === "retry_interrupted" &&
+            action.queueEntryId === interruptedEntry.queueEntryId
+        )
+      : undefined;
+    return {
+      schemaVersion: 1,
+      state: "retry_available",
+      title: "Step interrupted",
+      message: "A playbook step was interrupted. Tessera can retry it.",
+      ...(retryAction ? { primaryAction: productActionFromSpec(retryAction) } : {}),
+      secondaryActions: [],
+      technicalSummary: {
+        internalStatus: interruptedEntry
+          ? `${detail.run.status}:${interruptedEntry.status}`
+          : detail.run.status,
+        ...(interruptedEntry
+          ? {
+              queueEntryId: interruptedEntry.queueEntryId,
+              nodePath: interruptedEntry.nodePath,
+              nodeKind: interruptedEntry.nodeKind,
+            }
+          : {}),
+      },
+    };
+  }
+
+  const reviewEntry = detail.queue.find(
+    (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
+  );
+  if (reviewEntry) {
+    const approveAction = actions.find(
+      (action) => action.decision === "approve" && action.queueEntryId === reviewEntry.queueEntryId
+    );
+    const stopAction = actions.find(
+      (action) => action.decision === "deny" && action.queueEntryId === reviewEntry.queueEntryId
+    );
+    return {
+      schemaVersion: 1,
+      state: "waiting_for_review",
+      title: "Review needed",
+      message: "Review what Tessera prepared before the run continues.",
+      ...(approveAction ? { primaryAction: productActionFromSpec(approveAction) } : {}),
+      secondaryActions: stopAction ? [productActionFromSpec(stopAction, "danger")] : [],
+      technicalSummary: {
+        internalStatus: `${detail.run.status}:${reviewEntry.status}`,
+        queueEntryId: reviewEntry.queueEntryId,
+        nodePath: reviewEntry.nodePath,
+        nodeKind: reviewEntry.nodeKind,
+      },
+    };
+  }
+
+  return {
+    schemaVersion: 1,
+    state: "working",
+    title: "Working",
+    message: "Tessera is working on this run.",
+    secondaryActions: [],
+    technicalSummary: { internalStatus: detail.run.status },
+  };
+}
+
 async function graphRunGitMilestonePreview(
   detail: GraphRunDetail,
   options: GraphRunHandlerOptions
@@ -2553,6 +2776,7 @@ async function graphRunReviewSurfaceFromDetail(
   _options: GraphRunHandlerOptions
 ): Promise<GraphRunReviewSurface> {
   const activeArtifacts = graphRunActiveArtifactRows(detail);
+  const actions = graphRunActionSpecs(detail);
   return PlaybookGraphRunReviewSurfaceSchema.parse({
     schemaVersion: 1,
     detail,
@@ -2560,7 +2784,8 @@ async function graphRunReviewSurfaceFromDetail(
     artifactTimeline: graphRunArtifactTimelineRows(detail, activeArtifacts),
     timeline: graphRunTimelineRows(detail),
     branches: graphRunBranchGroups(detail, activeArtifacts),
-    actions: graphRunActionSpecs(detail),
+    actions,
+    productView: graphRunProductView(detail, actions),
   });
 }
 
@@ -2621,6 +2846,9 @@ async function maybeDrainGraphRun(
     ...(options.now ? { now: options.now } : {}),
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
     leaseRenewalMs: graphRunLeaseRenewalMs(options),
+    heartbeatMs: options.heartbeatMs ?? 10_000,
+    softTimeoutMs,
+    hardTimeoutMs,
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
     ...(options.blockOnMissingAdapters !== undefined
       ? { blockOnMissingAdapters: options.blockOnMissingAdapters }
@@ -2687,6 +2915,7 @@ export async function recoverGraphRunInterruptedWork(
     runId,
     runtimeId: options.runtimeId ?? sidecarGraphRunRuntimeId("worker"),
     now: recoveredAt,
+    hardTimeoutMs,
   });
   const run = await store.getRun(runId);
   if (!run) {
@@ -2703,8 +2932,33 @@ export async function recoverGraphRunInterruptedWork(
   );
   let requeued = 0;
   let needsAttention = recovered.needsAttention;
+  const autoRecoveredQueueEntryIds: string[] = [];
+  const toolPolicies = graphRunDefaultToolPolicies(options);
+  const operationRecords = await store.listOperationRecords(runId);
   for (const entry of interruptedEntries) {
-    if (entry.recoveryPolicy === "rerun_if_no_success_memo") {
+    if (
+      entry.recoveryPolicy === "rerun_if_no_success_memo" &&
+      !autoRecoveryOperationExists(operationRecords, entry.queueEntryId)
+    ) {
+      const operationRecord = {
+        schemaVersion: 1,
+        operationRecordId: `${entry.queueEntryId}:auto-retry`,
+        operationAttemptId: `${entry.queueEntryId}:auto-retry`,
+        runId: entry.runId,
+        actionSpecId: "system.recovery.auto_retry",
+        kind: "retry_needs_attention",
+        status: "succeeded",
+        operatorIntent: "Automatically retry interrupted step",
+        queueEntryId: entry.queueEntryId,
+        affectedArtifactIds: [],
+        affectedReviewEventIds: [],
+        affectedQueueEntryIds: [entry.queueEntryId],
+        createdAt: recoveredAt,
+        completedAt: recoveredAt,
+        redactedPayloadSummary: "attentionCode=stale_lease",
+      } satisfies PlaybookGraphOperationRecord;
+      await store.addOperationRecord(operationRecord);
+      operationRecords.push(operationRecord);
       await store.updateQueueEntry({
         ...entry,
         status: "queued",
@@ -2755,14 +3009,66 @@ export async function recoverGraphRunInterruptedWork(
     needsAttention += 1;
   }
 
-  if (recovered.autoRequeued + requeued > 0) {
+  const postRecoveryDetail = await graphRunDetail(runId, store);
+  if (postRecoveryDetail) {
+    for (const entry of postRecoveryDetail.queue.filter(
+      (item) => item.status === "needs_attention"
+    )) {
+      const node = graphRunNodeForQueueEntry(postRecoveryDetail, entry);
+      if (!shouldAutoRecoverAttention(entry, node, postRecoveryDetail.operations, toolPolicies)) {
+        continue;
+      }
+      await store.addOperationRecord({
+        schemaVersion: 1,
+        operationRecordId: `${entry.queueEntryId}:auto-retry`,
+        operationAttemptId: `${entry.queueEntryId}:auto-retry`,
+        runId: entry.runId,
+        actionSpecId: "system.recovery.auto_retry",
+        kind: "retry_needs_attention",
+        status: "succeeded",
+        operatorIntent: "Automatically retry interrupted step",
+        queueEntryId: entry.queueEntryId,
+        affectedArtifactIds: [],
+        affectedReviewEventIds: [],
+        affectedQueueEntryIds: [entry.queueEntryId],
+        createdAt: recoveredAt,
+        completedAt: recoveredAt,
+        ...(entry.attentionEvidence?.code
+          ? { redactedPayloadSummary: `attentionCode=${entry.attentionEvidence.code}` }
+          : {}),
+      });
+      await store.updateQueueEntry({
+        ...entry,
+        status: "queued",
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        blockedReason: undefined,
+        error: undefined,
+        completedAt: undefined,
+        attentionEvidence: entry.attentionEvidence
+          ? {
+              ...entry.attentionEvidence,
+              recoveryDecision: "auto_requeued",
+            }
+          : undefined,
+        updatedAt: recoveredAt,
+      });
+      autoRecoveredQueueEntryIds.push(entry.queueEntryId);
+      needsAttention = Math.max(0, needsAttention - 1);
+    }
+  }
+
+  if (recovered.autoRequeued + requeued + autoRecoveredQueueEntryIds.length > 0) {
     const firstRequeued = interruptedEntries.find(
       (entry) => entry.recoveryPolicy === "rerun_if_no_success_memo"
     );
     await store.updateRun({
       ...run,
       status: "running",
-      currentQueueEntryId: firstRequeued?.queueEntryId ?? run.currentQueueEntryId,
+      currentQueueEntryId:
+        firstRequeued?.queueEntryId ?? autoRecoveredQueueEntryIds[0] ?? run.currentQueueEntryId,
       blockedReason: undefined,
       error: undefined,
       completedAt: undefined,
@@ -2784,7 +3090,7 @@ export async function recoverGraphRunInterruptedWork(
 
   return {
     interrupted: recovered.inspected + interruptedEntries.length,
-    requeued: recovered.autoRequeued + requeued,
+    requeued: recovered.autoRequeued + requeued + autoRecoveredQueueEntryIds.length,
     blocked: needsAttention,
     needsAttention,
   };
@@ -3060,6 +3366,70 @@ export async function handleGraphRunCreate(
 
     const detail = await graphRunDetail(run.runId, store);
     if (!detail) return Response.json({ error: "Graph run was not persisted" }, { status: 500 });
+    return Response.json(detail);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+export async function handleGraphRunDrain(
+  req: Request,
+  runId: string,
+  options: GraphRunHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = PlaybookGraphRunDrainRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    const store = options.store ?? graphRunStore;
+    const run = await store.getRun(runId);
+    if (!run) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+    const workspaceRoot =
+      run.materialization?.kind === "workspace"
+        ? run.materialization.workspaceRoot
+        : options.workspaceRoot;
+    const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
+      agentProfile: options.agentProfile ?? defaultAgentProfile(),
+      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
+    });
+    const runtimeProvider = graphRunAgentProvider(runtimeOptions);
+    const executionContext =
+      parsed.data.executionContext ??
+      (runtimeProvider
+        ? graphRunAgentExecutionContext({
+            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(),
+            provider: runtimeProvider,
+            ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+          })
+        : options.executionContext);
+
+    await maybeDrainGraphRun(
+      runId,
+      graphRunOptionsWithExecutionContext(
+        graphRunOptionsWithWorkspaceRoot(runtimeOptions, workspaceRoot),
+        executionContext
+      )
+    );
+
+    const detail = await graphRunDetail(runId, store);
+    if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
     return Response.json(detail);
   } catch (error) {
     return Response.json(
@@ -5090,6 +5460,12 @@ const server = Bun.serve({
     if (pathname === "/graph-runs") {
       if (req.method === "GET") return handleGraphRunList(req);
       return handleGraphRunCreate(req);
+    }
+
+    const graphRunDrainMatch = pathname.match(/^\/graph-runs\/([^/]+)\/drain$/);
+    const graphRunDrainId = graphRunDrainMatch?.[1];
+    if (graphRunDrainId) {
+      return handleGraphRunDrain(req, decodeURIComponent(graphRunDrainId));
     }
 
     const graphRunResumeMatch = pathname.match(/^\/graph-runs\/([^/]+)\/resume$/);
