@@ -24,6 +24,7 @@ import {
   hardTimeoutMs,
   heartbeatCadenceMs,
   parsePinnedCompiledGraph,
+  resolveArtifactDependencies,
   softTimeoutMs,
 } from "./playbook-graph-runtime.js";
 
@@ -2358,5 +2359,86 @@ describe("MemoryGraphRunStore.bumpHeartbeat (test-double behavior)", () => {
     expect((await store.getQueue("run-1"))[0].lastHeartbeatAt).toBe(
       "2026-05-18T12:00:10.000Z"
     );
+  });
+});
+
+describe("resolveArtifactDependencies", () => {
+  const baseEntry: PlaybookGraphQueueEntry = {
+    schemaVersion: 1,
+    queueEntryId: "qe-down",
+    runId: "run",
+    nodeId: "down",
+    nodePath: "down",
+    nodeKind: "script",
+    status: "queued",
+    dependsOn: ["qe-up"],
+    producesArtifacts: [],
+    declaredConsumesArtifacts: ["plan"],
+    consumesArtifacts: [{ artifactId: "plan", versionId: "qe-up:plan:v1", contentHash: "h" }],
+    artifactBindingState: "resolved",
+    recoveryPolicy: "rerun_if_no_success_memo",
+    attempt: 0,
+    createdAt: "2026-05-18T12:00:00.000Z",
+    updatedAt: "2026-05-18T12:00:00.000Z",
+  };
+
+  test("runnable when every declared consume has a committed version", () => {
+    const result = resolveArtifactDependencies({
+      entry: baseEntry,
+      artifactVersions: [
+        {
+          schemaVersion: 1,
+          runId: "run",
+          artifactId: "plan",
+          versionId: "qe-up:plan:v1",
+          producerQueueEntryId: "qe-up",
+          nodePath: "up",
+          contentHash: "h",
+          value: {},
+          createdAt: "2026-05-18T12:00:00.000Z",
+        },
+      ],
+    });
+    expect(result.runnable).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  test("blocked when declared consume has no committed version", () => {
+    const result = resolveArtifactDependencies({
+      entry: baseEntry,
+      artifactVersions: [],
+    });
+    expect(result.runnable).toBe(false);
+    expect(result.missing.map((ref) => ref.artifactId)).toEqual(["plan"]);
+  });
+
+  test("blocked when content hash drifts", () => {
+    const result = resolveArtifactDependencies({
+      entry: baseEntry,
+      artifactVersions: [
+        {
+          schemaVersion: 1,
+          runId: "run",
+          artifactId: "plan",
+          versionId: "qe-up:plan:v1",
+          producerQueueEntryId: "qe-up",
+          nodePath: "up",
+          contentHash: "other",
+          value: {},
+          createdAt: "2026-05-18T12:00:00.000Z",
+        },
+      ],
+    });
+    expect(result.runnable).toBe(false);
+    expect(result.missing.map((ref) => ref.artifactId)).toEqual(["plan"]);
+  });
+
+  test("runnable when no artifacts declared", () => {
+    const result = resolveArtifactDependencies({
+      entry: { ...baseEntry, declaredConsumesArtifacts: [], consumesArtifacts: [] },
+      artifactVersions: [],
+    });
+    expect(result.runnable).toBe(true);
+    expect(result.missing).toEqual([]);
   });
 });

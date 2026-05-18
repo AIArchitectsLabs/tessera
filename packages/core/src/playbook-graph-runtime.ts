@@ -559,6 +559,36 @@ function artifactBindingState(
     : "unresolved";
 }
 
+export function resolveArtifactDependencies(input: {
+  entry: PlaybookGraphQueueEntry;
+  artifactVersions: PlaybookGraphArtifactVersion[];
+}): {
+  runnable: boolean;
+  missing: PlaybookGraphArtifactVersionRef[];
+} {
+  const { entry } = input;
+  if (entry.declaredConsumesArtifacts.length === 0) {
+    return { runnable: true, missing: [] };
+  }
+  const versionsById = new Map<string, PlaybookGraphArtifactVersion>();
+  for (const version of input.artifactVersions) {
+    versionsById.set(`${version.artifactId}:${version.versionId}`, version);
+  }
+  const missing: PlaybookGraphArtifactVersionRef[] = [];
+  for (const artifactId of entry.declaredConsumesArtifacts) {
+    const ref = entry.consumesArtifacts.find((candidate) => candidate.artifactId === artifactId);
+    if (!ref) {
+      missing.push({ artifactId, versionId: "", contentHash: "" });
+      continue;
+    }
+    const committed = versionsById.get(`${ref.artifactId}:${ref.versionId}`);
+    if (!committed || committed.contentHash !== ref.contentHash) {
+      missing.push(ref);
+    }
+  }
+  return { runnable: missing.length === 0, missing };
+}
+
 function latestArtifactRefsById(
   versions: PlaybookGraphArtifactVersion[]
 ): Map<string, PlaybookGraphArtifactVersionRef> {
