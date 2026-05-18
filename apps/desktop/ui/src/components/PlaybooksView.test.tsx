@@ -119,7 +119,7 @@ const dashboardPlaybook = {
 const importedPlaybook = {
   id: "content.seo-blog",
   version: 1,
-  packageVersion: "0.1.0",
+  packageVersion: "0.1.3",
   name: "Imported SEO Blog Article",
   description: "Imported archive playbook",
   graphHash: "sha256:imported-graph",
@@ -849,7 +849,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         schemaVersion: 1,
         status: "installed",
         id: importedPlaybook.id,
-        version: "0.1.0",
+        version: importedPlaybook.packageVersion,
         name: importedPlaybook.name,
         graphHash: importedPlaybook.graphHash,
         sourceHash: importedPlaybook.sourceHash,
@@ -1559,7 +1559,9 @@ describe("PlaybooksView", () => {
             (args as Record<string, unknown>).zipPath === "/tmp/reference.playbook.zip"
         )
       ).toBe(true);
-      expect(view.getByText("Imported SEO Blog Article installed.")).toBeTruthy();
+      expect(view.getByText("Imported SEO Blog Article 0.1.3 installed.")).toBeTruthy();
+      expect(view.getAllByText("Package 0.1.3").length).toBeGreaterThan(0);
+      expect(view.getByText("Ready to run")).toBeTruthy();
       expect(view.getAllByText("Imported archive playbook").length).toBeGreaterThan(0);
     });
   });

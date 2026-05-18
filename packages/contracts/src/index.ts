@@ -2589,6 +2589,7 @@ export type WorkflowRunRequest = z.infer<typeof WorkflowRunRequestSchema>;
 export const WorkflowRunResultSchema = z.object({
   runId: z.string().min(1),
   workflowId: z.string().min(1),
+  packageVersion: z.string().min(1).optional(),
   status: WorkflowRunStatusSchema,
   currentStepId: z.string().optional(),
   input: z.record(z.unknown()).default({}),

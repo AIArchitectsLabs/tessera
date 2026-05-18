@@ -179,6 +179,14 @@ function formatTokens(value: number): string {
     .replace(/[A-Z]/g, (char) => char.toLowerCase());
 }
 
+function packageVersionLabel(version: string | undefined): string | null {
+  return version ? `Package ${version}` : null;
+}
+
+function runPackageVersion(run: PlaybookRunDetail | null): string | undefined {
+  return run?.packageVersion;
+}
+
 function formatCapabilityLabel(value: string): string {
   return titleFromId(value.replace(/^(?:skill|tool|integration)\./, ""));
 }
@@ -845,6 +853,7 @@ function graphRunToPlaybookRunDetail(
   return {
     runId: detail.run.runId,
     workflowId: detail.run.playbookId,
+    packageVersion: detail.run.snapshot.packageVersion,
     status: workflowStatusFromGraph(detail.run.status),
     currentStepId: detail.run.currentQueueEntryId,
     input: detail.run.input,
@@ -881,6 +890,7 @@ function graphRunRecordToPlaybookRunDetail(
   return {
     runId: run.runId,
     workflowId: run.playbookId,
+    packageVersion: run.snapshot.packageVersion,
     status: workflowStatusFromGraph(run.status),
     currentStepId: run.currentQueueEntryId,
     input: run.input,
@@ -1369,7 +1379,10 @@ function GraphRuntimeSection({
                   {graphStatusCopy[run.status]}
                 </span>
               </div>
-              <div className="mt-1 text-muted-foreground">Updated {formatTime(run.updatedAt)}</div>
+              <div className="mt-1 text-muted-foreground">
+                {packageVersionLabel(run.snapshot.packageVersion)} · Updated{" "}
+                {formatTime(run.updatedAt)}
+              </div>
             </button>
           ))}
         </div>
@@ -1857,6 +1870,7 @@ function GuidedStart({
   }
 
   const showSetupEditor = setupEditorOpen || !agentsConfirmed;
+  const playbookPackageLabel = packageVersionLabel(playbook.packageVersion);
   const preflightPanel = !showSetupEditor ? (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 px-4 py-3">
       <div className="min-w-0">
@@ -2099,6 +2113,11 @@ function GuidedStart({
           </div>
         ) : null}
         <h2 className="text-2xl font-semibold text-foreground">{playbook.name}</h2>
+        {playbookPackageLabel ? (
+          <div className="mt-2 text-xs font-medium text-muted-foreground">
+            {playbookPackageLabel}
+          </div>
+        ) : null}
         {playbook.description ? (
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{playbook.description}</p>
         ) : null}
@@ -2402,6 +2421,8 @@ function GuidedResult({
   onViewDetails: () => void;
 }) {
   const name = playbook?.name ?? "Your playbook";
+  const runVersionLabel = packageVersionLabel(runPackageVersion(run));
+  const latestVersionLabel = packageVersionLabel(playbook?.packageVersion);
   const blockedWithoutApproval = run.status === "blocked" && !run.approval;
   const headlineFn = blockedWithoutApproval ? undefined : resultHeadline[run.status];
   const headline = blockedWithoutApproval
@@ -2448,6 +2469,14 @@ function GuidedResult({
           </div>
         ) : null}
         <h2 className="text-2xl font-semibold text-foreground">{headline}</h2>
+        {runVersionLabel ? (
+          <p className="mt-2 text-xs font-medium text-muted-foreground">
+            {runVersionLabel}
+            {latestVersionLabel && latestVersionLabel !== runVersionLabel
+              ? ` · Latest package ${playbook?.packageVersion}`
+              : ""}
+          </p>
+        ) : null}
         {sub ? <p className="mt-2 text-sm text-muted-foreground">{sub}</p> : null}
         {run.status === "completed" ? (
           <div className="mt-3">
@@ -2611,6 +2640,8 @@ function DetailsPanel({
   onClose: () => void;
 }) {
   const playbookForRun = playbookDetail ?? run?.playbook ?? null;
+  const runVersionLabel = packageVersionLabel(runPackageVersion(run));
+  const latestVersionLabel = packageVersionLabel(playbookForRun?.packageVersion);
   const runInput = run?.input ?? {};
   const sourceGaps = run?.sourceGaps ?? [];
   const visibleInputs = useMemo(() => {
@@ -2688,6 +2719,14 @@ function DetailsPanel({
                   <div className="font-medium text-foreground">
                     {playbookForRun?.name ?? titleFromId(run.workflowId)}
                   </div>
+                  {runVersionLabel ? (
+                    <div className="mt-1 text-muted-foreground">
+                      {runVersionLabel}
+                      {latestVersionLabel && latestVersionLabel !== runVersionLabel
+                        ? ` · Latest package ${playbookForRun?.packageVersion}`
+                        : ""}
+                    </div>
+                  ) : null}
                   <div className="mt-1 text-muted-foreground">
                     {resultSub[run.status] ?? "Tessera updated this run."}
                   </div>
@@ -2892,6 +2931,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const [playbooksLoaded, setPlaybooksLoaded] = useState(false);
   const [running, setRunning] = useState(false);
   const [importingPlaybook, setImportingPlaybook] = useState(false);
+  const [importEvents, setImportEvents] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3188,6 +3228,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   }, [refreshNotice]);
 
   useEffect(() => {
+    if (importingPlaybook || importEvents.length === 0) return;
+    const timeout = setTimeout(() => setImportEvents([]), 5000);
+    return () => clearTimeout(timeout);
+  }, [importEvents.length, importingPlaybook]);
+
+  useEffect(() => {
     let cancelled = false;
     setDashboardLayout(null);
     if (
@@ -3262,6 +3308,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
   const importPlaybook = useCallback(async () => {
     setError(null);
     setRefreshNotice(null);
+    setImportEvents([]);
     let selectedPath: string | string[] | null;
     try {
       selectedPath = await open({
@@ -3277,10 +3324,16 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     }
 
     setImportingPlaybook(true);
+    setImportEvents(["Archive selected", "Installing playbook package"]);
     try {
       const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
         zipPath: selectedPath,
       });
+      setImportEvents((current) => [
+        ...current,
+        `${imported.name} ${imported.version} ${imported.status}`,
+        "Refreshing playbooks and run history",
+      ]);
       const result = await invoke<PlaybookListResult>("playbook_list");
       setPlaybooks(result.playbooks);
       setSelectedPlaybookId(imported.id);
@@ -3289,9 +3342,13 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       setSelectedGraphRunId(null);
       setSelectedGraphRunDetail(null);
       await Promise.all([loadPlaybookDetail(imported.id), loadRuns(imported.id), loadRunHistory()]);
+      setImportEvents((current) => [...current, "Ready to run"]);
       const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
-      setRefreshNotice(`${imported.name} ${imported.status}.${warningCopy}`.trim());
+      setRefreshNotice(
+        `${imported.name} ${imported.version} ${imported.status}.${warningCopy}`.trim()
+      );
     } catch (importError) {
+      setImportEvents((current) => [...current, "Import failed"]);
       setError(importError instanceof Error ? importError.message : String(importError));
     } finally {
       setImportingPlaybook(false);
@@ -3493,6 +3550,11 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">Dashboard</span>
         ) : null}
       </div>
+      {packageVersionLabel(playbook.packageVersion) ? (
+        <div className="mt-1 text-xs font-medium text-muted-foreground">
+          {packageVersionLabel(playbook.packageVersion)}
+        </div>
+      ) : null}
       <div className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
         {playbook.businessUseCase ?? playbook.description}
       </div>
@@ -3602,6 +3664,20 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           </div>
         ) : null}
 
+        {importEvents.length > 0 ? (
+          <div className="border-b border-border bg-background px-4 py-3 text-xs">
+            <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
+              {importingPlaybook ? <Loader2 size={13} className="animate-spin" /> : null}
+              {importingPlaybook ? "Importing playbook" : "Import complete"}
+            </div>
+            <div className="space-y-1 text-muted-foreground">
+              {importEvents.map((event) => (
+                <div key={event}>{event}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="max-h-56 flex-shrink-0 overflow-y-auto py-2 scrollbar-subtle">
           {runs.map((run) => (
             <button
@@ -3629,6 +3705,15 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
                   {runStatusCopy(run)}
                 </span>
               </div>
+              {packageVersionLabel(runPackageVersion(run)) ? (
+                <div className="mt-1 text-xs font-medium text-muted-foreground">
+                  {packageVersionLabel(runPackageVersion(run))}
+                  {selectedPlaybookForUi?.packageVersion &&
+                  selectedPlaybookForUi.packageVersion !== runPackageVersion(run)
+                    ? ` · Latest package ${selectedPlaybookForUi.packageVersion}`
+                    : ""}
+                </div>
+              ) : null}
               {run.usage ? (
                 <div className="mt-1 text-xs text-muted-foreground">
                   {formatTokens(run.usage.totalTokens)} tokens
