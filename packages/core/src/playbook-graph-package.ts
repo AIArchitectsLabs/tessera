@@ -24,6 +24,7 @@ const LOCKFILE_NAMES = new Set([
   "pnpm-lock.yaml",
   "yarn.lock",
 ]);
+const IGNORED_DIRECTORY_NAMES = new Set([".git"]);
 const DEPENDENCY_FIELDS = new Set([
   "dependencies",
   "devDependencies",
@@ -163,6 +164,9 @@ async function collectPackageFiles(
   for (const entry of entries) {
     const childAbsolutePath = join(absolutePath, entry.name);
     const childRelativePosix = toPosixPath(relative(root, childAbsolutePath));
+    if (entry.isDirectory() && IGNORED_DIRECTORY_NAMES.has(entry.name)) {
+      continue;
+    }
     let resolvedChild: string;
     try {
       resolvedChild = await realpath(childAbsolutePath);

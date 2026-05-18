@@ -96,6 +96,7 @@ describe("readPlaybookGraphPackage", () => {
     await writePackageFile(root, "scripts/plan.ts", "export const plan = 1;\n");
     await writePackageFile(root, "schemas/research.json", '{"type":"object"}\n');
     await writePackageFile(root, "assets/ignored.bin", "ignore me");
+    await writePackageFile(root, ".git/hooks/pre-commit", "#!/bin/sh\n");
     await writePackageFile(
       root,
       "package.json",
