@@ -48,8 +48,9 @@ import { PlaybookRefreshButton } from "./PlaybookRefreshButton";
 import { WorkspacePicker } from "./WorkspacePicker";
 
 interface PlaybooksViewProps {
-  workspaceRoot: string | null;
   onWorkspaceSelect: (path: string) => void;
+  userKey: string;
+  workspaceRoot: string | null;
 }
 
 const statusCopy: Record<PlaybookRunDetail["status"], string> = {
@@ -3109,7 +3110,7 @@ function DetailsPanel({
   );
 }
 
-export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksViewProps) {
+export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: PlaybooksViewProps) {
   const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
   const [runs, setRuns] = useState<PlaybookRunDetail[]>([]);
@@ -3266,9 +3267,9 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     try {
       const [loadedModelSettings, loadedIntegrationSettings, loadedAgentProfiles] =
         await Promise.all([
-          invoke<ModelSettingsRead>("model_settings_get"),
-          invoke<IntegrationSettingsRead>("integration_settings_get"),
-          invoke<AgentProfileListResult>("agent_profile_list"),
+          invoke<ModelSettingsRead>("model_settings_get", { userKey }),
+          invoke<IntegrationSettingsRead>("integration_settings_get", { userKey }),
+          invoke<AgentProfileListResult>("agent_profile_list", { userKey }),
         ]);
       setModelSettings(loadedModelSettings);
       setIntegrationSettings(loadedIntegrationSettings);
@@ -3276,7 +3277,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
     } catch (loadError) {
       setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
     }
-  }, []);
+  }, [userKey]);
 
   const loadPlaybookDetail = useCallback(async (playbookId: string) => {
     try {
@@ -3636,6 +3637,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
       };
       const detail = await invoke<PlaybookGraphRunDetail>("graph_run_create", {
         request,
+        userKey,
       });
       const run = graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi);
       setRuns((current) => [run, ...current.filter((item) => item.runId !== run.runId)]);
@@ -3712,6 +3714,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           decision: actionDecision,
           ...(action?.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
         },
+        userKey,
       });
       const run = graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi);
       setRuns((current) => current.map((item) => (item.runId === run.runId ? run : item)));
@@ -3746,6 +3749,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect }: PlaybooksVie
           ...(action.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
           ...(payload && Object.keys(payload).length > 0 ? { payload } : {}),
         },
+        userKey,
       });
       setSelectedGraphRunDetail(detail);
       setGraphRuns((current) =>

@@ -41,6 +41,13 @@ impl ModelProvider {
         }
     }
 
+    fn account_for_user(self, user_key: Option<&str>) -> String {
+        match user_key {
+            Some(user_key) => format!("user.{user_key}.{}", self.account()),
+            None => self.account().to_string(),
+        }
+    }
+
     fn default_model(self) -> &'static str {
         match self {
             Self::Openai => "gpt-5.4",
@@ -50,6 +57,33 @@ impl ModelProvider {
             Self::Local => "llama3.2",
         }
     }
+}
+
+pub fn validate_user_key(user_key: &str) -> Result<&str> {
+    if !user_key.is_empty()
+        && user_key.len() <= 160
+        && user_key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+    {
+        return Ok(user_key);
+    }
+    bail!("Invalid user key")
+}
+
+fn scoped_user_key(user_key: Option<&str>) -> Result<Option<&str>> {
+    user_key.map(validate_user_key).transpose()
+}
+
+pub fn user_config_dir(app: &AppHandle, user_key: Option<&str>) -> Result<PathBuf> {
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .context("Could not resolve app config dir")?;
+    Ok(match scoped_user_key(user_key)? {
+        Some(user_key) => app_config_dir.join("users").join(user_key),
+        None => app_config_dir,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -206,7 +240,13 @@ pub fn codex_chatgpt_account_id(access_token: &str) -> Option<String> {
 }
 
 pub fn get_codex_oauth_credential() -> Result<Option<CodexOAuthCredential>> {
-    get_credential(ModelProvider::OpenaiCodex).and_then(|value| {
+    get_codex_oauth_credential_for_user(None)
+}
+
+pub fn get_codex_oauth_credential_for_user(
+    user_key: Option<&str>,
+) -> Result<Option<CodexOAuthCredential>> {
+    get_credential_for_user(ModelProvider::OpenaiCodex, user_key).and_then(|value| {
         value
             .as_deref()
             .map(decode_codex_oauth_credential)
@@ -215,8 +255,15 @@ pub fn get_codex_oauth_credential() -> Result<Option<CodexOAuthCredential>> {
 }
 
 pub fn set_codex_oauth_credential(credential: &CodexOAuthCredential) -> Result<()> {
+    set_codex_oauth_credential_for_user(None, credential)
+}
+
+pub fn set_codex_oauth_credential_for_user(
+    user_key: Option<&str>,
+    credential: &CodexOAuthCredential,
+) -> Result<()> {
     let encoded = encode_codex_oauth_credential(credential)?;
-    set_credential(ModelProvider::OpenaiCodex, &encoded)
+    set_credential_for_user(ModelProvider::OpenaiCodex, user_key, &encoded)
 }
 
 pub fn codex_oauth_status_from_credential(
@@ -241,7 +288,11 @@ pub fn codex_oauth_status_from_credential(
 }
 
 pub fn codex_oauth_status() -> Result<CodexOAuthStatus> {
-    let credential = get_codex_oauth_credential()?;
+    codex_oauth_status_for_user(None)
+}
+
+pub fn codex_oauth_status_for_user(user_key: Option<&str>) -> Result<CodexOAuthStatus> {
+    let credential = get_codex_oauth_credential_for_user(user_key)?;
     Ok(codex_oauth_status_from_credential(credential.as_ref()))
 }
 
@@ -321,11 +372,11 @@ pub fn default_settings_file() -> SettingsFile {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf> {
-    Ok(app
-        .path()
-        .app_config_dir()
-        .context("Could not resolve app config dir")?
-        .join(SETTINGS_FILE))
+    settings_path_for_user(app, None)
+}
+
+pub fn settings_path_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<PathBuf> {
+    Ok(user_config_dir(app, user_key)?.join(SETTINGS_FILE))
 }
 
 pub fn load_settings_file(path: &Path) -> Result<SettingsFile> {
@@ -361,19 +412,27 @@ pub fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keyring_entry(provider: ModelProvider) -> Result<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, provider.account()).context("Could not open keychain entry")
+fn keyring_entry(provider: ModelProvider, user_key: Option<&str>) -> Result<Entry> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
+    Entry::new(KEYCHAIN_SERVICE, &account).context("Could not open keychain entry")
 }
 
 pub fn get_credential(provider: ModelProvider) -> Result<Option<String>> {
+    get_credential_for_user(provider, None)
+}
+
+pub fn get_credential_for_user(
+    provider: ModelProvider,
+    user_key: Option<&str>,
+) -> Result<Option<String>> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return get_macos_credential(provider);
+        return get_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
     #[cfg(not(target_os = "macos"))]
-    match keyring_entry(provider)?.get_password() {
+    match keyring_entry(provider, user_key)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error).context("Could not read model credential"),
@@ -381,27 +440,42 @@ pub fn get_credential(provider: ModelProvider) -> Result<Option<String>> {
 }
 
 fn set_credential(provider: ModelProvider, api_key: &str) -> Result<()> {
+    set_credential_for_user(provider, None, api_key)
+}
+
+fn set_credential_for_user(
+    provider: ModelProvider,
+    user_key: Option<&str>,
+    api_key: &str,
+) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return set_macos_credential(provider, api_key);
+        return set_macos_credential(
+            &provider.account_for_user(scoped_user_key(user_key)?),
+            api_key,
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
-    keyring_entry(provider)?
+    keyring_entry(provider, user_key)?
         .set_password(api_key)
         .context("Could not store model credential")
 }
 
 pub fn delete_credential(provider: ModelProvider) -> Result<()> {
+    delete_credential_for_user(provider, None)
+}
+
+pub fn delete_credential_for_user(provider: ModelProvider, user_key: Option<&str>) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return delete_macos_credential(provider);
+        return delete_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
     #[cfg(not(target_os = "macos"))]
-    match keyring_entry(provider)?.delete_credential() {
+    match keyring_entry(provider, user_key)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("Could not delete model credential"),
     }
@@ -431,11 +505,11 @@ fn security_item_missing(output: &std::process::Output) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn get_macos_credential(provider: ModelProvider) -> Result<Option<String>> {
+fn get_macos_credential(account: &str) -> Result<Option<String>> {
     let output = run_security(&[
         "find-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -457,11 +531,11 @@ fn get_macos_credential(provider: ModelProvider) -> Result<Option<String>> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_macos_credential(provider: ModelProvider, api_key: &str) -> Result<()> {
+fn set_macos_credential(account: &str, api_key: &str) -> Result<()> {
     let output = run_security(&[
         "add-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -480,11 +554,11 @@ fn set_macos_credential(provider: ModelProvider, api_key: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn delete_macos_credential(provider: ModelProvider) -> Result<()> {
+fn delete_macos_credential(account: &str) -> Result<()> {
     let output = run_security(&[
         "delete-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
     ])?;
@@ -500,12 +574,20 @@ fn delete_macos_credential(provider: ModelProvider) -> Result<()> {
 }
 
 fn redact(settings: SettingsFile) -> Result<ModelSettingsRead> {
-    redact_with_known_credentials(settings, BTreeMap::new())
+    redact_with_known_credentials_for_user(settings, BTreeMap::new(), None)
 }
 
 fn redact_with_known_credentials(
     settings: SettingsFile,
     known_credentials: BTreeMap<ModelProvider, bool>,
+) -> Result<ModelSettingsRead> {
+    redact_with_known_credentials_for_user(settings, known_credentials, None)
+}
+
+fn redact_with_known_credentials_for_user(
+    settings: SettingsFile,
+    known_credentials: BTreeMap<ModelProvider, bool>,
+    user_key: Option<&str>,
 ) -> Result<ModelSettingsRead> {
     let mut providers = BTreeMap::new();
 
@@ -519,7 +601,7 @@ fn redact_with_known_credentials(
                 base_url: config.base_url,
                 has_credential: match known_credentials.get(&provider) {
                     Some(value) => *value,
-                    None => get_credential(provider)?.is_some(),
+                    None => get_credential_for_user(provider, user_key)?.is_some(),
                 },
             },
         );
@@ -567,7 +649,15 @@ pub fn selected_provider_config(settings: &SettingsFile) -> Result<ProviderConfi
 }
 
 pub fn read(app: &AppHandle) -> Result<ModelSettingsRead> {
-    redact(load_settings_file(&settings_path(app)?)?)
+    read_for_user(app, None)
+}
+
+pub fn read_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<ModelSettingsRead> {
+    redact_with_known_credentials_for_user(
+        load_settings_file(&settings_path_for_user(app, user_key)?)?,
+        BTreeMap::new(),
+        user_key,
+    )
 }
 
 pub fn validate_save_request(request: &ModelSettingsSaveRequest) -> Result<()> {
@@ -593,7 +683,15 @@ fn apply_save_request(
 }
 
 pub fn save(app: &AppHandle, request: ModelSettingsSaveRequest) -> Result<ModelSettingsRead> {
-    let path = settings_path(app)?;
+    save_for_user(app, None, request)
+}
+
+pub fn save_for_user(
+    app: &AppHandle,
+    user_key: Option<&str>,
+    request: ModelSettingsSaveRequest,
+) -> Result<ModelSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
     validate_save_request(&request)?;
     let settings = apply_save_request(load_settings_file(&path)?, &request)?;
     let mut known_credentials = BTreeMap::new();
@@ -609,21 +707,29 @@ pub fn save(app: &AppHandle, request: ModelSettingsSaveRequest) -> Result<ModelS
     if let Some(credential) = request.credential {
         let api_key = credential.api_key.trim();
         if !api_key.is_empty() {
-            set_credential(request.provider.provider, api_key)?;
+            set_credential_for_user(request.provider.provider, user_key, api_key)?;
         }
     }
 
     save_settings_file(&path, &settings)?;
-    redact_with_known_credentials(settings, known_credentials)
+    redact_with_known_credentials_for_user(settings, known_credentials, user_key)
 }
 
 pub fn delete(app: &AppHandle, request: ModelCredentialDeleteRequest) -> Result<ModelSettingsRead> {
-    let path = settings_path(app)?;
+    delete_for_user(app, None, request)
+}
+
+pub fn delete_for_user(
+    app: &AppHandle,
+    user_key: Option<&str>,
+    request: ModelCredentialDeleteRequest,
+) -> Result<ModelSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
     let settings = load_settings_file(&path)?;
-    delete_credential(request.provider)?;
+    delete_credential_for_user(request.provider, user_key)?;
     let mut known_credentials = BTreeMap::new();
     known_credentials.insert(request.provider, false);
-    redact_with_known_credentials(settings, known_credentials)
+    redact_with_known_credentials_for_user(settings, known_credentials, user_key)
 }
 
 #[cfg(test)]

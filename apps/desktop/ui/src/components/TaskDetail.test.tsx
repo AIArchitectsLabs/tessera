@@ -243,6 +243,7 @@ function renderTaskDetail(overrides: Partial<React.ComponentProps<typeof TaskDet
     sendingTurn: false,
     task: taskDetail(),
     tasks: [],
+    userKey: "user.test",
     workspaceRoot: "/tmp/workspace",
     ...overrides,
   };
@@ -280,6 +281,7 @@ describe("TaskDetail composer", () => {
         (call) =>
           call.command === "skill_list" &&
           call.args?.agentId === "default" &&
+          call.args?.userKey === "user.test" &&
           call.args?.workspaceRoot === "/tmp/workspace"
       )
     ).toBe(true);
@@ -319,6 +321,7 @@ describe("TaskDetail composer", () => {
         (call) =>
           call.command === "skill_list" &&
           call.args?.agentId === "agent-1" &&
+          call.args?.userKey === "user.test" &&
           call.args?.workspaceRoot === "/tmp/workspace"
       )
     ).toBe(true);

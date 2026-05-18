@@ -33,12 +33,16 @@ function installDom() {
 
 installDom();
 
-const invokeMock = mock(async (command: string) => {
+const invokeMock = mock(async (command: string): Promise<unknown> => {
   if (command === "google_identity_connect") {
     return {
       ok: true,
       message: "Google sign-in complete.",
       provider: null,
+      user: {
+        email: "alex@example.com",
+        userKey: "google-alex",
+      },
     };
   }
   if (command === "google_identity_connection_status") {
@@ -46,6 +50,10 @@ const invokeMock = mock(async (command: string) => {
       ok: true,
       message: "Google sign-in complete.",
       provider: null,
+      user: {
+        email: "alex@example.com",
+        userKey: "google-alex",
+      },
     };
   }
   if (command === "task_list") return { tasks: [] };
@@ -57,6 +65,10 @@ const invokeMock = mock(async (command: string) => {
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
+}));
+
+mock.module("@tauri-apps/plugin-fs", () => ({
+  readDir: mock(async () => []),
 }));
 
 import App from "./App";
@@ -90,10 +102,11 @@ describe("App login flow", () => {
     expect(localStorage.getItem("tessera_auth_session")).toContain(
       "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com"
     );
+    expect(localStorage.getItem("tessera_auth_session")).toContain("google-alex");
   });
 
   test("waits for browser consent to finish before entering the app shell", async () => {
-    invokeMock.mockImplementationOnce(async (command: string) => {
+    invokeMock.mockImplementationOnce(async (command: string): Promise<unknown> => {
       if (command === "google_identity_connect") {
         return {
           ok: false,
@@ -127,6 +140,7 @@ describe("App login flow", () => {
         provider: "google",
         clientId: "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com",
         authenticatedAt: "2026-05-11T00:00:00.000Z",
+        userKey: "google-alex",
       })
     );
 
@@ -140,5 +154,50 @@ describe("App login flow", () => {
 
     expect(localStorage.getItem("tessera_auth_session")).toBeNull();
     expect(view.getByRole("heading", { name: /welcome to tessera/i })).toBeTruthy();
+  });
+
+  test("loads the selected workspace from the signed-in user bucket", async () => {
+    localStorage.setItem(
+      "tessera_auth_session",
+      JSON.stringify({
+        provider: "google",
+        clientId: "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com",
+        authenticatedAt: "2026-05-11T00:00:00.000Z",
+        userKey: "google-alex",
+      })
+    );
+    localStorage.setItem("tessera_user:google-alex:workspace_root", "/tmp/alex-workspace");
+    localStorage.setItem("tessera_user:google-blair:workspace_root", "/tmp/blair-workspace");
+    localStorage.setItem("tessera_workspace_root", "/tmp/legacy-global-workspace");
+
+    const view = render(<App />);
+
+    await waitFor(() => {
+      expect(view.getByText("alex-workspace")).toBeTruthy();
+    });
+    expect(view.queryByText("blair-workspace")).toBeNull();
+    expect(view.queryByText("legacy-global-workspace")).toBeNull();
+  });
+
+  test("does not show another user's selected workspace", async () => {
+    localStorage.setItem(
+      "tessera_auth_session",
+      JSON.stringify({
+        provider: "google",
+        clientId: "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com",
+        authenticatedAt: "2026-05-11T00:00:00.000Z",
+        userKey: "google-blair",
+      })
+    );
+    localStorage.setItem("tessera_user:google-alex:workspace_root", "/tmp/alex-workspace");
+    localStorage.setItem("tessera_workspace_root", "/tmp/legacy-global-workspace");
+
+    const view = render(<App />);
+
+    await waitFor(() => {
+      expect(view.getByText("Select Workspace")).toBeTruthy();
+    });
+    expect(view.queryByText("alex-workspace")).toBeNull();
+    expect(view.queryByText("legacy-global-workspace")).toBeNull();
   });
 });

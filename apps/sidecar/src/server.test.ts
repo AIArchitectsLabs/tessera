@@ -5174,7 +5174,22 @@ describe("sidecar utility handlers", () => {
         return undefined;
       },
       getMemoryById() {
-        return undefined;
+        return {
+          id: "memory-active",
+          workspaceKey: "workspace:one",
+          ownerId: "local-owner",
+          scope: "workspace" as const,
+          type: "preference" as const,
+          title: "Weekly style",
+          body: "Prefer concise bullets.",
+          status: "active" as const,
+          confidence: 0.92,
+          freshness: "fresh" as const,
+          sourceEventIds: [],
+          sourceDocumentIds: [],
+          createdAt: "2026-05-13T00:00:00.000Z",
+          updatedAt: "2026-05-13T00:00:00.000Z",
+        };
       },
       indexDocument() {},
       searchChunks() {

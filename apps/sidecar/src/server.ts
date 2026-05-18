@@ -189,6 +189,7 @@ const capabilityInstallTasks = new Map<string, Promise<void>>();
 const graphRunStore = createPlaybookGraphRunStore(WORKFLOW_DB_PATH);
 const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
+const agentProfileStoresByUserKey = new Map<string, ReturnType<typeof createAgentProfileStore>>();
 const inboxStore = createInboxStore(TASK_DB_PATH);
 const graphRunBackgroundWorkerRef: { current: GraphRunWorker | undefined } = {
   current: undefined,
@@ -355,30 +356,65 @@ void refreshBuiltInGraphPlaybookRegistry().catch((error) => {
   );
 });
 
-function profileForAgentId(agentId: string): AgentProfile {
-  if (agentId === "default") return defaultAgentProfile();
-  return agentProfileStore.get(agentId) ?? DEFAULT_AGENT_PROFILE;
+function validateUserKey(value: string): string {
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(value)) {
+    throw new Error("Invalid user key");
+  }
+  return value;
 }
 
-function defaultAgentProfile(): AgentProfile {
-  return mergeDefaultAgentProfile(DEFAULT_AGENT_PROFILE, agentProfileStore.get("default"));
+function userKeyFromRequest(req: Request): string | undefined {
+  const raw = new URL(req.url).searchParams.get("userKey");
+  return raw ? validateUserKey(raw) : undefined;
 }
 
-function allowedSkillIdsForAgent(agentId: string): string[] {
-  return profileForAgentId(agentId).skills ?? [];
+function memoryOwnerIdForUserKey(userKey: string | undefined): string {
+  return userKey ?? LOCAL_MEMORY_OWNER_ID;
+}
+
+function memoryManagerForUserKey(userKey: string | undefined): TesseraMemoryManager {
+  if (!memoryStore) return memoryManager;
+  return createMemoryManager({ store: memoryStore, ownerId: memoryOwnerIdForUserKey(userKey) });
+}
+
+function agentProfileStoreForUserKey(userKey: string | undefined) {
+  if (!userKey) return agentProfileStore;
+  const existing = agentProfileStoresByUserKey.get(userKey);
+  if (existing) return existing;
+  const store = createAgentProfileStore(
+    join(dirname(TASK_DB_PATH), "users", userKey, "agent-profiles.sqlite")
+  );
+  agentProfileStoresByUserKey.set(userKey, store);
+  return store;
+}
+
+function profileForAgentId(agentId: string, userKey?: string): AgentProfile {
+  const store = agentProfileStoreForUserKey(userKey);
+  if (agentId === "default") return defaultAgentProfile(userKey);
+  return store.get(agentId) ?? DEFAULT_AGENT_PROFILE;
+}
+
+function defaultAgentProfile(userKey?: string): AgentProfile {
+  const store = agentProfileStoreForUserKey(userKey);
+  return mergeDefaultAgentProfile(DEFAULT_AGENT_PROFILE, store.get("default"));
+}
+
+function allowedSkillIdsForAgent(agentId: string, userKey?: string): string[] {
+  return profileForAgentId(agentId, userKey).skills ?? [];
 }
 
 async function parseSkillInvocation(options: {
   text: string;
   workspaceRoot: string;
   agentId: string;
+  userKey?: string | undefined;
 }): Promise<{
   originalContent: string;
   prompt: string;
   skill?: Omit<TaskSkillActivation, "activatedAt">;
 }> {
   const registry = createTesseraSkillRegistry({ workspaceRoot: options.workspaceRoot });
-  const allowedSkillIds = allowedSkillIdsForAgent(options.agentId);
+  const allowedSkillIds = allowedSkillIdsForAgent(options.agentId, options.userKey);
   const invocation = await resolveSlashSkillInvocation(options.text, registry, { allowedSkillIds });
   if (!invocation) return { originalContent: options.text, prompt: options.text };
   const detail = await registry.loadSkill(invocation.skillId, { allowedSkillIds });
@@ -404,6 +440,9 @@ process.on("exit", () => {
   graphRunStore.close();
   taskStore.close();
   agentProfileStore.close();
+  for (const store of agentProfileStoresByUserKey.values()) {
+    store.close();
+  }
   inboxStore.close();
   memoryStore?.close();
 });
@@ -3306,8 +3345,9 @@ export async function handleGraphRunCreate(
 
   try {
     const store = options.store ?? graphRunStore;
+    const userKey = userKeyFromRequest(req);
     const workspaceRoot = parsed.data.workspaceRoot ?? options.workspaceRoot;
-    const agentProfile = profileForAgentId(parsed.data.agentId);
+    const agentProfile = profileForAgentId(parsed.data.agentId, userKey);
     const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
       agentProfile,
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
@@ -3885,11 +3925,12 @@ export async function handleGraphRunResume(
 
   try {
     const store = options.store ?? graphRunStore;
+    const userKey = userKeyFromRequest(req);
     const run = await store.getRun(runId);
     if (!run) return Response.json({ error: "Unknown graph run" }, { status: 404 });
     const now = options.now ? options.now() : new Date().toISOString();
     const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
-      agentProfile: options.agentProfile ?? defaultAgentProfile(),
+      agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
       ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
     });
@@ -3898,7 +3939,7 @@ export async function handleGraphRunResume(
       parsed.data.executionContext ??
       (runtimeProvider
         ? graphRunAgentExecutionContext({
-            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(),
+            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
             provider: runtimeProvider,
             ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
           })
@@ -4650,10 +4691,12 @@ async function handleTaskCreate(req: Request): Promise<Response> {
   }
 
   try {
+    const userKey = userKeyFromRequest(req);
     const invocation = await parseSkillInvocation({
       text: parsed.data.initialInstruction,
       workspaceRoot: parsed.data.workspaceRoot,
       agentId: parsed.data.agentId,
+      userKey,
     });
     const taskInput = {
       ...parsed.data,
@@ -4661,7 +4704,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
     };
     let execution = parsed.data.execution;
     if (execution && taskInput.agentId !== "default") {
-      const profile = agentProfileStore.get(taskInput.agentId);
+      const profile = agentProfileStoreForUserKey(userKey).get(taskInput.agentId);
       if (profile) {
         execution = {
           ...execution,
@@ -4670,7 +4713,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         };
       }
     } else if (execution) {
-      const agent = defaultAgentProfile();
+      const agent = defaultAgentProfile(userKey);
       execution = {
         ...execution,
         agent,
@@ -4704,7 +4747,7 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         browser: browserExecutor,
         capabilityManager: optionalCapabilityManager,
         cli: { runWorkspaceCli },
-        memory: memoryManager,
+        memory: memoryManagerForUserKey(userKey),
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
         pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
@@ -4774,12 +4817,14 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
   }
 
   try {
+    const userKey = userKeyFromRequest(req);
     const task = taskStore.getTask(taskId);
     if (!task) return Response.json({ error: "Unknown task" }, { status: 404 });
     const invocation = await parseSkillInvocation({
       text: parsed.data.content,
       workspaceRoot: task.workspaceRoot,
       agentId: parsed.data.agentId,
+      userKey,
     });
     const turnInput = {
       ...parsed.data,
@@ -4787,7 +4832,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
     };
     let execution = parsed.data.execution;
     if (execution && turnInput.agentId !== "default") {
-      const profile = agentProfileStore.get(turnInput.agentId);
+      const profile = agentProfileStoreForUserKey(userKey).get(turnInput.agentId);
       if (profile) {
         execution = {
           ...execution,
@@ -4796,7 +4841,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         };
       }
     } else if (execution) {
-      const agent = defaultAgentProfile();
+      const agent = defaultAgentProfile(userKey);
       execution = {
         ...execution,
         agent,
@@ -4843,7 +4888,7 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         browser: browserExecutor,
         capabilityManager: optionalCapabilityManager,
         cli: { runWorkspaceCli },
-        memory: memoryManager,
+        memory: memoryManagerForUserKey(userKey),
         ...(execution ? { execution } : {}),
         promptOverride: invocation.prompt,
         pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
@@ -5085,11 +5130,13 @@ function handleAgentProfileList(req: Request): Response {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  const userKey = userKeyFromRequest(req);
+  const store = agentProfileStoreForUserKey(userKey);
 
   const result = {
     profiles: [
-      defaultAgentProfile(),
-      ...agentProfileStore.list().filter((profile) => profile.id !== "default"),
+      defaultAgentProfile(userKey),
+      ...store.list().filter((profile) => profile.id !== "default"),
     ],
   };
   return Response.json(result);
@@ -5099,8 +5146,10 @@ function handleAgentProfileGet(req: Request, id: string): Response {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  const userKey = userKeyFromRequest(req);
+  const store = agentProfileStoreForUserKey(userKey);
 
-  const profile = id === "default" ? defaultAgentProfile() : agentProfileStore.get(id);
+  const profile = id === "default" ? defaultAgentProfile(userKey) : store.get(id);
   if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json(profile);
 }
@@ -5123,7 +5172,7 @@ async function handleAgentProfileCreate(req: Request): Promise<Response> {
   }
 
   try {
-    const profile = agentProfileStore.create(parsed.data);
+    const profile = agentProfileStoreForUserKey(userKeyFromRequest(req)).create(parsed.data);
     return Response.json(profile);
   } catch (error) {
     return Response.json(
@@ -5150,10 +5199,12 @@ async function handleAgentProfileUpdate(req: Request, id: string): Promise<Respo
     return Response.json({ error: parsed.error.message }, { status: 400 });
   }
 
+  const userKey = userKeyFromRequest(req);
+  const store = agentProfileStoreForUserKey(userKey);
   const profile =
     id === "default"
-      ? agentProfileStore.updateDefault(DEFAULT_AGENT_PROFILE, parsed.data)
-      : agentProfileStore.update(id, parsed.data);
+      ? store.updateDefault(DEFAULT_AGENT_PROFILE, parsed.data)
+      : store.update(id, parsed.data);
   if (!profile) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json(profile);
 }
@@ -5166,7 +5217,7 @@ function handleAgentProfileReset(req: Request, id: string): Response {
     return Response.json({ error: "Only the default profile can be reset" }, { status: 400 });
   }
 
-  agentProfileStore.resetDefault();
+  agentProfileStoreForUserKey(userKeyFromRequest(req)).resetDefault();
   return Response.json(DEFAULT_AGENT_PROFILE);
 }
 
@@ -5178,7 +5229,7 @@ function handleAgentProfileDelete(req: Request, id: string): Response {
     return Response.json({ error: "The default agent profile cannot be deleted" }, { status: 400 });
   }
 
-  const deleted = agentProfileStore.delete(id);
+  const deleted = agentProfileStoreForUserKey(userKeyFromRequest(req)).delete(id);
   if (!deleted) return Response.json({ error: "Unknown agent profile" }, { status: 404 });
   return Response.json({ ok: true });
 }
@@ -5194,10 +5245,11 @@ async function handleSkillList(req: Request): Promise<Response> {
   try {
     const url = new URL(req.url);
     const agentId = url.searchParams.get("agentId") ?? undefined;
+    const userKey = userKeyFromRequest(req);
     const registry = skillRegistryForUrl(req);
     return Response.json({
       skills: await registry.listSkills(
-        agentId ? { allowedSkillIds: allowedSkillIdsForAgent(agentId) } : undefined
+        agentId ? { allowedSkillIds: allowedSkillIdsForAgent(agentId, userKey) } : undefined
       ),
     });
   } catch (error) {
@@ -5236,8 +5288,9 @@ async function handleTaskSkillCreate(req: Request, taskId: string): Promise<Resp
   const task = taskStore.getTask(taskId);
   if (!task) return Response.json({ error: "Unknown task" }, { status: 404 });
   try {
+    const userKey = userKeyFromRequest(req);
     const registry = createTesseraSkillRegistry({ workspaceRoot: task.workspaceRoot });
-    const allowedSkillIds = allowedSkillIdsForAgent(task.agentId);
+    const allowedSkillIds = allowedSkillIdsForAgent(task.agentId, userKey);
     const detail = await registry.loadSkill(skillId, { allowedSkillIds });
     const updated = taskStore.addActiveSkill(taskId, {
       skillId: detail.id,
@@ -5279,18 +5332,19 @@ export function handleMemoryReviewList(
   }
 
   const url = new URL(req.url);
+  const ownerId = memoryOwnerIdForUserKey(userKeyFromRequest(req));
   const workspaceKey = url.searchParams.get("workspaceKey") ?? undefined;
   const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "24", 10);
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 24;
   const result = MemoryReviewListResultSchema.parse({
     active: store.listActiveMemories({
       ...(workspaceKey ? { workspaceKey } : {}),
-      ownerId: LOCAL_MEMORY_OWNER_ID,
+      ownerId,
       limit,
     }),
     candidates: store.listCandidateMemories({
       ...(workspaceKey ? { workspaceKey } : {}),
-      ownerId: LOCAL_MEMORY_OWNER_ID,
+      ownerId,
       limit,
     }),
   });
@@ -5320,6 +5374,10 @@ export async function handleMemoryReviewDecision(
 
   const memory = store.getMemoryById(parsed.data.memoryId);
   if (!memory) {
+    return Response.json({ error: "Unknown memory" }, { status: 404 });
+  }
+  const ownerId = memoryOwnerIdForUserKey(userKeyFromRequest(req));
+  if (memory.ownerId !== ownerId) {
     return Response.json({ error: "Unknown memory" }, { status: 404 });
   }
   if (parsed.data.decision === "accept" && memory.status !== "candidate") {
@@ -5359,6 +5417,11 @@ export async function handleMemoryForget(
   const parsed = MemoryForgetRequestSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+  const ownerId = memoryOwnerIdForUserKey(userKeyFromRequest(req));
+  const memory = store.getMemoryById(parsed.data.memoryId);
+  if (!memory || memory.ownerId !== ownerId) {
+    return Response.json({ error: "Unknown memory" }, { status: 404 });
   }
 
   store.forgetMemory(parsed.data);

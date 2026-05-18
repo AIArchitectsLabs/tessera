@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AuthenticatedUser,
   ClarifyResponse,
   InboxListResult,
   InboxMessage,
@@ -29,7 +30,6 @@ import { mergeTaskDetail } from "./lib/taskDetails";
 import { mergeTaskSummary, summaryFromDetail } from "./lib/taskSummaries";
 import { useTaskEvents } from "./lib/useTaskEvents";
 
-const WORKSPACE_STORAGE_KEY = "tessera_workspace_root";
 const AUTH_SESSION_STORAGE_KEY = "tessera_auth_session";
 const GOOGLE_CLIENT_ID = "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com";
 const GOOGLE_AUTH_POLL_INTERVAL_MS = 2_000;
@@ -38,7 +38,17 @@ const GOOGLE_AUTH_MAX_POLLS = 60;
 interface AuthSession {
   authenticatedAt: string;
   clientId: string;
+  email?: string;
   provider: "google";
+  userKey: string;
+}
+
+function userStorageKey(userKey: string, setting: string): string {
+  return `tessera_user:${userKey}:${setting}`;
+}
+
+function validUserKey(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(value);
 }
 
 function readAuthSession(): AuthSession | null {
@@ -49,14 +59,37 @@ function readAuthSession(): AuthSession | null {
     if (parsed.provider !== "google") return null;
     if (parsed.clientId !== GOOGLE_CLIENT_ID) return null;
     if (typeof parsed.authenticatedAt !== "string") return null;
+    if (!validUserKey(parsed.userKey)) return null;
     return {
       authenticatedAt: parsed.authenticatedAt,
       clientId: parsed.clientId,
+      ...(typeof parsed.email === "string" && parsed.email.trim()
+        ? { email: parsed.email.trim() }
+        : {}),
       provider: parsed.provider,
+      userKey: parsed.userKey,
     };
   } catch {
     return null;
   }
+}
+
+function readWorkspaceRoot(session: AuthSession | null): string | null {
+  if (!session) return null;
+  return localStorage.getItem(userStorageKey(session.userKey, "workspace_root"));
+}
+
+function authSessionFromUser(user: AuthenticatedUser | undefined): AuthSession {
+  if (!user || !validUserKey(user.userKey)) {
+    throw new Error("Google sign-in did not return a usable account identity.");
+  }
+  return {
+    authenticatedAt: new Date().toISOString(),
+    clientId: GOOGLE_CLIENT_ID,
+    ...(user.email ? { email: user.email } : {}),
+    provider: "google",
+    userKey: user.userKey,
+  };
 }
 
 function googleAuthIsWaiting(message: string): boolean {
@@ -69,10 +102,11 @@ function wait(ms: number): Promise<void> {
 
 export default function App() {
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => readAuthSession());
+  const authSessionUserKey = authSession?.userKey ?? null;
   const [loginStatus, setLoginStatus] = useState<string | null>(null);
-  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() => {
-    return localStorage.getItem(WORKSPACE_STORAGE_KEY);
-  });
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(() =>
+    readWorkspaceRoot(readAuthSession())
+  );
   const [activeView, setActiveView] = useState<AppView>("tasks");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
@@ -99,8 +133,9 @@ export default function App() {
   selectedTaskIdRef.current = selectedTaskId;
 
   const handleWorkspaceSelect = (path: string) => {
+    if (!authSession) return;
     setWorkspaceRoot(path);
-    localStorage.setItem(WORKSPACE_STORAGE_KEY, path);
+    localStorage.setItem(userStorageKey(authSession.userKey, "workspace_root"), path);
     setTaskListView("active");
     setSelectedTaskId(null);
     setSelectedTask(null);
@@ -231,14 +266,15 @@ export default function App() {
     setTaskListView("active");
   };
 
-  const saveAuthSession = () => {
-    const session: AuthSession = {
-      authenticatedAt: new Date().toISOString(),
-      clientId: GOOGLE_CLIENT_ID,
-      provider: "google",
-    };
+  const saveAuthSession = (user: AuthenticatedUser | undefined) => {
+    const session = authSessionFromUser(user);
     localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
     setAuthSession(session);
+    setWorkspaceRoot(readWorkspaceRoot(session));
+    setTaskListView("active");
+    setSelectedTaskId(null);
+    setSelectedTask(null);
+    setSelectedInboxId(null);
   };
 
   const pollGoogleAuthConnection = async () => {
@@ -248,7 +284,7 @@ export default function App() {
         "google_identity_connection_status"
       );
       if (status.ok) {
-        saveAuthSession();
+        saveAuthSession(status.user);
         return;
       }
       setLoginStatus(status.message);
@@ -267,7 +303,7 @@ export default function App() {
     setLoginStatus(result.message);
 
     if (result.ok) {
-      saveAuthSession();
+      saveAuthSession(result.user);
       return;
     }
 
@@ -282,7 +318,24 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
     setAuthSession(null);
+    setWorkspaceRoot(null);
+    setTaskListView("active");
+    setSelectedTaskId(null);
+    setSelectedTask(null);
+    setSelectedInboxId(null);
   };
+
+  useEffect(() => {
+    setWorkspaceRoot(
+      authSessionUserKey
+        ? localStorage.getItem(userStorageKey(authSessionUserKey, "workspace_root"))
+        : null
+    );
+    setTaskListView("active");
+    setSelectedTaskId(null);
+    setSelectedTask(null);
+    setSelectedInboxId(null);
+  }, [authSessionUserKey]);
 
   useEffect(() => {
     void loadTasks();
@@ -321,7 +374,10 @@ export default function App() {
         agentId,
         agentLabel,
       };
-      const task = await invoke<TaskDetail>("task_create", { request });
+      const task = await invoke<TaskDetail>("task_create", {
+        request,
+        userKey: authSessionUserKey,
+      });
       setSelectedTaskId(task.id);
       setSelectedTask(task);
       setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
@@ -346,6 +402,7 @@ export default function App() {
       const task = await invoke<TaskDetail>("task_create_turn", {
         taskId: selectedTaskId,
         request,
+        userKey: authSessionUserKey,
       });
       setSelectedTask((current) => (current ? mergeTaskDetail(current, task) : task));
       setTasks((current) => mergeTaskSummary(current, summaryFromDetail(task)));
@@ -452,7 +509,7 @@ export default function App() {
         onViewChange={setActiveView}
       />
       {settingsOpen ? (
-        <SettingsView onClose={() => setSettingsOpen(false)} />
+        <SettingsView onClose={() => setSettingsOpen(false)} userKey={authSession.userKey} />
       ) : activeView === "inbox" ? (
         <InboxView
           error={inboxError}
@@ -468,7 +525,11 @@ export default function App() {
           workspaceRoot={workspaceRoot}
         />
       ) : activeView === "playbooks" ? (
-        <PlaybooksView workspaceRoot={workspaceRoot} onWorkspaceSelect={handleWorkspaceSelect} />
+        <PlaybooksView
+          onWorkspaceSelect={handleWorkspaceSelect}
+          userKey={authSession.userKey}
+          workspaceRoot={workspaceRoot}
+        />
       ) : (
         <>
           <Sidebar
@@ -503,6 +564,7 @@ export default function App() {
               sendingTurn={sendingTurn}
               task={selectedTask}
               tasks={tasks}
+              userKey={authSession.userKey}
               workspaceRoot={workspaceRoot}
             />
           </div>

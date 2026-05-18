@@ -90,7 +90,11 @@ function modelProvider(model: AgentModelSelection): AgentProviderConfig {
   return model.mode === "override" ? model.provider : defaultDraftForProvider("openai");
 }
 
-export function AgentSettingsView() {
+interface AgentSettingsViewProps {
+  userKey: string;
+}
+
+export function AgentSettingsView({ userKey }: AgentSettingsViewProps) {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -99,14 +103,14 @@ export function AgentSettingsView() {
   const loadProfiles = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await invoke<AgentProfileListResult>("agent_profile_list");
+      const result = await invoke<AgentProfileListResult>("agent_profile_list", { userKey });
       setProfiles(result.profiles);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [userKey]);
 
   useEffect(() => {
     void loadProfiles();
@@ -178,6 +182,7 @@ export function AgentSettingsView() {
           {selectedProfile || selectedId === "new" ? (
             <AgentEditor
               profile={selectedProfile}
+              userKey={userKey}
               onSaved={() => {
                 void loadProfiles();
                 setSelectedId(null);
@@ -200,10 +205,12 @@ export function AgentSettingsView() {
 
 function AgentEditor({
   profile,
+  userKey,
   onSaved,
   onDeleted,
 }: {
   profile: AgentProfile | null;
+  userKey: string;
   onSaved: () => void;
   onDeleted: () => void;
 }) {
@@ -221,10 +228,10 @@ function AgentEditor({
   }, [profile]);
 
   useEffect(() => {
-    invoke<SkillListResult>("skill_list")
+    invoke<SkillListResult>("skill_list", { userKey })
       .then((result) => setSkills(result.skills))
       .catch(() => setSkills([]));
-  }, []);
+  }, [userKey]);
 
   function updateDraft<K extends keyof DraftState>(key: K, value: DraftState[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -259,12 +266,14 @@ function AgentEditor({
         await invoke("agent_profile_update", {
           id: profile.id,
           request,
+          userKey,
         });
       } else {
         await invoke("agent_profile_create", {
           request: {
             ...request,
           },
+          userKey,
         });
       }
       onSaved();
@@ -282,7 +291,7 @@ function AgentEditor({
     setBusy(true);
     setError(null);
     try {
-      await invoke("agent_profile_reset", { id: profile.id });
+      await invoke("agent_profile_reset", { id: profile.id, userKey });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -297,7 +306,7 @@ function AgentEditor({
     setBusy(true);
     setError(null);
     try {
-      await invoke("agent_profile_delete", { id: profile.id });
+      await invoke("agent_profile_delete", { id: profile.id, userKey });
       onDeleted();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

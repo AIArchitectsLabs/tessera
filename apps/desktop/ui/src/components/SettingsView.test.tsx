@@ -53,6 +53,7 @@ type InvokeCall = {
     decision?: MemoryReviewDecisionRequest;
     deviceAuthId?: string;
     request?: Record<string, unknown>;
+    userKey?: string;
     userCode?: string;
   };
 };
@@ -556,7 +557,9 @@ afterEach(() => {
 });
 
 async function renderIntegrationsView() {
-  const view = render(React.createElement(SettingsView, { onClose: () => undefined }));
+  const view = render(
+    React.createElement(SettingsView, { onClose: () => undefined, userKey: "user.test" })
+  );
 
   await waitFor(() => {
     expect(invokeCalls.some((call) => call.command === "integration_settings_get")).toBe(true);
@@ -569,7 +572,9 @@ async function renderIntegrationsView() {
 }
 
 async function renderModelView() {
-  const view = render(React.createElement(SettingsView, { onClose: () => undefined }));
+  const view = render(
+    React.createElement(SettingsView, { onClose: () => undefined, userKey: "user.test" })
+  );
 
   await waitFor(() => {
     expect(invokeCalls.some((call) => call.command === "model_settings_get")).toBe(true);
@@ -580,7 +585,9 @@ async function renderModelView() {
 }
 
 async function renderMemoryView() {
-  const view = render(React.createElement(SettingsView, { onClose: () => undefined }));
+  const view = render(
+    React.createElement(SettingsView, { onClose: () => undefined, userKey: "user.test" })
+  );
 
   await waitFor(() => {
     expect(invokeCalls.some((call) => call.command === "memory_status_get")).toBe(true);
@@ -762,6 +769,7 @@ describe("SettingsView memory flow", () => {
         invokeCalls.some(
           (call) =>
             call.command === "memory_review_decide" &&
+            call.args?.userKey === "user.test" &&
             call.args?.decision?.memoryId === "memory-candidate-style" &&
             call.args.decision.decision === "accept"
         )
@@ -785,6 +793,7 @@ describe("SettingsView memory flow", () => {
         invokeCalls.some(
           (call) =>
             call.command === "memory_forget" &&
+            call.args?.userKey === "user.test" &&
             call.args?.request?.memoryId === "memory-active-style" &&
             call.args.request.action === "delete"
         )

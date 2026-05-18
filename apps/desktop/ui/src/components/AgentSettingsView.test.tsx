@@ -47,6 +47,7 @@ type InvokeCall = {
   args?: {
     id?: string;
     request?: Record<string, unknown>;
+    userKey?: string;
   };
 };
 
@@ -165,7 +166,7 @@ function setInputValue(input: Element, value: string) {
 
 describe("AgentSettingsView model overrides", () => {
   test("creates a new agent with an OpenRouter model override", async () => {
-    const view = render(React.createElement(AgentSettingsView));
+    const view = render(React.createElement(AgentSettingsView, { userKey: "user.test" }));
 
     await waitFor(() => expect(view.getByRole("button", { name: "New Agent" })).toBeTruthy());
     fireEvent.click(view.getByRole("button", { name: "New Agent" }));
@@ -185,6 +186,7 @@ describe("AgentSettingsView model overrides", () => {
 
     await waitFor(() => {
       const createCall = invokeCalls.find((call) => call.command === "agent_profile_create");
+      expect(createCall?.args?.userKey).toBe("user.test");
       expect(createCall?.args?.request?.model).toEqual({
         mode: "override",
         provider: {
@@ -197,7 +199,7 @@ describe("AgentSettingsView model overrides", () => {
   });
 
   test("updates an existing agent to use a Codex model override", async () => {
-    const view = render(React.createElement(AgentSettingsView));
+    const view = render(React.createElement(AgentSettingsView, { userKey: "user.test" }));
 
     fireEvent.click(await view.findByRole("button", { name: /Router Analyst/ }));
     expect(view.getByText("OpenRouter / qwen/qwen3-coder")).toBeTruthy();
@@ -214,6 +216,7 @@ describe("AgentSettingsView model overrides", () => {
 
     await waitFor(() => {
       const updateCall = invokeCalls.find((call) => call.command === "agent_profile_update");
+      expect(updateCall?.args?.userKey).toBe("user.test");
       expect(updateCall?.args?.request?.model).toEqual({
         mode: "override",
         provider: {

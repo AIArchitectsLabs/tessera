@@ -154,6 +154,20 @@ describe("integration settings contracts", () => {
     expect(parsed.searchProvider).toBe("tavily");
   });
 
+  test("parses connection test results with authenticated user identity", () => {
+    const parsed = IntegrationConnectionTestResultSchema.parse({
+      ok: true,
+      message: "Google sign-in complete.",
+      user: {
+        email: "alex@example.com",
+        userKey: "google-alex",
+      },
+    });
+
+    expect(parsed.user?.userKey).toBe("google-alex");
+    expect(parsed.user?.email).toBe("alex@example.com");
+  });
+
   test("parses normalized gcal list payloads", () => {
     const parsed = GcalListResultSchema.parse({
       calendarId: "primary",

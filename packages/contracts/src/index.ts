@@ -352,11 +352,18 @@ export type IntegrationConnectionTestRequest = z.infer<
   typeof IntegrationConnectionTestRequestSchema
 >;
 
+export const AuthenticatedUserSchema = z.object({
+  userKey: z.string().min(1),
+  email: z.string().min(1).optional(),
+});
+export type AuthenticatedUser = z.infer<typeof AuthenticatedUserSchema>;
+
 export const IntegrationConnectionTestResultSchema = z.object({
   ok: z.boolean(),
   message: z.string(),
   provider: IntegrationProviderSchema.optional(),
   searchProvider: SearchProviderSchema.optional(),
+  user: AuthenticatedUserSchema.optional(),
 });
 export type IntegrationConnectionTestResult = z.infer<typeof IntegrationConnectionTestResultSchema>;
 

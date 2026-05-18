@@ -609,6 +609,54 @@ fn json_object_from_process_output(output: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&output[start..=end]).ok()
 }
 
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn google_workspace_credentials_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("credentials.enc")
+}
+
+fn google_account_email_from_output(output: &str) -> Option<String> {
+    json_object_from_process_output(output).and_then(|value| {
+        value
+            .get("account")
+            .or_else(|| value.get("user"))
+            .or_else(|| value.get("email"))
+            .and_then(|account| account.as_str())
+            .map(str::trim)
+            .filter(|account| !account.is_empty() && *account != "(unknown)")
+            .map(str::to_string)
+    })
+}
+
+fn google_authenticated_user_from_outputs(
+    config_dir: &Path,
+    outputs: &[&SpawnResult],
+) -> Option<integration_settings::AuthenticatedUser> {
+    for output in outputs {
+        let combined = format!("{}\n{}", output.stderr, output.stdout);
+        if let Some(email) = google_account_email_from_output(&combined) {
+            let normalized = email.to_lowercase();
+            return Some(integration_settings::AuthenticatedUser {
+                user_key: format!("google-{}", fnv1a64_hex(normalized.as_bytes())),
+                email: Some(email),
+            });
+        }
+    }
+
+    let credential_bytes = fs::read(google_workspace_credentials_path(config_dir)).ok()?;
+    Some(integration_settings::AuthenticatedUser {
+        user_key: format!("google-{}", fnv1a64_hex(&credential_bytes)),
+        email: None,
+    })
+}
+
 fn google_workspace_auth_status_connected(result: &SpawnResult) -> bool {
     json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
         .and_then(|value| {
@@ -758,6 +806,28 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn scoped_command_user_key(user_key: Option<&str>) -> Result<Option<&str>, String> {
+    user_key
+        .map(model_settings::validate_user_key)
+        .transpose()
+        .map_err(|error| error.to_string())
+}
+
+fn push_user_key_param(params: &mut Vec<String>, user_key: Option<&str>) -> Result<(), String> {
+    if let Some(user_key) = scoped_command_user_key(user_key)? {
+        params.push(format!("userKey={}", percent_encode(user_key)));
+    }
+    Ok(())
+}
+
+fn path_with_params(base: String, params: Vec<String>) -> String {
+    if params.is_empty() {
+        base
+    } else {
+        format!("{}?{}", base, params.join("&"))
+    }
+}
+
 fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json::Value {
     match provider.provider {
         model_settings::ModelProvider::Openai => serde_json::json!({
@@ -813,9 +883,10 @@ fn api_key_runtime_credential(api_key: String) -> serde_json::Value {
 
 async fn codex_oauth_runtime_credential(
     state: &SidecarHandle,
+    user_key: Option<&str>,
 ) -> Result<Option<serde_json::Value>, String> {
-    let Some(mut credential) =
-        model_settings::get_codex_oauth_credential().map_err(|error| error.to_string())?
+    let Some(mut credential) = model_settings::get_codex_oauth_credential_for_user(user_key)
+        .map_err(|error| error.to_string())?
     else {
         return Ok(None);
     };
@@ -832,7 +903,7 @@ async fn codex_oauth_runtime_credential(
         .map_err(|error| error.to_string())?;
         credential =
             model_settings::decode_codex_oauth_credential(&json).map_err(|e| e.to_string())?;
-        model_settings::set_codex_oauth_credential(&credential)
+        model_settings::set_codex_oauth_credential_for_user(user_key, &credential)
             .map_err(|error| error.to_string())?;
     }
 
@@ -976,10 +1047,13 @@ fn parse_model_provider(provider: &str) -> Result<model_settings::ModelProvider,
 async fn resolve_task_agent_json(
     app: &AppHandle,
     agent_id: Option<&str>,
+    user_key: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let id = agent_id.unwrap_or("default");
     let handle = app.state::<SidecarHandle>();
-    let path = format!("/agent-profiles/{}", percent_encode(id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key)?;
+    let path = path_with_params(format!("/agent-profiles/{}", percent_encode(id)), params);
     let json = handle.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -987,21 +1061,22 @@ async fn resolve_task_agent_json(
 async fn attach_default_task_execution(
     app: &AppHandle,
     mut request: serde_json::Value,
+    user_key: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if request.get("execution").is_some() {
         return Ok(request);
     }
 
-    let settings_path = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| error.to_string())?
-        .join(model_settings::SETTINGS_FILE);
+    let settings_path =
+        model_settings::settings_path_for_user(app, user_key).map_err(|error| error.to_string())?;
     let settings =
         model_settings::load_settings_file(&settings_path).map_err(|error| error.to_string())?;
-    let agent =
-        resolve_task_agent_json(app, request.get("agentId").and_then(|value| value.as_str()))
-            .await?;
+    let agent = resolve_task_agent_json(
+        app,
+        request.get("agentId").and_then(|value| value.as_str()),
+        user_key,
+    )
+    .await?;
     let provider = if agent
         .get("model")
         .and_then(|model| model.get("mode"))
@@ -1026,9 +1101,9 @@ async fn attach_default_task_execution(
     )?;
     let credential = if credential_provider == model_settings::ModelProvider::OpenaiCodex {
         let state = app.state::<SidecarHandle>();
-        codex_oauth_runtime_credential(&state).await?
+        codex_oauth_runtime_credential(&state, user_key).await?
     } else {
-        model_settings::get_credential(credential_provider)
+        model_settings::get_credential_for_user(credential_provider, user_key)
             .map_err(|error| error.to_string())?
             .map(api_key_runtime_credential)
     };
@@ -1054,16 +1129,14 @@ async fn attach_default_task_execution(
 async fn attach_default_workflow_execution(
     app: &AppHandle,
     mut request: serde_json::Value,
+    user_key: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if request.get("agentProvider").is_some() || request.get("credential").is_some() {
         return Ok(request);
     }
 
-    let settings_path = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| error.to_string())?
-        .join(model_settings::SETTINGS_FILE);
+    let settings_path =
+        model_settings::settings_path_for_user(app, user_key).map_err(|error| error.to_string())?;
     let settings =
         model_settings::load_settings_file(&settings_path).map_err(|error| error.to_string())?;
     let selected =
@@ -1071,9 +1144,9 @@ async fn attach_default_workflow_execution(
     let provider = provider_config_json(&selected);
     let credential = if selected.provider == model_settings::ModelProvider::OpenaiCodex {
         let state = app.state::<SidecarHandle>();
-        codex_oauth_runtime_credential(&state).await?
+        codex_oauth_runtime_credential(&state, user_key).await?
     } else {
-        model_settings::get_credential(selected.provider)
+        model_settings::get_credential_for_user(selected.provider, user_key)
             .map_err(|error| error.to_string())?
             .map(api_key_runtime_credential)
     };
@@ -1262,20 +1335,26 @@ async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, St
 }
 
 #[tauri::command]
-async fn memory_status_get(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
-    let json = state
-        .get("/memory/status")
-        .await
-        .map_err(|e| e.to_string())?;
+async fn memory_status_get(
+    state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/memory/status".to_string(), params);
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn memory_review_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
-    let json = state
-        .get("/memory/review")
-        .await
-        .map_err(|e| e.to_string())?;
+async fn memory_review_list(
+    state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/memory/review".to_string(), params);
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1283,12 +1362,13 @@ async fn memory_review_list(state: State<'_, SidecarHandle>) -> Result<serde_jso
 async fn memory_review_decide(
     state: State<'_, SidecarHandle>,
     decision: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/memory/review/decision".to_string(), params);
     let body = serde_json::to_string(&decision).map_err(|e| e.to_string())?;
-    let json = state
-        .post("/memory/review/decision", &body)
-        .await
-        .map_err(|e| e.to_string())?;
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1296,12 +1376,13 @@ async fn memory_review_decide(
 async fn memory_forget(
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/memory/forget".to_string(), params);
     let body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-    let json = state
-        .post("/memory/forget", &body)
-        .await
-        .map_err(|e| e.to_string())?;
+    let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1668,10 +1749,15 @@ async fn graph_run_create(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(&app, request).await?;
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
+    let request = attach_default_workflow_execution(&app, request, scoped_user_key).await?;
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, scoped_user_key)?;
+    let path = path_with_params("/graph-runs".to_string(), params);
     let json = state
-        .post("/graph-runs", &request.to_string())
+        .post(&path, &request.to_string())
         .await
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -1775,10 +1861,17 @@ async fn graph_run_resume(
     state: State<'_, SidecarHandle>,
     run_id: String,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(&app, request).await?;
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
+    let request = attach_default_workflow_execution(&app, request, scoped_user_key).await?;
     let body = request.to_string();
-    let path = format!("/graph-runs/{}/resume", percent_encode(&run_id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, scoped_user_key)?;
+    let path = path_with_params(
+        format!("/graph-runs/{}/resume", percent_encode(&run_id)),
+        params,
+    );
     let json = state.post(&path, &body).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -1893,10 +1986,15 @@ async fn task_create(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_task_execution(&app, request).await?;
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
+    let request = attach_default_task_execution(&app, request, scoped_user_key).await?;
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, scoped_user_key)?;
+    let path = path_with_params("/tasks".to_string(), params);
     let json = state
-        .post("/tasks", &request.to_string())
+        .post(&path, &request.to_string())
         .await
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -1932,9 +2030,13 @@ async fn task_create_turn(
     state: State<'_, SidecarHandle>,
     task_id: String,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_task_execution(&app, request).await?;
-    let path = format!("/tasks/{}/turns", percent_encode(&task_id));
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
+    let request = attach_default_task_execution(&app, request, scoped_user_key).await?;
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, scoped_user_key)?;
+    let path = path_with_params(format!("/tasks/{}/turns", percent_encode(&task_id)), params);
     let json = state
         .post(&path, &request.to_string())
         .await
@@ -2003,6 +2105,7 @@ async fn skill_list(
     state: State<'_, SidecarHandle>,
     workspace_root: Option<String>,
     agent_id: Option<String>,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = Vec::new();
     if let Some(workspace_root) = workspace_root {
@@ -2011,11 +2114,8 @@ async fn skill_list(
     if let Some(agent_id) = agent_id {
         params.push(format!("agentId={}", percent_encode(&agent_id)));
     }
-    let path = if params.is_empty() {
-        "/skills".to_string()
-    } else {
-        format!("/skills?{}", params.join("&"))
-    };
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/skills".to_string(), params);
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -2026,6 +2126,7 @@ async fn skill_get(
     id: String,
     workspace_root: Option<String>,
     agent_id: Option<String>,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = Vec::new();
     if let Some(workspace_root) = workspace_root {
@@ -2034,11 +2135,8 @@ async fn skill_get(
     if let Some(agent_id) = agent_id {
         params.push(format!("agentId={}", percent_encode(&agent_id)));
     }
-    let path = if params.is_empty() {
-        format!("/skills/{}", percent_encode(&id))
-    } else {
-        format!("/skills/{}?{}", percent_encode(&id), params.join("&"))
-    };
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(format!("/skills/{}", percent_encode(&id)), params);
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -2076,38 +2174,50 @@ async fn task_skill_remove(
 }
 
 #[tauri::command]
-async fn model_settings_get(app: AppHandle) -> Result<model_settings::ModelSettingsRead, String> {
-    model_settings::read(&app).map_err(|error| error.to_string())
+async fn model_settings_get(
+    app: AppHandle,
+    user_key: Option<String>,
+) -> Result<model_settings::ModelSettingsRead, String> {
+    model_settings::read_for_user(&app, user_key.as_deref()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn model_settings_save(
     app: AppHandle,
     request: model_settings::ModelSettingsSaveRequest,
+    user_key: Option<String>,
 ) -> Result<model_settings::ModelSettingsRead, String> {
-    model_settings::save(&app, request).map_err(|error| error.to_string())
+    model_settings::save_for_user(&app, user_key.as_deref(), request)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn model_credential_delete(
     app: AppHandle,
     request: model_settings::ModelCredentialDeleteRequest,
+    user_key: Option<String>,
 ) -> Result<model_settings::ModelSettingsRead, String> {
-    model_settings::delete(&app, request).map_err(|error| error.to_string())
+    model_settings::delete_for_user(&app, user_key.as_deref(), request)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn model_codex_oauth_status() -> Result<model_settings::CodexOAuthStatus, String> {
-    model_settings::codex_oauth_status().map_err(|error| error.to_string())
+async fn model_codex_oauth_status(
+    user_key: Option<String>,
+) -> Result<model_settings::CodexOAuthStatus, String> {
+    model_settings::codex_oauth_status_for_user(user_key.as_deref())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn model_codex_oauth_save(
     app: AppHandle,
     credential: model_settings::CodexOAuthCredential,
+    user_key: Option<String>,
 ) -> Result<model_settings::ModelSettingsRead, String> {
-    model_settings::set_codex_oauth_credential(&credential).map_err(|error| error.to_string())?;
-    model_settings::read(&app).map_err(|error| error.to_string())
+    model_settings::set_codex_oauth_credential_for_user(user_key.as_deref(), &credential)
+        .map_err(|error| error.to_string())?;
+    model_settings::read_for_user(&app, user_key.as_deref()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2130,6 +2240,7 @@ async fn model_codex_oauth_poll(
     state: State<'_, SidecarHandle>,
     device_auth_id: String,
     user_code: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let body = serde_json::json!({
         "deviceAuthId": device_auth_id,
@@ -2154,9 +2265,10 @@ async fn model_codex_oauth_poll(
                 serde_json::from_value::<model_settings::CodexOAuthCredential>(credential)
                     .map_err(|error| error.to_string())
             })?;
-        model_settings::set_codex_oauth_credential(&credential)
+        model_settings::set_codex_oauth_credential_for_user(user_key.as_deref(), &credential)
             .map_err(|error| error.to_string())?;
-        let read = model_settings::read(&app).map_err(|error| error.to_string())?;
+        let read = model_settings::read_for_user(&app, user_key.as_deref())
+            .map_err(|error| error.to_string())?;
         return Ok(serde_json::json!({
             "status": "authorized",
             "settings": read
@@ -2169,18 +2281,19 @@ async fn model_codex_oauth_poll(
 async fn model_connection_test(
     state: State<'_, SidecarHandle>,
     request: model_settings::ModelConnectionTestRequest,
+    user_key: Option<String>,
 ) -> Result<model_settings::ModelConnectionTestResult, String> {
     let provider =
         model_settings::validate_provider_config(&request.provider).map_err(|e| e.to_string())?;
     let credential = if provider.provider == model_settings::ModelProvider::OpenaiCodex {
-        codex_oauth_runtime_credential(&state).await?
+        codex_oauth_runtime_credential(&state, user_key.as_deref()).await?
     } else {
         match request.credential {
             Some(input) => {
                 let api_key = input.api_key.trim();
                 (!api_key.is_empty()).then(|| api_key_runtime_credential(api_key.to_string()))
             }
-            None => model_settings::get_credential(provider.provider)
+            None => model_settings::get_credential_for_user(provider.provider, user_key.as_deref())
                 .map_err(|error| error.to_string())?
                 .map(api_key_runtime_credential),
         }
@@ -2223,24 +2336,30 @@ async fn model_connection_test(
 #[tauri::command]
 async fn integration_settings_get(
     app: AppHandle,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
-    integration_settings::read(&app).map_err(|error| error.to_string())
+    integration_settings::read_for_user(&app, user_key.as_deref())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn integration_settings_save(
     app: AppHandle,
     request: integration_settings::IntegrationSettingsSaveRequest,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
-    integration_settings::save(&app, request).map_err(|error| error.to_string())
+    integration_settings::save_for_user(&app, user_key.as_deref(), request)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn integration_credential_delete(
     app: AppHandle,
     request: integration_settings::IntegrationCredentialDeleteRequest,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
-    integration_settings::delete(&app, request).map_err(|error| error.to_string())
+    integration_settings::delete_for_user(&app, user_key.as_deref(), request)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2248,7 +2367,9 @@ async fn integration_connection_test(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
     request: integration_settings::IntegrationConnectionTestRequest,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let target = request.target().map_err(|error| error.to_string())?;
     let (command_args, credential_env, provider, search_provider) = match target {
         integration_settings::IntegrationRequestTarget::Integration(provider) => {
@@ -2259,13 +2380,18 @@ async fn integration_connection_test(
                 integration_settings::IntegrationProvider::GoogleWorkspace => {
                     let status = google_workspace_auth_status(&app, state.inner()).await?;
                     if status.exit_code != 0 || !google_workspace_auth_status_connected(&status) {
-                        integration_settings::set_google_workspace_connected(&app, false)
-                            .map_err(|error| error.to_string())?;
+                        integration_settings::set_google_workspace_connected_for_user(
+                            &app,
+                            scoped_user_key,
+                            false,
+                        )
+                        .map_err(|error| error.to_string())?;
                         return Ok(integration_settings::IntegrationConnectionTestResult {
                             ok: false,
                             message: first_useful_process_line(&status),
                             provider: Some(provider),
                             search_provider: None,
+                            user: None,
                         });
                     }
                     (vec!["gcal", "list", "--limit", "1"], None)
@@ -2277,8 +2403,10 @@ async fn integration_connection_test(
                         let api_key = input.api_key.trim();
                         (!api_key.is_empty()).then(|| api_key.to_string())
                     }
-                    None => integration_settings::get_credential(provider)
-                        .map_err(|error| error.to_string())?,
+                    None => {
+                        integration_settings::get_credential_for_user(provider, scoped_user_key)
+                            .map_err(|error| error.to_string())?
+                    }
                 }
             } else {
                 None
@@ -2299,8 +2427,11 @@ async fn integration_connection_test(
                     let api_key = input.api_key.trim();
                     (!api_key.is_empty()).then(|| api_key.to_string())
                 }
-                None => integration_settings::get_search_credential(search_provider)
-                    .map_err(|error| error.to_string())?,
+                None => integration_settings::get_search_credential_for_user(
+                    search_provider,
+                    scoped_user_key,
+                )
+                .map_err(|error| error.to_string())?,
             };
 
             if credential.is_none()
@@ -2334,7 +2465,7 @@ async fn integration_connection_test(
             .to_string()
     };
     if provider == Some(integration_settings::IntegrationProvider::GoogleWorkspace) {
-        integration_settings::set_google_workspace_connected(&app, ok)
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, ok)
             .map_err(|error| error.to_string())?;
     }
 
@@ -2350,11 +2481,13 @@ async fn integration_connection_test(
 async fn google_workspace_connection_status(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
     if ok {
-        integration_settings::set_google_workspace_connected(&app, true)
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
     }
 
@@ -2367,6 +2500,7 @@ async fn google_workspace_connection_status(
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
+        user: None,
     })
 }
 
@@ -2374,7 +2508,9 @@ async fn google_workspace_connection_status(
 async fn google_workspace_connect(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let app_config_dir = app
         .path()
         .app_config_dir()
@@ -2389,6 +2525,7 @@ async fn google_workspace_connect(
             message: google_workspace_oauth_missing_message(),
             provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
             search_provider: None,
+            user: None,
         });
     }
 
@@ -2404,6 +2541,7 @@ async fn google_workspace_connect(
             message: first_useful_process_line(&login),
             provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
             search_provider: None,
+            user: None,
         });
     }
     if login.exit_code != 0 {
@@ -2412,13 +2550,14 @@ async fn google_workspace_connect(
             message: first_useful_process_line(&login),
             provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
             search_provider: None,
+            user: None,
         });
     }
 
     let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
     if ok {
-        integration_settings::set_google_workspace_connected(&app, true)
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
     }
 
@@ -2431,6 +2570,7 @@ async fn google_workspace_connect(
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
+        user: None,
     })
 }
 
@@ -2439,8 +2579,16 @@ async fn google_identity_connection_status(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
 ) -> Result<integration_settings::IntegrationConnectionTestResult, String> {
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
+    let google_workspace_config_dir = google_workspace_config_dir(&app_config_dir);
     let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
+    let user = ok
+        .then(|| google_authenticated_user_from_outputs(&google_workspace_config_dir, &[&status]))
+        .flatten();
 
     Ok(integration_settings::IntegrationConnectionTestResult {
         ok,
@@ -2451,6 +2599,7 @@ async fn google_identity_connection_status(
         },
         provider: None,
         search_provider: None,
+        user,
     })
 }
 
@@ -2473,6 +2622,7 @@ async fn google_identity_connect(
             message: google_workspace_oauth_missing_message(),
             provider: None,
             search_provider: None,
+            user: None,
         });
     }
 
@@ -2485,6 +2635,7 @@ async fn google_identity_connect(
             message: first_useful_process_line(&login),
             provider: None,
             search_provider: None,
+            user: None,
         });
     }
     if login.exit_code != 0 {
@@ -2493,11 +2644,17 @@ async fn google_identity_connect(
             message: first_useful_process_line(&login),
             provider: None,
             search_provider: None,
+            user: None,
         });
     }
 
     let status = google_workspace_auth_status(&app, state.inner()).await?;
     let ok = status.exit_code == 0 && google_workspace_auth_status_connected(&status);
+    let user = ok
+        .then(|| {
+            google_authenticated_user_from_outputs(&google_workspace_config_dir, &[&login, &status])
+        })
+        .flatten();
 
     Ok(integration_settings::IntegrationConnectionTestResult {
         ok,
@@ -2508,6 +2665,7 @@ async fn google_identity_connect(
         },
         provider: None,
         search_provider: None,
+        user,
     })
 }
 
@@ -2515,12 +2673,14 @@ async fn google_identity_connect(
 async fn google_workspace_disconnect(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
 ) -> Result<integration_settings::IntegrationSettingsRead, String> {
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let logout = run_google_workspace_cli_command(&app, state.inner(), &["auth", "logout"]).await?;
     if logout.exit_code != 0 {
         return Err(first_useful_process_line(&logout));
     }
-    integration_settings::set_google_workspace_connected(&app, false)
+    integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, false)
         .map_err(|error| error.to_string())
 }
 
@@ -2642,6 +2802,7 @@ fn connection_test_result(
         message,
         provider,
         search_provider,
+        user: None,
     }
 }
 
@@ -2744,11 +2905,14 @@ async fn workspace_file_open(
 // ── Agent Profiles ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn agent_profile_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
-    let json = state
-        .get("/agent-profiles")
-        .await
-        .map_err(|e| e.to_string())?;
+async fn agent_profile_list(
+    state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/agent-profiles".to_string(), params);
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -2756,8 +2920,11 @@ async fn agent_profile_list(state: State<'_, SidecarHandle>) -> Result<serde_jso
 async fn agent_profile_get(
     state: State<'_, SidecarHandle>,
     id: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(format!("/agent-profiles/{}", percent_encode(&id)), params);
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -2766,9 +2933,13 @@ async fn agent_profile_get(
 async fn agent_profile_create(
     state: State<'_, SidecarHandle>,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/agent-profiles".to_string(), params);
     let json = state
-        .post("/agent-profiles", &request.to_string())
+        .post(&path, &request.to_string())
         .await
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -2779,8 +2950,11 @@ async fn agent_profile_update(
     state: State<'_, SidecarHandle>,
     id: String,
     request: serde_json::Value,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(format!("/agent-profiles/{}", percent_encode(&id)), params);
     let json = state
         .request("PATCH", &path, Some(&request.to_string()))
         .await
@@ -2792,8 +2966,11 @@ async fn agent_profile_update(
 async fn agent_profile_delete(
     state: State<'_, SidecarHandle>,
     id: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/agent-profiles/{}", percent_encode(&id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(format!("/agent-profiles/{}", percent_encode(&id)), params);
     let json = state
         .request("DELETE", &path, None)
         .await
@@ -2805,8 +2982,14 @@ async fn agent_profile_delete(
 async fn agent_profile_reset(
     state: State<'_, SidecarHandle>,
     id: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/agent-profiles/{}/reset", percent_encode(&id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(
+        format!("/agent-profiles/{}/reset", percent_encode(&id)),
+        params,
+    );
     let json = state.post(&path, "{}").await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -3224,6 +3407,65 @@ mod tests {
             google_identity_auth_args(),
             vec!["auth", "login", "--scopes", "openid,email,profile"]
         );
+    }
+
+    #[test]
+    fn google_authenticated_user_prefers_account_email_from_login_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "status": "success",
+                "account": "Alex@Example.com"
+            })
+            .to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+        let same_account_different_case = SpawnResult {
+            stdout: serde_json::json!({
+                "status": "success",
+                "user": "alex@example.com"
+            })
+            .to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        let user = super::google_authenticated_user_from_outputs(dir.path(), &[&result])
+            .expect("user from account");
+        let same_user = super::google_authenticated_user_from_outputs(
+            dir.path(),
+            &[&same_account_different_case],
+        )
+        .expect("user from lower-case account");
+
+        assert_eq!(user.email, Some("Alex@Example.com".to_string()));
+        assert_eq!(user.user_key, same_user.user_key);
+        assert!(user.user_key.starts_with("google-"));
+    }
+
+    #[test]
+    fn google_authenticated_user_falls_back_to_credential_fingerprint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("credentials.enc"), b"encrypted-token")
+            .expect("write credential fingerprint source");
+        let status = SpawnResult {
+            stdout: serde_json::json!({ "auth_method": "encrypted" }).to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        let user = super::google_authenticated_user_from_outputs(dir.path(), &[&status])
+            .expect("user from credential fingerprint");
+
+        assert_eq!(user.email, None);
+        assert!(user.user_key.starts_with("google-"));
     }
 
     #[test]

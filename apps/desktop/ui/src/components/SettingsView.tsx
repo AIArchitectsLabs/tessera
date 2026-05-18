@@ -61,6 +61,7 @@ import { AgentSettingsView } from "./AgentSettingsView";
 
 interface SettingsViewProps {
   onClose: () => void;
+  userKey: string;
 }
 
 type StatusTone = "error" | "info" | "success";
@@ -143,7 +144,7 @@ async function invokeWithTimeout<T>(
   }
 }
 
-export function SettingsView({ onClose }: SettingsViewProps) {
+export function SettingsView({ onClose, userKey }: SettingsViewProps) {
   const [settings, setSettings] = useState<ModelSettingsRead | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryRuntimeStatus | null>(null);
@@ -210,10 +211,14 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       setMemoryStatusMessage(null);
       setMemoryReviewMessage(null);
       try {
-        const memoryStatusResult = invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get")
+        const memoryStatusResult = invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get", {
+          userKey,
+        })
           .then((loadedMemoryStatus) => ({ loadedMemoryStatus }))
           .catch((error: unknown) => ({ error }));
-        const memoryReviewResult = invokeWithTimeout<MemoryReviewListResult>("memory_review_list")
+        const memoryReviewResult = invokeWithTimeout<MemoryReviewListResult>("memory_review_list", {
+          userKey,
+        })
           .then((loadedMemoryReview) => ({ loadedMemoryReview }))
           .catch((error: unknown) => ({ error }));
         const googleWorkspaceCapabilityResult = invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
@@ -223,8 +228,8 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           .catch((error: unknown) => ({ error }));
         const [loaded, loadedIntegrations, loadedGoogleWorkspaceOAuthClientStatus] =
           await Promise.all([
-            invokeWithTimeout<ModelSettingsRead>("model_settings_get"),
-            invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get"),
+            invokeWithTimeout<ModelSettingsRead>("model_settings_get", { userKey }),
+            invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get", { userKey }),
             invokeWithTimeout<GoogleWorkspaceOAuthClientStatus>(
               "google_workspace_oauth_client_status"
             ),
@@ -296,7 +301,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [userKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -375,7 +380,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setMemoryLoading(true);
     setMemoryStatusMessage(null);
     try {
-      const next = await invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get");
+      const next = await invokeWithTimeout<MemoryRuntimeStatus>("memory_status_get", { userKey });
       if (!mountedRef.current) {
         return;
       }
@@ -400,7 +405,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setMemoryReviewLoading(true);
     setMemoryReviewMessage(null);
     try {
-      const next = await invokeWithTimeout<MemoryReviewListResult>("memory_review_list");
+      const next = await invokeWithTimeout<MemoryReviewListResult>("memory_review_list", {
+        userKey,
+      });
       if (!mountedRef.current) {
         return;
       }
@@ -435,6 +442,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           reason: `Memory ${decision} from Settings review.`,
           decidedAt: new Date().toISOString(),
         } satisfies MemoryReviewDecisionRequest,
+        userKey,
       });
       if (!mountedRef.current) {
         return;
@@ -476,6 +484,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           reason: "Memory forgotten from Settings.",
           requestedAt: new Date().toISOString(),
         } satisfies MemoryForgetRequest,
+        userKey,
       });
       if (!mountedRef.current) {
         return;
@@ -507,14 +516,17 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         return;
       }
       const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
-        "google_workspace_connection_status"
+        "google_workspace_connection_status",
+        { userKey }
       );
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
       }
       if (result.ok) {
         setIntegrationStatus({ message: result.message, tone: "success" });
-        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get", {
+          userKey,
+        });
         if (mountedRef.current && integrationRequestIdRef.current === requestId) {
           hydrateFromIntegrations(next);
         }
@@ -591,6 +603,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           hasExistingCredential: hasCredential,
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
+        userKey,
       });
       if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
@@ -619,6 +632,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     try {
       const next = await invokeWithTimeout<ModelSettingsRead>("model_credential_delete", {
         request: { provider: selectedProvider },
+        userKey,
       });
       if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
@@ -654,6 +668,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           provider: draft,
           ...(shouldSendCredential(apiKey) ? { credential: { apiKey: apiKey.trim() } } : {}),
         },
+        userKey,
       });
       if (!mountedRef.current || modelRequestIdRef.current !== requestId) {
         return;
@@ -697,6 +712,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         }
         const result = await invokeWithTimeout<CodexPollResult>("model_codex_oauth_poll", {
           deviceAuthId: deviceCode.deviceAuthId,
+          userKey,
           userCode: deviceCode.userCode,
         });
         if (result.status === "authorized") {
@@ -742,6 +758,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             ? { credential: { apiKey: integrationApiKey.trim() } }
             : {}),
         },
+        userKey,
       });
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
@@ -772,6 +789,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         "integration_credential_delete",
         {
           request: { provider: selectedIntegration },
+          userKey,
         }
       );
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -817,6 +835,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
               ? { credential: { apiKey: integrationApiKey.trim() } }
               : {}),
           },
+          userKey,
         }
       );
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -824,7 +843,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
       }
       setIntegrationStatus({ message: result.message, tone: result.ok ? "success" : "info" });
       if (selectedIntegration === "google-workspace" && !integrationAllowsCredentials) {
-        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get", {
+          userKey,
+        });
         if (mountedRef.current && integrationRequestIdRef.current === requestId) {
           hydrateFromIntegrations(next);
         }
@@ -922,7 +943,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     try {
       const result = await invokeWithTimeout<IntegrationConnectionTestResult>(
         "google_workspace_connect",
-        undefined,
+        { userKey },
         120_000
       );
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
@@ -933,7 +954,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         tone: result.ok ? "success" : result.message.includes("Google sign-in") ? "info" : "error",
       });
       if (result.ok) {
-        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get");
+        const next = await invokeWithTimeout<IntegrationSettingsRead>("integration_settings_get", {
+          userKey,
+        });
         if (mountedRef.current && integrationRequestIdRef.current === requestId) {
           hydrateFromIntegrations(next);
         }
@@ -963,7 +986,9 @@ export function SettingsView({ onClose }: SettingsViewProps) {
     setActiveIntegrationAction("disconnect");
     setIntegrationStatus(null);
     try {
-      const next = await invokeWithTimeout<IntegrationSettingsRead>("google_workspace_disconnect");
+      const next = await invokeWithTimeout<IntegrationSettingsRead>("google_workspace_disconnect", {
+        userKey,
+      });
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
       }
@@ -1068,6 +1093,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
           allowKeylessFallback,
           apiKey: searchApiKey,
         }),
+        userKey,
       });
       if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
         return;
@@ -1105,6 +1131,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
         "integration_credential_delete",
         {
           request: deleteRequest,
+          userKey,
         }
       );
       if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
@@ -1139,6 +1166,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             selectedSearchProvider,
             apiKey: searchApiKey,
           }),
+          userKey,
         }
       );
       if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
@@ -2290,7 +2318,7 @@ export function SettingsView({ onClose }: SettingsViewProps) {
             </div>
           </div>
         ) : (
-          <AgentSettingsView />
+          <AgentSettingsView userKey={userKey} />
         )}
       </section>
     </main>

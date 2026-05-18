@@ -1173,8 +1173,9 @@ const { PlaybooksView } = await import("./PlaybooksView");
 function renderPlaybooksView(workspaceRoot = "/tmp/workspace") {
   return render(
     React.createElement(PlaybooksView, {
-      workspaceRoot,
       onWorkspaceSelect: mock(() => undefined),
+      userKey: "user.test",
+      workspaceRoot,
     })
   );
 }
@@ -1337,6 +1338,7 @@ describe("PlaybooksView", () => {
           workspaceRoot: "/tmp/workspace",
           drainDeterministic: true,
         },
+        userKey: "user.test",
       });
     });
   });

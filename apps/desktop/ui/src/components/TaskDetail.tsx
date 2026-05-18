@@ -44,6 +44,7 @@ interface TaskDetailProps {
   sendingTurn: boolean;
   task: TaskDetailType | null;
   tasks: TaskSummary[];
+  userKey: string;
   workspaceRoot: string | null;
 }
 
@@ -80,6 +81,7 @@ export function TaskDetail({
   sendingTurn,
   task,
   tasks,
+  userKey,
   workspaceRoot,
 }: TaskDetailProps) {
   const [content, setContent] = useState("");
@@ -158,6 +160,7 @@ export function TaskDetail({
               onChange={setContent}
               onSend={handleSend}
               showAgentSelector={true}
+              userKey={userKey}
               workspaceRoot={workspaceRoot}
               inline
             />
@@ -294,6 +297,7 @@ export function TaskDetail({
             onChange={setContent}
             onSend={handleSend}
             agentId={task.agentId}
+            userKey={userKey}
             workspaceRoot={task.workspaceRoot}
             showAgentSelector={false}
           />
@@ -319,6 +323,7 @@ function TaskComposer({
   workspaceRoot,
   showAgentSelector,
   inline,
+  userKey,
 }: {
   agentId?: string;
   busy: boolean;
@@ -327,6 +332,7 @@ function TaskComposer({
   onSend: (agentId?: string, agentLabel?: string) => void;
   placeholder: string;
   value: string;
+  userKey: string;
   workspaceRoot?: string | null;
   showAgentSelector?: boolean;
   inline?: boolean;
@@ -348,10 +354,10 @@ function TaskComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    invoke<AgentProfileListResult>("agent_profile_list")
+    invoke<AgentProfileListResult>("agent_profile_list", { userKey })
       .then((res) => setAgents(res.profiles))
       .catch(console.error);
-  }, []);
+  }, [userKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -359,6 +365,7 @@ function TaskComposer({
     setSkillsError(null);
     invoke<SkillListResult>("skill_list", {
       agentId: selectedAgentId,
+      userKey,
       workspaceRoot: workspaceRoot ?? undefined,
     })
       .then((res) => {
@@ -376,7 +383,7 @@ function TaskComposer({
     return () => {
       cancelled = true;
     };
-  }, [selectedAgentId, workspaceRoot]);
+  }, [selectedAgentId, userKey, workspaceRoot]);
 
   useEffect(() => {
     if (agentId) setSelectedAgentId(agentId);

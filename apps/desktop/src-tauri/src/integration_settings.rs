@@ -6,9 +6,9 @@ use anyhow::{bail, Context, Result};
 #[cfg(not(target_os = "macos"))]
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-use crate::model_settings::KEYCHAIN_SERVICE;
+use crate::model_settings::{user_config_dir, validate_user_key, KEYCHAIN_SERVICE};
 
 pub const SETTINGS_FILE: &str = "integration-settings.json";
 static KEYCHAIN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -38,6 +38,13 @@ impl IntegrationProvider {
             Self::GoogleWorkspace => "Google Workspace",
         }
     }
+
+    fn account_for_user(self, user_key: Option<&str>) -> String {
+        match user_key {
+            Some(user_key) => format!("user.{user_key}.{}", self.account()),
+            None => self.account().to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -62,6 +69,13 @@ impl SearchProvider {
             Self::BraveSearch => "Brave Search",
             Self::Tavily => "Tavily",
             Self::DuckDuckGo => "DuckDuckGo",
+        }
+    }
+
+    fn account_for_user(self, user_key: Option<&str>) -> String {
+        match user_key {
+            Some(user_key) => format!("user.{user_key}.{}", self.account()),
+            None => self.account().to_string(),
         }
     }
 }
@@ -228,6 +242,14 @@ impl IntegrationConnectionTestRequest {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AuthenticatedUser {
+    pub user_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IntegrationConnectionTestResult {
     pub ok: bool,
     pub message: String,
@@ -235,6 +257,8 @@ pub struct IntegrationConnectionTestResult {
     pub provider: Option<IntegrationProvider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_provider: Option<SearchProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<AuthenticatedUser>,
 }
 
 pub fn missing_credential_result(provider: IntegrationProvider) -> IntegrationConnectionTestResult {
@@ -246,6 +270,7 @@ pub fn missing_credential_result(provider: IntegrationProvider) -> IntegrationCo
         ),
         provider: Some(provider),
         search_provider: None,
+        user: None,
     }
 }
 
@@ -263,6 +288,7 @@ pub fn missing_search_credential_result(
         },
         provider: None,
         search_provider: Some(provider),
+        user: None,
     }
 }
 
@@ -306,11 +332,15 @@ fn default_search_settings() -> SearchSettings {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf> {
-    Ok(app
-        .path()
-        .app_config_dir()
-        .context("Could not resolve app config dir")?
-        .join(SETTINGS_FILE))
+    settings_path_for_user(app, None)
+}
+
+fn scoped_user_key(user_key: Option<&str>) -> Result<Option<&str>> {
+    user_key.map(validate_user_key).transpose()
+}
+
+pub fn settings_path_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<PathBuf> {
+    Ok(user_config_dir(app, user_key)?.join(SETTINGS_FILE))
 }
 
 fn load_settings_file(path: &Path) -> Result<SettingsFile> {
@@ -333,24 +363,33 @@ fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keyring_entry(provider: IntegrationProvider) -> Result<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, provider.account()).context("Could not open keychain entry")
+fn keyring_entry(provider: IntegrationProvider, user_key: Option<&str>) -> Result<Entry> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
+    Entry::new(KEYCHAIN_SERVICE, &account).context("Could not open keychain entry")
 }
 
 #[cfg(not(target_os = "macos"))]
-fn search_keyring_entry(provider: SearchProvider) -> Result<Entry> {
-    Entry::new(KEYCHAIN_SERVICE, provider.account()).context("Could not open keychain entry")
+fn search_keyring_entry(provider: SearchProvider, user_key: Option<&str>) -> Result<Entry> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
+    Entry::new(KEYCHAIN_SERVICE, &account).context("Could not open keychain entry")
 }
 
 pub fn get_credential(provider: IntegrationProvider) -> Result<Option<String>> {
+    get_credential_for_user(provider, None)
+}
+
+pub fn get_credential_for_user(
+    provider: IntegrationProvider,
+    user_key: Option<&str>,
+) -> Result<Option<String>> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return get_macos_credential(provider);
+        return get_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
     #[cfg(not(target_os = "macos"))]
-    match keyring_entry(provider)?.get_password() {
+    match keyring_entry(provider, user_key)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error).context("Could not read integration credential"),
@@ -358,14 +397,21 @@ pub fn get_credential(provider: IntegrationProvider) -> Result<Option<String>> {
 }
 
 pub fn get_search_credential(provider: SearchProvider) -> Result<Option<String>> {
+    get_search_credential_for_user(provider, None)
+}
+
+pub fn get_search_credential_for_user(
+    provider: SearchProvider,
+    user_key: Option<&str>,
+) -> Result<Option<String>> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return get_macos_search_credential(provider);
+        return get_macos_search_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
     #[cfg(not(target_os = "macos"))]
-    match search_keyring_entry(provider)?.get_password() {
+    match search_keyring_entry(provider, user_key)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error).context("Could not read search credential"),
@@ -373,65 +419,103 @@ pub fn get_search_credential(provider: SearchProvider) -> Result<Option<String>>
 }
 
 fn set_credential(provider: IntegrationProvider, api_key: &str) -> Result<()> {
+    set_credential_for_user(provider, None, api_key)
+}
+
+fn set_credential_for_user(
+    provider: IntegrationProvider,
+    user_key: Option<&str>,
+    api_key: &str,
+) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return set_macos_credential(provider, api_key);
+        return set_macos_credential(
+            &provider.account_for_user(scoped_user_key(user_key)?),
+            api_key,
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
-    keyring_entry(provider)?
+    keyring_entry(provider, user_key)?
         .set_password(api_key)
         .context("Could not store integration credential")
 }
 
 fn set_search_credential(provider: SearchProvider, api_key: &str) -> Result<()> {
+    set_search_credential_for_user(provider, None, api_key)
+}
+
+fn set_search_credential_for_user(
+    provider: SearchProvider,
+    user_key: Option<&str>,
+    api_key: &str,
+) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return set_macos_search_credential(provider, api_key);
+        return set_macos_search_credential(
+            &provider.account_for_user(scoped_user_key(user_key)?),
+            api_key,
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
-    search_keyring_entry(provider)?
+    search_keyring_entry(provider, user_key)?
         .set_password(api_key)
         .context("Could not store search credential")
 }
 
 pub fn delete_credential(provider: IntegrationProvider) -> Result<()> {
+    delete_credential_for_user(provider, None)
+}
+
+pub fn delete_credential_for_user(
+    provider: IntegrationProvider,
+    user_key: Option<&str>,
+) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return delete_macos_credential(provider);
+        return delete_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
     }
 
     #[cfg(not(target_os = "macos"))]
-    match keyring_entry(provider)?.delete_credential() {
+    match keyring_entry(provider, user_key)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("Could not delete integration credential"),
     }
 }
 
 pub fn delete_search_credential(provider: SearchProvider) -> Result<()> {
+    delete_search_credential_for_user(provider, None)
+}
+
+pub fn delete_search_credential_for_user(
+    provider: SearchProvider,
+    user_key: Option<&str>,
+) -> Result<()> {
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return delete_macos_search_credential(provider);
+        return delete_macos_search_credential(
+            &provider.account_for_user(scoped_user_key(user_key)?),
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
-    match search_keyring_entry(provider)?.delete_credential() {
+    match search_keyring_entry(provider, user_key)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("Could not delete search credential"),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn get_macos_search_credential(provider: SearchProvider) -> Result<Option<String>> {
+fn get_macos_search_credential(account: &str) -> Result<Option<String>> {
     let output = run_security(&[
         "find-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -476,11 +560,11 @@ fn security_item_missing(output: &std::process::Output) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn get_macos_credential(provider: IntegrationProvider) -> Result<Option<String>> {
+fn get_macos_credential(account: &str) -> Result<Option<String>> {
     let output = run_security(&[
         "find-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -502,11 +586,11 @@ fn get_macos_credential(provider: IntegrationProvider) -> Result<Option<String>>
 }
 
 #[cfg(target_os = "macos")]
-fn set_macos_search_credential(provider: SearchProvider, api_key: &str) -> Result<()> {
+fn set_macos_search_credential(account: &str, api_key: &str) -> Result<()> {
     let output = run_security(&[
         "add-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -525,11 +609,11 @@ fn set_macos_search_credential(provider: SearchProvider, api_key: &str) -> Resul
 }
 
 #[cfg(target_os = "macos")]
-fn delete_macos_search_credential(provider: SearchProvider) -> Result<()> {
+fn delete_macos_search_credential(account: &str) -> Result<()> {
     let output = run_security(&[
         "delete-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
     ])?;
@@ -545,11 +629,11 @@ fn delete_macos_search_credential(provider: SearchProvider) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_macos_credential(provider: IntegrationProvider, api_key: &str) -> Result<()> {
+fn set_macos_credential(account: &str, api_key: &str) -> Result<()> {
     let output = run_security(&[
         "add-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
         "-w",
@@ -568,11 +652,11 @@ fn set_macos_credential(provider: IntegrationProvider, api_key: &str) -> Result<
 }
 
 #[cfg(target_os = "macos")]
-fn delete_macos_credential(provider: IntegrationProvider) -> Result<()> {
+fn delete_macos_credential(account: &str) -> Result<()> {
     let output = run_security(&[
         "delete-generic-password",
         "-a",
-        provider.account(),
+        account,
         "-s",
         KEYCHAIN_SERVICE,
     ])?;
@@ -587,16 +671,27 @@ fn delete_macos_credential(provider: IntegrationProvider) -> Result<()> {
     );
 }
 
-fn redact(_settings: SettingsFile) -> Result<IntegrationSettingsRead> {
-    redact_with_settings(_settings)
+fn redact(settings: SettingsFile) -> Result<IntegrationSettingsRead> {
+    redact_with_settings_for_user(settings, None)
 }
 
 fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRead> {
+    redact_with_settings_for_user(settings, None)
+}
+
+fn redact_with_settings_for_user(
+    settings: SettingsFile,
+    user_key: Option<&str>,
+) -> Result<IntegrationSettingsRead> {
     Ok(IntegrationSettingsRead {
         providers: ReadProviders {
             brave_search: ProviderSettings {
                 provider: IntegrationProvider::BraveSearch,
-                has_credential: get_credential(IntegrationProvider::BraveSearch)?.is_some(),
+                has_credential: get_credential_for_user(
+                    IntegrationProvider::BraveSearch,
+                    user_key,
+                )?
+                .is_some(),
             },
             google_workspace: ProviderSettings {
                 provider: IntegrationProvider::GoogleWorkspace,
@@ -609,15 +704,27 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
             providers: SearchProvidersRead {
                 brave_search: SearchProviderSettings {
                     provider: SearchProvider::BraveSearch,
-                    has_credential: get_search_credential(SearchProvider::BraveSearch)?.is_some(),
+                    has_credential: get_search_credential_for_user(
+                        SearchProvider::BraveSearch,
+                        user_key,
+                    )?
+                    .is_some(),
                 },
                 tavily: SearchProviderSettings {
                     provider: SearchProvider::Tavily,
-                    has_credential: get_search_credential(SearchProvider::Tavily)?.is_some(),
+                    has_credential: get_search_credential_for_user(
+                        SearchProvider::Tavily,
+                        user_key,
+                    )?
+                    .is_some(),
                 },
                 duckduckgo: SearchProviderSettings {
                     provider: SearchProvider::DuckDuckGo,
-                    has_credential: get_search_credential(SearchProvider::DuckDuckGo)?.is_some(),
+                    has_credential: get_search_credential_for_user(
+                        SearchProvider::DuckDuckGo,
+                        user_key,
+                    )?
+                    .is_some(),
                 },
             },
         },
@@ -625,14 +732,26 @@ fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRea
 }
 
 pub fn read(app: &AppHandle) -> Result<IntegrationSettingsRead> {
-    let path = settings_path(app)?;
+    read_for_user(app, None)
+}
+
+pub fn read_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<IntegrationSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
     let settings = load_settings_file(&path)?;
-    redact(settings)
+    redact_with_settings_for_user(settings, user_key)
 }
 
 fn save_at_path(
     path: &Path,
     request: IntegrationSettingsSaveRequest,
+) -> Result<IntegrationSettingsRead> {
+    save_at_path_for_user(path, request, None)
+}
+
+fn save_at_path_for_user(
+    path: &Path,
+    request: IntegrationSettingsSaveRequest,
+    user_key: Option<&str>,
 ) -> Result<IntegrationSettingsRead> {
     let mut settings = load_settings_file(&path)?;
     match request.target()? {
@@ -645,7 +764,7 @@ fn save_at_path(
                 if api_key.is_empty() {
                     bail!("API key cannot be empty");
                 }
-                set_credential(provider, api_key)?;
+                set_credential_for_user(provider, user_key, api_key)?;
             }
         }
         IntegrationRequestTarget::Search(search_provider) => {
@@ -657,7 +776,7 @@ fn save_at_path(
                 if search_provider == SearchProvider::DuckDuckGo {
                     bail!("DuckDuckGo does not use an API key");
                 }
-                set_search_credential(search_provider, api_key)?;
+                set_search_credential_for_user(search_provider, user_key, api_key)?;
             }
         }
     }
@@ -668,62 +787,102 @@ fn save_at_path(
     }
 
     save_settings_file(&path, &settings)?;
-    redact_with_settings(settings)
+    redact_with_settings_for_user(settings, user_key)
 }
 
 pub fn save(
     app: &AppHandle,
     request: IntegrationSettingsSaveRequest,
 ) -> Result<IntegrationSettingsRead> {
-    let path = settings_path(app)?;
-    save_at_path(&path, request)
+    save_for_user(app, None, request)
+}
+
+pub fn save_for_user(
+    app: &AppHandle,
+    user_key: Option<&str>,
+    request: IntegrationSettingsSaveRequest,
+) -> Result<IntegrationSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
+    save_at_path_for_user(&path, request, user_key)
 }
 
 fn delete_at_path(
     path: &Path,
     request: IntegrationCredentialDeleteRequest,
 ) -> Result<IntegrationSettingsRead> {
+    delete_at_path_for_user(path, request, None)
+}
+
+fn delete_at_path_for_user(
+    path: &Path,
+    request: IntegrationCredentialDeleteRequest,
+    user_key: Option<&str>,
+) -> Result<IntegrationSettingsRead> {
     let settings = load_settings_file(&path)?;
     match request.target()? {
         IntegrationRequestTarget::Integration(provider) => {
             if !is_google_workspace_provider(provider) {
-                delete_credential(provider)?;
+                delete_credential_for_user(provider, user_key)?;
             }
         }
         IntegrationRequestTarget::Search(search_provider) => {
             if search_provider != SearchProvider::DuckDuckGo {
-                delete_search_credential(search_provider)?;
+                delete_search_credential_for_user(search_provider, user_key)?;
             }
         }
     }
     save_settings_file(&path, &settings)?;
-    redact_with_settings(settings)
+    redact_with_settings_for_user(settings, user_key)
 }
 
 pub fn delete(
     app: &AppHandle,
     request: IntegrationCredentialDeleteRequest,
 ) -> Result<IntegrationSettingsRead> {
-    let path = settings_path(app)?;
-    delete_at_path(&path, request)
+    delete_for_user(app, None, request)
+}
+
+pub fn delete_for_user(
+    app: &AppHandle,
+    user_key: Option<&str>,
+    request: IntegrationCredentialDeleteRequest,
+) -> Result<IntegrationSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
+    delete_at_path_for_user(&path, request, user_key)
 }
 
 fn set_google_workspace_connected_at_path(
     path: &Path,
     connected: bool,
 ) -> Result<IntegrationSettingsRead> {
+    set_google_workspace_connected_at_path_for_user(path, connected, None)
+}
+
+fn set_google_workspace_connected_at_path_for_user(
+    path: &Path,
+    connected: bool,
+    user_key: Option<&str>,
+) -> Result<IntegrationSettingsRead> {
     let mut settings = load_settings_file(path)?;
     settings.providers.google_workspace.connected = connected;
     save_settings_file(path, &settings)?;
-    redact_with_settings(settings)
+    redact_with_settings_for_user(settings, user_key)
 }
 
 pub fn set_google_workspace_connected(
     app: &AppHandle,
     connected: bool,
 ) -> Result<IntegrationSettingsRead> {
-    let path = settings_path(app)?;
-    set_google_workspace_connected_at_path(&path, connected)
+    set_google_workspace_connected_for_user(app, None, connected)
+}
+
+pub fn set_google_workspace_connected_for_user(
+    app: &AppHandle,
+    user_key: Option<&str>,
+    connected: bool,
+) -> Result<IntegrationSettingsRead> {
+    let path = settings_path_for_user(app, user_key)?;
+    set_google_workspace_connected_at_path_for_user(&path, connected, user_key)
 }
 
 #[cfg(test)]
