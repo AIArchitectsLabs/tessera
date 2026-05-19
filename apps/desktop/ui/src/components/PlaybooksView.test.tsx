@@ -1691,6 +1691,95 @@ describe("PlaybooksView", () => {
       expect(view.getByText("Latest update")).toBeTruthy();
       expect(view.getByText("Working on Draft")).toBeTruthy();
     });
+    const latestUpdate = view.getByText("Latest update").closest("[aria-live='polite']");
+    expect(latestUpdate).toBeTruthy();
+    expect(latestUpdate?.parentElement?.className).toContain("order-first");
+  });
+
+  test("marks only the current workflow phase as active", async () => {
+    graphRunSurfaceOverride = {
+      ...graphRunSurface,
+      detail: {
+        ...graphRunDetail,
+        run: {
+          ...graphRunDetail.run,
+          status: "running",
+          blockedReason: undefined,
+          currentQueueEntryId: "queue-draft-current",
+          updatedAt: "2026-05-15T00:03:00.000Z",
+          snapshot: {
+            ...graphRunDetail.run.snapshot,
+            snapshotJson: JSON.stringify({
+              graph: {
+                nodes: [
+                  {
+                    id: "staleResearch",
+                    kind: "agent",
+                    label: "Collect research",
+                    phase: "Research",
+                  },
+                  { id: "draftArticle", kind: "agent", label: "Draft article", phase: "Draft" },
+                ],
+              },
+            }),
+          },
+        },
+        queue: [
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-research-running",
+            nodeId: "staleResearch",
+            nodePath: "research",
+            nodeKind: "agent",
+            status: "running",
+            declaredConsumesArtifacts: [],
+            consumesArtifacts: [],
+            producesArtifacts: ["contentBrief"],
+            blockedReason: undefined,
+            createdAt: "2026-05-15T00:01:00.000Z",
+            updatedAt: "2026-05-15T00:02:00.000Z",
+          },
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-draft-current",
+            nodeId: "draftArticle",
+            nodePath: "draftArticle",
+            nodeKind: "agent",
+            status: "running",
+            declaredConsumesArtifacts: [],
+            consumesArtifacts: [],
+            producesArtifacts: ["articleDraft"],
+            blockedReason: undefined,
+            createdAt: "2026-05-15T00:02:00.000Z",
+            updatedAt: "2026-05-15T00:03:00.000Z",
+          },
+        ],
+        artifacts: [],
+      },
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      actions: [],
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Preparing Sales Meeting Brief")).toBeTruthy();
+      expect(view.getAllByText(/Draft article/i).length).toBeGreaterThan(0);
+    });
+
+    const activePhases = [...view.container.querySelectorAll('[aria-current="step"]')];
+    expect(activePhases).toHaveLength(1);
+    expect(activePhases[0]?.textContent).toContain("Draft");
+    expect(activePhases[0]?.textContent).toContain("Now");
   });
 
   test("shows product-state retry copy for needs-attention evidence", async () => {
