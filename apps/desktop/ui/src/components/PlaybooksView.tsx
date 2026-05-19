@@ -51,6 +51,7 @@ interface PlaybooksViewProps {
   onWorkspaceSelect: (path: string) => void;
   userKey: string;
   workspaceRoot: string | null;
+  initialPlaybooks?: PlaybookSummary[] | null;
 }
 
 const statusCopy: Record<PlaybookRunDetail["status"], string> = {
@@ -3715,12 +3716,19 @@ function DetailsPanel({
   );
 }
 
-export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: PlaybooksViewProps) {
-  const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
+export function PlaybooksView({
+  workspaceRoot,
+  onWorkspaceSelect,
+  userKey,
+  initialPlaybooks,
+}: PlaybooksViewProps) {
+  const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>(() => initialPlaybooks ?? []);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
   const [runs, setRuns] = useState<PlaybookRunDetail[]>([]);
   const [runHistory, setRunHistory] = useState<PlaybookRunDetail[]>([]);
-  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(
+    () => initialPlaybooks?.find((p) => p.businessUseCase)?.id ?? null
+  );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<PlaybookRunDetail | null>(null);
   const [graphRuns, setGraphRuns] = useState<PlaybookGraphRunDetail["run"][]>([]);
@@ -3739,8 +3747,9 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
   const [showStartForm, setShowStartForm] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
-  const [loadingPlaybooks, setLoadingPlaybooks] = useState(true);
-  const [playbooksLoaded, setPlaybooksLoaded] = useState(false);
+  const hasInitialPlaybooks = initialPlaybooks != null && initialPlaybooks.length > 0;
+  const [loadingPlaybooks, setLoadingPlaybooks] = useState(!hasInitialPlaybooks);
+  const [playbooksLoaded, setPlaybooksLoaded] = useState(hasInitialPlaybooks);
   const [running, setRunning] = useState(false);
   const [importingPlaybook, setImportingPlaybook] = useState(false);
   const [importEvents, setImportEvents] = useState<string[]>([]);

@@ -6,6 +6,8 @@ import type {
   InboxMessage,
   InboxStatus,
   IntegrationConnectionTestResult,
+  PlaybookListResult,
+  PlaybookSummary,
   TaskCreateRequest,
   TaskCreateTurnRequest,
   TaskDetail,
@@ -124,6 +126,7 @@ export default function App() {
   const [selectedInboxId, setSelectedInboxId] = useState<string | null>(null);
   const [loadingInbox, setLoadingInbox] = useState(false);
   const [inboxError, setInboxError] = useState<string | null>(null);
+  const [prefetchedPlaybooks, setPrefetchedPlaybooks] = useState<PlaybookSummary[] | null>(null);
   const taskDetailRequestId = useRef(0);
   const reconnectAttemptsRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -338,6 +341,16 @@ export default function App() {
   }, [authSessionUserKey]);
 
   useEffect(() => {
+    if (!authSessionUserKey) {
+      setPrefetchedPlaybooks(null);
+      return;
+    }
+    void invoke<PlaybookListResult>("playbook_list", { userKey: authSessionUserKey })
+      .then((result) => setPrefetchedPlaybooks(result.playbooks))
+      .catch(() => {});
+  }, [authSessionUserKey]);
+
+  useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
 
@@ -526,6 +539,7 @@ export default function App() {
         />
       ) : activeView === "playbooks" ? (
         <PlaybooksView
+          initialPlaybooks={prefetchedPlaybooks}
           onWorkspaceSelect={handleWorkspaceSelect}
           userKey={authSession.userKey}
           workspaceRoot={workspaceRoot}
