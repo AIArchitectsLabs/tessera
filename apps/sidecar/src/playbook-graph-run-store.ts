@@ -68,6 +68,10 @@ function persistedTerminalQueueEntry(entry: PlaybookGraphQueueEntry): PlaybookGr
   };
 }
 
+function runWorkspaceRoot(run: PlaybookGraphRunRecord): string | undefined {
+  return run.materialization?.kind === "workspace" ? run.materialization.workspaceRoot : undefined;
+}
+
 export interface PlaybookGraphRunStore extends GraphRunStore {
   close(): void;
 }
@@ -80,8 +84,10 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   db.exec(`
     CREATE TABLE IF NOT EXISTS playbook_graph_runs (
       run_id TEXT PRIMARY KEY NOT NULL,
+      owner_user_key TEXT,
       playbook_id TEXT NOT NULL,
       status TEXT NOT NULL,
+      workspace_root TEXT,
       snapshot_hash TEXT NOT NULL,
       payload TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -166,6 +172,18 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     );
   `);
 
+  const runColumns = db.query<{ name: string }, []>("PRAGMA table_info(playbook_graph_runs)").all();
+  if (!runColumns.some((column) => column.name === "owner_user_key")) {
+    db.run("ALTER TABLE playbook_graph_runs ADD COLUMN owner_user_key TEXT");
+  }
+  if (!runColumns.some((column) => column.name === "workspace_root")) {
+    db.run("ALTER TABLE playbook_graph_runs ADD COLUMN workspace_root TEXT");
+  }
+  db.run(`
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_owner_workspace_updated_idx
+      ON playbook_graph_runs (owner_user_key, workspace_root, updated_at DESC, run_id DESC)
+  `);
+
   const queueColumns = db
     .query<{ name: string }, []>("PRAGMA table_info(playbook_graph_queue)")
     .all();
@@ -174,11 +192,15 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   }
 
   const saveRun = db.prepare(`
-    INSERT INTO playbook_graph_runs (run_id, playbook_id, status, snapshot_hash, payload, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO playbook_graph_runs (
+      run_id, owner_user_key, playbook_id, status, workspace_root, snapshot_hash, payload, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id) DO UPDATE SET
+      owner_user_key = excluded.owner_user_key,
       playbook_id = excluded.playbook_id,
       status = excluded.status,
+      workspace_root = excluded.workspace_root,
       snapshot_hash = excluded.snapshot_hash,
       payload = excluded.payload,
       updated_at = excluded.updated_at
@@ -189,26 +211,14 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   const listRuns = db.prepare<PayloadRow, []>(
     "SELECT payload FROM playbook_graph_runs ORDER BY updated_at DESC, run_id DESC"
   );
-  const listRunsLimited = db.prepare<PayloadRow, [number]>(
-    "SELECT payload FROM playbook_graph_runs ORDER BY updated_at DESC, run_id DESC LIMIT ?"
-  );
   const listRunsByPlaybook = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? ORDER BY updated_at DESC, run_id DESC"
-  );
-  const listRunsByPlaybookLimited = db.prepare<PayloadRow, [string, number]>(
-    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
   );
   const listRunsByStatus = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC"
   );
-  const listRunsByStatusLimited = db.prepare<PayloadRow, [string, number]>(
-    "SELECT payload FROM playbook_graph_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
-  );
   const listRunsByPlaybookAndStatus = db.prepare<PayloadRow, [string, string]>(
     "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? AND status = ? ORDER BY updated_at DESC, run_id DESC"
-  );
-  const listRunsByPlaybookAndStatusLimited = db.prepare<PayloadRow, [string, string, number]>(
-    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? AND status = ? ORDER BY updated_at DESC, run_id DESC LIMIT ?"
   );
   const saveQueue = db.prepare(`
     INSERT INTO playbook_graph_queue (
@@ -326,8 +336,10 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     const parsed = PlaybookGraphRunRecordSchema.parse(run);
     saveRun.run(
       parsed.runId,
+      parsed.ownerUserKey ?? null,
       parsed.playbookId,
       parsed.status,
+      runWorkspaceRoot(parsed) ?? null,
       parsed.snapshot.snapshotHash,
       JSON.stringify(parsed),
       parsed.updatedAt
@@ -665,24 +677,22 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       const limit = filter?.limit;
       const rows =
         filter?.playbookId && filter.status
-          ? limit
-            ? listRunsByPlaybookAndStatusLimited.all(filter.playbookId, filter.status, limit)
-            : listRunsByPlaybookAndStatus.all(filter.playbookId, filter.status)
+          ? listRunsByPlaybookAndStatus.all(filter.playbookId, filter.status)
           : filter?.playbookId
-            ? limit
-              ? listRunsByPlaybookLimited.all(filter.playbookId, limit)
-              : listRunsByPlaybook.all(filter.playbookId)
+            ? listRunsByPlaybook.all(filter.playbookId)
             : filter?.status
-              ? limit
-                ? listRunsByStatusLimited.all(filter.status, limit)
-                : listRunsByStatus.all(filter.status)
-              : limit
-                ? listRunsLimited.all(limit)
-                : listRuns.all();
-      return rows.flatMap((row) => {
+              ? listRunsByStatus.all(filter.status)
+              : listRuns.all();
+      const runs = rows.flatMap((row) => {
         const run = parseRun(row);
         return run ? [run] : [];
       });
+      const scoped = runs.filter(
+        (run) =>
+          (filter?.ownerUserKey === undefined || run.ownerUserKey === filter.ownerUserKey) &&
+          (filter?.workspaceRoot === undefined || runWorkspaceRoot(run) === filter.workspaceRoot)
+      );
+      return limit ? scoped.slice(0, limit) : scoped;
     },
     async getQueue(runId) {
       return getQueue.all(runId).flatMap((row) => {

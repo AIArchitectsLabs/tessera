@@ -146,6 +146,7 @@ const MEMORY_DB_PATH =
   process.env.TESSERA_MEMORY_DB_PATH ?? join(homedir(), ".tessera", "memory.sqlite");
 const MEMORY_DISABLED = process.env.TESSERA_MEMORY_DISABLED === "1";
 const LOCAL_MEMORY_OWNER_ID = "local-owner";
+const LOCAL_GRAPH_RUN_OWNER_KEY = LOCAL_MEMORY_OWNER_ID;
 const TESSERA_DATA_DIR = process.env.TESSERA_DATA_DIR ?? join(homedir(), ".tessera");
 const GRAPH_PLAYBOOK_INSTALL_ROOT =
   process.env.TESSERA_GRAPH_PLAYBOOK_INSTALL_ROOT ??
@@ -270,6 +271,10 @@ interface GraphPlaybookRegistryState {
 
 const installedGraphPlaybookRegistryState: GraphPlaybookRegistryState = { entries: [] };
 const installedGraphPlaybookCatalogState: GraphPlaybookRegistryState = { entries: [] };
+const installedGraphPlaybookRegistryStatesByUserKey = new Map<
+  string,
+  { state: GraphPlaybookRegistryState; catalogState: GraphPlaybookRegistryState }
+>();
 
 export interface BuiltInGraphPlaybookRegistryEntry {
   kind: "built-in";
@@ -366,6 +371,107 @@ function validateUserKey(value: string): string {
 function userKeyFromRequest(req: Request): string | undefined {
   const raw = new URL(req.url).searchParams.get("userKey");
   return raw ? validateUserKey(raw) : undefined;
+}
+
+function graphPlaybookUserSegment(userKey: string): string {
+  return `u-${Buffer.from(userKey, "utf8").toString("base64url")}`;
+}
+
+function graphPlaybookRootsForUserKey(
+  userKey: string | undefined,
+  options: { installRoot?: string; cacheRoot?: string } = {}
+): { installRoot: string; cacheRoot: string } {
+  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
+  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
+  if (!userKey) {
+    return { installRoot, cacheRoot };
+  }
+  const segment = graphPlaybookUserSegment(userKey);
+  return {
+    installRoot: join(installRoot, "users", segment),
+    cacheRoot: join(cacheRoot, "users", segment),
+  };
+}
+
+function graphPlaybookRegistryStatesForUserKey(
+  userKey: string | undefined,
+  options: { state?: GraphPlaybookRegistryState; catalogState?: GraphPlaybookRegistryState } = {}
+): { state: GraphPlaybookRegistryState; catalogState: GraphPlaybookRegistryState } {
+  if (options.state || options.catalogState) {
+    return {
+      state: options.state ?? { entries: [] },
+      catalogState: options.catalogState ?? { entries: [] },
+    };
+  }
+  if (!userKey) {
+    return {
+      state: installedGraphPlaybookRegistryState,
+      catalogState: installedGraphPlaybookCatalogState,
+    };
+  }
+
+  const existing = installedGraphPlaybookRegistryStatesByUserKey.get(userKey);
+  if (existing) return existing;
+
+  const created = {
+    state: { entries: [] },
+    catalogState: { entries: [] },
+  };
+  installedGraphPlaybookRegistryStatesByUserKey.set(userKey, created);
+  return created;
+}
+
+function graphPlaybookRequestScope(
+  req: Request,
+  options: {
+    installRoot?: string;
+    cacheRoot?: string;
+    state?: GraphPlaybookRegistryState;
+    catalogState?: GraphPlaybookRegistryState;
+  } = {}
+): {
+  userKey: string | undefined;
+  installRoot: string;
+  cacheRoot: string;
+  state: GraphPlaybookRegistryState;
+  catalogState: GraphPlaybookRegistryState;
+} {
+  const userKey = userKeyFromRequest(req);
+  return {
+    userKey,
+    ...graphPlaybookRootsForUserKey(userKey, options),
+    ...graphPlaybookRegistryStatesForUserKey(userKey, options),
+  };
+}
+
+interface GraphRunRequestScope {
+  ownerUserKey: string;
+  workspaceRoot?: string;
+}
+
+function graphRunWorkspaceRootFromRequest(req: Request): string | undefined {
+  const raw = new URL(req.url).searchParams.get("workspaceRoot");
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function graphRunScopeFromRequest(req: Request): GraphRunRequestScope {
+  const workspaceRoot = graphRunWorkspaceRootFromRequest(req);
+  return {
+    ownerUserKey: userKeyFromRequest(req) ?? LOCAL_GRAPH_RUN_OWNER_KEY,
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+  };
+}
+
+function graphRunStoredWorkspaceRoot(run: PlaybookGraphRunRecord): string | undefined {
+  return run.materialization?.kind === "workspace" ? run.materialization.workspaceRoot : undefined;
+}
+
+function graphRunMatchesScope(run: PlaybookGraphRunRecord, scope: GraphRunRequestScope): boolean {
+  return (
+    run.ownerUserKey === scope.ownerUserKey &&
+    (scope.workspaceRoot === undefined || graphRunStoredWorkspaceRoot(run) === scope.workspaceRoot)
+  );
 }
 
 function memoryOwnerIdForUserKey(userKey: string | undefined): string {
@@ -1322,22 +1428,21 @@ export async function handleGraphPlaybookInstall(
     return Response.json({ error: "sourceRoot is required" }, { status: 400 });
   }
 
-  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
-  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
 
   try {
     const installed = await installGraphPlaybookPackage({
       sourceRoot,
-      installRoot,
-      cacheRoot,
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
       compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
       scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
     });
     await refreshInstalledGraphPlaybookRegistry({
-      installRoot,
-      cacheRoot,
-      ...(options.state ? { state: options.state } : {}),
-      ...(options.catalogState ? { catalogState: options.catalogState } : {}),
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
     });
 
     return Response.json({
@@ -1374,24 +1479,23 @@ export async function handleGraphPlaybookImport(
     return Response.json({ error: "zipPath is required" }, { status: 400 });
   }
 
-  const installRoot = options.installRoot ?? GRAPH_PLAYBOOK_INSTALL_ROOT;
-  const cacheRoot = options.cacheRoot ?? GRAPH_PLAYBOOK_CACHE_ROOT;
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
 
   try {
     const builtIns = await builtInGraphPlaybooks();
     const imported = await importGraphPlaybookArchive({
       zipPath,
-      installRoot,
-      cacheRoot,
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
       builtInIds: builtIns.map((entry) => entry.id),
       compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
       scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
     });
     await refreshInstalledGraphPlaybookRegistry({
-      installRoot,
-      cacheRoot,
-      ...(options.state ? { state: options.state } : {}),
-      ...(options.catalogState ? { catalogState: options.catalogState } : {}),
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
     });
 
     return Response.json(GraphPlaybookImportResultSchema.parse(imported));
@@ -2116,10 +2220,12 @@ function graphRunOptionsWithAgentRuntime(
 
 async function graphRunDetail(
   runId: string,
-  store: GraphRunStore
+  store: GraphRunStore,
+  scope?: GraphRunRequestScope
 ): Promise<ReturnType<typeof PlaybookGraphRunDetailSchema.parse> | undefined> {
   const run = await store.getRun(runId);
   if (!run) return undefined;
+  if (scope && !graphRunMatchesScope(run, scope)) return undefined;
   return PlaybookGraphRunDetailSchema.parse({
     run,
     queue: await store.getQueue(runId),
@@ -2831,9 +2937,10 @@ async function graphRunReviewSurfaceFromDetail(
 async function graphRunReviewSurface(
   runId: string,
   store: GraphRunStore,
-  options: GraphRunHandlerOptions
+  options: GraphRunHandlerOptions,
+  scope?: GraphRunRequestScope
 ): Promise<GraphRunReviewSurface | undefined> {
-  const detail = await graphRunDetail(runId, store);
+  const detail = await graphRunDetail(runId, store, scope);
   if (!detail) return undefined;
   return graphRunReviewSurfaceFromDetail(detail, options);
 }
@@ -3345,10 +3452,32 @@ export async function handleGraphRunCreate(
 
   try {
     const store = options.store ?? graphRunStore;
-    const userKey = userKeyFromRequest(req);
-    const workspaceRoot = parsed.data.workspaceRoot ?? options.workspaceRoot;
+    const scope = graphRunScopeFromRequest(req);
+    const userKey = scope.ownerUserKey;
+    if (
+      scope.workspaceRoot &&
+      parsed.data.workspaceRoot &&
+      scope.workspaceRoot !== parsed.data.workspaceRoot
+    ) {
+      return Response.json(
+        { error: "Graph run workspaceRoot must match the request scope" },
+        { status: 409 }
+      );
+    }
+    const workspaceRoot = parsed.data.workspaceRoot ?? scope.workspaceRoot ?? options.workspaceRoot;
+    const graphPlaybooks = graphPlaybookRequestScope(req, {
+      ...(options.installRoot ? { installRoot: options.installRoot } : {}),
+      ...(options.cacheRoot ? { cacheRoot: options.cacheRoot } : {}),
+      ...(options.graphPlaybookRegistryState ? { state: options.graphPlaybookRegistryState } : {}),
+    });
+    const graphPlaybookRuntimeOptions: GraphRunHandlerOptions = {
+      ...options,
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      graphPlaybookRegistryState: graphPlaybooks.state,
+    };
     const agentProfile = profileForAgentId(parsed.data.agentId, userKey);
-    const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
+    const runtimeOptions = graphRunOptionsWithAgentRuntime(graphPlaybookRuntimeOptions, {
       agentProfile,
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
       ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
@@ -3364,18 +3493,20 @@ export async function handleGraphRunCreate(
           })
         : undefined);
     const compiledGraph =
-      parsed.data.compiledGraph ?? (await graphRunCompiledGraphFromReference(parsed.data, options));
+      parsed.data.compiledGraph ??
+      (await graphRunCompiledGraphFromReference(parsed.data, graphPlaybookRuntimeOptions));
     if (!compiledGraph) {
       return Response.json({ error: "Unknown compiled graph" }, { status: 404 });
     }
     const sourceFiles =
       parsed.data.sourceFiles ??
-      (await installedGraphRunSourceFiles(compiledGraph, options)) ??
+      (await installedGraphRunSourceFiles(compiledGraph, graphPlaybookRuntimeOptions)) ??
       (await builtInGraphRunSourceFiles(compiledGraph));
 
     const run = await createPlaybookGraphRun({
       compiledGraph,
       ...(sourceFiles ? { sourceFiles } : {}),
+      ownerUserKey: scope.ownerUserKey,
       input: parsed.data.input,
       ...(executionContext !== undefined
         ? { executionContext }
@@ -3404,7 +3535,7 @@ export async function handleGraphRunCreate(
       );
     }
 
-    const detail = await graphRunDetail(run.runId, store);
+    const detail = await graphRunDetail(run.runId, store, scope);
     if (!detail) return Response.json({ error: "Graph run was not persisted" }, { status: 500 });
     return Response.json(detail);
   } catch (error) {
@@ -3438,9 +3569,12 @@ export async function handleGraphRunDrain(
 
   try {
     const store = options.store ?? graphRunStore;
+    const scope = graphRunScopeFromRequest(req);
     const userKey = userKeyFromRequest(req);
     const run = await store.getRun(runId);
-    if (!run) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+    if (!run || !graphRunMatchesScope(run, scope)) {
+      return Response.json({ error: "Unknown graph run" }, { status: 404 });
+    }
     const workspaceRoot =
       run.materialization?.kind === "workspace"
         ? run.materialization.workspaceRoot
@@ -3469,7 +3603,7 @@ export async function handleGraphRunDrain(
       )
     );
 
-    const detail = await graphRunDetail(runId, store);
+    const detail = await graphRunDetail(runId, store, scope);
     if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
     return Response.json(detail);
   } catch (error) {
@@ -3490,12 +3624,15 @@ export async function handleGraphRunList(
 
   const { searchParams } = new URL(req.url);
   const store = options.store ?? graphRunStore;
+  const scope = graphRunScopeFromRequest(req);
   const status = searchParams.get("status") ?? undefined;
   const playbookId = searchParams.get("playbookId") ?? undefined;
   const limit = searchParams.has("limit")
     ? Number.parseInt(searchParams.get("limit") ?? "", 10)
     : undefined;
   const filter = PlaybookGraphRunListFilterSchema.safeParse({
+    ownerUserKey: scope.ownerUserKey,
+    ...(scope.workspaceRoot ? { workspaceRoot: scope.workspaceRoot } : {}),
     ...(playbookId ? { playbookId } : {}),
     ...(status ? { status } : {}),
     ...(limit !== undefined ? { limit } : {}),
@@ -3520,7 +3657,11 @@ export async function handleGraphRunGet(
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const detail = await graphRunDetail(runId, options.store ?? graphRunStore);
+  const detail = await graphRunDetail(
+    runId,
+    options.store ?? graphRunStore,
+    graphRunScopeFromRequest(req)
+  );
   if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
   return Response.json(detail);
 }
@@ -3534,7 +3675,12 @@ export async function handleGraphRunReviewSurface(
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const surface = await graphRunReviewSurface(runId, options.store ?? graphRunStore, options);
+  const surface = await graphRunReviewSurface(
+    runId,
+    options.store ?? graphRunStore,
+    options,
+    graphRunScopeFromRequest(req)
+  );
   if (!surface) return Response.json({ error: "Unknown graph run" }, { status: 404 });
   return Response.json(surface);
 }
@@ -3561,7 +3707,7 @@ export async function handleGraphRunGitMilestonePreview(
     return Response.json({ error: "Git milestone body runId does not match URL" }, { status: 400 });
   }
   const store = options.store ?? graphRunStore;
-  const detail = await graphRunDetail(runId, store);
+  const detail = await graphRunDetail(runId, store, graphRunScopeFromRequest(req));
   if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
   const workspaceRoot =
     detail.run.materialization?.kind === "workspace"
@@ -3610,7 +3756,7 @@ export async function handleGraphRunGitMilestoneCommit(
     return Response.json({ error: "Git milestone body runId does not match URL" }, { status: 400 });
   }
   const store = options.store ?? graphRunStore;
-  const detail = await graphRunDetail(runId, store);
+  const detail = await graphRunDetail(runId, store, graphRunScopeFromRequest(req));
   if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
   const workspaceRoot =
     detail.run.materialization?.kind === "workspace"
@@ -3926,9 +4072,12 @@ export async function handleGraphRunResume(
 
   try {
     const store = options.store ?? graphRunStore;
+    const scope = graphRunScopeFromRequest(req);
     const userKey = userKeyFromRequest(req);
     const run = await store.getRun(runId);
-    if (!run) return Response.json({ error: "Unknown graph run" }, { status: 404 });
+    if (!run || !graphRunMatchesScope(run, scope)) {
+      return Response.json({ error: "Unknown graph run" }, { status: 404 });
+    }
     const now = options.now ? options.now() : new Date().toISOString();
     const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
       agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
@@ -4456,7 +4605,7 @@ export async function handleGraphRunResume(
       await maybeDrainGraphRun(runId, drainOptions);
     }
 
-    const detail = await graphRunDetail(runId, store);
+    const detail = await graphRunDetail(runId, store, scope);
     if (!detail) return Response.json({ error: "Unknown graph run" }, { status: 404 });
     return Response.json(detail);
   } catch (error) {
@@ -4468,7 +4617,19 @@ export async function handleGraphRunResume(
 }
 
 interface PlaybookCatalogHandlerOptions {
+  installRoot?: string;
+  cacheRoot?: string;
+  state?: GraphPlaybookRegistryState;
   catalogState?: GraphPlaybookRegistryState;
+}
+
+function shouldRefreshGraphPlaybookCatalog(options: PlaybookCatalogHandlerOptions): boolean {
+  return (
+    options.catalogState === undefined ||
+    options.state !== undefined ||
+    options.installRoot !== undefined ||
+    options.cacheRoot !== undefined
+  );
 }
 
 export async function handlePlaybookList(
@@ -4479,8 +4640,17 @@ export async function handlePlaybookList(
     return new Response("Method Not Allowed", { status: 405 });
   }
 
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
+  if (shouldRefreshGraphPlaybookCatalog(options)) {
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
+    });
+  }
   const builtIns = await builtInGraphPlaybooks();
-  const imported = await importedGraphPlaybookCatalog({ state: options.catalogState });
+  const imported = await importedGraphPlaybookCatalog({ state: graphPlaybooks.catalogState });
   return Response.json(
     PlaybookListResultSchema.parse({
       playbooks: [
@@ -4500,10 +4670,19 @@ export async function handlePlaybookGet(
     return new Response("Method Not Allowed", { status: 405 });
   }
 
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
   const entry = await builtInGraphPlaybook(playbookId);
+  if (entry === undefined && shouldRefreshGraphPlaybookCatalog(options)) {
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
+    });
+  }
   const imported =
     entry === undefined
-      ? await importedGraphPlaybookById(playbookId, options.catalogState, {
+      ? await importedGraphPlaybookById(playbookId, graphPlaybooks.catalogState, {
           includeSourceFiles: true,
         })
       : undefined;

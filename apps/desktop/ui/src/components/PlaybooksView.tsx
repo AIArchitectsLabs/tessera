@@ -3290,11 +3290,22 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
     setLoadingPlaybooks(true);
     setError(null);
     try {
-      const result = await invoke<PlaybookListResult>("playbook_list");
+      const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
       setPlaybooks(result.playbooks);
       setSelectedPlaybookId((current) => {
-        if (current) return current;
-        return result.playbooks.find((p) => p.businessUseCase)?.id ?? null;
+        const next =
+          current && result.playbooks.some((playbook) => playbook.id === current)
+            ? current
+            : (result.playbooks.find((p) => p.businessUseCase)?.id ?? null);
+        if (next !== current) {
+          setSelectedPlaybookDetail(null);
+          setSelectedRunId(null);
+          setSelectedRunDetail(null);
+          setSelectedGraphRunId(null);
+          setSelectedGraphRunDetail(null);
+          setSelectedGraphRunSurface(null);
+        }
+        return next;
       });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -3302,7 +3313,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
       setPlaybooksLoaded(true);
       setLoadingPlaybooks(false);
     }
-  }, []);
+  }, [userKey]);
 
   const loadSetup = useCallback(async () => {
     setSetupError(null);
@@ -3321,81 +3332,100 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
     }
   }, [userKey]);
 
-  const loadPlaybookDetail = useCallback(async (playbookId: string) => {
-    try {
-      const detail = await invoke<PlaybookDetail>("playbook_get", { playbookId });
-      setSelectedPlaybookDetail(detail);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
+  const loadPlaybookDetail = useCallback(
+    async (playbookId: string) => {
+      try {
+        const detail = await invoke<PlaybookDetail>("playbook_get", { playbookId, userKey });
+        setSelectedPlaybookDetail(detail);
+      } catch (loadError) {
+        setSelectedPlaybookDetail(null);
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    },
+    [userKey]
+  );
 
-  const loadRuns = useCallback(async (playbookId?: string | null) => {
-    const requestId = ++runListRequestRef.current;
-    setError(null);
-    setGraphRunError(null);
-    if (!playbookId) {
-      setRuns([]);
-      setGraphRuns([]);
-      setSelectedRunId(null);
-      setSelectedRunDetail(null);
-      setSelectedGraphRunId(null);
-      setSelectedGraphRunDetail(null);
-      setSelectedGraphRunSurface(null);
-      return;
-    }
-
-    try {
-      const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
-        playbookId,
-        limit: PLAYBOOK_RUN_LIST_LIMIT,
-      });
-      if (requestId !== runListRequestRef.current) return;
-
-      const nextGraphRuns = result.runs.filter((run) => run.playbookId === playbookId);
-      const playbookRuns = nextGraphRuns.map((run) => graphRunRecordToPlaybookRunDetail(run, null));
-      setGraphRuns(nextGraphRuns);
-      setRuns(playbookRuns);
-      setSelectedRunId((current) => {
-        if (current && playbookRuns.some((run) => run.runId === current)) return current;
+  const loadRuns = useCallback(
+    async (playbookId?: string | null) => {
+      const requestId = ++runListRequestRef.current;
+      setError(null);
+      setGraphRunError(null);
+      if (!playbookId || !workspaceRoot) {
+        setRuns([]);
+        setGraphRuns([]);
+        setSelectedRunId(null);
         setSelectedRunDetail(null);
-        return null;
-      });
-      setSelectedGraphRunId((current) => {
-        if (current && nextGraphRuns.some((run) => run.runId === current)) return current;
+        setSelectedGraphRunId(null);
         setSelectedGraphRunDetail(null);
         setSelectedGraphRunSurface(null);
-        return null;
-      });
-    } catch (loadError) {
-      if (requestId !== runListRequestRef.current) return;
-      setRuns([]);
-      setGraphRuns([]);
-      setSelectedRunDetail(null);
-      setSelectedGraphRunDetail(null);
-      setSelectedGraphRunSurface(null);
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-      setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
-    }
-  }, []);
+        return;
+      }
+
+      try {
+        const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
+          playbookId,
+          limit: PLAYBOOK_RUN_LIST_LIMIT,
+          userKey,
+          workspaceRoot,
+        });
+        if (requestId !== runListRequestRef.current) return;
+
+        const nextGraphRuns = result.runs.filter((run) => run.playbookId === playbookId);
+        const playbookRuns = nextGraphRuns.map((run) =>
+          graphRunRecordToPlaybookRunDetail(run, null)
+        );
+        setGraphRuns(nextGraphRuns);
+        setRuns(playbookRuns);
+        setSelectedRunId((current) => {
+          if (current && playbookRuns.some((run) => run.runId === current)) return current;
+          setSelectedRunDetail(null);
+          return null;
+        });
+        setSelectedGraphRunId((current) => {
+          if (current && nextGraphRuns.some((run) => run.runId === current)) return current;
+          setSelectedGraphRunDetail(null);
+          setSelectedGraphRunSurface(null);
+          return null;
+        });
+      } catch (loadError) {
+        if (requestId !== runListRequestRef.current) return;
+        setRuns([]);
+        setGraphRuns([]);
+        setSelectedRunDetail(null);
+        setSelectedGraphRunDetail(null);
+        setSelectedGraphRunSurface(null);
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+        setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    },
+    [userKey, workspaceRoot]
+  );
 
   const loadRunHistory = useCallback(async () => {
+    if (!workspaceRoot) {
+      setRunHistory([]);
+      return;
+    }
     try {
       const result = await invoke<PlaybookGraphRunListResult>("graph_run_list", {
         status: "completed",
         limit: PLAYBOOK_HISTORY_LIMIT,
+        userKey,
+        workspaceRoot,
       });
       setRunHistory(result.runs.map((run) => graphRunRecordToPlaybookRunDetail(run, null)));
     } catch {
       setRunHistory([]);
     }
-  }, []);
+  }, [userKey, workspaceRoot]);
 
   const loadRunDetail = useCallback(
     async (runId: string) => {
       try {
         let surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
           runId,
+          userKey,
+          workspaceRoot,
         });
         const queuedRunId = surface.detail.run.runId;
         if (graphRunHasQueuedRuntimeWork(surface.detail)) {
@@ -3405,6 +3435,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             invoke<PlaybookGraphRunDetail>("graph_run_drain", {
               runId: queuedRunId,
               userKey,
+              workspaceRoot,
             }).finally(() => {
               graphRunDrainInFlightRef.current.delete(queuedRunId);
             });
@@ -3412,6 +3443,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           await drain;
           surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
             runId,
+            userKey,
+            workspaceRoot,
           });
         }
         const detail = graphRunToPlaybookRunDetail(
@@ -3427,7 +3460,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
-    [selectedPlaybookForUi, userKey]
+    [selectedPlaybookForUi, userKey, workspaceRoot]
   );
 
   const loadGraphRunDetail = useCallback(
@@ -3435,6 +3468,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
       try {
         let surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
           runId,
+          userKey,
+          workspaceRoot,
         });
         const queuedRunId = surface.detail.run.runId;
         if (graphRunHasQueuedRuntimeWork(surface.detail)) {
@@ -3444,6 +3479,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             invoke<PlaybookGraphRunDetail>("graph_run_drain", {
               runId: queuedRunId,
               userKey,
+              workspaceRoot,
             }).finally(() => {
               graphRunDrainInFlightRef.current.delete(queuedRunId);
             });
@@ -3451,6 +3487,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           await drain;
           surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
             runId,
+            userKey,
+            workspaceRoot,
           });
         }
         setSelectedGraphRunSurface(surface);
@@ -3465,7 +3503,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
-    [selectedPlaybookForUi, userKey]
+    [selectedPlaybookForUi, userKey, workspaceRoot]
   );
 
   useEffect(() => {
@@ -3618,13 +3656,14 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
     try {
       const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
         zipPath: selectedPath,
+        userKey,
       });
       setImportEvents((current) => [
         ...current,
         `${imported.name} ${imported.version} ${imported.status}`,
         "Refreshing playbooks and run history",
       ]);
-      const result = await invoke<PlaybookListResult>("playbook_list");
+      const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
       setPlaybooks(result.playbooks);
       setSelectedPlaybookId(imported.id);
       setSelectedRunId(null);
@@ -3643,7 +3682,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
     } finally {
       setImportingPlaybook(false);
     }
-  }, [loadPlaybookDetail, loadRunHistory, loadRuns]);
+  }, [loadPlaybookDetail, loadRunHistory, loadRuns, userKey]);
 
   async function startRun(
     inputOverride?: Record<string, unknown>,
@@ -3759,6 +3798,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           ...(action?.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
         },
         userKey,
+        workspaceRoot,
       });
       const run = graphRunToPlaybookRunDetail(detail, selectedPlaybookForUi);
       setRuns((current) => current.map((item) => (item.runId === run.runId ? run : item)));
@@ -3794,6 +3834,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           ...(payload && Object.keys(payload).length > 0 ? { payload } : {}),
         },
         userKey,
+        workspaceRoot,
       });
       setSelectedGraphRunDetail(detail);
       setGraphRuns((current) =>
@@ -3819,6 +3860,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         actionSpecId: `${runId}:git_milestone`,
         workspaceRoot,
       },
+      userKey,
+      workspaceRoot,
     });
   }
 
