@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -165,6 +166,120 @@ describe("createPlaybookGraphRunStore", () => {
       ]);
     } finally {
       store.close();
+    }
+  });
+
+  test("applies scoped playbook limits before parsing run payloads", async () => {
+    const dbPath = tempDbPath();
+    const writer = createPlaybookGraphRunStore(dbPath);
+    try {
+      await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-a",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store: writer,
+        runId: "run-a",
+        now,
+      });
+      await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-b",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store: writer,
+        runId: "run-b",
+        now: later,
+      });
+    } finally {
+      writer.close();
+    }
+
+    const db = new Database(dbPath, { strict: true });
+    db.prepare("UPDATE playbook_graph_runs SET payload = ? WHERE run_id = ?").run(
+      '{"schemaVersion":999}',
+      "run-b"
+    );
+    db.close();
+
+    const reader = createPlaybookGraphRunStore(dbPath);
+    try {
+      expect(
+        (
+          await reader.listRuns({
+            ownerUserKey: "user-a",
+            workspaceRoot: "/tmp/workspace-a",
+            playbookId: "content.seo-blog",
+            limit: 1,
+          })
+        ).map((run) => run.runId)
+      ).toEqual(["run-a"]);
+    } finally {
+      reader.close();
+    }
+  });
+
+  test("applies scoped status limits before parsing run payloads", async () => {
+    const dbPath = tempDbPath();
+    const writer = createPlaybookGraphRunStore(dbPath);
+    try {
+      const runA = await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-a",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store: writer,
+        runId: "run-a",
+        now,
+      });
+      await writer.updateRun({ ...runA, status: "completed", completedAt: now });
+      const runB = await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-b",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store: writer,
+        runId: "run-b",
+        now: later,
+      });
+      await writer.updateRun({ ...runB, status: "completed", completedAt: later });
+    } finally {
+      writer.close();
+    }
+
+    const db = new Database(dbPath, { strict: true });
+    db.prepare("UPDATE playbook_graph_runs SET payload = ? WHERE run_id = ?").run(
+      '{"schemaVersion":999}',
+      "run-b"
+    );
+    db.close();
+
+    const reader = createPlaybookGraphRunStore(dbPath);
+    try {
+      expect(
+        (
+          await reader.listRuns({
+            ownerUserKey: "user-a",
+            workspaceRoot: "/tmp/workspace-a",
+            status: "completed",
+            limit: 1,
+          })
+        ).map((run) => run.runId)
+      ).toEqual(["run-a"]);
+    } finally {
+      reader.close();
     }
   });
 
