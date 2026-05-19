@@ -66,6 +66,93 @@ describe("built-in graph playbooks", () => {
     }
   });
 
+  test("sales meeting brief exposes only the customer-facing brief artifact", async () => {
+    const loaded = await loadBuiltInGraphPlaybookPackages({
+      compilerVersion: "test",
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-16T00:00:00.000Z",
+    });
+    const entry = loaded.find(
+      (candidate) => candidate.compiled.graph.id === "sales.meeting-brief"
+    );
+    if (!entry) throw new Error("Missing Sales Meeting Brief built-in graph");
+
+    expect(entry.compiled.graph.metadata?.outputs).toEqual([
+      {
+        kind: "meetingBrief",
+        label: "Meeting brief",
+      },
+    ]);
+    expect(Object.keys(entry.compiled.graph.artifacts)).toEqual(["meetingBrief"]);
+    expect(entry.sourceFiles["prompts/draft-brief.md"]).toContain(
+      "Return only the final meeting brief as Markdown"
+    );
+    expect(entry.sourceFiles["prompts/draft-brief.md"]).toContain(
+      "Do not include internal working notes"
+    );
+    expect(entry.sourceFiles["prompts/draft-brief.md"]).not.toContain(
+      "and include account context"
+    );
+  });
+
+  test("renewal risk review exposes only the customer-facing brief artifact", async () => {
+    const loaded = await loadBuiltInGraphPlaybookPackages({
+      compilerVersion: "test",
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-16T00:00:00.000Z",
+    });
+    const entry = loaded.find(
+      (candidate) => candidate.compiled.graph.id === "customer.renewal-risk-review"
+    );
+    if (!entry) throw new Error("Missing Renewal Risk Review built-in graph");
+
+    expect(entry.compiled.graph.metadata?.outputs).toEqual([
+      {
+        kind: "businessBrief",
+        label: "Renewal risk brief",
+      },
+    ]);
+    expect(Object.keys(entry.compiled.graph.artifacts)).toEqual(["businessBrief"]);
+    expect(entry.sourceFiles["prompts/draft-risk-review.md"]).toContain(
+      "Return only the final renewal risk brief as Markdown"
+    );
+    expect(entry.sourceFiles["prompts/draft-risk-review.md"]).toContain(
+      "Do not include internal working notes"
+    );
+    expect(entry.sourceFiles["prompts/draft-risk-review.md"]).not.toContain(
+      "and source gaps"
+    );
+  });
+
+  test("weekly status digest exposes only the stakeholder-facing digest artifact", async () => {
+    const loaded = await loadBuiltInGraphPlaybookPackages({
+      compilerVersion: "test",
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-16T00:00:00.000Z",
+    });
+    const entry = loaded.find(
+      (candidate) => candidate.compiled.graph.id === "operations.weekly-status-digest"
+    );
+    if (!entry) throw new Error("Missing Weekly Status Digest built-in graph");
+
+    expect(entry.compiled.graph.metadata?.outputs).toEqual([
+      {
+        kind: "statusDigest",
+        label: "Weekly status digest",
+      },
+    ]);
+    expect(Object.keys(entry.compiled.graph.artifacts)).toEqual(["statusDigest"]);
+    expect(entry.sourceFiles["prompts/draft-status-digest.md"]).toContain(
+      "Return only the final weekly status digest as Markdown"
+    );
+    expect(entry.sourceFiles["prompts/draft-status-digest.md"]).toContain(
+      "Do not include internal working notes"
+    );
+    expect(entry.sourceFiles["prompts/draft-status-digest.md"]).not.toContain(
+      "and source gaps"
+    );
+  });
+
   test("activity snapshot preserves the legacy refreshable dashboard contract", async () => {
     const loaded = await loadBuiltInGraphPlaybookPackages({
       compilerVersion: "test",

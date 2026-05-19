@@ -4,7 +4,7 @@ export default {
   version: "1",
   name: "Sales Meeting Brief",
   description:
-    "Creates a source-aware customer meeting brief and pauses before preparing a workspace artifact.",
+    "Creates a concise customer meeting brief and pauses before writing it to the workspace.",
   metadata: {
     category: "sales",
     businessUseCase: "Prepare for a customer or prospect meeting",
@@ -14,14 +14,6 @@ export default {
       {
         kind: "meetingBrief",
         label: "Meeting brief",
-      },
-      {
-        kind: "sourceSummary",
-        label: "Source summary",
-      },
-      {
-        kind: "approvalRequest",
-        label: "Workspace prep approval",
       },
     ],
     phases: ["Prepare", "Review"],
@@ -78,7 +70,7 @@ export default {
       required: true,
       label: "Research sources",
       description:
-        "Sources to use when available. Unavailable selected sources are reported as gaps.",
+        "Sources to use internally when available while drafting the brief.",
       order: 5,
       group: "Research",
       default: ["web"],
@@ -108,19 +100,6 @@ export default {
         control: "multiselect",
       },
     },
-    approvalTarget: {
-      type: "string",
-      required: true,
-      label: "Approval target",
-      description: "Workspace artifact or follow-up note destination.",
-      placeholder: "meeting-prep",
-      order: 6,
-      group: "Approval",
-      default: "meeting-prep",
-      ui: {
-        control: "text",
-      },
-    },
     workspaceRoot: {
       type: "string",
       required: true,
@@ -134,12 +113,6 @@ export default {
   artifacts: {
     meetingBrief: {
       schema: "schemas/meetingBrief.schema.json",
-    },
-    sourceSummary: {
-      schema: "schemas/sourceSummary.schema.json",
-    },
-    approvalRequest: {
-      schema: "schemas/approvalRequest.schema.json",
     },
   },
   capabilities: ["web", "calendar", "mail", "drive", "contacts"],
@@ -168,9 +141,6 @@ export default {
         sources: {
           input: "sources",
         },
-        approvalTarget: {
-          input: "approvalTarget",
-        },
         workspaceRoot: {
           input: "workspaceRoot",
         },
@@ -183,7 +153,7 @@ export default {
     },
     {
       id: "approveBrief",
-      label: "Review workspace preparation",
+      label: "Review meeting brief",
       kind: "humanReview",
       artifact: "meetingBrief",
       actions: ["approve", "request_changes", "deny"],

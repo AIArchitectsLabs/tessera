@@ -15,10 +15,6 @@ export default {
         kind: "statusDigest",
         label: "Weekly status digest",
       },
-      {
-        kind: "sourceSummary",
-        label: "Source summary",
-      },
     ],
     phases: ["Summarize", "Review"],
   },
@@ -80,7 +76,7 @@ export default {
       required: true,
       label: "Workspace sources",
       description:
-        "Sources to use when available. Unavailable selected sources are reported as gaps.",
+        "Sources to use internally when available while drafting the digest.",
       order: 4,
       group: "Evidence",
       default: ["calendar", "mail", "drive"],
@@ -115,9 +111,6 @@ export default {
   artifacts: {
     statusDigest: {
       schema: "schemas/statusDigest.schema.json",
-    },
-    sourceSummary: {
-      schema: "schemas/sourceSummary.schema.json",
     },
   },
   capabilities: ["calendar", "mail", "drive"],

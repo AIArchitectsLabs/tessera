@@ -15,10 +15,6 @@ export default {
         kind: "businessBrief",
         label: "Renewal risk brief",
       },
-      {
-        kind: "sourceSummary",
-        label: "Source summary",
-      },
     ],
     phases: ["Analyze", "Review"],
   },
@@ -74,7 +70,7 @@ export default {
       required: true,
       label: "Evidence sources",
       description:
-        "Sources to use when available. Unavailable selected sources are reported as gaps.",
+        "Sources to use internally when available while drafting the brief.",
       order: 5,
       group: "Evidence",
       default: ["web", "drive"],
@@ -113,9 +109,6 @@ export default {
   artifacts: {
     businessBrief: {
       schema: "schemas/businessBrief.schema.json",
-    },
-    sourceSummary: {
-      schema: "schemas/sourceSummary.schema.json",
     },
   },
   capabilities: ["web", "mail", "drive", "contacts"],

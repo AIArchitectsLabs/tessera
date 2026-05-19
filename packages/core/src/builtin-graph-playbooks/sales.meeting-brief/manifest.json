@@ -3,6 +3,6 @@
   "id": "sales.meeting-brief",
   "version": "1",
   "name": "Sales Meeting Brief",
-  "description": "Creates a source-aware customer meeting brief and pauses before preparing a workspace artifact.",
+  "description": "Creates a concise customer meeting brief and pauses before writing it to the workspace.",
   "entrypoint": "playbook.ts"
 }

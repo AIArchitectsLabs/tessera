@@ -13,7 +13,7 @@ Each playbook gets one folder with a stable package id:
 | [`packages/core/src/builtin-graph-playbooks/customer.renewal-risk-review/`](../packages/core/src/builtin-graph-playbooks/customer.renewal-risk-review/) | Review flow with `humanReview` and `artifactWrite` |
 | [`packages/core/src/builtin-graph-playbooks/ops.weekly-status-digest/`](../packages/core/src/builtin-graph-playbooks/ops.weekly-status-digest/) | Review flow with evidence sources |
 | [`packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/) | Dashboard output example |
-| [`packages/core/src/builtin-graph-playbooks/sales.meeting-brief/`](../packages/core/src/builtin-graph-playbooks/sales.meeting-brief/) | Review flow with an approval artifact |
+| [`packages/core/src/builtin-graph-playbooks/sales.meeting-brief/`](../packages/core/src/builtin-graph-playbooks/sales.meeting-brief/) | Review flow with a meeting brief artifact |
 
 Inside a playbook folder, keep files package-relative and stable:
 
