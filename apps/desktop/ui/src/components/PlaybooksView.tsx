@@ -608,14 +608,16 @@ function visiblePlaybookOutputs(
   const declaredOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
   );
-  if (declaredOutputs.length > 0) return declaredOutputs;
+  const declaredKinds = new Set(declaredOutputs.map((output) => output.kind));
 
-  return Object.entries(runOutputs).flatMap(([kind, value]) => {
-    if (!shouldShowResultOutput(kind, value) || !playbookOutputArtifactPath(kind, value)) {
+  const materializedOutputs = Object.entries(runOutputs).flatMap(([kind, value]) => {
+    if (declaredKinds.has(kind) || !shouldShowInferredGraphOutput(kind, value)) {
       return [];
     }
     return [{ kind, label: artifactLabel(kind) }];
   });
+
+  return [...declaredOutputs, ...materializedOutputs];
 }
 
 function playbookOutputSummary(
@@ -677,6 +679,12 @@ function shouldShowResultOutput(kind: string, value: unknown): boolean {
   if (kind === "sourceSummary") return false;
   if (kind !== "approvalRequest") return true;
   return isApprovalOutput(value) && (value as Record<string, unknown>).mutated === true;
+}
+
+function shouldShowInferredGraphOutput(kind: string, value: unknown): boolean {
+  if (!shouldShowResultOutput(kind, value)) return false;
+  if (!playbookOutputArtifactPath(kind, value)) return false;
+  return !/scorecard/i.test(kind);
 }
 
 function inputDisplayValue(value: unknown): string {
@@ -2760,6 +2768,28 @@ function GuidedResult({
             {run.error ?? "The run is blocked by a runtime setup problem."}
           </p>
         ) : null}
+        <div className="mt-4 flex flex-wrap gap-3">
+          {isDashboard && run.status === "completed" ? (
+            <PlaybookRefreshButton
+              label={dashboardLayout?.refreshLabel ?? `Refresh ${name}`}
+              isRefreshing={refreshing}
+              onRefresh={onRefresh}
+            />
+          ) : (
+            <Button type="button" size="sm" className="rounded-md" onClick={onStartAnother}>
+              Start another
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="rounded-md"
+            onClick={onViewDetails}
+          >
+            View run details
+          </Button>
+        </div>
       </div>
 
       {isDashboard && run.status === "completed" ? (
@@ -2811,6 +2841,11 @@ function GuidedResult({
                   <FileText size={18} className="mt-0.5 flex-shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-foreground">{output.label}</div>
+                    {artifactPath ? (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {artifactPath}
+                      </p>
+                    ) : null}
                     {summary && summary !== "Not provided" ? (
                       <p className="mt-1 line-clamp-3 text-xs leading-5 text-muted-foreground">
                         {summary}
@@ -2845,29 +2880,6 @@ function GuidedResult({
           </div>
         </div>
       ) : null}
-
-      <div className="flex flex-wrap gap-3">
-        {isDashboard && run.status === "completed" ? (
-          <PlaybookRefreshButton
-            label={dashboardLayout?.refreshLabel ?? `Refresh ${name}`}
-            isRefreshing={refreshing}
-            onRefresh={onRefresh}
-          />
-        ) : (
-          <Button type="button" size="sm" className="rounded-md" onClick={onStartAnother}>
-            Start another
-          </Button>
-        )}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="rounded-md"
-          onClick={onViewDetails}
-        >
-          View details
-        </Button>
-      </div>
     </div>
   );
 }

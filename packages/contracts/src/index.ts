@@ -1362,14 +1362,7 @@ export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 export type WorkflowStep = WorkflowToolStep | WorkflowAgentStep;
 
 export const WorkflowOutputDeclarationSchema = z.object({
-  kind: z.enum([
-    "meetingBrief",
-    "businessBrief",
-    "statusDigest",
-    "sourceSummary",
-    "approvalRequest",
-    "dashboard",
-  ]),
+  kind: z.string().min(1),
   label: z.string().min(1),
   description: z.string().min(1).optional(),
   id: z.string().min(1).optional(),

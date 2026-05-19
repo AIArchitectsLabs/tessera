@@ -7,9 +7,10 @@ import type {
   AgentTurnResult,
   ModelRuntimeCredential,
   PermissionDecision,
+  TokenUsage,
 } from "@tessera/contracts";
 import { createAgentModel, resolveApiKey } from "./model.js";
-import { runCodexResponsesTurn } from "./pi-session.js";
+import { normalizeTokenUsage, runCodexResponsesTurn } from "./pi-session.js";
 import { createSpawnShellExecutor } from "./shell-runtime.js";
 import { type WorkspaceCliExecutor, createTesseraTools, summarizeToolResult } from "./tools.js";
 
@@ -69,6 +70,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
   const permissionDecisions: PermissionDecision[] = [];
   const toolResults: AgentToolResultSummary[] = [];
   let messages: AgentMessageSummary[] = [];
+  let usage: TokenUsage | undefined;
   let error: string | undefined;
 
   if (
@@ -153,6 +155,9 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
   });
 
   agent.subscribe((event: AgentEvent) => {
+    const eventUsage = normalizeTokenUsage(event);
+    if (eventUsage) usage = eventUsage;
+
     if (event.type === "tool_execution_end") {
       toolResults.push(summarizeToolResult(event.toolName, event.result, event.isError));
     }
@@ -176,6 +181,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
     messages,
     toolResults,
     permissionDecisions,
+    ...(usage ? { usage } : {}),
     ...(error ? { error } : {}),
   };
 }

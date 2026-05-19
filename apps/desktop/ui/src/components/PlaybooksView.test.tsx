@@ -133,6 +133,11 @@ const importedPlaybook = {
   phases: ["Draft"],
 } satisfies PlaybookDetail;
 
+const importedPlaybookWithDeclaredOutputs = {
+  ...importedPlaybook,
+  outputs: [{ kind: "contentBrief", label: "Content Brief" }],
+} satisfies PlaybookDetail;
+
 const completedRun = {
   runId: "run-1",
   workflowId: "sales.meeting-brief",
@@ -777,6 +782,9 @@ const seoCompletedGraphRunDetail = {
       snapshotJson: JSON.stringify({
         graph: {
           artifacts: {
+            contentBrief: {
+              schema: "schemas/contentBrief.schema.json",
+            },
             finalArticle: {
               schema: "schemas/finalArticle.schema.json",
               materialize: "outputs/final-article.md",
@@ -789,16 +797,82 @@ const seoCompletedGraphRunDetail = {
               materialize: "outputs/final-output-manifest.md",
             },
           },
-          nodes: [],
+          nodes: [
+            {
+              id: "writeContentBrief",
+              kind: "artifactWrite",
+              artifact: "contentBrief",
+              path: "outputs/content-brief.md",
+            },
+          ],
         },
       }),
     },
     updatedAt: "2026-05-18T12:33:00.000Z",
     completedAt: "2026-05-18T12:33:00.000Z",
   },
-  queue: [],
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-write-content-brief",
+      runId: "graph-run-seo-completed",
+      nodeId: "writeContentBrief",
+      nodePath: "writeContentBrief",
+      nodeKind: "artifactWrite",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: [],
+      declaredConsumesArtifacts: ["contentBrief"],
+      consumesArtifacts: [
+        {
+          artifactId: "contentBrief",
+          versionId: "content-brief-v2",
+          contentHash: "sha256:content-brief-structured",
+        },
+      ],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-18T12:31:30.000Z",
+      updatedAt: "2026-05-18T12:31:45.000Z",
+      completedAt: "2026-05-18T12:31:45.000Z",
+    },
+  ],
   branchItems: [],
   artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "contentBrief",
+      versionId: "content-brief-v1",
+      producerQueueEntryId: "queue-synthesize-brief",
+      nodePath: "synthesizeBrief",
+      contentHash: "sha256:content-brief-agent",
+      value: {
+        text: "# Content Brief\n\nDraft brief from the model.",
+        usage: {
+          inputTokens: 800,
+          outputTokens: 200,
+          totalTokens: 1000,
+        },
+      },
+      createdAt: "2026-05-18T12:31:00.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "contentBrief",
+      versionId: "content-brief-v2",
+      producerQueueEntryId: "queue-structure-brief",
+      nodePath: "structureContentBrief",
+      contentHash: "sha256:content-brief-structured",
+      value: {
+        title: "AI workspace governance for finance teams",
+        thesis: "Finance workflows need reviewable AI governance.",
+        markdown: "# AI workspace governance for finance teams\n\nA practical content brief.",
+      },
+      createdAt: "2026-05-18T12:31:30.000Z",
+    },
     {
       schemaVersion: 1,
       runId: "graph-run-seo-completed",
@@ -809,6 +883,11 @@ const seoCompletedGraphRunDetail = {
       contentHash: "sha256:final-article",
       value: {
         text: "# AI workspace governance for finance teams\n\nA practical governance article.",
+        usage: {
+          inputTokens: 1200,
+          outputTokens: 400,
+          totalTokens: 1600,
+        },
       },
       createdAt: "2026-05-18T12:32:00.000Z",
     },
@@ -955,10 +1034,14 @@ const integrationSettings: IntegrationSettingsRead = {
 let includeContextDriftRun = false;
 let includeInterruptedRun = false;
 let includeImportedPlaybook = false;
+let useDeclaredImportedOutputs = false;
 let playbookListOverride: Promise<PlaybookListResult> | null = null;
 let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
+  const currentImportedPlaybook = useDeclaredImportedOutputs
+    ? importedPlaybookWithDeclaredOutputs
+    : importedPlaybook;
   switch (command) {
     case "playbook_list":
       if (playbookListOverride) return playbookListOverride;
@@ -966,14 +1049,14 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         playbooks: [
           playbook,
           dashboardPlaybook,
-          ...(includeImportedPlaybook ? [importedPlaybook] : []),
+          ...(includeImportedPlaybook ? [currentImportedPlaybook] : []),
         ],
       } satisfies PlaybookListResult;
     case "playbook_get":
       return args?.playbookId === dashboardPlaybook.id
         ? dashboardPlaybook
         : args?.playbookId === importedPlaybook.id
-          ? importedPlaybook
+          ? currentImportedPlaybook
           : playbook;
     case "playbook_import":
       includeImportedPlaybook = true;
@@ -1187,6 +1270,7 @@ beforeEach(() => {
   includeContextDriftRun = false;
   includeInterruptedRun = false;
   includeImportedPlaybook = false;
+  useDeclaredImportedOutputs = false;
   playbookListOverride = null;
   graphRunSurfaceOverride = null;
   modelSettings.selectedProvider = "openai";
@@ -1372,7 +1456,7 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByText(/Sales Meeting Brief - FOMORA\.md/)).toBeTruthy();
+      expect(view.getAllByText(/Sales Meeting Brief - FOMORA\.md/).length).toBeGreaterThan(0);
       expect(view.getByText("Input 1.2k tokens")).toBeTruthy();
       expect(view.getByText("Output 340 tokens")).toBeTruthy();
       expect(view.getByText("Total 1.5k tokens")).toBeTruthy();
@@ -1421,14 +1505,20 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
+      expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
       expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
-      expect(view.getByText(/outputs\/final-article\.md/)).toBeTruthy();
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
       expect(view.getAllByText("Final Output Manifest").length).toBeGreaterThan(0);
-      expect(view.getByText(/outputs\/final-output-manifest\.md/)).toBeTruthy();
+      expect(view.getAllByText(/outputs\/final-output-manifest\.md/).length).toBeGreaterThan(0);
       expect(view.queryByText("Article Scorecard")).toBeNull();
+      expect(view.getByText("Input 2k tokens")).toBeTruthy();
+      expect(view.getByText("Output 600 tokens")).toBeTruthy();
+      expect(view.getByText("Total 2.6k tokens")).toBeTruthy();
     });
 
-    const artifactCard = view.getAllByTitle("Open artifact")[0];
+    const finalArticleLabel = view.getAllByText("Final Article")[0];
+    const artifactCard = finalArticleLabel?.closest("button");
     if (!artifactCard) throw new Error("Expected artifact card");
     fireEvent.click(artifactCard);
 
@@ -1437,6 +1527,41 @@ describe("PlaybooksView", () => {
         workspaceRoot: "/tmp/workspace",
         path: "outputs/final-article.md",
       });
+    });
+  });
+
+  test("keeps materialized graph artifacts visible when a playbook declares one output", async () => {
+    includeImportedPlaybook = true;
+    useDeclaredImportedOutputs = true;
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected SEO run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getByRole("button", { name: "View run details" })).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "View run details" }));
+
+    await waitFor(() => {
+      expect(view.getByText("Run summary")).toBeTruthy();
+      expect(view.getByText("What Tessera did and produced")).toBeTruthy();
     });
   });
 
@@ -1811,9 +1936,9 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByRole("button", { name: "View details" })).toBeTruthy();
+      expect(view.getByRole("button", { name: "View run details" })).toBeTruthy();
     });
-    fireEvent.click(view.getByRole("button", { name: "View details" }));
+    fireEvent.click(view.getByRole("button", { name: "View run details" }));
 
     await waitFor(() => {
       expect(view.getByText("Run summary")).toBeTruthy();
@@ -1880,9 +2005,9 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByRole("button", { name: "View details" })).toBeTruthy();
+      expect(view.getByRole("button", { name: "View run details" })).toBeTruthy();
     });
-    fireEvent.click(view.getByRole("button", { name: "View details" }));
+    fireEvent.click(view.getByRole("button", { name: "View run details" }));
 
     await waitFor(() => {
       expect(view.getByRole("button", { name: "Preview Git milestone" })).toBeTruthy();
