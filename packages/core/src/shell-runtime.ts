@@ -16,6 +16,12 @@ import {
 } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 
+const DEFAULT_SHELL_TIMEOUT_MS = 20_000;
+const WEB_FETCH_TIMEOUT_MS = 45_000;
+const WEB_FETCH_MAX_ATTEMPTS = 2;
+const RETRYABLE_WEB_FETCH_EXIT_CODES = new Set([124, 137, 143]);
+const RETRYABLE_WEB_FETCH_ERROR = /\b(ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b|timed out|socket hang up/i;
+
 export class ShellValidationError extends Error {}
 export class ShellExecutionError extends Error {
   constructor(
@@ -67,6 +73,23 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   return json;
 }
 
+function timeoutMsForCall(call: ShellToolCall): number {
+  return call.command === "web-fetch" && call.subcommand === "fetch"
+    ? WEB_FETCH_TIMEOUT_MS
+    : DEFAULT_SHELL_TIMEOUT_MS;
+}
+
+function maxAttemptsForCall(call: ShellToolCall): number {
+  return call.command === "web-fetch" && call.subcommand === "fetch" ? WEB_FETCH_MAX_ATTEMPTS : 1;
+}
+
+function isRetryableShellFailure(call: ShellToolCall, result: SpawnResult): boolean {
+  if (call.command !== "web-fetch" || call.subcommand !== "fetch") return false;
+  if (RETRYABLE_WEB_FETCH_EXIT_CODES.has(result.exitCode)) return true;
+  if (result.signal !== null) return true;
+  return RETRYABLE_WEB_FETCH_ERROR.test(result.stderr);
+}
+
 export function createSpawnShellExecutor(cli: {
   runWorkspaceCli(args: string[], timeoutMs?: number): Promise<SpawnResult>;
 }): {
@@ -75,48 +98,56 @@ export function createSpawnShellExecutor(cli: {
   return {
     async executeShell(call) {
       const validated = validateShellCall(call);
-      const spawnResult = SpawnResultSchema.parse(
-        await cli.runWorkspaceCli(
-          [validated.command, validated.subcommand, ...validated.args],
-          20_000
-        )
-      );
-
-      const baseResult = {
-        command: validated.command,
-        subcommand: validated.subcommand,
-        stdout: spawnResult.stdout,
-        stderr: spawnResult.stderr,
-        exitCode: spawnResult.exitCode,
-        durationMs: Math.round(spawnResult.durationMs),
-      };
-
-      if (spawnResult.exitCode !== 0) {
-        throw new ShellExecutionError(
-          spawnResult.stderr.trim() ||
-            `${formatShellPreview(validated)} exited ${spawnResult.exitCode}`,
-          ShellToolResultSchema.parse(baseResult)
+      const attempts = maxAttemptsForCall(validated);
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const spawnResult = SpawnResultSchema.parse(
+          await cli.runWorkspaceCli(
+            [validated.command, validated.subcommand, ...validated.args],
+            timeoutMsForCall(validated)
+          )
         );
+
+        const baseResult = {
+          command: validated.command,
+          subcommand: validated.subcommand,
+          stdout: spawnResult.stdout,
+          stderr: spawnResult.stderr,
+          exitCode: spawnResult.exitCode,
+          durationMs: Math.round(spawnResult.durationMs),
+        };
+
+        if (spawnResult.exitCode !== 0) {
+          if (attempt < attempts && isRetryableShellFailure(validated, spawnResult)) {
+            continue;
+          }
+          throw new ShellExecutionError(
+            spawnResult.stderr.trim() ||
+              `${formatShellPreview(validated)} exited ${spawnResult.exitCode}`,
+            ShellToolResultSchema.parse(baseResult)
+          );
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = parseShellPayload(validated, spawnResult.stdout);
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : `Invalid JSON returned by ${formatShellPreview(validated)}`;
+          throw new ShellExecutionError(
+            `Invalid JSON returned by ${formatShellPreview(validated)}: ${message}`,
+            ShellToolResultSchema.parse(baseResult)
+          );
+        }
+
+        return ShellToolResultSchema.parse({
+          ...baseResult,
+          parsed,
+        });
       }
 
-      let parsed: unknown;
-      try {
-        parsed = parseShellPayload(validated, spawnResult.stdout);
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : `Invalid JSON returned by ${formatShellPreview(validated)}`;
-        throw new ShellExecutionError(
-          `Invalid JSON returned by ${formatShellPreview(validated)}: ${message}`,
-          ShellToolResultSchema.parse(baseResult)
-        );
-      }
-
-      return ShellToolResultSchema.parse({
-        ...baseResult,
-        parsed,
-      });
+      throw new ShellExecutionError(`No attempts executed for ${formatShellPreview(validated)}`);
     },
   };
 }

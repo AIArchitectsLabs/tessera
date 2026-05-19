@@ -119,8 +119,10 @@ describe("shell runtime", () => {
       subcommand: "search",
       args: ["tessera"],
     };
+    const calls: string[][] = [];
     const executor = createSpawnShellExecutor({
-      async runWorkspaceCli(): Promise<SpawnResult> {
+      async runWorkspaceCli(args): Promise<SpawnResult> {
+        calls.push(args);
         return {
           stdout: "",
           stderr: "Brave Search is not configured. Add an API key in Settings > Integrations.",
@@ -134,6 +136,79 @@ describe("shell runtime", () => {
     await expect(executor.executeShell(call)).rejects.toThrow(
       "Brave Search is not configured. Add an API key in Settings > Integrations."
     );
+    expect(calls).toHaveLength(1);
+  });
+
+  test("retries retryable web-fetch terminations once", async () => {
+    const calls: Array<{ args: string[]; timeoutMs?: number }> = [];
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(args, timeoutMs): Promise<SpawnResult> {
+        const call: { args: string[]; timeoutMs?: number } = { args };
+        if (timeoutMs !== undefined) call.timeoutMs = timeoutMs;
+        calls.push(call);
+        if (calls.length === 1) {
+          return {
+            stdout: "",
+            stderr: "",
+            exitCode: 143,
+            signal: "SIGTERM",
+            durationMs: 20_000,
+          };
+        }
+        return {
+          stdout: JSON.stringify({
+            url: "https://example.com/post",
+            title: "Example",
+            markdown: "# Example\n\nFetched on retry.",
+            diagnostics: { status: 200, contentType: "text/html" },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 35,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "web-fetch",
+      subcommand: "fetch",
+      args: ["https://example.com/post"],
+    });
+
+    expect(calls).toEqual([
+      { args: ["web-fetch", "fetch", "https://example.com/post"], timeoutMs: 45_000 },
+      { args: ["web-fetch", "fetch", "https://example.com/post"], timeoutMs: 45_000 },
+    ]);
+    expect(result.parsed).toMatchObject({
+      url: "https://example.com/post",
+      markdown: "# Example\n\nFetched on retry.",
+    });
+  });
+
+  test("reports the final web-fetch error after retry exhaustion", async () => {
+    const calls: string[][] = [];
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(args): Promise<SpawnResult> {
+        calls.push(args);
+        return {
+          stdout: "",
+          stderr: "",
+          exitCode: 143,
+          signal: "SIGTERM",
+          durationMs: 45_000,
+        };
+      },
+    });
+
+    await expect(
+      executor.executeShell({
+        command: "web-fetch",
+        subcommand: "fetch",
+        args: ["https://example.com/slow"],
+      })
+    ).rejects.toThrow("web-fetch fetch https://example.com/slow exited 143");
+    expect(calls).toHaveLength(2);
   });
 
   test("parses successful gcal list payloads from workspace cli stdout", async () => {
