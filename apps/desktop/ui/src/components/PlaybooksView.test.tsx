@@ -781,9 +781,23 @@ const seoCompletedGraphRunDetail = {
       packageVersion: importedPlaybook.packageVersion,
       snapshotJson: JSON.stringify({
         graph: {
+          name: "SEO/GEO Blog Article Reference Playbook",
+          description: "Reference graph playbook for a blog article workflow.",
+          metadata: {
+            businessUseCase:
+              "Reference graph playbook for a blog article workflow using generic Tessera orchestration.",
+            outputs: [
+              { kind: "contentBrief", label: "Content Brief" },
+              { kind: "articleDraft", label: "Blog Article Draft" },
+            ],
+          },
           artifacts: {
             contentBrief: {
               schema: "schemas/contentBrief.schema.json",
+            },
+            articleDraft: {
+              schema: "schemas/articleDraft.schema.json",
+              materialize: "outputs/blog-draft.md",
             },
             finalArticle: {
               schema: "schemas/finalArticle.schema.json",
@@ -803,6 +817,12 @@ const seoCompletedGraphRunDetail = {
               kind: "artifactWrite",
               artifact: "contentBrief",
               path: "outputs/content-brief.md",
+            },
+            {
+              id: "writeArticleDraft",
+              kind: "artifactWrite",
+              artifact: "articleDraft",
+              path: "outputs/blog-draft.md",
             },
           ],
         },
@@ -836,6 +856,31 @@ const seoCompletedGraphRunDetail = {
       createdAt: "2026-05-18T12:31:30.000Z",
       updatedAt: "2026-05-18T12:31:45.000Z",
       completedAt: "2026-05-18T12:31:45.000Z",
+    },
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-write-article-draft",
+      runId: "graph-run-seo-completed",
+      nodeId: "writeArticleDraft",
+      nodePath: "writeArticleDraft",
+      nodeKind: "artifactWrite",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: [],
+      declaredConsumesArtifacts: ["articleDraft"],
+      consumesArtifacts: [
+        {
+          artifactId: "articleDraft",
+          versionId: "article-draft-v2",
+          contentHash: "sha256:article-draft",
+        },
+      ],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-18T12:31:55.000Z",
+      updatedAt: "2026-05-18T12:32:00.000Z",
+      completedAt: "2026-05-18T12:32:00.000Z",
     },
   ],
   branchItems: [],
@@ -894,6 +939,35 @@ const seoCompletedGraphRunDetail = {
     {
       schemaVersion: 1,
       runId: "graph-run-seo-completed",
+      artifactId: "articleDraft",
+      versionId: "article-draft-v1",
+      producerQueueEntryId: "queue-article-draft",
+      nodePath: "draftArticle",
+      contentHash: "sha256:article-draft-raw",
+      value: {
+        text: "# Raw Article Draft\n\nA raw draft from the model.",
+      },
+      createdAt: "2026-05-18T12:31:45.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "articleDraft",
+      versionId: "article-draft-v2",
+      producerQueueEntryId: "queue-structure-article-draft",
+      nodePath: "draftArticle/structureArticleDraft",
+      contentHash: "sha256:article-draft",
+      value: {
+        title: "AI workspace governance for finance teams",
+        bodyMarkdown:
+          "# AI workspace governance for finance teams\n\nA practical governance draft.",
+        citations: [],
+      },
+      createdAt: "2026-05-18T12:31:50.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
       artifactId: "articleScorecard",
       versionId: "article-scorecard-v1",
       producerQueueEntryId: "queue-scorecard",
@@ -921,6 +995,40 @@ const seoCompletedGraphRunDetail = {
   ],
   reviews: [],
   operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const seoContentBriefOnlyGraphRunDetail = {
+  ...seoCompletedGraphRunDetail,
+  run: {
+    ...seoCompletedGraphRunDetail.run,
+    snapshot: {
+      ...seoCompletedGraphRunDetail.run.snapshot,
+      snapshotJson: JSON.stringify({
+        graph: {
+          metadata: {
+            outputs: [{ kind: "contentBrief", label: "Content Brief" }],
+          },
+          artifacts: {
+            contentBrief: {
+              schema: "schemas/contentBrief.schema.json",
+            },
+          },
+          nodes: [
+            {
+              id: "writeContentBrief",
+              kind: "artifactWrite",
+              artifact: "contentBrief",
+              path: "outputs/content-brief.md",
+            },
+          ],
+        },
+      }),
+    },
+  },
+  queue: seoCompletedGraphRunDetail.queue.filter((entry) => entry.nodeId === "writeContentBrief"),
+  artifacts: seoCompletedGraphRunDetail.artifacts.filter(
+    (artifact) => artifact.artifactId === "contentBrief"
+  ),
 } satisfies PlaybookGraphRunDetail;
 
 const dashboardRun = {
@@ -1037,6 +1145,7 @@ let includeImportedPlaybook = false;
 let useDeclaredImportedOutputs = false;
 let playbookListOverride: Promise<PlaybookListResult> | null = null;
 let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
+let seoGraphRunSurfaceQueue: PlaybookGraphRunReviewSurface[] = [];
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   const currentImportedPlaybook = useDeclaredImportedOutputs
@@ -1102,7 +1211,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
                 actions: [],
               }
             : args?.runId === seoCompletedGraphRunDetail.run.runId
-              ? {
+              ? (seoGraphRunSurfaceQueue.shift() ?? {
                   schemaVersion: 1,
                   detail: seoCompletedGraphRunDetail,
                   activeArtifacts: [],
@@ -1110,7 +1219,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
                   timeline: [],
                   branches: [],
                   actions: [],
-                }
+                })
               : args?.runId === completedGraphRunDetail.run.runId
                 ? {
                     schemaVersion: 1,
@@ -1273,6 +1382,7 @@ beforeEach(() => {
   useDeclaredImportedOutputs = false;
   playbookListOverride = null;
   graphRunSurfaceOverride = null;
+  seoGraphRunSurfaceQueue = [];
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -1562,6 +1672,90 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(view.getByText("Run summary")).toBeTruthy();
       expect(view.getByText("What Tessera did and produced")).toBeTruthy();
+    });
+  });
+
+  test("shows both run-snapshot imported playbook artifacts after completion", async () => {
+    includeImportedPlaybook = true;
+    useDeclaredImportedOutputs = true;
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected SEO run button");
+    const contentPane = view.getByTestId("playbook-content-pane");
+    if (!(contentPane instanceof HTMLElement)) throw new Error("Expected content pane");
+    contentPane.scrollTop = 720;
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(contentPane.scrollTop).toBe(0);
+      expect(view.getByTestId("result-output-list").className).toContain("grid");
+      expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
+      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Draft Article")).toBeNull();
+      expect(view.queryByText("Structure Article Draft")).toBeNull();
+    });
+  });
+
+  test("automatically refreshes stale selected history run details", async () => {
+    includeImportedPlaybook = true;
+    useDeclaredImportedOutputs = true;
+    seoGraphRunSurfaceQueue = [
+      {
+        schemaVersion: 1,
+        detail: seoContentBriefOnlyGraphRunDetail,
+        activeArtifacts: [],
+        artifactTimeline: [],
+        timeline: [],
+        branches: [],
+        actions: [],
+      },
+      {
+        schemaVersion: 1,
+        detail: seoCompletedGraphRunDetail,
+        activeArtifacts: [],
+        artifactTimeline: [],
+        timeline: [],
+        branches: [],
+        actions: [],
+      },
+    ];
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected SEO run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
+      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
     });
   });
 

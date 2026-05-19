@@ -28,6 +28,7 @@ import type {
   WorkflowCapabilityInventory,
   WorkflowInputDefinition,
   WorkflowNodeAssignment,
+  WorkflowOutputDeclaration,
   WorkflowRunAssignmentPlan,
   WorkflowRunEvent,
   WorkflowRunStepRecord,
@@ -106,6 +107,7 @@ const ctaCopyMap: Record<string, string> = {
 const PLAYBOOK_RUN_LIST_LIMIT = 10;
 const PLAYBOOK_HISTORY_LIMIT = 10;
 const PLAYBOOK_ACTIVE_RUN_REFRESH_MS = 2_000;
+const PLAYBOOK_RESULT_RENDERER_REVISION = 3;
 
 const resultHeadline: Partial<Record<PlaybookRunDetail["status"], (name: string) => string>> = {
   completed: (name) => `${name} is ready.`,
@@ -353,7 +355,7 @@ function artifactPreviewText(value: unknown): string | null {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  for (const key of ["text", "markdown", "content", "body", "summary"]) {
+  for (const key of ["text", "markdown", "bodyMarkdown", "content", "body", "summary"]) {
     const candidate = record[key];
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
@@ -624,7 +626,8 @@ function playbookOutputArtifactPath(kind: string, value: unknown): string | null
 
 function visiblePlaybookOutputs(
   outputs: Array<{ kind: string; label: string }>,
-  runOutputs: Record<string, unknown>
+  runOutputs: Record<string, unknown>,
+  inferredOutputKinds?: ReadonlySet<string>
 ): Array<{ kind: string; label: string }> {
   const declaredOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
@@ -632,13 +635,49 @@ function visiblePlaybookOutputs(
   const declaredKinds = new Set(declaredOutputs.map((output) => output.kind));
 
   const materializedOutputs = Object.entries(runOutputs).flatMap(([kind, value]) => {
-    if (declaredKinds.has(kind) || !shouldShowInferredGraphOutput(kind, value)) {
+    if (
+      declaredKinds.has(kind) ||
+      (inferredOutputKinds && !inferredOutputKinds.has(kind)) ||
+      !shouldShowInferredGraphOutput(kind, value)
+    ) {
       return [];
     }
     return [{ kind, label: artifactLabel(kind) }];
   });
 
   return [...declaredOutputs, ...materializedOutputs];
+}
+
+function mergeOutputDeclarations(
+  ...groups: Array<Array<{ kind: string; label: string }>>
+): Array<{ kind: string; label: string }> {
+  const merged = new Map<string, { kind: string; label: string }>();
+  for (const group of groups) {
+    for (const output of group) {
+      if (!merged.has(output.kind)) {
+        merged.set(output.kind, output);
+      }
+    }
+  }
+  return [...merged.values()];
+}
+
+function graphRunResultOutputDeclarations(
+  detail: PlaybookGraphRunDetail | null
+): WorkflowOutputDeclaration[] {
+  if (!detail) return [];
+  const declared = graphSnapshotOutputDeclarations(detail);
+  const declaredKinds = new Set(declared.map((output) => output.kind));
+  const runOutputs = graphRunOutputs(detail);
+  const artifactIds = [...new Set(detail.artifacts.map((artifact) => artifact.artifactId))];
+  const inferred = artifactIds.flatMap((kind): WorkflowOutputDeclaration[] => {
+    const value = runOutputs[kind];
+    if (declaredKinds.has(kind) || !shouldShowInferredGraphOutput(kind, value)) {
+      return [];
+    }
+    return [{ kind, label: artifactLabel(kind) }];
+  });
+  return mergeOutputDeclarations(declared, inferred);
 }
 
 function playbookOutputSummary(
@@ -704,7 +743,14 @@ function shouldShowResultOutput(kind: string, value: unknown): boolean {
 
 function shouldShowInferredGraphOutput(kind: string, value: unknown): boolean {
   if (!shouldShowResultOutput(kind, value)) return false;
-  if (!playbookOutputArtifactPath(kind, value)) return false;
+  if (
+    /^(normalizedIntake|keywordClusters|researchPlan|researchResults|searchResults|fetchCandidate|fetchedSource|articleReview)$/i.test(
+      kind
+    )
+  ) {
+    return false;
+  }
+  if (!playbookOutputArtifactPath(kind, value) && !artifactPreviewText(value)) return false;
   return !/scorecard/i.test(kind);
 }
 
@@ -775,7 +821,7 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
     outputs[artifact.artifactId] = artifact.value;
     const segments = artifact.nodePath.split("/");
     const nodeKey = segments[segments.length - 1];
-    if (nodeKey) outputs[nodeKey] = artifact.value;
+    if (nodeKey && !outputs[nodeKey]) outputs[nodeKey] = artifact.value;
   }
   for (const [artifactId, path] of graphRunArtifactWritePaths(detail)) {
     const value = outputs[artifactId];
@@ -818,15 +864,8 @@ function graphNodeMetadata(
   detail: PlaybookGraphRunDetail
 ): Map<string, { label?: string; phase?: string }> {
   const metadata = new Map<string, { label?: string; phase?: string }>();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(detail.run.snapshot.snapshotJson);
-  } catch {
-    return metadata;
-  }
-  if (!parsed || typeof parsed !== "object") return metadata;
-  const record = parsed as Record<string, unknown>;
-  const graph = record.graph && typeof record.graph === "object" ? record.graph : record;
+  const graph = graphSnapshotObject(detail);
+  if (!graph) return metadata;
 
   for (const node of graphNodeRecords(graph)) {
     if (typeof node.id !== "string") continue;
@@ -843,27 +882,122 @@ function graphNodeMetadata(
   return metadata;
 }
 
-function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string, string> {
-  const paths = new Map<string, string>();
+function graphSnapshotObject(detail: PlaybookGraphRunDetail): Record<string, unknown> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(detail.run.snapshot.snapshotJson);
   } catch {
-    return paths;
+    return null;
   }
-  if (!parsed || typeof parsed !== "object") return paths;
+  if (!parsed || typeof parsed !== "object") return null;
   const record = parsed as Record<string, unknown>;
   const graph = record.graph && typeof record.graph === "object" ? record.graph : record;
-  const nodes = (graph as Record<string, unknown>).nodes;
-  if (!Array.isArray(nodes)) return paths;
+  return graph && typeof graph === "object" && !Array.isArray(graph)
+    ? (graph as Record<string, unknown>)
+    : null;
+}
 
-  const completedNodeIds = new Set(
-    detail.queue
-      .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
-      .map((entry) => entry.nodeId)
-  );
+function graphSnapshotOutputDeclarations(
+  detail: PlaybookGraphRunDetail
+): WorkflowOutputDeclaration[] {
+  const graph = graphSnapshotObject(detail);
+  const metadata = graph?.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+  const outputs = (metadata as Record<string, unknown>).outputs;
+  if (!Array.isArray(outputs)) return [];
+
+  return outputs.flatMap((output): WorkflowOutputDeclaration[] => {
+    if (!output || typeof output !== "object" || Array.isArray(output)) return [];
+    const record = output as Record<string, unknown>;
+    if (typeof record.kind !== "string" || !record.kind.trim()) return [];
+    if (typeof record.label !== "string" || !record.label.trim()) return [];
+    return [
+      {
+        kind: record.kind,
+        label: record.label,
+        ...(typeof record.description === "string" && record.description.trim()
+          ? { description: record.description }
+          : {}),
+        ...(typeof record.id === "string" && record.id.trim() ? { id: record.id } : {}),
+        ...(typeof record.layoutScript === "string" && record.layoutScript.trim()
+          ? { layoutScript: record.layoutScript }
+          : {}),
+        ...(typeof record.layout === "string" && record.layout.trim()
+          ? { layout: record.layout }
+          : {}),
+        ...(record.layoutData &&
+        typeof record.layoutData === "object" &&
+        !Array.isArray(record.layoutData)
+          ? { layoutData: record.layoutData as DashboardLayout }
+          : {}),
+      },
+    ];
+  });
+}
+
+function graphSnapshotText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function graphSnapshotTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && !!item.trim());
+}
+
+function graphSnapshotPlaybookSummary(
+  detail: PlaybookGraphRunDetail,
+  outputs: WorkflowOutputDeclaration[]
+): PlaybookSummary | null {
+  if (outputs.length === 0) return null;
+  const graph = graphSnapshotObject(detail);
+  if (!graph) return null;
+  const metadata =
+    graph.metadata && typeof graph.metadata === "object" && !Array.isArray(graph.metadata)
+      ? (graph.metadata as Record<string, unknown>)
+      : {};
+
+  return {
+    id: detail.run.playbookId,
+    version: 1,
+    packageVersion: detail.run.snapshot.packageVersion,
+    name: graphSnapshotText(graph.name) ?? titleFromId(detail.run.playbookId),
+    ...(graphSnapshotText(graph.description)
+      ? { description: graphSnapshotText(graph.description) }
+      : {}),
+    graphHash: detail.run.snapshot.graphHash,
+    sourceHash: detail.run.snapshot.sourceHash,
+    ...(graphSnapshotText(metadata.category)
+      ? { category: graphSnapshotText(metadata.category) }
+      : {}),
+    ...(graphSnapshotText(metadata.businessUseCase)
+      ? { businessUseCase: graphSnapshotText(metadata.businessUseCase) }
+      : {}),
+    requiredCapabilities: [],
+    optionalCapabilities: [],
+    outputs,
+    stepCount: graphNodeRecords(graph).length,
+    phases: graphSnapshotTextArray(metadata.phases),
+  };
+}
+
+function playbookWithRunSnapshotOutputs(
+  detail: PlaybookGraphRunDetail,
+  playbook: PlaybookSummary | PlaybookDetail | null
+): PlaybookSummary | PlaybookDetail | null {
+  const outputs = graphSnapshotOutputDeclarations(detail);
+  if (outputs.length === 0) return playbook;
+  if (!playbook || playbook.id !== detail.run.playbookId) {
+    return graphSnapshotPlaybookSummary(detail, outputs) ?? playbook;
+  }
+  return { ...playbook, packageVersion: detail.run.snapshot.packageVersion, outputs };
+}
+
+function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string, string> {
+  const paths = new Map<string, string>();
+  const graph = graphSnapshotObject(detail);
+  if (!graph) return paths;
   const materializedArtifactIds = new Set(detail.artifacts.map((artifact) => artifact.artifactId));
-  const artifactDeclarations = (graph as Record<string, unknown>).artifacts;
+  const artifactDeclarations = graph.artifacts;
   if (artifactDeclarations && typeof artifactDeclarations === "object") {
     for (const [artifactId, declaration] of Object.entries(
       artifactDeclarations as Record<string, unknown>
@@ -876,6 +1010,15 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
       }
     }
   }
+
+  const nodes = graph.nodes;
+  if (!Array.isArray(nodes)) return paths;
+
+  const completedNodeIds = new Set(
+    detail.queue
+      .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
+      .map((entry) => entry.nodeId)
+  );
   for (const node of nodes) {
     if (!node || typeof node !== "object" || Array.isArray(node)) continue;
     const candidate = node as Record<string, unknown>;
@@ -1121,9 +1264,10 @@ function graphRunToPlaybookRunDetail(
 ): PlaybookRunDetail {
   const outputs = graphRunOutputs(detail);
   const usage = graphRunUsage(detail);
+  const playbookForRun = playbookWithRunSnapshotOutputs(detail, playbook);
   const detailSteps =
-    playbook && "steps" in playbook
-      ? new Map(playbook.steps.map((step) => [step.id, step]))
+    playbookForRun && "steps" in playbookForRun
+      ? new Map(playbookForRun.steps.map((step) => [step.id, step]))
       : new Map<string, PlaybookDetail["steps"][number]>();
   const snapshotMetadata = graphNodeMetadata(detail);
   const steps: GraphWorkflowStepRecord[] = detail.queue.map((entry) => ({
@@ -1137,7 +1281,7 @@ function graphRunToPlaybookRunDetail(
     phase:
       detailSteps.get(entry.nodeId)?.phase ??
       snapshotMetadata.get(entry.nodeId)?.phase ??
-      playbook?.phases?.[0] ??
+      playbookForRun?.phases?.[0] ??
       "Run",
     status: workflowStepStatusFromGraph(entry.status),
     startedAt: entry.claimedAt ?? entry.createdAt,
@@ -1158,8 +1302,8 @@ function graphRunToPlaybookRunDetail(
     input: detail.run.input,
     outputs,
     ...(usage ? { usage } : {}),
-    dashboardLayout: dashboardLayoutFromPlaybook(playbook) ?? undefined,
-    approval: graphRunApproval(detail, playbook, productView),
+    dashboardLayout: dashboardLayoutFromPlaybook(playbookForRun) ?? undefined,
+    approval: graphRunApproval(detail, playbookForRun, productView),
     error: detail.run.error ?? detail.run.repairReason,
     startedAt: detail.run.startedAt,
     updatedAt: detail.run.updatedAt,
@@ -1178,7 +1322,7 @@ function graphRunToPlaybookRunDetail(
       },
     })),
     sourceGaps: [],
-    playbook: playbook ?? undefined,
+    playbook: playbookForRun ?? undefined,
   };
 }
 
@@ -3227,6 +3371,7 @@ function GuidedResult({
   run,
   playbook,
   playbookDetail,
+  graphRunDetail,
   workspaceRoot,
   artifactWorkspaceRoot,
   dashboardLayout,
@@ -3239,6 +3384,7 @@ function GuidedResult({
   run: PlaybookRunDetail;
   playbook: PlaybookSummary | PlaybookDetail | null;
   playbookDetail: PlaybookDetail | null;
+  graphRunDetail: PlaybookGraphRunDetail | null;
   workspaceRoot: string | null;
   artifactWorkspaceRoot: string | null;
   dashboardLayout: DashboardLayout | null;
@@ -3248,31 +3394,49 @@ function GuidedResult({
   onStartAnother: () => void;
   onViewDetails: () => void;
 }) {
-  const name = playbook?.name ?? "Your playbook";
-  const runVersionLabel = packageVersionLabel(runPackageVersion(run));
-  const latestVersionLabel = packageVersionLabel(playbook?.packageVersion);
-  const blockedWithoutApproval = run.status === "blocked" && !run.approval;
-  const headlineFn = blockedWithoutApproval ? undefined : resultHeadline[run.status];
+  const graphRunResult = useMemo(
+    () =>
+      graphRunDetail?.run.runId === run.runId
+        ? graphRunToPlaybookRunDetail(graphRunDetail, run.playbook ?? playbookDetail ?? playbook)
+        : null,
+    [graphRunDetail, playbook, playbookDetail, run.playbook, run.runId]
+  );
+  const resultRun = graphRunResult ?? run;
+  const graphOutputDeclarations =
+    graphRunDetail?.run.runId === run.runId ? graphRunResultOutputDeclarations(graphRunDetail) : [];
+  const inferredOutputKinds =
+    graphRunDetail?.run.runId === run.runId
+      ? new Set(graphRunDetail.artifacts.map((artifact) => artifact.artifactId))
+      : undefined;
+  const playbookForResult = resultRun.playbook ?? run.playbook ?? playbookDetail ?? playbook;
+  const name = playbookForResult?.name ?? "Your playbook";
+  const runVersionLabel = packageVersionLabel(runPackageVersion(resultRun));
+  const latestVersionLabel = packageVersionLabel(playbookForResult?.packageVersion);
+  const blockedWithoutApproval = resultRun.status === "blocked" && !resultRun.approval;
+  const headlineFn = blockedWithoutApproval ? undefined : resultHeadline[resultRun.status];
   const headline = blockedWithoutApproval
     ? "Needs setup attention."
     : headlineFn
       ? headlineFn(name)
       : `${name} finished.`;
-  const outputs = playbookDetail?.outputs ?? playbook?.outputs ?? [];
-  const runOutputs = run.outputs ?? {};
-  const latestEvent = run.events?.[run.events.length - 1];
-  const sourceGaps = run.sourceGaps ?? [];
-  const runInput = run.input ?? {};
+  const outputs = mergeOutputDeclarations(
+    playbookForResult?.outputs ?? [],
+    graphOutputDeclarations
+  );
+  const runOutputs = { ...(run.outputs ?? {}), ...(graphRunResult?.outputs ?? {}) };
+  const latestEvent = resultRun.events?.[resultRun.events.length - 1];
+  const sourceGaps = resultRun.sourceGaps ?? [];
+  const runInput = resultRun.input ?? {};
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
-  const isDashboard = isDashboardPlaybook(playbookDetail ?? playbook);
+  const isDashboard = isDashboardPlaybook(playbookForResult);
   const sub = blockedWithoutApproval
     ? "Tessera cannot continue this run until the underlying setup problem is fixed."
-    : run.status === "completed" && isDashboard
+    : resultRun.status === "completed" && isDashboard
       ? "Here's what changed, what's at risk, and what needs follow-up."
-      : (resultSub[run.status] ?? "");
-  const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs);
+      : (resultSub[resultRun.status] ?? "");
+  const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs, inferredOutputKinds);
 
   async function openArtifact(path: string) {
     if (!openWorkspaceRoot) return;
@@ -3288,11 +3452,11 @@ function GuidedResult({
   }
 
   return (
-    <div className="mx-auto w-full max-w-xl py-10">
-      <div className="mb-8">
-        {playbook?.businessUseCase ? (
+    <div className="mx-auto w-full max-w-2xl py-4">
+      <div className="mb-5">
+        {playbookForResult?.businessUseCase ? (
           <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            {playbook.businessUseCase}
+            {playbookForResult.businessUseCase}
           </div>
         ) : null}
         <h2 className="text-2xl font-semibold text-foreground">{headline}</h2>
@@ -3300,28 +3464,28 @@ function GuidedResult({
           <p className="mt-2 text-xs font-medium text-muted-foreground">
             {runVersionLabel}
             {latestVersionLabel && latestVersionLabel !== runVersionLabel
-              ? ` · Latest package ${playbook?.packageVersion}`
+              ? ` · Latest package ${playbookForResult?.packageVersion}`
               : ""}
           </p>
         ) : null}
         {sub ? <p className="mt-2 text-sm text-muted-foreground">{sub}</p> : null}
-        {run.status === "completed" ? (
+        {resultRun.status === "completed" ? (
           <div className="mt-3">
-            <UsageSummary usage={run.usage} />
+            <UsageSummary usage={resultRun.usage} />
           </div>
         ) : null}
-        {run.status === "failed" && latestEvent ? (
+        {resultRun.status === "failed" && latestEvent ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {latestEvent.message}
           </p>
         ) : null}
         {blockedWithoutApproval ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {run.error ?? "The run is blocked by a runtime setup problem."}
+            {resultRun.error ?? "The run is blocked by a runtime setup problem."}
           </p>
         ) : null}
         <div className="mt-4 flex flex-wrap gap-3">
-          {isDashboard && run.status === "completed" ? (
+          {isDashboard && resultRun.status === "completed" ? (
             <PlaybookRefreshButton
               label={dashboardLayout?.refreshLabel ?? `Refresh ${name}`}
               isRefreshing={refreshing}
@@ -3344,7 +3508,7 @@ function GuidedResult({
         </div>
       </div>
 
-      {isDashboard && run.status === "completed" ? (
+      {isDashboard && resultRun.status === "completed" ? (
         <div className="mb-6 space-y-4">
           {dashboardLayout ? (
             <DashboardView layout={dashboardLayout} outputs={runOutputs} />
@@ -3360,7 +3524,7 @@ function GuidedResult({
           ) : null}
         </div>
       ) : visibleOutputs.length > 0 ? (
-        <div className="mb-6 space-y-3">
+        <div className="mb-5 grid content-start gap-2" data-testid="result-output-list">
           {visibleOutputs.map((output) => {
             const value = playbookOutputValue(output.kind, runOutputs);
             const artifactPath = playbookOutputArtifactPath(output.kind, value);
@@ -3384,7 +3548,7 @@ function GuidedResult({
                 title={canOpen ? "Open artifact" : undefined}
                 onClick={canOpen ? () => void openArtifact(artifactPath) : undefined}
                 className={cn(
-                  "w-full rounded-lg border border-border bg-background p-4 text-left",
+                  "m-0 w-full rounded-md border border-border bg-background p-3 text-left",
                   canOpen &&
                     "cursor-pointer transition-colors hover:border-foreground/30 hover:bg-secondary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 )}
@@ -3465,7 +3629,7 @@ function DetailsPanel({
   ) => Promise<PlaybookGraphGitMilestonePreview>;
   onClose: () => void;
 }) {
-  const playbookForRun = playbookDetail ?? run?.playbook ?? null;
+  const playbookForRun = run?.playbook ?? playbookDetail ?? null;
   const runVersionLabel = packageVersionLabel(runPackageVersion(run));
   const latestVersionLabel = packageVersionLabel(playbookForRun?.packageVersion);
   const runInput = run?.input ?? {};
@@ -3482,9 +3646,16 @@ function DetailsPanel({
   }, [playbookDetail?.inputs, runInput]);
 
   const outputRows = useMemo(() => {
-    const outputs = playbookForRun?.outputs ?? [];
-    const runOutputs = run?.outputs ?? {};
-    return visiblePlaybookOutputs(outputs, runOutputs).map((output) => {
+    const graphRunForOutput = selectedGraphRun?.run.runId === run?.runId ? selectedGraphRun : null;
+    const outputs = mergeOutputDeclarations(
+      playbookForRun?.outputs ?? [],
+      graphRunResultOutputDeclarations(graphRunForOutput)
+    );
+    const runOutputs = { ...(run?.outputs ?? {}), ...graphRunOutputs(graphRunForOutput) };
+    const inferredOutputKinds = graphRunForOutput
+      ? new Set(graphRunForOutput.artifacts.map((artifact) => artifact.artifactId))
+      : undefined;
+    return visiblePlaybookOutputs(outputs, runOutputs, inferredOutputKinds).map((output) => {
       const value = playbookOutputValue(output.kind, runOutputs);
       const artifactPath = playbookOutputArtifactPath(output.kind, value);
       return {
@@ -3493,7 +3664,7 @@ function DetailsPanel({
         path: artifactPath,
       };
     });
-  }, [playbookForRun?.outputs, run?.outputs]);
+  }, [playbookForRun?.outputs, run?.outputs, run?.runId, selectedGraphRun]);
 
   const runStepGroups = useMemo(() => {
     if (!run?.steps?.length) return [];
@@ -3766,6 +3937,10 @@ export function PlaybooksView({
   const runListRequestRef = useRef(0);
   const liveRunRefreshInFlightRef = useRef(false);
   const graphRunDrainInFlightRef = useRef(new Map<string, Promise<PlaybookGraphRunDetail>>());
+  const selectedRunIdRef = useRef<string | null>(selectedRunId);
+  const selectedGraphRunIdRef = useRef<string | null>(selectedGraphRunId);
+  const selectedRunDetailRefreshRef = useRef<string | null>(null);
+  const contentScrollRef = useRef<HTMLElement | null>(null);
 
   const businessPlaybooks = useMemo(
     () => playbooks.filter((p) => !!p.businessUseCase || !!p.graphHash),
@@ -3797,9 +3972,26 @@ export function PlaybooksView({
     selectedPlaybookDetail?.id === selectedPlaybook?.id ? selectedPlaybookDetail : selectedPlaybook;
   const selectedGraphHash = selectedPlaybookForUi?.graphHash;
   const selectedSourceHash = selectedPlaybookForUi?.sourceHash;
-  const selectedRun =
-    selectedRunDetail ??
-    (selectedRunId ? (runs.find((run) => run.runId === selectedRunId) ?? null) : null);
+  const selectedRun = useMemo(() => {
+    if (selectedGraphRunDetail?.run.runId === selectedRunId) {
+      return graphRunToPlaybookRunDetail(
+        selectedGraphRunDetail,
+        selectedPlaybookForUi,
+        selectedGraphRunSurface?.productView
+      );
+    }
+    return (
+      selectedRunDetail ??
+      (selectedRunId ? (runs.find((run) => run.runId === selectedRunId) ?? null) : null)
+    );
+  }, [
+    runs,
+    selectedGraphRunDetail,
+    selectedGraphRunSurface?.productView,
+    selectedPlaybookForUi,
+    selectedRunDetail,
+    selectedRunId,
+  ]);
   const selectedRunNeedsRefresh = runNeedsLiveRefresh(selectedRun, selectedGraphRunDetail);
   const selectedReviewEvidence = useMemo(
     () => reviewEvidenceFromSurface(selectedGraphRunSurface),
@@ -3832,6 +4024,15 @@ export function PlaybooksView({
     if (selectedRun.status === "running") return "preparing";
     return "result";
   }, [showStartForm, running, selectedRun]);
+  const contentScrollResetKey = `${guidedState}:${selectedPlaybookId ?? ""}:${selectedRunId ?? ""}`;
+
+  useEffect(() => {
+    const contentPane = contentScrollRef.current;
+    if (!contentPane) return;
+    contentPane.dataset.scrollResetKey = contentScrollResetKey;
+    contentPane.scrollTop = 0;
+    contentPane.scrollLeft = 0;
+  }, [contentScrollResetKey]);
 
   useEffect(() => {
     if (!selectedPlaybookId || !workspaceRoot || !capabilityInventory) {
@@ -4026,16 +4227,43 @@ export function PlaybooksView({
           selectedPlaybookForUi,
           surface.productView
         );
-        setSelectedGraphRunSurface(surface);
-        setSelectedGraphRunDetail(surface.detail);
+        if (selectedRunIdRef.current !== runId) return;
+        const selectedGraphRunId = selectedGraphRunIdRef.current;
+        if (!selectedGraphRunId || selectedGraphRunId === runId) {
+          setSelectedGraphRunSurface(surface);
+          setSelectedGraphRunDetail(surface.detail);
+        }
         setSelectedRunDetail(detail);
         setRuns((current) => mergeRunById(current, detail));
         setGraphRuns((current) => mergeRunById(current, surface.detail.run));
       } catch (loadError) {
+        if (selectedRunIdRef.current !== runId) return;
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
     [selectedPlaybookForUi, userKey, workspaceRoot]
+  );
+
+  const selectRun = useCallback(
+    (runId: string) => {
+      const alreadySelected = selectedRunId === runId;
+      if (contentScrollRef.current) {
+        contentScrollRef.current.scrollTop = 0;
+        contentScrollRef.current.scrollLeft = 0;
+      }
+      selectedRunIdRef.current = runId;
+      selectedGraphRunIdRef.current = null;
+      setSelectedRunId(runId);
+      setSelectedGraphRunId(null);
+      setShowStartForm(false);
+      setSelectedRunDetail(null);
+      setSelectedGraphRunDetail(null);
+      setSelectedGraphRunSurface(null);
+      if (alreadySelected) {
+        void loadRunDetail(runId);
+      }
+    },
+    [loadRunDetail, selectedRunId]
   );
 
   const loadGraphRunDetail = useCallback(
@@ -4071,6 +4299,8 @@ export function PlaybooksView({
           selectedPlaybookForUi,
           surface.productView
         );
+        const selectedGraphRunId = selectedGraphRunIdRef.current;
+        if (selectedGraphRunId && selectedGraphRunId !== runId) return;
         setSelectedGraphRunSurface(surface);
         setSelectedGraphRunDetail(surface.detail);
         setSelectedRunDetail(detailRun);
@@ -4082,6 +4312,14 @@ export function PlaybooksView({
     },
     [selectedPlaybookForUi, userKey, workspaceRoot]
   );
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    selectedGraphRunIdRef.current = selectedGraphRunId;
+  }, [selectedGraphRunId]);
 
   useEffect(() => {
     void loadPlaybooks();
@@ -4117,6 +4355,17 @@ export function PlaybooksView({
     }
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      selectedRunDetailRefreshRef.current = null;
+      return;
+    }
+    const refreshKey = `${PLAYBOOK_RESULT_RENDERER_REVISION}:${selectedRunId}`;
+    if (selectedRunDetailRefreshRef.current === refreshKey) return;
+    selectedRunDetailRefreshRef.current = refreshKey;
+    void loadRunDetail(selectedRunId);
+  });
 
   useEffect(() => {
     if (!selectedPlaybookId || !selectedRunId || !selectedRunNeedsRefresh) return;
@@ -4629,10 +4878,7 @@ export function PlaybooksView({
                   ? "border-primary bg-background"
                   : "border-transparent"
               )}
-              onClick={() => {
-                setSelectedRunId(run.runId);
-                setShowStartForm(false);
-              }}
+              onClick={() => selectRun(run.runId)}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-muted-foreground">{formatTime(run.updatedAt)}</span>
@@ -4664,7 +4910,11 @@ export function PlaybooksView({
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 overflow-y-auto px-8 py-5">
+      <section
+        ref={contentScrollRef}
+        data-testid="playbook-content-pane"
+        className="flex min-w-0 flex-1 overflow-y-auto px-8 py-5"
+      >
         {playbookCatalogLoading ? (
           <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
             Loading playbooks...
@@ -4717,6 +4967,7 @@ export function PlaybooksView({
             run={selectedRun}
             playbook={selectedPlaybookForUi}
             playbookDetail={selectedPlaybookDetail}
+            graphRunDetail={selectedGraphRunDetail}
             workspaceRoot={workspaceRoot}
             artifactWorkspaceRoot={graphRunWorkspaceRoot(selectedGraphRunDetail)}
             dashboardLayout={dashboardLayout}
