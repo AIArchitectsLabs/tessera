@@ -29,6 +29,7 @@ import {
 import { configureSidecarSqlite } from "./sqlite.js";
 
 type PayloadRow = { payload: string };
+type RunListParam = string | number;
 type QueuePayloadRow = {
   queue_entry_id: string;
   status: PlaybookGraphQueueEntry["status"];
@@ -183,6 +184,18 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     CREATE INDEX IF NOT EXISTS playbook_graph_runs_owner_workspace_updated_idx
       ON playbook_graph_runs (owner_user_key, workspace_root, updated_at DESC, run_id DESC)
   `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_owner_workspace_playbook_updated_idx
+      ON playbook_graph_runs (owner_user_key, workspace_root, playbook_id, updated_at DESC, run_id DESC)
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_owner_workspace_status_updated_idx
+      ON playbook_graph_runs (owner_user_key, workspace_root, status, updated_at DESC, run_id DESC)
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS playbook_graph_runs_owner_workspace_playbook_status_updated_idx
+      ON playbook_graph_runs (owner_user_key, workspace_root, playbook_id, status, updated_at DESC, run_id DESC)
+  `);
 
   const queueColumns = db
     .query<{ name: string }, []>("PRAGMA table_info(playbook_graph_queue)")
@@ -207,18 +220,6 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   `);
   const getRun = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_runs WHERE run_id = ?"
-  );
-  const listRuns = db.prepare<PayloadRow, []>(
-    "SELECT payload FROM playbook_graph_runs ORDER BY updated_at DESC, run_id DESC"
-  );
-  const listRunsByPlaybook = db.prepare<PayloadRow, [string]>(
-    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? ORDER BY updated_at DESC, run_id DESC"
-  );
-  const listRunsByStatus = db.prepare<PayloadRow, [string]>(
-    "SELECT payload FROM playbook_graph_runs WHERE status = ? ORDER BY updated_at DESC, run_id DESC"
-  );
-  const listRunsByPlaybookAndStatus = db.prepare<PayloadRow, [string, string]>(
-    "SELECT payload FROM playbook_graph_runs WHERE playbook_id = ? AND status = ? ORDER BY updated_at DESC, run_id DESC"
   );
   const saveQueue = db.prepare(`
     INSERT INTO playbook_graph_queue (
@@ -372,6 +373,39 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       writeRun(verified);
     }
     return verified;
+  }
+
+  function listRunRows(filter?: PlaybookGraphRunListFilter): PayloadRow[] {
+    const clauses: string[] = [];
+    const params: RunListParam[] = [];
+    if (filter?.ownerUserKey !== undefined) {
+      clauses.push("owner_user_key = ?");
+      params.push(filter.ownerUserKey);
+    }
+    if (filter?.workspaceRoot !== undefined) {
+      clauses.push("workspace_root = ?");
+      params.push(filter.workspaceRoot);
+    }
+    if (filter?.playbookId !== undefined) {
+      clauses.push("playbook_id = ?");
+      params.push(filter.playbookId);
+    }
+    if (filter?.status !== undefined) {
+      clauses.push("status = ?");
+      params.push(filter.status);
+    }
+    const sql = [
+      "SELECT payload FROM playbook_graph_runs",
+      clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+      "ORDER BY updated_at DESC, run_id DESC",
+      filter?.limit ? "LIMIT ?" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    if (filter?.limit) {
+      params.push(filter.limit);
+    }
+    return db.query<PayloadRow, RunListParam[]>(sql).all(...params);
   }
 
   function parseQueue(
@@ -674,25 +708,11 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       writeRun(run);
     },
     async listRuns(filter) {
-      const limit = filter?.limit;
-      const rows =
-        filter?.playbookId && filter.status
-          ? listRunsByPlaybookAndStatus.all(filter.playbookId, filter.status)
-          : filter?.playbookId
-            ? listRunsByPlaybook.all(filter.playbookId)
-            : filter?.status
-              ? listRunsByStatus.all(filter.status)
-              : listRuns.all();
-      const runs = rows.flatMap((row) => {
+      const rows = listRunRows(filter);
+      return rows.flatMap((row) => {
         const run = parseRun(row);
         return run ? [run] : [];
       });
-      const scoped = runs.filter(
-        (run) =>
-          (filter?.ownerUserKey === undefined || run.ownerUserKey === filter.ownerUserKey) &&
-          (filter?.workspaceRoot === undefined || runWorkspaceRoot(run) === filter.workspaceRoot)
-      );
-      return limit ? scoped.slice(0, limit) : scoped;
     },
     async getQueue(runId) {
       return getQueue.all(runId).flatMap((row) => {

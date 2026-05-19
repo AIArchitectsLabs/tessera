@@ -267,6 +267,7 @@ const taskEventBus = createTaskEventBus();
 
 interface GraphPlaybookRegistryState {
   entries: GraphPlaybookRegistryEntry[];
+  loaded?: boolean;
 }
 
 const installedGraphPlaybookRegistryState: GraphPlaybookRegistryState = { entries: [] };
@@ -312,7 +313,9 @@ export async function refreshInstalledGraphPlaybookRegistry(
   });
   const catalogEntries = await loadInstalledGraphPlaybookCatalog({ installRoot, cacheRoot });
   state.entries = entries;
+  state.loaded = true;
   catalogState.entries = catalogEntries;
+  catalogState.loaded = true;
   return entries;
 }
 
@@ -4623,12 +4626,18 @@ interface PlaybookCatalogHandlerOptions {
   catalogState?: GraphPlaybookRegistryState;
 }
 
-function shouldRefreshGraphPlaybookCatalog(options: PlaybookCatalogHandlerOptions): boolean {
+function shouldRefreshGraphPlaybookCatalog(
+  options: PlaybookCatalogHandlerOptions,
+  catalogState: GraphPlaybookRegistryState
+): boolean {
+  if (options.catalogState !== undefined && options.state === undefined) {
+    return options.installRoot !== undefined || options.cacheRoot !== undefined;
+  }
   return (
-    options.catalogState === undefined ||
     options.state !== undefined ||
     options.installRoot !== undefined ||
-    options.cacheRoot !== undefined
+    options.cacheRoot !== undefined ||
+    !catalogState.loaded
   );
 }
 
@@ -4641,7 +4650,7 @@ export async function handlePlaybookList(
   }
 
   const graphPlaybooks = graphPlaybookRequestScope(req, options);
-  if (shouldRefreshGraphPlaybookCatalog(options)) {
+  if (shouldRefreshGraphPlaybookCatalog(options, graphPlaybooks.catalogState)) {
     await refreshInstalledGraphPlaybookRegistry({
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,
@@ -4672,7 +4681,10 @@ export async function handlePlaybookGet(
 
   const graphPlaybooks = graphPlaybookRequestScope(req, options);
   const entry = await builtInGraphPlaybook(playbookId);
-  if (entry === undefined && shouldRefreshGraphPlaybookCatalog(options)) {
+  if (
+    entry === undefined &&
+    shouldRefreshGraphPlaybookCatalog(options, graphPlaybooks.catalogState)
+  ) {
     await refreshInstalledGraphPlaybookRegistry({
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,
