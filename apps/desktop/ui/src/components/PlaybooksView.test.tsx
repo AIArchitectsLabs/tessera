@@ -713,10 +713,44 @@ const completedGraphRunDetail = {
       company: "FOMORA",
       sources: ["web"],
     },
+    assignmentPlan: {
+      resolverVersion: 1,
+      createdAt: "2026-05-09T07:15:00.000Z",
+      assignments: {
+        draftBrief: {
+          stepId: "draftBrief",
+          agentId: "analyst",
+          agentLabel: "Analyst",
+          agentFingerprint: "ui-analyst",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read"],
+          integrationCapabilities: [],
+        },
+      },
+    },
     updatedAt: "2026-05-09T07:17:00.000Z",
     completedAt: "2026-05-09T07:17:00.000Z",
   },
   queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-draft",
+      runId: "graph-run-completed",
+      nodeId: "draftBrief",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: ["meetingBrief"],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-09T07:15:00.000Z",
+      updatedAt: "2026-05-09T07:16:00.000Z",
+      completedAt: "2026-05-09T07:16:00.000Z",
+    },
     {
       schemaVersion: 1,
       queueEntryId: "queue-write",
@@ -1419,6 +1453,15 @@ describe("PlaybooksView", () => {
           graphHash: "sha256:graph",
           sourceHash: "sha256:source",
           agentId: "analyst",
+          assignmentPlan: {
+            assignments: {
+              draftBrief: {
+                agentId: "analyst",
+                agentLabel: "Analyst",
+                stepId: "draftBrief",
+              },
+            },
+          },
           workspaceRoot: "/tmp/workspace",
           drainDeterministic: true,
         },
@@ -1462,6 +1505,11 @@ describe("PlaybooksView", () => {
       expect(view.getByText("Total 1.5k tokens")).toBeTruthy();
       expect(view.getByText("Cached 200 tokens")).toBeTruthy();
       expect(view.getByText("Reasoning 25 tokens")).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "View run details" }));
+    await waitFor(() => {
+      expect(view.getByText("Assigned to Analyst • Tools: Workspace Read")).toBeTruthy();
     });
 
     const artifactCard = view.getByTitle("Open artifact");

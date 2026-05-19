@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { AgentProfile, WorkflowRunAssignmentPlan } from "@tessera/contracts";
 import {
   type GraphRunStore,
   type PlaybookGraphAgentAdapterInput,
@@ -51,6 +52,9 @@ let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefi
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let graphRunWorkspaceContext: typeof import("./server.js").graphRunWorkspaceContext | undefined;
+let graphRunAgentProfileForNode:
+  | typeof import("./server.js").graphRunAgentProfileForNode
+  | undefined;
 let pollCodexDeviceToken: typeof import("./server.js").pollCodexDeviceToken | undefined;
 let resolveGoogleWorkspaceCliEnv:
   | typeof import("./server.js").resolveGoogleWorkspaceCliEnv
@@ -92,6 +96,7 @@ beforeAll(async () => {
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     graphRunWorkspaceContext = serverModule.graphRunWorkspaceContext;
+    graphRunAgentProfileForNode = serverModule.graphRunAgentProfileForNode;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
     refreshCodexOAuthCredential = serverModule.refreshCodexOAuthCredential;
     resolveGoogleWorkspaceCliEnv = serverModule.resolveGoogleWorkspaceCliEnv;
@@ -120,6 +125,57 @@ function crc32(data: Buffer): number {
     crc = (crcTable[(crc ^ byte) & 0xff] ?? 0) ^ (crc >>> 8);
   }
   return (crc ^ 0xffffffff) >>> 0;
+}
+
+function testAgentProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
+  return {
+    id: "default",
+    name: "Tessera",
+    model: { mode: "default" },
+    instructions: "",
+    soul: "",
+    userContext: "",
+    skills: [],
+    toolPolicyPreset: "workspace_editor",
+    memoryDefaults: "",
+    createdAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function testAssignmentPlan(options: {
+  agentFingerprint?: string;
+  agentId?: string;
+  agentLabel?: string;
+  createdAt?: string;
+  credentialRef?: string;
+  providerFingerprint?: string;
+  stepId?: string;
+  toolCapabilities?: string[];
+}): WorkflowRunAssignmentPlan {
+  const stepId = options.stepId ?? "score";
+  const agentLabel = options.agentLabel ?? "Analyst";
+  return {
+    resolverVersion: 1,
+    createdAt: options.createdAt ?? "2026-05-15T00:00:00.000Z",
+    assignments: {
+      [stepId]: {
+        stepId,
+        agentId: options.agentId ?? "analyst",
+        agentLabel,
+        agentFingerprint:
+          options.agentFingerprint ?? `ui-${agentLabel.toLowerCase().replaceAll(" ", "-")}`,
+        ...(options.providerFingerprint
+          ? { providerFingerprint: options.providerFingerprint }
+          : {}),
+        ...(options.credentialRef ? { credentialRef: options.credentialRef } : {}),
+        skillCapabilities: [],
+        toolCapabilities: options.toolCapabilities ?? ["tool.workspace.read"],
+        integrationCapabilities: [],
+      },
+    },
+  };
 }
 
 async function writeZipArchive(
@@ -915,6 +971,75 @@ describe("graph playbook import endpoint", () => {
 });
 
 describe("graph run endpoints", () => {
+  test("resolves graph agent profiles from node assignments", () => {
+    expect(graphRunAgentProfileForNode).toBeDefined();
+    if (!graphRunAgentProfileForNode) {
+      throw new Error("graphRunAgentProfileForNode was not loaded");
+    }
+    const fallback = testAgentProfile();
+    const writer = testAgentProfile({
+      id: "writer",
+      name: "Writer",
+      instructions: "Write the article draft.",
+    });
+
+    const resolved = graphRunAgentProfileForNode({
+      fallbackAgent: fallback,
+      nodeId: "draftArticle",
+      run: {
+        ownerUserKey: "user.test",
+        assignmentPlan: testAssignmentPlan({
+          stepId: "draftArticle",
+          agentId: "writer",
+          agentLabel: "Writer",
+        }),
+      },
+      resolveProfile(agentId, userKey) {
+        expect(agentId).toBe("writer");
+        expect(userKey).toBe("user.test");
+        return writer;
+      },
+    });
+
+    expect(resolved.name).toBe("Writer");
+    const reviewer = testAgentProfile({
+      id: "reviewer",
+      name: "Reviewer",
+      instructions: "Rate the article draft.",
+    });
+    const overrideResolved = graphRunAgentProfileForNode({
+      assignmentPlan: testAssignmentPlan({
+        createdAt: "2026-05-15T00:01:00.000Z",
+        stepId: "draftArticle",
+        agentId: "reviewer",
+        agentLabel: "Reviewer",
+      }),
+      fallbackAgent: fallback,
+      nodeId: "draftArticle",
+      run: {
+        ownerUserKey: "user.test",
+        assignmentPlan: testAssignmentPlan({
+          stepId: "draftArticle",
+          agentId: "writer",
+          agentLabel: "Writer",
+        }),
+      },
+      resolveProfile(agentId, userKey) {
+        expect(agentId).toBe("reviewer");
+        expect(userKey).toBe("user.test");
+        return reviewer;
+      },
+    });
+    expect(overrideResolved.name).toBe("Reviewer");
+    expect(
+      graphRunAgentProfileForNode({
+        fallbackAgent: fallback,
+        nodeId: "scoreArticle",
+        run: { ownerUserKey: "user.test" },
+      }).name
+    ).toBe("Tessera");
+  });
+
   test("builds bounded workspace context for graph agents", async () => {
     expect(graphRunWorkspaceContext).toBeDefined();
     if (!graphRunWorkspaceContext) throw new Error("graphRunWorkspaceContext was not loaded");
@@ -963,6 +1088,7 @@ describe("graph run endpoints", () => {
           body: JSON.stringify({
             compiledGraph: testCompiledGraph(),
             input: { topic: "durable runtime" },
+            assignmentPlan: testAssignmentPlan({}),
           }),
         }),
         { store }
@@ -970,10 +1096,16 @@ describe("graph run endpoints", () => {
 
       expect(response?.status).toBe(200);
       const detail = (await response?.json()) as {
-        run: { runId: string; status: string; snapshot: { snapshotJson: string } };
+        run: {
+          runId: string;
+          status: string;
+          snapshot: { snapshotJson: string };
+          assignmentPlan?: { assignments: Record<string, { agentId?: string }> };
+        };
         queue: Array<{ nodeId: string; status: string }>;
       };
       expect(detail.run.status).toBe("queued");
+      expect(detail.run.assignmentPlan?.assignments.score?.agentId).toBe("analyst");
       expect(detail.queue).toHaveLength(1);
       expect(detail.queue[0]).toMatchObject({ nodeId: "score", status: "queued" });
 
@@ -1071,6 +1203,10 @@ describe("graph run endpoints", () => {
               apiKeyEnv: "OPENAI_API_KEY",
             },
             credential: { apiKey: "sk-raw-secret" },
+            assignmentPlan: testAssignmentPlan({
+              providerFingerprint: "provider:fingerprint",
+              credentialRef: "credential-secret-ref",
+            }),
           }),
         }),
         { store }
@@ -1088,6 +1224,7 @@ describe("graph run endpoints", () => {
       expect(fingerprints?.provider).toBe("openai");
       expect(fingerprints?.model).toBe("gpt-test");
       expect(JSON.stringify(fingerprints)).not.toContain("sk-raw-secret");
+      expect(JSON.stringify(fingerprints)).not.toContain("credential-secret-ref");
       expect(JSON.stringify(fingerprints)).toContain("runtimeAuthDigest");
     } finally {
       store.close();
@@ -3186,6 +3323,62 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("drain endpoint persists assignment plans for node profile resolution", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunDrain).toBeDefined();
+    expect(graphRunAgentProfileForNode).toBeDefined();
+    if (!handleGraphRunDrain) throw new Error("handleGraphRunDrain was not loaded");
+    if (!graphRunAgentProfileForNode) {
+      throw new Error("graphRunAgentProfileForNode was not loaded");
+    }
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as { run: { runId: string } };
+      const assignmentPlan = testAssignmentPlan({});
+
+      const drainResponse = await handleGraphRunDrain(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/drain`, {
+          method: "POST",
+          body: JSON.stringify({ assignmentPlan }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            return { ok: true };
+          },
+        }
+      );
+
+      expect(drainResponse.status).toBe(200);
+      const run = await store.getRun(created.run.runId);
+      expect(run?.assignmentPlan?.assignments.score?.agentId).toBe("analyst");
+      const fallback = testAgentProfile();
+      const analyst = graphRunAgentProfileForNode({
+        fallbackAgent: fallback,
+        nodeId: "score",
+        run: run ?? { ownerUserKey: "user.test" },
+        resolveProfile(agentId) {
+          expect(agentId).toBe("analyst");
+          return { ...fallback, id: "analyst", name: "Analyst" };
+        },
+      });
+      expect(analyst.name).toBe("Analyst");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("blocks graph work on execution context drift and resumes after approval", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
@@ -3203,6 +3396,7 @@ describe("graph run endpoints", () => {
       account: "acct-b:fingerprint",
       budget: { maxUsd: 5 },
     };
+    const assignmentPlan = testAssignmentPlan({});
     try {
       const response = await handleGraphRunCreate?.(
         new Request("http://localhost/graph-runs", {
@@ -3246,6 +3440,7 @@ describe("graph run endpoints", () => {
             runId: created.run.runId,
             decision: "approve_context_change",
             executionContext: changedContext,
+            assignmentPlan,
           }),
         }),
         created.run.runId,
@@ -3265,6 +3460,9 @@ describe("graph run endpoints", () => {
       };
       expect(resumed.run.status).toBe("completed");
       expect(resumed.run.executionContext?.fingerprints.account).toBe("acct-b:fingerprint");
+      expect(
+        (await store.getRun(created.run.runId))?.assignmentPlan?.assignments.score?.agentId
+      ).toBe("analyst");
       expect(resumed.queue[0]?.status).toBe("succeeded");
       expect(calls).toBe(1);
 
