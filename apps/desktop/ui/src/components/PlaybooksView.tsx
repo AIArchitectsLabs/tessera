@@ -739,10 +739,7 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
   if (!detail) return {};
   const latestByArtifact = new Map<string, PlaybookGraphRunDetail["artifacts"][number]>();
   for (const artifact of detail.artifacts) {
-    const current = latestByArtifact.get(artifact.artifactId);
-    if (!current || artifact.createdAt >= current.createdAt) {
-      latestByArtifact.set(artifact.artifactId, artifact);
-    }
+    latestByArtifact.set(artifact.artifactId, artifact);
   }
   const outputs: Record<string, unknown> = {};
   for (const artifact of latestByArtifact.values()) {
@@ -762,32 +759,6 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
   return outputs;
 }
 
-function graphNodeRecords(value: unknown): Record<string, unknown>[] {
-  const records: Record<string, unknown>[] = [];
-  const seen = new Set<object>();
-  const stack: unknown[] = [value];
-
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current || typeof current !== "object") continue;
-    if (seen.has(current)) continue;
-    seen.add(current);
-
-    if (Array.isArray(current)) {
-      stack.push(...current);
-      continue;
-    }
-
-    const record = current as Record<string, unknown>;
-    if (typeof record.id === "string" && typeof record.kind === "string") {
-      records.push(record);
-    }
-    stack.push(...Object.values(record));
-  }
-
-  return records;
-}
-
 function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string, string> {
   const paths = new Map<string, string>();
   let parsed: unknown;
@@ -799,6 +770,8 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
   if (!parsed || typeof parsed !== "object") return paths;
   const record = parsed as Record<string, unknown>;
   const graph = record.graph && typeof record.graph === "object" ? record.graph : record;
+  const nodes = (graph as Record<string, unknown>).nodes;
+  if (!Array.isArray(nodes)) return paths;
 
   const completedNodeIds = new Set(
     detail.queue
@@ -819,7 +792,9 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
       }
     }
   }
-  for (const candidate of graphNodeRecords(graph)) {
+  for (const node of nodes) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    const candidate = node as Record<string, unknown>;
     if (
       candidate.kind !== "artifactWrite" ||
       typeof candidate.id !== "string" ||
