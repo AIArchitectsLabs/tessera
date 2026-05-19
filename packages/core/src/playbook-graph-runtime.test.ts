@@ -28,6 +28,22 @@ import {
   softTimeoutMs,
 } from "./playbook-graph-runtime.js";
 
+const assignmentPlan = {
+  resolverVersion: 1,
+  createdAt: "2026-05-15T00:00:00.000Z",
+  assignments: {
+    draft: {
+      stepId: "draft",
+      agentId: "writer",
+      agentLabel: "Writer",
+      agentFingerprint: "ui-writer",
+      skillCapabilities: [],
+      toolCapabilities: ["tool.workspace.read"],
+      integrationCapabilities: [],
+    },
+  },
+};
+
 class MemoryGraphRunStore implements GraphRunStore {
   runs = new Map<string, PlaybookGraphRunRecord>();
   queue = new Map<string, PlaybookGraphQueueEntry>();
@@ -644,6 +660,20 @@ describe("createPlaybookGraphMemoKey", () => {
 });
 
 describe("drainPlaybookGraphRun", () => {
+  test("persists graph run assignment plans", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph(),
+      store,
+      runId: "run-assignment-plan",
+      now: "2026-05-15T00:00:00.000Z",
+      assignmentPlan,
+    });
+
+    expect(run.assignmentPlan?.assignments.draft?.agentId).toBe("writer");
+    expect((await store.getRun(run.runId))?.assignmentPlan).toEqual(assignmentPlan);
+  });
+
   test("does not persist a run when start queue creation fails", async () => {
     const store = new MemoryGraphRunStore();
     const base = compiledGraph();

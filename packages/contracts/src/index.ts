@@ -1992,6 +1992,7 @@ export const PlaybookGraphRunRecordSchema = z
     input: z.record(z.unknown()).default({}),
     materialization: PlaybookGraphMaterializationTargetSchema.optional(),
     executionContext: PlaybookGraphExecutionContextSchema.optional(),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
     snapshot: PlaybookGraphSnapshotSchema,
     currentQueueEntryId: z.string().min(1).optional(),
     blockedReason: z.string().min(1).optional(),
@@ -2266,6 +2267,7 @@ export const PlaybookGraphResumeDecisionSchema = z
     queueEntryId: z.string().min(1).optional(),
     payload: z.record(z.unknown()).default({}),
     executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
     agentProvider: AgentProviderConfigSchema.optional(),
     credential: ModelRuntimeCredentialSchema.optional(),
   })
@@ -2536,6 +2538,7 @@ export const PlaybookGraphRunCreateRequestSchema = z
     drainDeterministic: z.boolean().default(false),
     workspaceRoot: z.string().min(1).optional(),
     executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
     agentId: z.string().min(1).default("default"),
     agentProvider: AgentProviderConfigSchema.optional(),
     credential: ModelRuntimeCredentialSchema.optional(),
@@ -2570,6 +2573,7 @@ export type PlaybookGraphRunCreateRequest = z.infer<typeof PlaybookGraphRunCreat
 export const PlaybookGraphRunDrainRequestSchema = z
   .object({
     executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
+    assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
     agentProvider: AgentProviderConfigSchema.optional(),
     credential: ModelRuntimeCredentialSchema.optional(),
   })

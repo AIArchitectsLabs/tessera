@@ -67,6 +67,7 @@ import {
   WorkflowCapabilitySchema,
   type WorkflowOutputDeclaration,
   WorkflowOutputDeclarationSchema,
+  type WorkflowRunAssignmentPlan,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
@@ -1530,6 +1531,7 @@ export interface GraphRunHandlerOptions {
   heartbeatMs?: number;
   maxSteps?: number;
   executionContext?: Record<string, unknown>;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
   blockOnMissingAdapters?: boolean;
   agentProfile?: AgentProfile;
   agentProvider?: AgentProviderConfig;
@@ -1598,6 +1600,14 @@ function graphRunOptionsWithExecutionContext(
 ): GraphRunHandlerOptions {
   if (executionContext === undefined) return options;
   return { ...options, executionContext };
+}
+
+function graphRunOptionsWithAssignmentPlan(
+  options: GraphRunHandlerOptions,
+  assignmentPlan: WorkflowRunAssignmentPlan | undefined
+): GraphRunHandlerOptions {
+  if (assignmentPlan === undefined) return options;
+  return { ...options, assignmentPlan };
 }
 
 function sidecarGraphRunRuntimeId(label: string): string {
@@ -1890,10 +1900,48 @@ function graphRunAgentExecutionContext(input: {
   };
 }
 
+function graphRunAssignmentExecutionContext(
+  assignmentPlan: WorkflowRunAssignmentPlan | undefined
+): Record<string, unknown> | undefined {
+  const assignments = Object.fromEntries(
+    Object.entries(assignmentPlan?.assignments ?? {}).map(([nodeId, assignment]) => [
+      nodeId,
+      {
+        ...(assignment.agentId ? { agentId: assignment.agentId } : {}),
+        ...(assignment.agentLabel ? { agentLabel: assignment.agentLabel } : {}),
+        ...(assignment.agentFingerprint ? { agentFingerprint: assignment.agentFingerprint } : {}),
+        ...(assignment.providerFingerprint
+          ? { providerFingerprint: assignment.providerFingerprint }
+          : {}),
+        skillCapabilities: assignment.skillCapabilities,
+        toolCapabilities: assignment.toolCapabilities,
+        integrationCapabilities: assignment.integrationCapabilities,
+      },
+    ])
+  );
+  if (Object.keys(assignments).length === 0) return undefined;
+  return {
+    resolverVersion: assignmentPlan?.resolverVersion ?? 1,
+    assignments,
+  };
+}
+
+function graphRunExecutionContextWithAssignments(
+  executionContext: Record<string, unknown> | undefined,
+  assignmentPlan: WorkflowRunAssignmentPlan | undefined
+): Record<string, unknown> | undefined {
+  const assignmentContext = graphRunAssignmentExecutionContext(assignmentPlan);
+  if (!assignmentContext) return executionContext;
+  return {
+    ...(executionContext ?? {}),
+    nodeAssignments: assignmentContext,
+  };
+}
+
 function graphRunAgentProvider(options: GraphRunHandlerOptions): AgentProviderConfig | undefined {
-  if (options.agentProvider) return options.agentProvider;
   const agent = options.agentProfile;
-  return agent?.model.mode === "override" ? agent.model.provider : undefined;
+  if (agent?.model.mode === "override") return agent.model.provider;
+  return options.agentProvider;
 }
 
 const GRAPH_AGENT_WORKSPACE_CONTEXT_MAX_FILES = 24;
@@ -2006,7 +2054,8 @@ export async function graphRunWorkspaceContext(
 
 function graphRunAgentPrompt(
   input: PlaybookGraphAgentAdapterInput,
-  workspaceContext?: string
+  workspaceContext?: string,
+  agent?: AgentProfile
 ): string {
   const context = stableJsonStringify({
     runId: input.run.runId,
@@ -2015,7 +2064,18 @@ function graphRunAgentPrompt(
     artifacts: input.artifacts,
     branchItem: input.branchItem?.value,
   });
+  const runtime = agent ? compileAgentRuntimeContext(agent) : undefined;
   return [
+    ...(agent
+      ? [
+          `Agent profile: ${agent.name}`,
+          runtime ? `Agent runtime: ${runtime.compiledSummary}` : "",
+          agent.instructions ? `Agent instructions:\n${agent.instructions}` : "",
+          agent.soul ? `Agent soul:\n${agent.soul}` : "",
+          agent.userContext ? `User context:\n${agent.userContext}` : "",
+          agent.memoryDefaults ? `Memory defaults:\n${agent.memoryDefaults}` : "",
+        ].filter(Boolean)
+      : []),
     input.prompt ?? `Execute graph agent node ${input.node.id}.`,
     ...(workspaceContext ? ["", "Workspace context:", workspaceContext] : []),
     "",
@@ -2039,21 +2099,42 @@ function graphRunAgentOutput(result: AgentTurnResult): unknown {
   };
 }
 
+export function graphRunAgentProfileForNode(input: {
+  assignmentPlan?: WorkflowRunAssignmentPlan;
+  fallbackAgent: AgentProfile;
+  nodeId: string;
+  run: Pick<PlaybookGraphRunRecord, "assignmentPlan" | "ownerUserKey">;
+  resolveProfile?: (agentId: string, userKey?: string) => AgentProfile;
+}): AgentProfile {
+  const assignment =
+    input.assignmentPlan?.assignments[input.nodeId] ??
+    input.run.assignmentPlan?.assignments[input.nodeId];
+  if (!assignment?.agentId) return input.fallbackAgent;
+  return (input.resolveProfile ?? profileForAgentId)(assignment.agentId, input.run.ownerUserKey);
+}
+
 function graphRunAgentAdapter(
   options: GraphRunHandlerOptions
 ): GraphRunHandlerOptions["agentAdapter"] | undefined {
   if (options.agentAdapter) return options.agentAdapter;
-  const agent = options.agentProfile ?? defaultAgentProfile();
-  const provider = graphRunAgentProvider({ ...options, agentProfile: agent });
-  if (!provider && !options.credential) return undefined;
-  if (!provider) throw new Error("Graph agent execution requires a model provider");
+  const fallbackAgent = options.agentProfile ?? defaultAgentProfile();
+  const fallbackProvider = graphRunAgentProvider({ ...options, agentProfile: fallbackAgent });
+  if (!fallbackProvider && !options.credential) return undefined;
   const workspaceCli = graphRunWorkspaceCli(options);
   return async (input) => {
+    const agent = graphRunAgentProfileForNode({
+      fallbackAgent,
+      nodeId: input.node.id,
+      run: input.run,
+      ...(options.assignmentPlan ? { assignmentPlan: options.assignmentPlan } : {}),
+    });
+    const provider = graphRunAgentProvider({ ...options, agentProfile: agent });
+    if (!provider) throw new Error("Graph agent execution requires a model provider");
     const workspaceContext = await graphRunWorkspaceContext(input);
     const result = await executeAgentTurn({
       cli: { runWorkspaceCli: workspaceCli },
       request: {
-        prompt: graphRunAgentPrompt(input, workspaceContext),
+        prompt: graphRunAgentPrompt(input, workspaceContext, agent),
         provider,
         grants: [],
         ...(options.credential ? { credential: options.credential } : {}),
@@ -3486,15 +3567,17 @@ export async function handleGraphRunCreate(
       ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
     });
     const provider = graphRunAgentProvider(runtimeOptions);
-    const executionContext =
+    const executionContext = graphRunExecutionContextWithAssignments(
       parsed.data.executionContext ??
-      (provider
-        ? graphRunAgentExecutionContext({
-            agent: agentProfile,
-            provider,
-            ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
-          })
-        : undefined);
+        (provider
+          ? graphRunAgentExecutionContext({
+              agent: agentProfile,
+              provider,
+              ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+            })
+          : undefined),
+      parsed.data.assignmentPlan
+    );
     const compiledGraph =
       parsed.data.compiledGraph ??
       (await graphRunCompiledGraphFromReference(parsed.data, graphPlaybookRuntimeOptions));
@@ -3511,6 +3594,7 @@ export async function handleGraphRunCreate(
       ...(sourceFiles ? { sourceFiles } : {}),
       ownerUserKey: scope.ownerUserKey,
       input: parsed.data.input,
+      ...(parsed.data.assignmentPlan ? { assignmentPlan: parsed.data.assignmentPlan } : {}),
       ...(executionContext !== undefined
         ? { executionContext }
         : options.executionContext !== undefined
@@ -3582,21 +3666,36 @@ export async function handleGraphRunDrain(
       run.materialization?.kind === "workspace"
         ? run.materialization.workspaceRoot
         : options.workspaceRoot;
-    const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
-      agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
-    });
+    const requestedAssignmentPlan = parsed.data.assignmentPlan;
+    const assignmentPlan = requestedAssignmentPlan ?? run.assignmentPlan;
+    const runtimeOptions = graphRunOptionsWithAssignmentPlan(
+      graphRunOptionsWithAgentRuntime(options, {
+        agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
+        ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+        ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
+      }),
+      assignmentPlan
+    );
     const runtimeProvider = graphRunAgentProvider(runtimeOptions);
-    const executionContext =
+    const executionContext = graphRunExecutionContextWithAssignments(
       parsed.data.executionContext ??
-      (runtimeProvider
-        ? graphRunAgentExecutionContext({
-            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
-            provider: runtimeProvider,
-            ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
-          })
-        : options.executionContext);
+        (runtimeProvider
+          ? graphRunAgentExecutionContext({
+              agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
+              provider: runtimeProvider,
+              ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+            })
+          : options.executionContext),
+      assignmentPlan
+    );
+
+    if (requestedAssignmentPlan) {
+      await store.updateRun({
+        ...run,
+        assignmentPlan: requestedAssignmentPlan,
+        updatedAt: graphRunNow(runtimeOptions),
+      });
+    }
 
     await maybeDrainGraphRun(
       runId,
@@ -4082,21 +4181,28 @@ export async function handleGraphRunResume(
       return Response.json({ error: "Unknown graph run" }, { status: 404 });
     }
     const now = options.now ? options.now() : new Date().toISOString();
-    const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
-      agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
-      ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
-      ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
-    });
+    const requestedAssignmentPlan = parsed.data.assignmentPlan;
+    const assignmentPlan = requestedAssignmentPlan ?? run.assignmentPlan;
+    const runtimeOptions = graphRunOptionsWithAssignmentPlan(
+      graphRunOptionsWithAgentRuntime(options, {
+        agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
+        ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
+        ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
+      }),
+      assignmentPlan
+    );
     const runtimeProvider = graphRunAgentProvider(runtimeOptions);
-    const executionContext =
+    const executionContext = graphRunExecutionContextWithAssignments(
       parsed.data.executionContext ??
-      (runtimeProvider
-        ? graphRunAgentExecutionContext({
-            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
-            provider: runtimeProvider,
-            ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
-          })
-        : options.executionContext);
+        (runtimeProvider
+          ? graphRunAgentExecutionContext({
+              agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
+              provider: runtimeProvider,
+              ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+            })
+          : options.executionContext),
+      assignmentPlan
+    );
 
     const mutation: {
       run?: PlaybookGraphRunRecord;
@@ -4580,6 +4686,14 @@ export async function handleGraphRunResume(
       }
     } else {
       return Response.json({ error: "Unsupported graph resume decision" }, { status: 400 });
+    }
+
+    if (requestedAssignmentPlan) {
+      mutation.run = {
+        ...(mutation.run ?? run),
+        assignmentPlan: requestedAssignmentPlan,
+        updatedAt: mutation.run?.updatedAt ?? now,
+      };
     }
 
     const redactedPayloadSummary = graphRunPayloadSummary(parsed.data.payload);

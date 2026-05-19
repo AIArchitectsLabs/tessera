@@ -55,6 +55,22 @@ const memoKeyParts = {
   inputSnapshotHash: "sha256:input",
 };
 
+const assignmentPlan = {
+  resolverVersion: 1,
+  createdAt: now,
+  assignments: {
+    draft: {
+      stepId: "draft",
+      agentId: "writer",
+      agentLabel: "Writer",
+      agentFingerprint: "ui-writer",
+      skillCapabilities: [],
+      toolCapabilities: ["tool.workspace.read"],
+      integrationCapabilities: [],
+    },
+  },
+};
+
 describe("PlaybookGraphSnapshotSchema", () => {
   test("accepts a pinned inline compiled graph snapshot header", () => {
     const parsed = PlaybookGraphSnapshotSchema.parse(snapshot);
@@ -93,6 +109,7 @@ describe("PlaybookGraphRunRecordSchema", () => {
           budget: { maxUsd: 5 },
         },
       },
+      assignmentPlan,
       snapshot,
       currentQueueEntryId: "queue-1",
       startedAt: now,
@@ -369,6 +386,7 @@ describe("PlaybookGraphResumeDecisionSchema", () => {
         queueEntryId: "queue-1",
         decision: "retry_interrupted",
         executionContext: { provider: "openai:gpt-5.4" },
+        assignmentPlan,
       })
     ).toEqual({
       runId: "run-1",
@@ -376,6 +394,7 @@ describe("PlaybookGraphResumeDecisionSchema", () => {
       decision: "retry_interrupted",
       payload: {},
       executionContext: { provider: "openai:gpt-5.4" },
+      assignmentPlan,
     });
   });
 
@@ -791,6 +810,7 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
         sourceHash: "sha256:source",
         workspaceRoot: "/tmp/tessera-workspace",
         executionContext: { provider: "openai:gpt-5.4" },
+        assignmentPlan,
       })
     ).toEqual({
       input: {},
@@ -800,6 +820,7 @@ describe("PlaybookGraphRunCreateRequestSchema", () => {
       drainDeterministic: false,
       workspaceRoot: "/tmp/tessera-workspace",
       executionContext: { provider: "openai:gpt-5.4" },
+      assignmentPlan,
       agentId: "default",
     });
 

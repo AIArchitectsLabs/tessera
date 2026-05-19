@@ -15,6 +15,7 @@ import type {
   PlaybookGraphRunListFilter,
   PlaybookGraphRunRecord,
   PlaybookGraphSnapshot,
+  WorkflowRunAssignmentPlan,
 } from "@tessera/contracts";
 import {
   CompiledPlaybookGraphSchema,
@@ -172,6 +173,7 @@ export interface CreatePlaybookGraphRunOptions {
   ownerUserKey?: string;
   materialization?: PlaybookGraphMaterializationTarget;
   executionContext?: unknown;
+  assignmentPlan?: WorkflowRunAssignmentPlan;
   now?: string;
   runId?: string;
   store: GraphRunStore;
@@ -1328,6 +1330,7 @@ export async function createPlaybookGraphRun(
     ...(options.executionContext !== undefined
       ? { executionContext: createPlaybookGraphExecutionContextPin(options.executionContext) }
       : {}),
+    ...(options.assignmentPlan ? { assignmentPlan: options.assignmentPlan } : {}),
     snapshot,
     startedAt: now,
     updatedAt: now,
