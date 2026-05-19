@@ -1688,6 +1688,8 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getByText("Running longer than expected")).toBeTruthy();
+      expect(view.getByText("Latest update")).toBeTruthy();
+      expect(view.getByText("Working on Draft")).toBeTruthy();
     });
   });
 
