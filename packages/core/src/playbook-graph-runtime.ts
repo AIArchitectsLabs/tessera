@@ -169,6 +169,7 @@ export interface CreatePlaybookGraphRunOptions {
   compiledGraph: CompiledPlaybookGraph;
   sourceFiles?: Record<string, string>;
   input?: Record<string, unknown>;
+  ownerUserKey?: string;
   materialization?: PlaybookGraphMaterializationTarget;
   executionContext?: unknown;
   now?: string;
@@ -1293,6 +1294,7 @@ export async function createPlaybookGraphRun(
   const run = PlaybookGraphRunRecordSchema.parse({
     schemaVersion: 1,
     runId,
+    ...(options.ownerUserKey ? { ownerUserKey: options.ownerUserKey } : {}),
     playbookId: compiled.graph.id,
     status: "queued",
     input: options.input ?? {},

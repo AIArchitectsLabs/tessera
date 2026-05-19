@@ -1945,6 +1945,8 @@ export type PlaybookGraphSnapshot = z.infer<typeof PlaybookGraphSnapshotSchema>;
 
 export const PlaybookGraphRunListFilterSchema = z
   .object({
+    ownerUserKey: z.string().min(1).optional(),
+    workspaceRoot: z.string().min(1).optional(),
     playbookId: SafePlaybookIdSchema.optional(),
     status: PlaybookGraphRunStatusSchema.optional(),
     limit: z.number().int().positive().max(100).optional(),
@@ -1991,6 +1993,7 @@ export const PlaybookGraphRunRecordSchema = z
   .object({
     schemaVersion: z.literal(1),
     runId: z.string().min(1),
+    ownerUserKey: z.string().min(1).optional(),
     playbookId: SafePlaybookIdSchema,
     status: PlaybookGraphRunStatusSchema,
     input: z.record(z.unknown()).default({}),

@@ -114,6 +114,60 @@ describe("createPlaybookGraphRunStore", () => {
     store.close();
   });
 
+  test("filters graph runs by owner and workspace", async () => {
+    const dbPath = tempDbPath();
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-a",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store,
+        runId: "run-a",
+        now,
+      });
+      await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-b",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-a",
+        },
+        store,
+        runId: "run-b",
+        now: later,
+      });
+      await createPlaybookGraphRun({
+        compiledGraph: compiledGraph(),
+        ownerUserKey: "user-a",
+        materialization: {
+          schemaVersion: 1,
+          kind: "workspace",
+          workspaceRoot: "/tmp/workspace-b",
+        },
+        store,
+        runId: "run-c",
+        now: later,
+      });
+
+      expect(
+        (await store.listRuns({ ownerUserKey: "user-a", workspaceRoot: "/tmp/workspace-a" })).map(
+          (item) => item.runId
+        )
+      ).toEqual(["run-a"]);
+      expect((await store.listRuns({ ownerUserKey: "user-b" })).map((item) => item.runId)).toEqual([
+        "run-b",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
   test("atomically creates runs with the initial queue entry", async () => {
     const dbPath = tempDbPath();
     const store = createPlaybookGraphRunStore(dbPath);

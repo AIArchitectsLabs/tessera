@@ -62,6 +62,9 @@ class MemoryGraphRunStore implements GraphRunStore {
   async listRuns(filter?: PlaybookGraphRunListFilter): Promise<PlaybookGraphRunRecord[]> {
     return [...this.runs.values()].filter(
       (run) =>
+        (filter?.ownerUserKey === undefined || run.ownerUserKey === filter.ownerUserKey) &&
+        (filter?.workspaceRoot === undefined ||
+          run.materialization?.workspaceRoot === filter.workspaceRoot) &&
         (filter?.playbookId === undefined || run.playbookId === filter.playbookId) &&
         (filter?.status === undefined || run.status === filter.status)
     );

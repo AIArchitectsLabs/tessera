@@ -667,6 +667,118 @@ describe("graph playbook import endpoint", () => {
     }
   });
 
+  test("scopes imported graph playbooks by user key", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    expect(handlePlaybookList).toBeDefined();
+    expect(handlePlaybookGet).toBeDefined();
+    expect(handleGraphRunCreate).toBeDefined();
+    const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const zipPath = await writeZipArchive(
+        archiveRoot,
+        graphPackageArchiveEntries({
+          version: "0.1.0",
+          name: "Imported SEO Blog Article",
+          prefix: "playbook",
+        })
+      );
+
+      const importResponse = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import?userKey=user-a", {
+          method: "POST",
+          body: JSON.stringify({ zipPath }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+      expect(importResponse?.status).toBe(200);
+      const imported = (await importResponse?.json()) as {
+        id: string;
+        graphHash: string;
+        sourceHash: string;
+      };
+
+      const userAListResponse = await handlePlaybookList?.(
+        new Request("http://localhost/playbooks?userKey=user-a"),
+        { installRoot, cacheRoot }
+      );
+      expect(userAListResponse?.status).toBe(200);
+      const userAList = (await userAListResponse?.json()) as {
+        playbooks: Array<Record<string, unknown>>;
+      };
+      expect(userAList.playbooks.find((item) => item.id === "content.seo-blog")).toMatchObject({
+        name: "Imported SEO Blog Article",
+      });
+
+      const userBListResponse = await handlePlaybookList?.(
+        new Request("http://localhost/playbooks?userKey=user-b"),
+        { installRoot, cacheRoot }
+      );
+      expect(userBListResponse?.status).toBe(200);
+      const userBList = (await userBListResponse?.json()) as {
+        playbooks: Array<Record<string, unknown>>;
+      };
+      expect(userBList.playbooks.find((item) => item.id === "content.seo-blog")).toBeUndefined();
+
+      const userBGetResponse = await handlePlaybookGet?.(
+        new Request("http://localhost/playbooks/content.seo-blog?userKey=user-b"),
+        "content.seo-blog",
+        { installRoot, cacheRoot }
+      );
+      expect(userBGetResponse?.status).toBe(404);
+
+      const userAGetResponse = await handlePlaybookGet?.(
+        new Request("http://localhost/playbooks/content.seo-blog?userKey=user-a"),
+        "content.seo-blog",
+        { installRoot, cacheRoot }
+      );
+      expect(userAGetResponse?.status).toBe(200);
+
+      const userARunResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs?userKey=user-a", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: imported.id,
+            graphHash: imported.graphHash,
+            sourceHash: imported.sourceHash,
+            input: { topic: "scoped import" },
+          }),
+        }),
+        { store, installRoot, cacheRoot }
+      );
+      expect(userARunResponse?.status).toBe(200);
+
+      const userBRunResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs?userKey=user-b", {
+          method: "POST",
+          body: JSON.stringify({
+            playbookId: imported.id,
+            graphHash: imported.graphHash,
+            sourceHash: imported.sourceHash,
+            input: { topic: "scoped import" },
+          }),
+        }),
+        { store, installRoot, cacheRoot }
+      );
+      expect(userBRunResponse?.status).toBe(404);
+    } finally {
+      store.close();
+      await Promise.all(
+        [archiveRoot, installRoot, cacheRoot, dirname(dbPath)].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
   test("lists imported graph playbooks with graph-native metadata", async () => {
     expect(handleGraphPlaybookImport).toBeDefined();
     const archiveRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-archive-"));
@@ -873,6 +985,70 @@ describe("graph run endpoints", () => {
       expect(getResponse?.status).toBe(200);
       const getPayload = (await getResponse?.json()) as typeof detail;
       expect(getPayload.run.snapshot.snapshotJson).toBe(detail.run.snapshot.snapshotJson);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("scopes graph run reads by owner and workspace", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunGet).toBeDefined();
+    expect(handleGraphRunList).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const workspaceRoot = "/tmp/tessera-workspace-a";
+    const scopedPath = `userKey=user-a&workspaceRoot=${encodeURIComponent(workspaceRoot)}`;
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request(`http://localhost/graph-runs?${scopedPath}`, {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            input: { topic: "durable runtime" },
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; ownerUserKey?: string };
+      };
+      expect(created.run.ownerUserKey).toBe("user-a");
+
+      const sameScopeList = await handleGraphRunList?.(
+        new Request(`http://localhost/graph-runs?${scopedPath}`),
+        { store }
+      );
+      expect(((await sameScopeList?.json()) as { runs: unknown[] }).runs).toHaveLength(1);
+
+      const otherUserList = await handleGraphRunList?.(
+        new Request(
+          `http://localhost/graph-runs?userKey=user-b&workspaceRoot=${encodeURIComponent(workspaceRoot)}`
+        ),
+        { store }
+      );
+      expect(((await otherUserList?.json()) as { runs: unknown[] }).runs).toHaveLength(0);
+
+      const otherWorkspaceGet = await handleGraphRunGet?.(
+        new Request(
+          `http://localhost/graph-runs/${created.run.runId}?userKey=user-a&workspaceRoot=${encodeURIComponent("/tmp/tessera-workspace-b")}`
+        ),
+        created.run.runId,
+        { store }
+      );
+      expect(otherWorkspaceGet?.status).toBe(404);
+
+      const otherUserSurface = await handleGraphRunReviewSurface?.(
+        new Request(
+          `http://localhost/graph-runs/${created.run.runId}/review-surface?userKey=user-b&workspaceRoot=${encodeURIComponent(workspaceRoot)}`
+        ),
+        created.run.runId,
+        { store }
+      );
+      expect(otherUserSurface?.status).toBe(404);
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
