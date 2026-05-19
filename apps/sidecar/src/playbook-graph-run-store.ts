@@ -760,23 +760,6 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       });
       return true;
     },
-    async bumpHeartbeat(input) {
-      const entry = parseQueue(getQueuePayload.get(input.queueEntryId));
-      if (
-        !entry ||
-        entry.runId !== input.runId ||
-        entry.status !== "running" ||
-        entry.leaseId !== input.leaseId
-      ) {
-        return false;
-      }
-      writeQueue({
-        ...entry,
-        lastHeartbeatAt: input.now,
-        updatedAt: input.now,
-      });
-      return true;
-    },
     async listArtifactVersions(runId) {
       return listArtifacts.all(runId).flatMap((row) => {
         const artifact = parseArtifact(row);

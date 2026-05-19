@@ -331,10 +331,6 @@ fn default_search_settings() -> SearchSettings {
     }
 }
 
-fn settings_path(app: &AppHandle) -> Result<PathBuf> {
-    settings_path_for_user(app, None)
-}
-
 fn scoped_user_key(user_key: Option<&str>) -> Result<Option<&str>> {
     user_key.map(validate_user_key).transpose()
 }
@@ -374,10 +370,6 @@ fn search_keyring_entry(provider: SearchProvider, user_key: Option<&str>) -> Res
     Entry::new(KEYCHAIN_SERVICE, &account).context("Could not open keychain entry")
 }
 
-pub fn get_credential(provider: IntegrationProvider) -> Result<Option<String>> {
-    get_credential_for_user(provider, None)
-}
-
 pub fn get_credential_for_user(
     provider: IntegrationProvider,
     user_key: Option<&str>,
@@ -396,10 +388,6 @@ pub fn get_credential_for_user(
     }
 }
 
-pub fn get_search_credential(provider: SearchProvider) -> Result<Option<String>> {
-    get_search_credential_for_user(provider, None)
-}
-
 pub fn get_search_credential_for_user(
     provider: SearchProvider,
     user_key: Option<&str>,
@@ -416,10 +404,6 @@ pub fn get_search_credential_for_user(
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error).context("Could not read search credential"),
     }
-}
-
-fn set_credential(provider: IntegrationProvider, api_key: &str) -> Result<()> {
-    set_credential_for_user(provider, None, api_key)
 }
 
 fn set_credential_for_user(
@@ -442,10 +426,6 @@ fn set_credential_for_user(
         .context("Could not store integration credential")
 }
 
-fn set_search_credential(provider: SearchProvider, api_key: &str) -> Result<()> {
-    set_search_credential_for_user(provider, None, api_key)
-}
-
 fn set_search_credential_for_user(
     provider: SearchProvider,
     user_key: Option<&str>,
@@ -466,10 +446,6 @@ fn set_search_credential_for_user(
         .context("Could not store search credential")
 }
 
-pub fn delete_credential(provider: IntegrationProvider) -> Result<()> {
-    delete_credential_for_user(provider, None)
-}
-
 pub fn delete_credential_for_user(
     provider: IntegrationProvider,
     user_key: Option<&str>,
@@ -485,10 +461,6 @@ pub fn delete_credential_for_user(
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("Could not delete integration credential"),
     }
-}
-
-pub fn delete_search_credential(provider: SearchProvider) -> Result<()> {
-    delete_search_credential_for_user(provider, None)
 }
 
 pub fn delete_search_credential_for_user(
@@ -671,14 +643,6 @@ fn delete_macos_credential(account: &str) -> Result<()> {
     );
 }
 
-fn redact(settings: SettingsFile) -> Result<IntegrationSettingsRead> {
-    redact_with_settings_for_user(settings, None)
-}
-
-fn redact_with_settings(settings: SettingsFile) -> Result<IntegrationSettingsRead> {
-    redact_with_settings_for_user(settings, None)
-}
-
 fn redact_with_settings_for_user(
     settings: SettingsFile,
     user_key: Option<&str>,
@@ -731,21 +695,10 @@ fn redact_with_settings_for_user(
     })
 }
 
-pub fn read(app: &AppHandle) -> Result<IntegrationSettingsRead> {
-    read_for_user(app, None)
-}
-
 pub fn read_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<IntegrationSettingsRead> {
     let path = settings_path_for_user(app, user_key)?;
     let settings = load_settings_file(&path)?;
     redact_with_settings_for_user(settings, user_key)
-}
-
-fn save_at_path(
-    path: &Path,
-    request: IntegrationSettingsSaveRequest,
-) -> Result<IntegrationSettingsRead> {
-    save_at_path_for_user(path, request, None)
 }
 
 fn save_at_path_for_user(
@@ -790,13 +743,6 @@ fn save_at_path_for_user(
     redact_with_settings_for_user(settings, user_key)
 }
 
-pub fn save(
-    app: &AppHandle,
-    request: IntegrationSettingsSaveRequest,
-) -> Result<IntegrationSettingsRead> {
-    save_for_user(app, None, request)
-}
-
 pub fn save_for_user(
     app: &AppHandle,
     user_key: Option<&str>,
@@ -804,13 +750,6 @@ pub fn save_for_user(
 ) -> Result<IntegrationSettingsRead> {
     let path = settings_path_for_user(app, user_key)?;
     save_at_path_for_user(&path, request, user_key)
-}
-
-fn delete_at_path(
-    path: &Path,
-    request: IntegrationCredentialDeleteRequest,
-) -> Result<IntegrationSettingsRead> {
-    delete_at_path_for_user(path, request, None)
 }
 
 fn delete_at_path_for_user(
@@ -835,13 +774,6 @@ fn delete_at_path_for_user(
     redact_with_settings_for_user(settings, user_key)
 }
 
-pub fn delete(
-    app: &AppHandle,
-    request: IntegrationCredentialDeleteRequest,
-) -> Result<IntegrationSettingsRead> {
-    delete_for_user(app, None, request)
-}
-
 pub fn delete_for_user(
     app: &AppHandle,
     user_key: Option<&str>,
@@ -849,13 +781,6 @@ pub fn delete_for_user(
 ) -> Result<IntegrationSettingsRead> {
     let path = settings_path_for_user(app, user_key)?;
     delete_at_path_for_user(&path, request, user_key)
-}
-
-fn set_google_workspace_connected_at_path(
-    path: &Path,
-    connected: bool,
-) -> Result<IntegrationSettingsRead> {
-    set_google_workspace_connected_at_path_for_user(path, connected, None)
 }
 
 fn set_google_workspace_connected_at_path_for_user(
@@ -867,13 +792,6 @@ fn set_google_workspace_connected_at_path_for_user(
     settings.providers.google_workspace.connected = connected;
     save_settings_file(path, &settings)?;
     redact_with_settings_for_user(settings, user_key)
-}
-
-pub fn set_google_workspace_connected(
-    app: &AppHandle,
-    connected: bool,
-) -> Result<IntegrationSettingsRead> {
-    set_google_workspace_connected_for_user(app, None, connected)
 }
 
 pub fn set_google_workspace_connected_for_user(
@@ -931,7 +849,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(SETTINGS_FILE);
 
-        let first = set_google_workspace_connected_at_path(&path, true).expect("connect");
+        let first =
+            set_google_workspace_connected_at_path_for_user(&path, true, None).expect("connect");
         assert!(first.providers.google_workspace.has_credential);
         assert_eq!(
             first.providers.google_workspace.provider,
@@ -941,7 +860,8 @@ mod tests {
         let settings = load_settings_file(&path).expect("load settings");
         assert!(settings.providers.google_workspace.connected);
 
-        let second = set_google_workspace_connected_at_path(&path, false).expect("disconnect");
+        let second = set_google_workspace_connected_at_path_for_user(&path, false, None)
+            .expect("disconnect");
         assert!(!second.providers.google_workspace.has_credential);
     }
 
@@ -960,7 +880,9 @@ mod tests {
         )
         .expect("write settings");
 
-        let redacted = redact(load_settings_file(&path).expect("load")).expect("redact");
+        let redacted =
+            redact_with_settings_for_user(load_settings_file(&path).expect("load"), None)
+                .expect("redact");
         assert!(!redacted.providers.google_workspace.has_credential);
     }
 
@@ -983,7 +905,7 @@ mod tests {
     fn save_persists_search_preferences_through_public_save_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(SETTINGS_FILE);
-        save_at_path(
+        save_at_path_for_user(
             &path,
             IntegrationSettingsSaveRequest {
                 provider: Some(IntegrationProvider::BraveSearch),
@@ -995,6 +917,7 @@ mod tests {
                     allow_keyless_fallback: true,
                 }),
             },
+            None,
         )
         .expect("save settings");
         let result = load_settings_file(&path).expect("load settings");
@@ -1007,7 +930,7 @@ mod tests {
     fn save_accepts_tavily_search_provider_requests_through_public_save_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(SETTINGS_FILE);
-        let result = save_at_path(
+        let result = save_at_path_for_user(
             &path,
             IntegrationSettingsSaveRequest {
                 provider: None,
@@ -1019,6 +942,7 @@ mod tests {
                     allow_keyless_fallback: true,
                 }),
             },
+            None,
         )
         .expect("save settings");
 
@@ -1034,12 +958,13 @@ mod tests {
     fn delete_accepts_tavily_search_provider_requests_through_public_delete_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(SETTINGS_FILE);
-        let result = delete_at_path(
+        let result = delete_at_path_for_user(
             &path,
             IntegrationCredentialDeleteRequest {
                 provider: None,
                 search_provider: Some(SearchProvider::Tavily),
             },
+            None,
         )
         .expect("delete search credential");
 

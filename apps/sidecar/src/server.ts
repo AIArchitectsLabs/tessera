@@ -3438,6 +3438,7 @@ export async function handleGraphRunDrain(
 
   try {
     const store = options.store ?? graphRunStore;
+    const userKey = userKeyFromRequest(req);
     const run = await store.getRun(runId);
     if (!run) return Response.json({ error: "Unknown graph run" }, { status: 404 });
     const workspaceRoot =
@@ -3445,7 +3446,7 @@ export async function handleGraphRunDrain(
         ? run.materialization.workspaceRoot
         : options.workspaceRoot;
     const runtimeOptions = graphRunOptionsWithAgentRuntime(options, {
-      agentProfile: options.agentProfile ?? defaultAgentProfile(),
+      agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
       ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
       ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
     });
@@ -3454,7 +3455,7 @@ export async function handleGraphRunDrain(
       parsed.data.executionContext ??
       (runtimeProvider
         ? graphRunAgentExecutionContext({
-            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(),
+            agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
             provider: runtimeProvider,
             ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
           })

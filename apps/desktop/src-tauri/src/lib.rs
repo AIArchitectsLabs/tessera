@@ -1768,9 +1768,17 @@ async fn graph_run_drain(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
     run_id: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let request = attach_default_workflow_execution(&app, serde_json::json!({})).await?;
-    let path = format!("/graph-runs/{}/drain", percent_encode(&run_id));
+    let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
+    let request =
+        attach_default_workflow_execution(&app, serde_json::json!({}), scoped_user_key).await?;
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, scoped_user_key)?;
+    let path = path_with_params(
+        format!("/graph-runs/{}/drain", percent_encode(&run_id)),
+        params,
+    );
     let json = state
         .post(&path, &request.to_string())
         .await

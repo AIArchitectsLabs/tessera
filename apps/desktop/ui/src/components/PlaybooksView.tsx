@@ -3402,11 +3402,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           const existingDrain = graphRunDrainInFlightRef.current.get(queuedRunId);
           const drain =
             existingDrain ??
-            invoke<PlaybookGraphRunDetail>("graph_run_drain", { runId: queuedRunId }).finally(
-              () => {
-                graphRunDrainInFlightRef.current.delete(queuedRunId);
-              }
-            );
+            invoke<PlaybookGraphRunDetail>("graph_run_drain", {
+              runId: queuedRunId,
+              userKey,
+            }).finally(() => {
+              graphRunDrainInFlightRef.current.delete(queuedRunId);
+            });
           if (!existingDrain) graphRunDrainInFlightRef.current.set(queuedRunId, drain);
           await drain;
           surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
@@ -3426,7 +3427,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
-    [selectedPlaybookForUi]
+    [selectedPlaybookForUi, userKey]
   );
 
   const loadGraphRunDetail = useCallback(
@@ -3440,11 +3441,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
           const existingDrain = graphRunDrainInFlightRef.current.get(queuedRunId);
           const drain =
             existingDrain ??
-            invoke<PlaybookGraphRunDetail>("graph_run_drain", { runId: queuedRunId }).finally(
-              () => {
-                graphRunDrainInFlightRef.current.delete(queuedRunId);
-              }
-            );
+            invoke<PlaybookGraphRunDetail>("graph_run_drain", {
+              runId: queuedRunId,
+              userKey,
+            }).finally(() => {
+              graphRunDrainInFlightRef.current.delete(queuedRunId);
+            });
           if (!existingDrain) graphRunDrainInFlightRef.current.set(queuedRunId, drain);
           await drain;
           surface = await invoke<PlaybookGraphRunReviewSurface>("graph_run_review_surface", {
@@ -3463,7 +3465,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
-    [selectedPlaybookForUi]
+    [selectedPlaybookForUi, userKey]
   );
 
   useEffect(() => {
