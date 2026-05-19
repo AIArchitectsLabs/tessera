@@ -76,6 +76,14 @@ describe("WorkflowOutputDeclarationSchema extensions", () => {
     });
     expect(decl.kind).toBe("meetingBrief");
   });
+
+  test("accepts imported playbook artifact output kinds", () => {
+    const decl = WorkflowOutputDeclarationSchema.parse({
+      kind: "contentBrief",
+      label: "Content brief",
+    });
+    expect(decl.kind).toBe("contentBrief");
+  });
 });
 
 describe("resolveDashboardBinding", () => {

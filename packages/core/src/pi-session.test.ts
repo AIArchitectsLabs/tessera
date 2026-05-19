@@ -195,6 +195,49 @@ describe("runPiTaskTurn", () => {
     });
   });
 
+  test("captures token usage from Pi-native provider usage payloads", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async () =>
+      new FakeSession([
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Draft ready." }],
+            usage: {
+              input: 10,
+              output: 5,
+              cacheRead: 3,
+              cacheWrite: 2,
+              totalTokens: 20,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          } as never,
+          toolResults: [],
+        },
+      ]);
+
+    const result = await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Draft a note",
+      provider: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+      },
+      workspaceRoot,
+    });
+
+    expect(result.usage).toEqual({
+      inputTokens: 15,
+      outputTokens: 5,
+      totalTokens: 20,
+      cachedInputTokens: 3,
+    });
+    expect(result.text).toBe("Draft ready.");
+  });
+
   test("ignores message_end for user messages and returns only assistant text", async () => {
     const workspaceRoot = await makeWorkspace();
     // Mirrors the real SDK event sequence from runAgentLoop:

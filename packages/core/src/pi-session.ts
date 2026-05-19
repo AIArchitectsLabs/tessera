@@ -182,14 +182,25 @@ function usageDetailsRecord(value: unknown): Record<string, unknown> | undefined
 }
 
 function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | undefined {
+  const cacheRead =
+    numericUsageValue(record.cacheRead) ??
+    numericUsageValue(record.cache_read) ??
+    numericUsageValue(record.cache_read_input_tokens);
+  const cacheWrite =
+    numericUsageValue(record.cacheWrite) ??
+    numericUsageValue(record.cache_write) ??
+    numericUsageValue(record.cache_creation_input_tokens);
+  const piInput = numericUsageValue(record.input);
   const input =
     numericUsageValue(record.inputTokens) ??
     numericUsageValue(record.input_tokens) ??
-    numericUsageValue(record.prompt_tokens);
+    numericUsageValue(record.prompt_tokens) ??
+    (piInput !== undefined ? piInput + (cacheRead ?? 0) + (cacheWrite ?? 0) : undefined);
   const output =
     numericUsageValue(record.outputTokens) ??
     numericUsageValue(record.output_tokens) ??
-    numericUsageValue(record.completion_tokens);
+    numericUsageValue(record.completion_tokens) ??
+    numericUsageValue(record.output);
   if (input === undefined || output === undefined) return undefined;
 
   const usage: TokenUsage = {
@@ -207,16 +218,20 @@ function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | und
     numericUsageValue(record.cachedInputTokens) ??
     numericUsageValue(record.cached_input_tokens) ??
     numericUsageValue(inputDetails?.cachedTokens) ??
-    numericUsageValue(inputDetails?.cached_tokens);
+    numericUsageValue(inputDetails?.cached_tokens) ??
+    cacheRead;
   if (cachedInputTokens !== undefined) {
     usage.cachedInputTokens = cachedInputTokens;
   }
 
+  const completionDetails = usageDetailsRecord(record.completion_tokens_details);
   const reasoningTokens =
     numericUsageValue(record.reasoningTokens) ??
     numericUsageValue(record.reasoning_tokens) ??
     numericUsageValue(outputDetails?.reasoningTokens) ??
-    numericUsageValue(outputDetails?.reasoning_tokens);
+    numericUsageValue(outputDetails?.reasoning_tokens) ??
+    numericUsageValue(completionDetails?.reasoningTokens) ??
+    numericUsageValue(completionDetails?.reasoning_tokens);
   if (reasoningTokens !== undefined) {
     usage.reasoningTokens = reasoningTokens;
   }
@@ -224,7 +239,7 @@ function normalizeUsageRecord(record: Record<string, unknown>): TokenUsage | und
   return usage;
 }
 
-function normalizeTokenUsage(payload: unknown): TokenUsage | undefined {
+export function normalizeTokenUsage(payload: unknown): TokenUsage | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const record = payload as Record<string, unknown>;
 
