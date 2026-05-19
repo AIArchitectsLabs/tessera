@@ -104,6 +104,7 @@ const ctaCopyMap: Record<string, string> = {
 
 const PLAYBOOK_RUN_LIST_LIMIT = 10;
 const PLAYBOOK_HISTORY_LIMIT = 10;
+const PLAYBOOK_ACTIVE_RUN_REFRESH_MS = 2_000;
 
 const resultHeadline: Partial<Record<PlaybookRunDetail["status"], (name: string) => string>> = {
   completed: (name) => `${name} is ready.`,
@@ -265,6 +266,13 @@ function packageVersionLabel(version: string | undefined): string | null {
 
 function runPackageVersion(run: PlaybookRunDetail | null): string | undefined {
   return run?.packageVersion;
+}
+
+function mergeRunById<T extends { runId: string }>(runs: T[], nextRun: T): T[] {
+  const found = runs.some((run) => run.runId === nextRun.runId);
+  return found
+    ? runs.map((run) => (run.runId === nextRun.runId ? nextRun : run))
+    : [nextRun, ...runs];
 }
 
 function formatCapabilityLabel(value: string): string {
@@ -725,6 +733,14 @@ function workflowStatusFromGraph(
     return "failed";
   }
   return "running";
+}
+
+function runNeedsLiveRefresh(
+  run: PlaybookRunDetail | null,
+  graphRun: PlaybookGraphRunDetail | null
+): boolean {
+  if (run?.status === "running") return true;
+  return graphRun?.run.status === "queued" || graphRun?.run.status === "running";
 }
 
 function workflowStepStatusFromGraph(
@@ -2811,6 +2827,7 @@ function GuidedPreparing({
       : 8;
   const currentStep = activeProgressStep(steps, run?.currentStepId);
   const currentStepLabel = currentStep ? (currentStep.label ?? titleFromId(currentStep.id)) : null;
+  const currentPhase = currentStep?.phase ?? null;
   const workflowRows = visibleProgressRows(
     buildProgressDisplaySteps(steps, run?.currentStepId, currentTime)
   );
@@ -2834,13 +2851,9 @@ function GuidedPreparing({
       const phaseDone = phaseSteps.filter(
         (step) => step.status === "succeeded" || step.status === "skipped"
       ).length;
-      const phaseActive = phaseSteps.some(
-        (step) =>
-          step.status === "running" ||
-          step.status === "blocked" ||
-          step.status === "needs_attention" ||
-          isCurrentProgressStep(step, run?.currentStepId)
-      );
+      const phaseActive =
+        phase === currentPhase ||
+        phaseSteps.some((step) => isCurrentProgressStep(step, run?.currentStepId));
       return {
         phase,
         total: phaseTotal,
@@ -2921,6 +2934,7 @@ function GuidedPreparing({
                 {phaseSummaries.map((phase) => (
                   <div
                     key={phase.phase}
+                    aria-current={phase.label === "Now" ? "step" : undefined}
                     className={cn(
                       "rounded-full border px-3 py-1 text-xs",
                       phase.label === "Done"
@@ -2991,8 +3005,9 @@ function GuidedPreparing({
             </div>
           </div>
 
-          <aside className="space-y-3">
+          <aside className="order-first space-y-3 xl:order-none xl:sticky xl:top-4 xl:self-start">
             <div
+              aria-live="polite"
               className={cn(
                 "rounded-lg border p-4",
                 latestUpdate ? latestUpdateClass(latestUpdate.tone) : "border-border bg-background"
@@ -3740,6 +3755,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
   );
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
   const runListRequestRef = useRef(0);
+  const liveRunRefreshInFlightRef = useRef(false);
   const graphRunDrainInFlightRef = useRef(new Map<string, Promise<PlaybookGraphRunDetail>>());
 
   const businessPlaybooks = useMemo(
@@ -3775,6 +3791,7 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
   const selectedRun =
     selectedRunDetail ??
     (selectedRunId ? (runs.find((run) => run.runId === selectedRunId) ?? null) : null);
+  const selectedRunNeedsRefresh = runNeedsLiveRefresh(selectedRun, selectedGraphRunDetail);
   const selectedReviewEvidence = useMemo(
     () => reviewEvidenceFromSurface(selectedGraphRunSurface),
     [selectedGraphRunSurface]
@@ -4003,7 +4020,8 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
         setSelectedGraphRunSurface(surface);
         setSelectedGraphRunDetail(surface.detail);
         setSelectedRunDetail(detail);
-        setRuns((current) => current.map((run) => (run.runId === detail.runId ? detail : run)));
+        setRuns((current) => mergeRunById(current, detail));
+        setGraphRuns((current) => mergeRunById(current, surface.detail.run));
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
@@ -4039,14 +4057,16 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             workspaceRoot,
           });
         }
+        const detailRun = graphRunToPlaybookRunDetail(
+          surface.detail,
+          selectedPlaybookForUi,
+          surface.productView
+        );
         setSelectedGraphRunSurface(surface);
         setSelectedGraphRunDetail(surface.detail);
-        setSelectedRunDetail(
-          graphRunToPlaybookRunDetail(surface.detail, selectedPlaybookForUi, surface.productView)
-        );
-        setGraphRuns((current) =>
-          current.map((run) => (run.runId === surface.detail.run.runId ? surface.detail.run : run))
-        );
+        setSelectedRunDetail(detailRun);
+        setRuns((current) => mergeRunById(current, detailRun));
+        setGraphRuns((current) => mergeRunById(current, surface.detail.run));
       } catch (loadError) {
         setGraphRunError(loadError instanceof Error ? loadError.message : String(loadError));
       }
@@ -4088,6 +4108,25 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
     }
     void loadRunDetail(selectedRunId);
   }, [loadRunDetail, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedPlaybookId || !selectedRunId || !selectedRunNeedsRefresh) return;
+
+    const interval = window.setInterval(() => {
+      if (liveRunRefreshInFlightRef.current) return;
+      liveRunRefreshInFlightRef.current = true;
+      void (async () => {
+        try {
+          await loadRuns(selectedPlaybookId);
+          await loadRunDetail(selectedRunId);
+        } finally {
+          liveRunRefreshInFlightRef.current = false;
+        }
+      })();
+    }, PLAYBOOK_ACTIVE_RUN_REFRESH_MS);
+
+    return () => window.clearInterval(interval);
+  }, [loadRunDetail, loadRuns, selectedPlaybookId, selectedRunId, selectedRunNeedsRefresh]);
 
   useEffect(() => {
     if (!showDetails) return;
