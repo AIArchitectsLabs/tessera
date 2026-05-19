@@ -125,9 +125,11 @@ type GraphReviewArtifact = PlaybookGraphRunReviewSurface["activeArtifacts"][numb
 type PlaybookRunProductView = NonNullable<PlaybookGraphRunReviewSurface["productView"]>;
 type GraphQueueEntry = PlaybookGraphRunDetail["queue"][number];
 type GraphWorkflowStepRecord = WorkflowRunStepRecord & {
+  queueEntryId?: string;
   nodeKind?: GraphQueueEntry["nodeKind"];
   claimedAt?: string;
   lastHeartbeatAt?: string;
+  updatedAt?: string;
 };
 
 interface ReviewScorecardSummary {
@@ -216,6 +218,16 @@ function stepStatusLabel(status: WorkflowRunStepRecord["status"]): string {
   if (status === "failed") return "Needs attention";
   if (status === "denied") return "Stopped";
   return "Not started";
+}
+
+function progressStatusLabel(status: WorkflowRunStepRecord["status"]): string {
+  if (status === "succeeded") return "Done";
+  if (status === "running") return "Now";
+  if (status === "blocked") return "Review";
+  if (status === "needs_attention" || status === "failed") return "Attention";
+  if (status === "denied") return "Stopped";
+  if (status === "skipped") return "Skipped";
+  return "Next";
 }
 
 function titleFromId(id: string): string {
@@ -759,6 +771,61 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
   return outputs;
 }
 
+function graphNodeRecords(value: unknown): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  const seen = new Set<object>();
+  const stack: unknown[] = [value];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      stack.push(...current);
+      continue;
+    }
+
+    const record = current as Record<string, unknown>;
+    if (typeof record.id === "string" && typeof record.kind === "string") {
+      records.push(record);
+    }
+    stack.push(...Object.values(record));
+  }
+
+  return records;
+}
+
+function graphNodeMetadata(
+  detail: PlaybookGraphRunDetail
+): Map<string, { label?: string; phase?: string }> {
+  const metadata = new Map<string, { label?: string; phase?: string }>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(detail.run.snapshot.snapshotJson);
+  } catch {
+    return metadata;
+  }
+  if (!parsed || typeof parsed !== "object") return metadata;
+  const record = parsed as Record<string, unknown>;
+  const graph = record.graph && typeof record.graph === "object" ? record.graph : record;
+
+  for (const node of graphNodeRecords(graph)) {
+    if (typeof node.id !== "string") continue;
+    const label = typeof node.label === "string" ? node.label : undefined;
+    const phase = typeof node.phase === "string" ? node.phase : undefined;
+    if (label || phase) {
+      metadata.set(node.id, {
+        ...(label ? { label } : {}),
+        ...(phase ? { phase } : {}),
+      });
+    }
+  }
+
+  return metadata;
+}
+
 function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string, string> {
   const paths = new Map<string, string>();
   let parsed: unknown;
@@ -1037,11 +1104,24 @@ function graphRunToPlaybookRunDetail(
 ): PlaybookRunDetail {
   const outputs = graphRunOutputs(detail);
   const usage = graphRunUsage(detail);
+  const detailSteps =
+    playbook && "steps" in playbook
+      ? new Map(playbook.steps.map((step) => [step.id, step]))
+      : new Map<string, PlaybookDetail["steps"][number]>();
+  const snapshotMetadata = graphNodeMetadata(detail);
   const steps: GraphWorkflowStepRecord[] = detail.queue.map((entry) => ({
     id: entry.nodeId,
-    label: titleFromId(entry.nodeId),
+    queueEntryId: entry.queueEntryId,
+    label:
+      detailSteps.get(entry.nodeId)?.label ??
+      snapshotMetadata.get(entry.nodeId)?.label ??
+      titleFromId(entry.nodeId),
     kind: entry.nodeKind === "agent" ? ("agent" as const) : ("tool" as const),
-    phase: playbook?.phases?.[0] ?? "Run",
+    phase:
+      detailSteps.get(entry.nodeId)?.phase ??
+      snapshotMetadata.get(entry.nodeId)?.phase ??
+      playbook?.phases?.[0] ??
+      "Run",
     status: workflowStepStatusFromGraph(entry.status),
     startedAt: entry.claimedAt ?? entry.createdAt,
     nodeKind: entry.nodeKind,
@@ -1049,6 +1129,7 @@ function graphRunToPlaybookRunDetail(
     ...(entry.error ? { error: entry.error } : {}),
     ...(entry.claimedAt ? { claimedAt: entry.claimedAt } : {}),
     ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
+    updatedAt: entry.updatedAt,
   }));
 
   return {
@@ -1468,6 +1549,275 @@ function RunEventItem({ event }: { event: WorkflowRunEvent }) {
       <div className="mt-1 text-xs text-muted-foreground">{formatTime(event.createdAt)}</div>
     </div>
   );
+}
+
+type ProgressUpdateTone = "working" | "success" | "attention" | "waiting";
+
+interface ProgressUpdate {
+  key: string;
+  title: string;
+  detail: string;
+  createdAt?: string;
+  tone: ProgressUpdateTone;
+}
+
+interface ProgressDisplayStep {
+  key: string;
+  label: string;
+  phase: string;
+  status: WorkflowRunStepRecord["status"];
+  count: number;
+  active: boolean;
+  softTimeout: boolean;
+  latestAt?: string;
+}
+
+type ProgressDisplayRow =
+  | { kind: "step"; step: ProgressDisplayStep }
+  | { kind: "gap"; key: string; hiddenCount: number };
+
+function timestampMs(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function laterTimestamp(current: string | undefined, next: string | undefined): string | undefined {
+  if (!current) return next;
+  if (!next) return current;
+  return timestampMs(next) > timestampMs(current) ? next : current;
+}
+
+function progressStepTimestamp(step: WorkflowRunStepRecord): string | undefined {
+  const graphStep = step as GraphWorkflowStepRecord;
+  return (
+    graphStep.updatedAt ??
+    step.completedAt ??
+    graphStep.lastHeartbeatAt ??
+    graphStep.claimedAt ??
+    step.startedAt
+  );
+}
+
+function isCurrentProgressStep(step: WorkflowRunStepRecord, currentStepId?: string): boolean {
+  if (!currentStepId) return false;
+  const graphStep = step as GraphWorkflowStepRecord;
+  return graphStep.queueEntryId === currentStepId || step.id === currentStepId;
+}
+
+function activeProgressStep(
+  steps: WorkflowRunStepRecord[],
+  currentStepId?: string
+): WorkflowRunStepRecord | null {
+  const current = steps.find(
+    (step) =>
+      isCurrentProgressStep(step, currentStepId) &&
+      step.status !== "succeeded" &&
+      step.status !== "skipped"
+  );
+  if (current) return current;
+  return (
+    steps.find((step) => step.status === "running") ??
+    steps.find((step) => step.status === "blocked" || step.status === "needs_attention") ??
+    steps.find((step) => step.status === "failed") ??
+    steps.find((step) => step.status === "queued") ??
+    null
+  );
+}
+
+function buildProgressDisplaySteps(
+  steps: WorkflowRunStepRecord[],
+  currentStepId: string | undefined,
+  now: number
+): ProgressDisplayStep[] {
+  const rows: ProgressDisplayStep[] = [];
+
+  for (const step of steps) {
+    const label = step.label ?? titleFromId(step.id);
+    const phase = step.phase ?? "Run";
+    const latestAt = progressStepTimestamp(step);
+    const active =
+      isCurrentProgressStep(step, currentStepId) ||
+      step.status === "running" ||
+      step.status === "blocked" ||
+      step.status === "needs_attention";
+    const last = rows[rows.length - 1];
+    if (last && last.label === label && last.phase === phase && last.status === step.status) {
+      last.count += 1;
+      last.active = last.active || active;
+      last.softTimeout = last.softTimeout || softTimeoutCrossed(step, now);
+      const nextLatestAt = laterTimestamp(last.latestAt, latestAt);
+      if (nextLatestAt) last.latestAt = nextLatestAt;
+      continue;
+    }
+    const displayStep: ProgressDisplayStep = {
+      key: `${phase}:${label}:${step.status}:${rows.length}`,
+      label,
+      phase,
+      status: step.status,
+      count: 1,
+      active,
+      softTimeout: softTimeoutCrossed(step, now),
+    };
+    if (latestAt) displayStep.latestAt = latestAt;
+    rows.push(displayStep);
+  }
+
+  return rows;
+}
+
+function visibleProgressRows(steps: ProgressDisplayStep[]): ProgressDisplayRow[] {
+  if (steps.length <= 7) {
+    return steps.map((step) => ({ kind: "step", step }));
+  }
+
+  const activeIndex = Math.max(
+    0,
+    steps.findIndex((step) => step.active)
+  );
+  const keep = new Set<number>([0, steps.length - 1]);
+  for (let index = activeIndex - 2; index <= activeIndex + 2; index += 1) {
+    if (index >= 0 && index < steps.length) keep.add(index);
+  }
+
+  const indexes = [...keep].sort((a, b) => a - b);
+  const rows: ProgressDisplayRow[] = [];
+  for (let index = 0; index < indexes.length; index += 1) {
+    const current = indexes[index];
+    const previous = indexes[index - 1];
+    if (current === undefined) continue;
+    if (previous !== undefined && current - previous > 1) {
+      rows.push({
+        kind: "gap",
+        key: `gap:${previous}:${current}`,
+        hiddenCount: current - previous - 1,
+      });
+    }
+    const step = steps[current];
+    if (step) rows.push({ kind: "step", step });
+  }
+  return rows;
+}
+
+function progressToneForStatus(status: WorkflowRunStepRecord["status"]): ProgressUpdateTone {
+  if (status === "succeeded") return "success";
+  if (status === "blocked" || status === "needs_attention" || status === "failed") {
+    return "attention";
+  }
+  if (status === "queued") return "waiting";
+  return "working";
+}
+
+function progressUpdateTitle(step: WorkflowRunStepRecord): string {
+  const label = step.label ?? titleFromId(step.id);
+  if (step.status === "succeeded") return `Finished ${label}`;
+  if (step.status === "running") return `Working on ${label}`;
+  if (step.status === "blocked") return `Waiting for review on ${label}`;
+  if (step.status === "needs_attention" || step.status === "failed") {
+    return `${label} needs attention`;
+  }
+  if (step.status === "denied") return `Stopped at ${label}`;
+  if (step.status === "skipped") return `Skipped ${label}`;
+  return `${label} is next`;
+}
+
+function progressTimelineTitle(row: PlaybookGraphRunReviewSurface["timeline"][number]): string {
+  if (/human review required/i.test(row.message)) return "Review checkpoint reached";
+  return row.message;
+}
+
+function progressUpdates(
+  run: PlaybookRunDetail | null,
+  surface: PlaybookGraphRunReviewSurface | null
+): ProgressUpdate[] {
+  const updates: ProgressUpdate[] = [];
+
+  for (const row of surface?.timeline ?? []) {
+    updates.push({
+      key: `timeline:${row.timelineRowId}`,
+      title: progressTimelineTitle(row),
+      detail: titleFromId(row.kind),
+      createdAt: row.createdAt,
+      tone: "waiting",
+    });
+  }
+
+  for (const event of run?.events ?? []) {
+    updates.push({
+      key: `event:${event.id}`,
+      title: event.message,
+      detail: stepStatusLabel(
+        event.status === "completed"
+          ? "succeeded"
+          : event.status === "denied"
+            ? "denied"
+            : event.status === "failed"
+              ? "failed"
+              : event.status === "blocked"
+                ? "blocked"
+                : event.status === "queued"
+                  ? "queued"
+                  : "running"
+      ),
+      createdAt: event.createdAt,
+      tone:
+        event.status === "succeeded" || event.status === "completed"
+          ? "success"
+          : event.status === "failed" || event.status === "blocked"
+            ? "attention"
+            : "working",
+    });
+  }
+
+  for (const step of run?.steps ?? []) {
+    const createdAt = progressStepTimestamp(step);
+    if (!createdAt) continue;
+    updates.push({
+      key: `step:${(step as GraphWorkflowStepRecord).queueEntryId ?? step.id}:${createdAt}`,
+      title: progressUpdateTitle(step),
+      detail: stepStatusLabel(step.status),
+      createdAt,
+      tone: progressToneForStatus(step.status),
+    });
+  }
+
+  const seen = new Set<string>();
+  return updates
+    .sort((a, b) => timestampMs(b.createdAt) - timestampMs(a.createdAt))
+    .filter((update) => {
+      const key = `${update.title}:${update.detail}:${update.createdAt ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4);
+}
+
+function progressIcon(step: ProgressDisplayStep) {
+  if (step.status === "succeeded") return <CheckCircle2 size={15} className="text-emerald-600" />;
+  if (step.status === "blocked" || step.status === "needs_attention" || step.status === "failed") {
+    return <AlertTriangle size={15} className="text-amber-600" />;
+  }
+  if (step.status === "running") {
+    return <span className="h-2.5 w-2.5 rounded-full bg-blue-600" aria-hidden="true" />;
+  }
+  return <Clock3 size={15} className="text-muted-foreground" />;
+}
+
+function progressStatusClass(status: WorkflowRunStepRecord["status"]): string {
+  if (status === "succeeded") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "running") return "border-blue-200 bg-blue-50 text-blue-700";
+  if (status === "blocked" || status === "needs_attention" || status === "failed") {
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }
+  return "border-border bg-secondary text-muted-foreground";
+}
+
+function latestUpdateClass(tone: ProgressUpdateTone): string {
+  if (tone === "success") return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (tone === "attention") return "border-amber-200 bg-amber-50 text-amber-900";
+  if (tone === "working") return "border-blue-200 bg-blue-50 text-blue-900";
+  return "border-border bg-background text-foreground";
 }
 
 function parseGraphActionPayload(
@@ -2439,66 +2789,252 @@ function GuidedStart({
 function GuidedPreparing({
   run,
   playbook,
+  selectedGraphRunSurface,
+  onViewDetails,
 }: {
   run: PlaybookRunDetail | null;
   playbook: PlaybookSummary | PlaybookDetail | null;
+  selectedGraphRunSurface: PlaybookGraphRunReviewSurface | null;
+  onViewDetails: () => void;
 }) {
   const name = playbook?.name ?? "this playbook";
   const steps = run?.steps ?? [];
   const phases = playbook?.phases ?? [];
   const currentTime = Date.now();
+  const totalSteps = steps.filter((step) => step.status !== "skipped").length;
+  const completedSteps = steps.filter(
+    (step) => step.status === "succeeded" || step.status === "skipped"
+  ).length;
+  const progressPercent =
+    totalSteps > 0
+      ? Math.max(4, Math.min(100, Math.round((completedSteps / totalSteps) * 100)))
+      : 8;
+  const currentStep = activeProgressStep(steps, run?.currentStepId);
+  const currentStepLabel = currentStep ? (currentStep.label ?? titleFromId(currentStep.id)) : null;
+  const workflowRows = visibleProgressRows(
+    buildProgressDisplaySteps(steps, run?.currentStepId, currentTime)
+  );
+  const updates = progressUpdates(run, selectedGraphRunSurface);
+  const latestUpdate =
+    updates[0] ??
+    (currentStep
+      ? {
+          key: "current-step",
+          title: progressUpdateTitle(currentStep),
+          detail: stepStatusLabel(currentStep.status),
+          createdAt: progressStepTimestamp(currentStep),
+          tone: progressToneForStatus(currentStep.status),
+        }
+      : null);
+  const phaseSummaries = [...new Set([...phases, ...steps.map((step) => step.phase ?? "Run")])]
+    .filter(Boolean)
+    .map((phase) => {
+      const phaseSteps = steps.filter((step) => (step.phase ?? "Run") === phase);
+      const phaseTotal = phaseSteps.filter((step) => step.status !== "skipped").length;
+      const phaseDone = phaseSteps.filter(
+        (step) => step.status === "succeeded" || step.status === "skipped"
+      ).length;
+      const phaseActive = phaseSteps.some(
+        (step) =>
+          step.status === "running" ||
+          step.status === "blocked" ||
+          step.status === "needs_attention" ||
+          isCurrentProgressStep(step, run?.currentStepId)
+      );
+      return {
+        phase,
+        total: phaseTotal,
+        done: phaseDone,
+        label:
+          phaseTotal > 0 && phaseDone >= phaseTotal
+            ? "Done"
+            : phaseActive
+              ? "Now"
+              : phaseDone > 0
+                ? "Started"
+                : "Next",
+      };
+    });
+  const showPhaseStrip = phaseSummaries.length > 1;
+  const softTimeout =
+    currentStep !== null &&
+    steps.some((step) => step === currentStep && softTimeoutCrossed(step, currentTime));
 
   return (
-    <div className="mx-auto w-full max-w-xl py-10">
-      <div className="mb-8">
+    <div className="mx-auto w-full max-w-3xl py-10">
+      <div className="mb-8 max-w-2xl">
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           <Loader2 size={13} className="animate-spin" />
           Working
         </div>
         <h2 className="text-2xl font-semibold text-foreground">Preparing {name}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          You can come back later — Tessera will keep this run ready.
+          Tessera is moving through the playbook and will pause only if a business review is needed.
         </p>
       </div>
 
       {steps.length > 0 ? (
-        <div className="space-y-2">
-          {steps.map((step) => (
-            <div
-              key={step.id}
-              className="flex items-center gap-3 rounded-md border border-border bg-background px-4 py-3"
-            >
-              <div className="flex-shrink-0">{stepIcon(step.status)}</div>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-foreground">
-                  {step.label ?? titleFromId(step.id)}
-                </div>
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  {stepStatusLabel(step.status)}
-                </div>
-                {softTimeoutCrossed(step, currentTime) ? (
-                  <div className="mt-1 text-xs font-medium text-amber-700">
-                    Running longer than expected
-                  </div>
-                ) : null}
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="min-w-0 space-y-5">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>
+                  {completedSteps} of {totalSteps} step{totalSteps === 1 ? "" : "s"} complete
+                </span>
+                {run?.updatedAt ? <span>Updated {formatTime(run.updatedAt)}</span> : null}
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                <div
+                  className="h-full rounded-full bg-emerald-500"
+                  style={{ width: `${progressPercent}%` }}
+                />
               </div>
             </div>
-          ))}
+
+            <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-blue-700">
+                Current focus
+              </div>
+              <div className="mt-2 flex items-start gap-3">
+                <Loader2 size={16} className="mt-0.5 flex-shrink-0 animate-spin text-blue-700" />
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold text-foreground">
+                    {currentStepLabel ?? "Starting the next step"}
+                  </h3>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    {currentStep
+                      ? stepStatusLabel(currentStep.status)
+                      : "Tessera is preparing the run."}
+                    {currentStep?.phase ? ` in ${currentStep.phase}.` : ""}
+                  </p>
+                  {softTimeout ? (
+                    <p className="mt-2 text-xs font-medium text-amber-800">
+                      Running longer than expected
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            {showPhaseStrip ? (
+              <div className="flex flex-wrap gap-2">
+                {phaseSummaries.map((phase) => (
+                  <div
+                    key={phase.phase}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-xs",
+                      phase.label === "Done"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : phase.label === "Now"
+                          ? "border-blue-200 bg-blue-50 text-blue-700"
+                          : "border-border bg-background text-muted-foreground"
+                    )}
+                  >
+                    <span className="font-medium text-foreground">{phase.phase}</span>
+                    <span className="ml-1">{phase.label}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Workflow
+              </div>
+              <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-background">
+                {workflowRows.map((row) =>
+                  row.kind === "gap" ? (
+                    <div key={row.key} className="px-4 py-2 text-xs text-muted-foreground">
+                      {row.hiddenCount} earlier step{row.hiddenCount === 1 ? "" : "s"} summarized
+                    </div>
+                  ) : (
+                    <div
+                      key={row.step.key}
+                      className="grid grid-cols-[1.25rem_1fr_auto] gap-3 px-4 py-3"
+                    >
+                      <div className="mt-0.5 flex h-5 items-center justify-center">
+                        {progressIcon(row.step)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="truncate text-sm font-medium text-foreground">
+                            {row.step.label}
+                          </span>
+                          {row.step.count > 1 ? (
+                            <span className="rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+                              x{row.step.count}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {row.step.phase}
+                          {row.step.latestAt ? ` · ${formatTime(row.step.latestAt)}` : ""}
+                        </div>
+                        {row.step.softTimeout && !row.step.active ? (
+                          <div className="mt-1 text-xs font-medium text-amber-700">
+                            Running longer than expected
+                          </div>
+                        ) : null}
+                      </div>
+                      <div
+                        className={cn(
+                          "h-fit rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                          progressStatusClass(row.step.status)
+                        )}
+                      >
+                        {progressStatusLabel(row.step.status)}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+
+          <aside className="space-y-3">
+            <div
+              className={cn(
+                "rounded-lg border p-4",
+                latestUpdate ? latestUpdateClass(latestUpdate.tone) : "border-border bg-background"
+              )}
+            >
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Latest update
+              </div>
+              <div className="mt-2 text-sm font-semibold text-foreground">
+                {latestUpdate?.title ?? "Run is starting"}
+              </div>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {latestUpdate?.detail ?? "Tessera is getting the playbook ready."}
+              </p>
+              {latestUpdate?.createdAt ? (
+                <div className="mt-3 text-xs text-muted-foreground">
+                  {formatTime(latestUpdate.createdAt)}
+                </div>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full rounded-md"
+              onClick={onViewDetails}
+            >
+              View run details
+            </Button>
+          </aside>
         </div>
       ) : phases.length > 0 ? (
-        <div className="space-y-2">
+        <div className="space-y-2 rounded-lg border border-border bg-background p-4">
           {phases.map((phase) => (
-            <div
-              key={phase}
-              className="flex items-center gap-3 rounded-md border border-border bg-background px-4 py-3"
-            >
-              <Loader2 size={15} className="animate-spin text-blue-500" />
+            <div key={phase} className="flex items-center gap-3 py-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-blue-600" aria-hidden="true" />
               <div className="text-sm font-medium text-foreground">{phase}</div>
             </div>
           ))}
         </div>
       ) : (
-        <div className="flex items-center gap-3 rounded-md border border-border bg-background px-4 py-3">
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-4 py-3">
           <Loader2 size={15} className="animate-spin text-blue-500" />
           <div className="text-sm font-medium text-foreground">Working…</div>
         </div>
@@ -4109,7 +4645,12 @@ export function PlaybooksView({ workspaceRoot, onWorkspaceSelect, userKey }: Pla
             graphReady={!!selectedGraphHash}
           />
         ) : guidedState === "preparing" ? (
-          <GuidedPreparing run={selectedRun} playbook={selectedPlaybookForUi} />
+          <GuidedPreparing
+            run={selectedRun}
+            playbook={selectedPlaybookForUi}
+            selectedGraphRunSurface={selectedGraphRunSurface}
+            onViewDetails={() => setShowDetails(true)}
+          />
         ) : guidedState === "review" && selectedRun ? (
           <GuidedReview
             run={selectedRun}
