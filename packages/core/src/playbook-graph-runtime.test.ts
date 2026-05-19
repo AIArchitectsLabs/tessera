@@ -1678,6 +1678,95 @@ describe("drainPlaybookGraphRun", () => {
     ]);
   });
 
+  test("parallelMap branch steps consume artifacts from their own branch", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          items: { schema: "schemas/items.schema.json" },
+          branchValue: { schema: "schemas/branch-value.schema.json" },
+          consumed: { schema: "schemas/consumed.schema.json" },
+          mapResults: { schema: "schemas/map-results.schema.json" },
+        },
+        start: "items",
+        nodes: [
+          {
+            id: "items",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "items",
+            onSuccess: "map",
+          },
+          {
+            id: "map",
+            kind: "parallelMap",
+            items: { artifact: "items", path: "$" },
+            outputArtifact: "mapResults",
+            branch: {
+              start: "produce",
+              nodes: [
+                {
+                  id: "produce",
+                  kind: "script",
+                  run: "scripts/produce.ts",
+                  inputs: {},
+                  outputArtifact: "branchValue",
+                  onSuccess: "consume",
+                },
+                {
+                  id: "consume",
+                  kind: "script",
+                  run: "scripts/consume.ts",
+                  inputs: {
+                    branchValue: { artifact: "branchValue" },
+                  },
+                  outputArtifact: "consumed",
+                  onSuccess: "completed",
+                },
+              ],
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-map-branch-local-artifacts",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-map-branch-local-artifacts",
+      store,
+      scriptAdapter({ node, input, artifacts }) {
+        if (node.id === "items") return [{ id: "a" }, { id: "b" }];
+        const branchItem = input.branchItem as { id: string };
+        if (node.id === "produce") return { id: branchItem.id };
+        if (node.id === "consume") {
+          return {
+            item: branchItem,
+            branchValue: artifacts.branchValue,
+          };
+        }
+        throw new Error(`Unexpected node: ${node.id}`);
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    const fanIn = (await store.listArtifactVersions(run.runId)).find(
+      (version) => version.artifactId === "mapResults"
+    );
+    expect(fanIn?.value).toEqual([
+      expect.objectContaining({
+        output: { item: { id: "a" }, branchValue: { id: "a" } },
+      }),
+      expect.objectContaining({
+        output: { item: { id: "b" }, branchValue: { id: "b" } },
+      }),
+    ]);
+  });
+
   test("parallelMap branch memo keys change when branch item values change", async () => {
     const store = new MemoryGraphRunStore();
     const compiled = compiledGraph({

@@ -590,11 +590,33 @@ export function resolveArtifactDependencies(input: {
   return { runnable: missing.length === 0, missing };
 }
 
+function branchItemScopePrefixes(nodePath: string): string[] {
+  const segments = nodePath.split("/");
+  const prefixes: string[] = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    if (/^item:\d+$/.test(segments[index] ?? "")) {
+      prefixes.push(segments.slice(0, index + 1).join("/"));
+    }
+  }
+  return prefixes;
+}
+
+function artifactVersionVisibleFromNodePath(
+  version: PlaybookGraphArtifactVersion,
+  consumerNodePath: string
+): boolean {
+  return branchItemScopePrefixes(version.nodePath).every(
+    (scope) => consumerNodePath === scope || consumerNodePath.startsWith(`${scope}/`)
+  );
+}
+
 function latestArtifactRefsById(
-  versions: PlaybookGraphArtifactVersion[]
+  versions: PlaybookGraphArtifactVersion[],
+  consumerNodePath: string
 ): Map<string, PlaybookGraphArtifactVersionRef> {
   const refs = new Map<string, PlaybookGraphArtifactVersionRef>();
   for (const version of versions) {
+    if (!artifactVersionVisibleFromNodePath(version, consumerNodePath)) continue;
     refs.set(version.artifactId, {
       artifactId: version.artifactId,
       versionId: version.versionId,
@@ -665,7 +687,7 @@ export function createPlaybookGraphQueueEntry(input: {
   dependsOn?: string[];
   artifactVersions?: PlaybookGraphArtifactVersion[];
 }): PlaybookGraphQueueEntry {
-  const latestRefs = latestArtifactRefsById(input.artifactVersions ?? []);
+  const latestRefs = latestArtifactRefsById(input.artifactVersions ?? [], input.nodePath);
   const declaredConsumesArtifacts = inputArtifactIds(input.node);
   const consumesArtifacts = declaredConsumesArtifacts.flatMap((artifactId) => {
     const ref = latestRefs.get(artifactId);
@@ -788,9 +810,15 @@ async function refreshQueuedArtifactBindings(input: {
   return updated;
 }
 
-function latestArtifactValues(versions: PlaybookGraphArtifactVersion[]): Record<string, unknown> {
+function latestArtifactValues(
+  versions: PlaybookGraphArtifactVersion[],
+  consumerNodePath = ""
+): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const version of versions) {
+    if (consumerNodePath && !artifactVersionVisibleFromNodePath(version, consumerNodePath)) {
+      continue;
+    }
     values[version.artifactId] = version.value;
   }
   return values;
@@ -1188,8 +1216,6 @@ async function enqueueReadyParallelMapFanIns(input: {
     await input.store.listArtifactVersions(run.runId),
     queue
   );
-  const artifacts = latestArtifactValues(artifactVersions);
-
   for (const parent of queue) {
     if (parent.nodeKind !== "parallelMap") continue;
     if (parent.status !== "succeeded" && parent.status !== "memoized") continue;
@@ -1218,7 +1244,7 @@ async function enqueueReadyParallelMapFanIns(input: {
       return run;
     }
 
-    const target = successTarget(node, artifacts);
+    const target = successTarget(node, latestArtifactValues(artifactVersions, parent.nodePath));
     const existingFanInArtifact =
       node.outputArtifact === undefined
         ? undefined
@@ -1577,7 +1603,7 @@ export async function drainPlaybookGraphRun(
         compiled,
         run,
         queueEntry: memoized,
-        target: successTarget(node, latestArtifactValues(artifactVersions)),
+        target: successTarget(node, latestArtifactValues(artifactVersions, queueEntry.nodePath)),
         artifactVersions,
         now: completedAt,
       });
@@ -1709,7 +1735,7 @@ export async function drainPlaybookGraphRun(
       return { run, executed };
     }
 
-    const artifacts = latestArtifactValues(artifactVersions);
+    const artifacts = latestArtifactValues(artifactVersions, queueEntry.nodePath);
     const claimedRun = run;
     const resolvedNode = resolveNodePayload({
       node,
