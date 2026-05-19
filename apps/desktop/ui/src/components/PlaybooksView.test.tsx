@@ -1391,29 +1391,13 @@ describe("PlaybooksView", () => {
     });
   });
 
-  test("opens completed graph artifacts from the run workspace when none is selected", async () => {
+  test("does not list workspace-scoped runs when no workspace is selected", async () => {
     const view = renderPlaybooksView(null);
 
     await waitFor(() => {
-      expect(view.getByText(/May 9/)).toBeTruthy();
+      expect(view.getByText("Select Workspace")).toBeTruthy();
     });
-
-    const runButton = view.getByText(/May 9/).closest("button");
-    if (!runButton) throw new Error("Expected run button");
-    fireEvent.click(runButton);
-
-    await waitFor(() => {
-      expect(view.getByText(/Sales Meeting Brief - FOMORA\.md/)).toBeTruthy();
-    });
-
-    fireEvent.click(view.getByTitle("Open artifact"));
-
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
-        workspaceRoot: "/tmp/workspace",
-        path: "Sales Meeting Brief - FOMORA.md",
-      });
-    });
+    expect(view.queryByText(/May 9/)).toBeNull();
   });
 
   test("shows materialized graph artifacts when playbook output declarations are empty", async () => {
@@ -1973,7 +1957,15 @@ describe("PlaybooksView", () => {
         invoke.mock.calls.some(
           ([command, args]) =>
             command === "playbook_import" &&
-            (args as Record<string, unknown>).zipPath === "/tmp/reference.playbook.zip"
+            (args as Record<string, unknown>).zipPath === "/tmp/reference.playbook.zip" &&
+            (args as Record<string, unknown>).userKey === "user.test"
+        )
+      ).toBe(true);
+      expect(
+        invoke.mock.calls.some(
+          ([command, args]) =>
+            command === "playbook_list" &&
+            (args as Record<string, unknown>)?.userKey === "user.test"
         )
       ).toBe(true);
       expect(view.getByText("Imported SEO Blog Article 0.1.3 installed.")).toBeTruthy();

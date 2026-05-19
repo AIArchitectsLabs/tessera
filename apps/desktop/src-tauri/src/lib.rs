@@ -820,6 +820,15 @@ fn push_user_key_param(params: &mut Vec<String>, user_key: Option<&str>) -> Resu
     Ok(())
 }
 
+fn push_workspace_root_param(params: &mut Vec<String>, workspace_root: Option<&str>) {
+    if let Some(workspace_root) = workspace_root
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        params.push(format!("workspaceRoot={}", percent_encode(workspace_root)));
+    }
+}
+
 fn path_with_params(base: String, params: Vec<String>) -> String {
     if params.is_empty() {
         base
@@ -1709,8 +1718,14 @@ async fn google_workspace_oauth_client_delete(
 }
 
 #[tauri::command]
-async fn playbook_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Value, String> {
-    let json = state.get("/playbooks").await.map_err(|e| e.to_string())?;
+async fn playbook_list(
+    state: State<'_, SidecarHandle>,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/playbooks".to_string(), params);
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
@@ -1718,8 +1733,14 @@ async fn playbook_list(state: State<'_, SidecarHandle>) -> Result<serde_json::Va
 async fn playbook_get(
     state: State<'_, SidecarHandle>,
     playbook_id: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/playbooks/{}", percent_encode(&playbook_id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(
+        format!("/playbooks/{}", percent_encode(&playbook_id)),
+        params,
+    );
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -1728,6 +1749,7 @@ async fn playbook_get(
 async fn playbook_import(
     state: State<'_, SidecarHandle>,
     zip_path: String,
+    user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let zip_path = zip_path.trim();
     if zip_path.is_empty() {
@@ -1736,9 +1758,12 @@ async fn playbook_import(
     if !std::path::Path::new(zip_path).is_absolute() {
         return Err("zip_path must be an absolute path".to_string());
     }
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params("/graph-playbooks/import".to_string(), params);
     let body = serde_json::json!({ "zipPath": zip_path });
     let json = state
-        .post("/graph-playbooks/import", &body.to_string())
+        .post(&path, &body.to_string())
         .await
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
@@ -1769,12 +1794,14 @@ async fn graph_run_drain(
     state: State<'_, SidecarHandle>,
     run_id: String,
     user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let request =
         attach_default_workflow_execution(&app, serde_json::json!({}), scoped_user_key).await?;
     let mut params = Vec::new();
     push_user_key_param(&mut params, scoped_user_key)?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
     let path = path_with_params(
         format!("/graph-runs/{}/drain", percent_encode(&run_id)),
         params,
@@ -1792,8 +1819,12 @@ async fn graph_run_list(
     playbook_id: Option<String>,
     status: Option<String>,
     limit: Option<u32>,
+    user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
     if let Some(playbook_id) = playbook_id {
         params.push(format!("playbookId={}", percent_encode(&playbook_id)));
     }
@@ -1816,8 +1847,13 @@ async fn graph_run_list(
 async fn graph_run_get(
     state: State<'_, SidecarHandle>,
     run_id: String,
+    user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/graph-runs/{}", percent_encode(&run_id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
+    let path = path_with_params(format!("/graph-runs/{}", percent_encode(&run_id)), params);
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -1826,8 +1862,16 @@ async fn graph_run_get(
 async fn graph_run_review_surface(
     state: State<'_, SidecarHandle>,
     run_id: String,
+    user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/graph-runs/{}/review-surface", percent_encode(&run_id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
+    let path = path_with_params(
+        format!("/graph-runs/{}/review-surface", percent_encode(&run_id)),
+        params,
+    );
     let json = state.get(&path).await.map_err(|e| e.to_string())?;
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
@@ -1837,8 +1881,16 @@ async fn graph_run_git_milestone_commit(
     state: State<'_, SidecarHandle>,
     run_id: String,
     request: serde_json::Value,
+    user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!("/graph-runs/{}/git-milestone", percent_encode(&run_id));
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
+    let path = path_with_params(
+        format!("/graph-runs/{}/git-milestone", percent_encode(&run_id)),
+        params,
+    );
     let json = state
         .post(&path, &request.to_string())
         .await
@@ -1851,10 +1903,18 @@ async fn graph_run_git_milestone_preview(
     state: State<'_, SidecarHandle>,
     run_id: String,
     request: serde_json::Value,
+    user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let path = format!(
-        "/graph-runs/{}/git-milestone/preview",
-        percent_encode(&run_id)
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
+    let path = path_with_params(
+        format!(
+            "/graph-runs/{}/git-milestone/preview",
+            percent_encode(&run_id)
+        ),
+        params,
     );
     let json = state
         .post(&path, &request.to_string())
@@ -1870,12 +1930,14 @@ async fn graph_run_resume(
     run_id: String,
     request: serde_json::Value,
     user_key: Option<String>,
+    workspace_root: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let scoped_user_key = scoped_command_user_key(user_key.as_deref())?;
     let request = attach_default_workflow_execution(&app, request, scoped_user_key).await?;
     let body = request.to_string();
     let mut params = Vec::new();
     push_user_key_param(&mut params, scoped_user_key)?;
+    push_workspace_root_param(&mut params, workspace_root.as_deref());
     let path = path_with_params(
         format!("/graph-runs/{}/resume", percent_encode(&run_id)),
         params,
