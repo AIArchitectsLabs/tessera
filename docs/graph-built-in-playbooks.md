@@ -74,6 +74,29 @@ Examples:
 
 If a prompt is imported from TypeScript, keep the matching `.md.d.ts` stub next to it. The current built-ins use that pattern for prompt files that are imported elsewhere.
 
+## Artifact Schema Contract
+
+Artifact schemas are runtime contracts, not hints. When a node declares an
+output artifact, Tessera stores the artifact value that matches the artifact's
+JSON schema. Downstream conditions, review cards, scripts, and artifact writes
+read that schema-shaped value directly.
+
+For agent nodes:
+
+- If `output.artifact` references a declared artifact, the artifact's schema is
+  the persisted output contract.
+- If `output.schema` is also provided, it must match the referenced artifact's
+  declared schema.
+- If the provider returns a wrapper such as `{ status, text, usage }` and `text`
+  contains JSON that satisfies the schema, Tessera persists the parsed JSON
+  object as the artifact value.
+- If neither the wrapper nor parsed text satisfies the schema, the node fails
+  before downstream nodes run.
+
+Prompts for schema-bound agent nodes should ask for JSON matching the schema.
+Prompts that ask for Markdown should use an object schema with a field such as
+`markdown` or `bodyMarkdown`, then put the Markdown in that field.
+
 ## Review Nodes And Artifact Writes
 
 Use `humanReview` when a playbook must pause on an artifact and wait for a decision. The current first-party examples are:

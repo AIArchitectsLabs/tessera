@@ -69,6 +69,37 @@ function outputArtifacts(node: PlaybookGraphNode): string[] {
   return [];
 }
 
+function normalizeSourceRef(ref: string): string {
+  return ref.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+
+function validateAgentOutputContract(options: {
+  artifacts: PlaybookGraph["artifacts"];
+  node: PlaybookGraphNode;
+  path: string;
+}): void {
+  const { node } = options;
+  if (
+    node.kind !== "agent" ||
+    node.output?.artifact === undefined ||
+    node.output.schema === undefined
+  ) {
+    return;
+  }
+
+  const artifact = options.artifacts[node.output.artifact];
+  if (
+    artifact === undefined ||
+    normalizeSourceRef(artifact.schema) === normalizeSourceRef(node.output.schema)
+  ) {
+    return;
+  }
+
+  throw new Error(
+    `Agent output schema mismatch at ${options.path}.${node.id}: ${node.output.artifact} uses ${artifact.schema}, but node output declares ${node.output.schema}`
+  );
+}
+
 function collectArtifactRefs(value: unknown, refs: string[]): void {
   if (!isRecord(value)) {
     if (Array.isArray(value)) {
@@ -109,7 +140,7 @@ function consumedArtifacts(node: PlaybookGraphNode): string[] {
 }
 
 function validateGraphNodes(options: {
-  artifacts: Set<string>;
+  artifacts: PlaybookGraph["artifacts"];
   nodes: PlaybookGraphNode[];
   start: string;
   path: string;
@@ -135,13 +166,15 @@ function validateGraphNodes(options: {
     }
 
     for (const artifact of outputArtifacts(node)) {
-      if (!options.artifacts.has(artifact)) {
+      if (options.artifacts[artifact] === undefined) {
         throw new Error(`Unknown artifact produced by ${options.path}.${node.id}: ${artifact}`);
       }
     }
 
+    validateAgentOutputContract({ artifacts: options.artifacts, node, path: options.path });
+
     for (const artifact of consumedArtifacts(node)) {
-      if (!options.artifacts.has(artifact)) {
+      if (options.artifacts[artifact] === undefined) {
         throw new Error(`Unknown artifact consumed by ${options.path}.${node.id}: ${artifact}`);
       }
     }
@@ -161,7 +194,7 @@ export function validatePlaybookGraph(graph: unknown): PlaybookGraph {
   const parsed = PlaybookGraphSchema.parse(graph);
 
   validateGraphNodes({
-    artifacts: new Set(Object.keys(parsed.artifacts)),
+    artifacts: parsed.artifacts,
     nodes: parsed.nodes,
     start: parsed.start,
     path: parsed.id,

@@ -131,6 +131,29 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Unknown artifact/);
   });
 
+  test("rejects agent outputs whose schema conflicts with the declared artifact schema", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "agent",
+            prompt: "./prompts/review.md",
+            inputs: {},
+            tools: [],
+            output: {
+              artifact: "scorecard",
+              schema: "./schemas/other-scorecard.schema.json",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/Agent output schema mismatch/);
+  });
+
   test("rejects consumed artifacts that are not declared by the graph", () => {
     const secondNode = requireNode(graph.nodes, 1);
 

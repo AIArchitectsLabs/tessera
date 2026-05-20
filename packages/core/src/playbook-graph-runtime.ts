@@ -371,6 +371,10 @@ function normalizeExecutionContext(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function agentAdapterStatus(
   output: unknown
 ): "completed" | "blocked" | "denied" | "error" | undefined {
@@ -380,6 +384,193 @@ function agentAdapterStatus(
     return status;
   }
   return undefined;
+}
+
+function normalizeSourceRef(ref: string): string {
+  return ref.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+
+function schemaSourceForArtifact(input: {
+  compiled: CompiledPlaybookGraph;
+  run: PlaybookGraphRunRecord;
+  node: PlaybookGraphNode;
+  artifactId: string;
+}): { ref: string; schema: Record<string, unknown> } | undefined {
+  const artifactSchema = input.compiled.graph.artifacts[input.artifactId]?.schema;
+  const schemaRef =
+    input.node.kind === "agent" &&
+    input.node.output?.artifact === input.artifactId &&
+    input.node.output.schema !== undefined
+      ? input.node.output.schema
+      : artifactSchema;
+  if (schemaRef === undefined || input.run.snapshot.sourceFiles === undefined) return undefined;
+
+  const source = input.run.snapshot.sourceFiles[normalizeSourceRef(schemaRef)];
+  if (source === undefined) return undefined;
+
+  try {
+    const schema = JSON.parse(source) as unknown;
+    return isRecord(schema) ? { ref: schemaRef, schema } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonSchemaTypeMatches(type: string, value: unknown): boolean {
+  if (type === "object") return isRecord(value);
+  if (type === "array") return Array.isArray(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "boolean") return typeof value === "boolean";
+  if (type === "null") return value === null;
+  return true;
+}
+
+function jsonSchemaTypes(schema: Record<string, unknown>): string[] {
+  const type = schema.type;
+  if (typeof type === "string") return [type];
+  if (Array.isArray(type)) {
+    return type.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
+
+function validateJsonSchemaValue(
+  schema: Record<string, unknown>,
+  value: unknown,
+  path = "$"
+): string[] {
+  const errors: string[] = [];
+  const types = jsonSchemaTypes(schema);
+  if (types.length > 0 && !types.some((type) => jsonSchemaTypeMatches(type, value))) {
+    errors.push(`${path} must be ${types.join(" or ")}`);
+    return errors;
+  }
+
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(candidate, value))) {
+    errors.push(`${path} must be one of the declared enum values`);
+  }
+
+  if (
+    typeof schema.minLength === "number" &&
+    typeof value === "string" &&
+    value.length < schema.minLength
+  ) {
+    errors.push(`${path} must be at least ${schema.minLength} characters`);
+  }
+
+  if (
+    typeof schema.minItems === "number" &&
+    Array.isArray(value) &&
+    value.length < schema.minItems
+  ) {
+    errors.push(`${path} must contain at least ${schema.minItems} items`);
+  }
+
+  if (isRecord(value)) {
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === "string")
+      : [];
+    for (const key of required) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) {
+        errors.push(`${path}.${key} is required`);
+      }
+    }
+
+    if (isRecord(schema.properties)) {
+      for (const [key, propertySchema] of Object.entries(schema.properties)) {
+        if (!Object.prototype.hasOwnProperty.call(value, key) || !isRecord(propertySchema)) {
+          continue;
+        }
+        errors.push(...validateJsonSchemaValue(propertySchema, value[key], `${path}.${key}`));
+      }
+      if (schema.additionalProperties === false) {
+        for (const key of Object.keys(value)) {
+          if (!Object.prototype.hasOwnProperty.call(schema.properties, key)) {
+            errors.push(`${path}.${key} is not allowed`);
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(value) && isRecord(schema.items)) {
+    value.forEach((item, index) => {
+      errors.push(
+        ...validateJsonSchemaValue(
+          schema.items as Record<string, unknown>,
+          item,
+          `${path}[${index}]`
+        )
+      );
+    });
+  }
+
+  return errors;
+}
+
+function jsonParseCandidates(text: string): unknown[] {
+  const trimmed = text.trim();
+  const candidates = [
+    trimmed,
+    trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim(),
+    trimmed.includes("{")
+      ? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1)
+      : undefined,
+    trimmed.includes("[")
+      ? trimmed.slice(trimmed.indexOf("["), trimmed.lastIndexOf("]") + 1)
+      : undefined,
+  ].filter(
+    (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0
+  );
+  const parsed: unknown[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      parsed.push(JSON.parse(candidate) as unknown);
+    } catch {}
+  }
+  return parsed;
+}
+
+function agentOutputText(output: unknown): string | undefined {
+  if (typeof output === "string" && output.trim()) return output;
+  if (!isRecord(output)) return undefined;
+  const text = output.text;
+  return typeof text === "string" && text.trim() ? text : undefined;
+}
+
+function artifactContractValue(input: {
+  compiled: CompiledPlaybookGraph;
+  run: PlaybookGraphRunRecord;
+  node: PlaybookGraphNode;
+  artifactId: string;
+  output: unknown;
+}): unknown {
+  const schemaSource = schemaSourceForArtifact(input);
+  if (!schemaSource) return input.output;
+
+  if (input.node.kind === "agent") {
+    const text = agentOutputText(input.output);
+    const parsed = text ? jsonParseCandidates(text) : [];
+    for (const candidate of parsed) {
+      if (validateJsonSchemaValue(schemaSource.schema, candidate).length === 0) {
+        return candidate;
+      }
+    }
+  }
+
+  const errors = validateJsonSchemaValue(schemaSource.schema, input.output);
+  if (errors.length === 0) return input.output;
+
+  throw new Error(
+    `Graph node ${input.node.id} produced ${input.artifactId} that does not match ${schemaSource.ref}: ${errors
+      .slice(0, 3)
+      .join("; ")}`
+  );
 }
 
 export function createPlaybookGraphExecutionContextPin(
@@ -1914,22 +2105,49 @@ export async function drainPlaybookGraphRun(
       branchUpdates = [...branchUpdates, completeBranchItem(branchItem, "completed", completedAt)];
     }
     const activeRunId = run.runId;
-    const newArtifactVersions = (node.kind === "parallelMap" ? [] : outputArtifacts(node)).map(
-      (artifactId) => {
-        const value = output;
-        return {
-          schemaVersion: 1 as const,
-          runId: activeRunId,
-          artifactId,
-          versionId: `${queueEntry.queueEntryId}:${artifactId}:v${queueEntry.attempt}`,
-          producerQueueEntryId: queueEntry.queueEntryId,
-          nodePath: queueEntry.nodePath,
-          contentHash: hashUnknown(value),
-          value,
-          createdAt: completedAt,
-        };
-      }
-    );
+    let newArtifactVersions: PlaybookGraphArtifactVersion[];
+    try {
+      newArtifactVersions = (node.kind === "parallelMap" ? [] : outputArtifacts(node)).map(
+        (artifactId) => {
+          const value = artifactContractValue({
+            compiled,
+            run,
+            node,
+            artifactId,
+            output,
+          });
+          return {
+            schemaVersion: 1 as const,
+            runId: activeRunId,
+            artifactId,
+            versionId: `${queueEntry.queueEntryId}:${artifactId}:v${queueEntry.attempt}`,
+            producerQueueEntryId: queueEntry.queueEntryId,
+            nodePath: queueEntry.nodePath,
+            contentHash: hashUnknown(value),
+            value,
+            createdAt: completedAt,
+          };
+        }
+      );
+    } catch (error) {
+      const failed = {
+        ...queueEntry,
+        status: "failed" as const,
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: completedAt,
+        completedAt,
+      };
+      run = {
+        ...run,
+        status: "failed",
+        error: failed.error,
+        currentQueueEntryId: failed.queueEntryId,
+        updatedAt: completedAt,
+        completedAt,
+      };
+      await options.store.checkpointNodeFailure({ run, queueEntry: failed });
+      return { run, executed };
+    }
     const artifactRefsForMemo = newArtifactVersions.map((version) => ({
       artifactId: version.artifactId,
       versionId: version.versionId,

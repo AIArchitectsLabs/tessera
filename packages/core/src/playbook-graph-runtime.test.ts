@@ -847,6 +847,171 @@ describe("drainPlaybookGraphRun", () => {
     expect(calls).toBe(1);
   });
 
+  test("stores schema-bound agent JSON instead of provider wrapper text", async () => {
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/review.md": "Return a review JSON object.",
+      "scripts/rework.ts": "export default function rework() {}\n",
+      "schemas/review.schema.json": JSON.stringify({
+        type: "object",
+        required: ["overall", "pass", "requiresRevision", "findings"],
+        properties: {
+          overall: { type: "number" },
+          pass: { type: "boolean" },
+          requiresRevision: { type: "boolean" },
+          findings: { type: "array", items: { type: "string" } },
+        },
+      }),
+      "schemas/final.schema.json": JSON.stringify({ type: "object" }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.review-contract",
+        version: "0.1.0",
+        name: "Review Contract",
+        artifacts: {
+          review: { schema: "schemas/review.schema.json" },
+          final: { schema: "schemas/final.schema.json" },
+        },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "agent",
+            prompt: "prompts/review.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "review", schema: "schemas/review.schema.json" },
+            onSuccess: "needsRework",
+          },
+          {
+            id: "needsRework",
+            kind: "condition",
+            when: { artifact: "review", path: "$.requiresRevision", equals: true },
+            onTrue: "rework",
+            onFalse: "completed",
+          },
+          {
+            id: "rework",
+            kind: "script",
+            run: "scripts/rework.ts",
+            inputs: { review: { artifact: "review" } },
+            outputArtifact: "final",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "test-compiler",
+      scriptSdkVersion: "test-sdk",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      sourceFiles,
+      store,
+      runId: "run-agent-json-contract",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    let reworkInput: unknown;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-json-contract",
+      store,
+      agentAdapter() {
+        return {
+          status: "completed",
+          text: JSON.stringify({
+            overall: 42,
+            pass: false,
+            requiresRevision: true,
+            findings: ["Brief needs deeper evidence."],
+          }),
+          usage: { totalTokens: 100 },
+        };
+      },
+      scriptAdapter({ artifacts }) {
+        reworkInput = artifacts.review;
+        return { ok: true };
+      },
+    });
+
+    const artifacts = await store.listArtifactVersions(run.runId);
+    const review = artifacts.find((artifact) => artifact.artifactId === "review");
+    expect(result.run.status).toBe("completed");
+    expect(review?.value).toEqual({
+      overall: 42,
+      pass: false,
+      requiresRevision: true,
+      findings: ["Brief needs deeper evidence."],
+    });
+    expect(reworkInput).toEqual(review?.value);
+    expect(artifacts.some((artifact) => artifact.artifactId === "final")).toBe(true);
+  });
+
+  test("fails schema-bound agent output when neither wrapper nor text matches the schema", async () => {
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/review.md": "Return a review JSON object.",
+      "schemas/review.schema.json": JSON.stringify({
+        type: "object",
+        required: ["overall"],
+        properties: { overall: { type: "number" } },
+      }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.review-contract-failure",
+        version: "0.1.0",
+        name: "Review Contract Failure",
+        artifacts: {
+          review: { schema: "schemas/review.schema.json" },
+        },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "agent",
+            prompt: "prompts/review.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "review", schema: "schemas/review.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "test-compiler",
+      scriptSdkVersion: "test-sdk",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      sourceFiles,
+      store,
+      runId: "run-agent-json-contract-failure",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-json-contract-failure",
+      store,
+      agentAdapter() {
+        return { status: "completed", text: "{}" };
+      },
+    });
+
+    expect(result.run.status).toBe("failed");
+    expect(result.run.error).toContain("does not match schemas/review.schema.json");
+    expect(await store.listArtifactVersions(run.runId)).toHaveLength(0);
+  });
+
   test("does not treat an omitted execution context as drift", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
