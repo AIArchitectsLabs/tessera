@@ -5,6 +5,7 @@ import { AgentProviderConfigSchema, type ModelProvider } from "@tessera/contract
 import {
   MODEL_PROVIDERS,
   defaultDraftForProvider,
+  modelOptionsForProvider,
   modelPlaceholderForProvider,
   providerLabel,
   shouldSendCredential,
@@ -23,6 +24,25 @@ describe("model settings UI helpers", () => {
     expect(modelPlaceholderForProvider("openai")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("openai-codex")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("local")).toBe("llama3.2");
+  });
+
+  test("returns curated model options and preserves existing custom selections", () => {
+    expect(modelOptionsForProvider("openai").map((option) => option.value)).toContain("gpt-5.5");
+    expect(modelOptionsForProvider("openrouter").map((option) => option.value)).toEqual(
+      expect.arrayContaining([
+        "openrouter/auto",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+        "google/gemini-2.5-pro",
+        "deepseek/deepseek-r1",
+        "qwen/qwen3-coder",
+      ])
+    );
+    expect(modelOptionsForProvider("local")).toEqual([]);
+    expect(modelOptionsForProvider("openrouter", "custom/provider-model")[0]).toEqual({
+      label: "Current: custom/provider-model",
+      value: "custom/provider-model",
+    });
   });
 
   test("omits blank credential replacements", () => {
@@ -65,7 +85,7 @@ describe("model settings UI helpers", () => {
       },
       openrouter: {
         provider: "openrouter",
-        model: "openai/gpt-5.4",
+        model: "openrouter/auto",
         apiKeyEnv: "OPENROUTER_API_KEY",
       },
       local: {

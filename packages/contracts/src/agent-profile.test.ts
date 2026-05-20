@@ -45,6 +45,44 @@ describe("agent profile contracts", () => {
     expect(parsed.toolPolicyPreset).toBe("elevated_with_approval");
   });
 
+  test("accepts thinking level for reasoning-capable agent model overrides", () => {
+    const parsed = AgentProfileSchema.parse({
+      id: "analyst",
+      name: "Analyst",
+      model: {
+        mode: "override",
+        provider: { provider: "openai", model: "gpt-5.4", thinkingLevel: "high" },
+      },
+      createdAt: "2026-05-02T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
+    expect(parsed.model).toMatchObject({
+      mode: "override",
+      provider: { provider: "openai", thinkingLevel: "high" },
+    });
+  });
+
+  test("rejects thinking level for local model overrides", () => {
+    const parsed = AgentProfileSchema.safeParse({
+      id: "local",
+      name: "Local",
+      model: {
+        mode: "override",
+        provider: {
+          provider: "local",
+          model: "llama3.2",
+          baseUrl: "http://127.0.0.1:11434/v1",
+          thinkingLevel: "high",
+        },
+      },
+      createdAt: "2026-05-02T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   test("rejects credentials embedded in agent profiles", () => {
     const parsed = AgentProfileSchema.safeParse({
       id: "bad",

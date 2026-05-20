@@ -70,12 +70,13 @@ describe("model settings contracts", () => {
   test("agent turn credential is separate from provider config", () => {
     const parsed = AgentTurnRequestSchema.parse({
       prompt: "Reply OK",
-      provider: { provider: "openai", model: "gpt-5.4" },
+      provider: { provider: "openai", model: "gpt-5.4", thinkingLevel: "medium" },
       credential: { apiKey: "sk-test" },
     });
 
     expect(parsed.credential).toMatchObject({ apiKey: "sk-test" });
     expect("apiKey" in parsed.provider).toBe(false);
+    expect(parsed.provider).toMatchObject({ thinkingLevel: "medium" });
   });
 
   test("agent turn accepts Codex OAuth runtime credentials without API key shape", () => {

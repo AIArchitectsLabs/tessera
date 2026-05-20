@@ -59,6 +59,7 @@ describe("resolveTaskExecutionConfig", () => {
           provider: "anthropic",
           model: "claude-sonnet-4-6",
           apiKeyEnv: "ANTHROPIC_API_KEY",
+          thinkingLevel: "high",
         },
       },
       instructions: "",
@@ -78,6 +79,7 @@ describe("resolveTaskExecutionConfig", () => {
     });
 
     expect(result.provider.provider).toBe("anthropic");
+    expect(result.provider).toMatchObject({ thinkingLevel: "high" });
     expect(result.credential).toMatchObject({ apiKey: "sk-anthropic" });
     expect(result.runtime.modelSource).toBe("profile_override");
   });

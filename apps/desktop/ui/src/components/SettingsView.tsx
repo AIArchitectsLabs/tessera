@@ -13,6 +13,7 @@ import {
 import {
   MODEL_PROVIDERS,
   defaultDraftForProvider,
+  modelOptionsForProvider,
   modelPlaceholderForProvider,
   providerLabel,
   shouldSendCredential,
@@ -1324,18 +1325,39 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
               </div>
 
               <div className="space-y-4">
-                <label className="block">
-                  <span className="text-sm font-medium text-foreground">Model</span>
-                  <input
-                    className="input mt-2"
-                    value={draft.model}
-                    disabled={modelBusy}
-                    placeholder={modelPlaceholderForProvider(selectedProvider)}
-                    onChange={(event) =>
-                      setDraft((current) => ({ ...current, model: event.target.value }))
-                    }
-                  />
-                </label>
+                <div className="block">
+                  <label htmlFor="settings-model" className="text-sm font-medium text-foreground">
+                    Model
+                  </label>
+                  {modelOptionsForProvider(selectedProvider, draft.model).length > 0 ? (
+                    <select
+                      id="settings-model"
+                      className="input mt-2"
+                      value={draft.model}
+                      disabled={modelBusy}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, model: event.target.value }))
+                      }
+                    >
+                      {modelOptionsForProvider(selectedProvider, draft.model).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="settings-model"
+                      className="input mt-2"
+                      value={draft.model}
+                      disabled={modelBusy}
+                      placeholder={modelPlaceholderForProvider(selectedProvider)}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, model: event.target.value }))
+                      }
+                    />
+                  )}
+                </div>
 
                 {draft.provider === "local" && (
                   <label className="block">

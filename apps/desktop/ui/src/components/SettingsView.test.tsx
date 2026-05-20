@@ -649,10 +649,19 @@ describe("SettingsView model flow", () => {
 
     fireEvent.click(view.getByRole("button", { name: /openai codex/i }));
 
+    expect((view.getByLabelText("Model") as HTMLSelectElement).value).toBe("gpt-5.4");
     expect(view.getByText("ChatGPT sign-in")).toBeTruthy();
     expect(view.getByText("No ChatGPT session connected")).toBeTruthy();
     expect(view.queryByText("API key")).toBeNull();
     expect(view.getByRole("button", { name: "Sign in with ChatGPT" })).toBeTruthy();
+  });
+
+  test("renders curated model choices for cloud providers", async () => {
+    const view = await renderModelView();
+
+    const openAiModel = view.getByLabelText("Model") as HTMLSelectElement;
+    expect(openAiModel.tagName).toBe("SELECT");
+    expect(Array.from(openAiModel.options).map((option) => option.value)).toContain("gpt-5.5");
   });
 
   test("starting Codex sign-in requests a device code", async () => {

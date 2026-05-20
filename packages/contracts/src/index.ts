@@ -46,31 +46,41 @@ export const SpawnResultSchema = z.object({
 
 export type SpawnResult = z.infer<typeof SpawnResultSchema>;
 
+export const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
+export type ThinkingLevel = z.infer<typeof ThinkingLevelSchema>;
+
+const CloudThinkingLevelSchema = ThinkingLevelSchema.exclude(["off"]).optional();
+
 export const AgentProviderConfigSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.literal("openai"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("OPENAI_API_KEY"),
+    thinkingLevel: CloudThinkingLevelSchema,
   }),
   z.object({
     provider: z.literal("openai-codex"),
     model: z.string().min(1),
+    thinkingLevel: CloudThinkingLevelSchema,
   }),
   z.object({
     provider: z.literal("anthropic"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("ANTHROPIC_API_KEY"),
+    thinkingLevel: CloudThinkingLevelSchema,
   }),
   z.object({
     provider: z.literal("openrouter"),
     model: z.string().min(1),
     apiKeyEnv: z.string().min(1).default("OPENROUTER_API_KEY"),
+    thinkingLevel: CloudThinkingLevelSchema,
   }),
   z.object({
     provider: z.literal("local"),
     model: z.string().min(1),
     baseUrl: z.string().url(),
     apiKeyEnv: z.string().min(1).optional(),
+    thinkingLevel: z.never().optional(),
   }),
 ]);
 

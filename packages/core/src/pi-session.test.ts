@@ -57,12 +57,14 @@ describe("runPiTaskTurn", () => {
       workspaceRoot?: string;
       modelRegistry?: ModelRegistry;
       model?: unknown;
-    } = {};
+      thinkingLevel: string | undefined;
+    } = { thinkingLevel: undefined };
     const factory: PiSessionFactory = async (options) => {
       seen.customTools = options.customTools;
       seen.workspaceRoot = options.workspaceRoot;
       seen.modelRegistry = options.modelRegistry;
       seen.model = options.model;
+      seen.thinkingLevel = options.thinkingLevel;
       return new FakeSession([
         {
           type: "message_update",
@@ -81,7 +83,12 @@ describe("runPiTaskTurn", () => {
       credential: "sk-test",
       factory,
       prompt: "Draft a note",
-      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      provider: {
+        provider: "openai",
+        model: "gpt-5.4",
+        apiKeyEnv: "OPENAI_API_KEY",
+        thinkingLevel: "medium",
+      },
       workspaceRoot,
     });
 
@@ -105,6 +112,7 @@ describe("runPiTaskTurn", () => {
     ]);
     expect(seen.model).toBeDefined();
     expect(seen.modelRegistry).toBeDefined();
+    expect(seen.thinkingLevel).toBe("medium");
   });
 
   test("captures token usage from nested SDK event.event payloads", async () => {
@@ -1093,7 +1101,7 @@ describe("runCodexResponsesTurn", () => {
       },
       fetchImpl: fakeFetch,
       prompt: "Reply OK",
-      provider: { provider: "openai-codex", model: "gpt-5.4" },
+      provider: { provider: "openai-codex", model: "gpt-5.4", thinkingLevel: "high" },
     });
 
     expect(result).toEqual({
@@ -1122,6 +1130,7 @@ describe("runCodexResponsesTurn", () => {
           content: [{ type: "input_text", text: "Reply OK" }],
         },
       ],
+      reasoning: { effort: "high" },
       store: false,
       stream: true,
     });

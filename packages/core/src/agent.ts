@@ -145,7 +145,10 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
         },
         shell: createSpawnShellExecutor(cli),
       }),
-      thinkingLevel: "off",
+      thinkingLevel:
+        model.reasoning && "thinkingLevel" in request.provider
+          ? (request.provider.thinkingLevel ?? "off")
+          : "off",
     },
     getApiKey(provider) {
       if (provider !== model.provider) return undefined;

@@ -84,6 +84,7 @@ function openRouterProfile(): AgentProfile {
         provider: "openrouter",
         model: "qwen/qwen3-coder",
         apiKeyEnv: "OPENROUTER_API_KEY",
+        thinkingLevel: "medium",
       },
     },
     instructions: "Analyze workspace data.",
@@ -178,10 +179,11 @@ describe("AgentSettingsView model overrides", () => {
     await waitFor(() => {
       expect((view.getByLabelText("Provider") as HTMLSelectElement).value).toBe("openrouter");
     });
-    setInputValue(view.getByLabelText("Model"), "z-ai/glm-4.6");
+    fireEvent.change(view.getByLabelText("Model"), { target: { value: "z-ai/glm-4.6" } });
     await waitFor(() => {
-      expect((view.getByLabelText("Model") as HTMLInputElement).value).toBe("z-ai/glm-4.6");
+      expect((view.getByLabelText("Model") as HTMLSelectElement).value).toBe("z-ai/glm-4.6");
     });
+    fireEvent.change(view.getByLabelText("Thinking level"), { target: { value: "high" } });
     fireEvent.click(view.getByRole("button", { name: "Save Agent" }));
 
     await waitFor(() => {
@@ -193,6 +195,7 @@ describe("AgentSettingsView model overrides", () => {
           provider: "openrouter",
           model: "z-ai/glm-4.6",
           apiKeyEnv: "OPENROUTER_API_KEY",
+          thinkingLevel: "high",
         },
       });
     });
@@ -202,15 +205,15 @@ describe("AgentSettingsView model overrides", () => {
     const view = render(React.createElement(AgentSettingsView, { userKey: "user.test" }));
 
     fireEvent.click(await view.findByRole("button", { name: /Router Analyst/ }));
-    expect(view.getByText("OpenRouter / qwen/qwen3-coder")).toBeTruthy();
+    expect(view.getByText("OpenRouter / qwen/qwen3-coder / Thinking medium")).toBeTruthy();
 
     fireEvent.change(view.getByLabelText("Provider"), { target: { value: "openai-codex" } });
     await waitFor(() => {
       expect((view.getByLabelText("Provider") as HTMLSelectElement).value).toBe("openai-codex");
     });
-    setInputValue(view.getByLabelText("Model"), "gpt-5.5");
+    fireEvent.change(view.getByLabelText("Model"), { target: { value: "gpt-5.5" } });
     await waitFor(() => {
-      expect((view.getByLabelText("Model") as HTMLInputElement).value).toBe("gpt-5.5");
+      expect((view.getByLabelText("Model") as HTMLSelectElement).value).toBe("gpt-5.5");
     });
     fireEvent.click(view.getByRole("button", { name: "Save Agent" }));
 
@@ -225,5 +228,17 @@ describe("AgentSettingsView model overrides", () => {
         },
       });
     });
+  });
+
+  test("hides thinking level for local model overrides", async () => {
+    const view = render(React.createElement(AgentSettingsView, { userKey: "user.test" }));
+
+    fireEvent.click(await view.findByRole("button", { name: /Router Analyst/ }));
+    fireEvent.change(view.getByLabelText("Provider"), { target: { value: "local" } });
+
+    await waitFor(() => {
+      expect((view.getByLabelText("Provider") as HTMLSelectElement).value).toBe("local");
+    });
+    expect(view.queryByLabelText("Thinking level")).toBeNull();
   });
 });

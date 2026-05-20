@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import {
   MODEL_PROVIDERS,
   defaultDraftForProvider,
+  modelOptionsForProvider,
   modelPlaceholderForProvider,
   providerLabel,
 } from "@/lib/modelSettings";
@@ -17,6 +18,7 @@ import {
   type SkillListResult,
   type SkillSummary,
   TOOL_POLICY_PRESET_DETAILS,
+  type ThinkingLevel,
   type ToolPolicyPreset,
 } from "@tessera/contracts";
 import { Bot, Loader2, Plus, RotateCcw, Trash2 } from "lucide-react";
@@ -34,6 +36,18 @@ type DraftState = {
   toolPolicyPreset: ToolPolicyPreset;
   memoryDefaults: string;
 };
+
+const THINKING_LEVEL_OPTIONS: Array<{
+  label: string;
+  value: ThinkingLevel;
+}> = [
+  { label: "Off", value: "off" },
+  { label: "Minimal", value: "minimal" },
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "X-High", value: "xhigh" },
+];
 
 function draftFromProfile(profile: AgentProfile | null): DraftState {
   return {
@@ -83,11 +97,21 @@ function draftFromTemplate(templateId: string): DraftState {
 
 function modelSummary(model: AgentModelSelection): string {
   if (model.mode === "default") return "Inherits Settings default";
-  return `${providerLabel(model.provider.provider)} / ${model.provider.model}`;
+  const thinking =
+    "thinkingLevel" in model.provider && model.provider.thinkingLevel
+      ? ` / Thinking ${model.provider.thinkingLevel}`
+      : "";
+  return `${providerLabel(model.provider.provider)} / ${model.provider.model}${thinking}`;
 }
 
 function modelProvider(model: AgentModelSelection): AgentProviderConfig {
   return model.mode === "override" ? model.provider : defaultDraftForProvider("openai");
+}
+
+function providerSupportsThinking(
+  provider: AgentProviderConfig
+): provider is Exclude<AgentProviderConfig, { provider: "local" }> {
+  return provider.provider !== "local";
 }
 
 interface AgentSettingsViewProps {
@@ -120,7 +144,7 @@ export function AgentSettingsView({ userKey }: AgentSettingsViewProps) {
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-6">
-      <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5 pr-44">
         <div className="min-w-0">
           <h1 className="text-xl font-semibold text-foreground">Agents</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -130,6 +154,7 @@ export function AgentSettingsView({ userKey }: AgentSettingsViewProps) {
         </div>
         <Button
           type="button"
+          className="shrink-0"
           onClick={() => setSelectedId("new")}
           disabled={loading || selectedId === "new"}
         >
@@ -552,6 +577,21 @@ function ModelField({
     });
   }
 
+  function updateThinkingLevel(value: ThinkingLevel) {
+    if (!providerSupportsThinking(provider)) return;
+    const { thinkingLevel: _thinkingLevel, ...providerWithoutThinking } = provider;
+    onChange({
+      mode: "override",
+      provider:
+        value === "off"
+          ? (providerWithoutThinking as AgentProviderConfig)
+          : ({
+              ...provider,
+              thinkingLevel: value,
+            } as AgentProviderConfig),
+    });
+  }
+
   return (
     <section className="rounded-2xl border border-border bg-secondary/20 p-4">
       <div className="text-sm font-medium text-foreground">Model</div>
@@ -619,17 +659,36 @@ function ModelField({
             </select>
           </label>
 
-          <label className="block">
-            <span className="text-sm font-medium text-foreground">Model</span>
-            <input
-              className="input mt-2"
-              value={provider.model}
-              disabled={disabled}
-              placeholder={modelPlaceholderForProvider(provider.provider)}
-              onInput={(event) => updateModel(event.currentTarget.value)}
-              onChange={(event) => updateModel(event.target.value)}
-            />
-          </label>
+          <div className="block">
+            <label htmlFor="agent-model" className="text-sm font-medium text-foreground">
+              Model
+            </label>
+            {modelOptionsForProvider(provider.provider, provider.model).length > 0 ? (
+              <select
+                id="agent-model"
+                className="input mt-2"
+                value={provider.model}
+                disabled={disabled}
+                onChange={(event) => updateModel(event.target.value)}
+              >
+                {modelOptionsForProvider(provider.provider, provider.model).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id="agent-model"
+                className="input mt-2"
+                value={provider.model}
+                disabled={disabled}
+                placeholder={modelPlaceholderForProvider(provider.provider)}
+                onInput={(event) => updateModel(event.currentTarget.value)}
+                onChange={(event) => updateModel(event.target.value)}
+              />
+            )}
+          </div>
 
           {provider.provider === "local" && (
             <label className="block md:col-span-2">
@@ -642,6 +701,28 @@ function ModelField({
                 onInput={(event) => updateBaseUrl(event.currentTarget.value)}
                 onChange={(event) => updateBaseUrl(event.target.value)}
               />
+            </label>
+          )}
+
+          {providerSupportsThinking(provider) && (
+            <label className="block md:col-span-2">
+              <span className="text-sm font-medium text-foreground">Thinking level</span>
+              <select
+                aria-label="Thinking level"
+                className="input mt-2"
+                value={"thinkingLevel" in provider ? (provider.thinkingLevel ?? "off") : "off"}
+                disabled={disabled}
+                onChange={(event) => updateThinkingLevel(event.target.value as ThinkingLevel)}
+              >
+                {THINKING_LEVEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-2 block text-xs text-muted-foreground">
+                Used only by providers and models that support reasoning effort.
+              </span>
             </label>
           )}
 

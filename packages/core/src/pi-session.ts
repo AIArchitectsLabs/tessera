@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentSessionEvent, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import {
@@ -60,6 +61,7 @@ export interface PiSessionFactoryOptions {
   // Pi SDK's Model type is not publicly exported; callers pass it opaquely.
   model?: unknown;
   modelRegistry: ModelRegistry;
+  thinkingLevel?: ThinkingLevel;
   workspaceRoot: string;
 }
 
@@ -121,6 +123,11 @@ function providerRequiresCredential(provider: AgentProviderConfig): boolean {
     provider.provider === "anthropic" ||
     provider.provider === "openrouter"
   );
+}
+
+function providerThinkingLevel(provider: AgentProviderConfig): ThinkingLevel {
+  if (provider.provider === "local") return "off";
+  return provider.thinkingLevel ?? "off";
 }
 
 function modelCapabilities(provider: AgentProviderConfig) {
@@ -431,6 +438,9 @@ export async function runCodexResponsesTurn(options: {
             content: [{ type: "input_text", text: options.prompt }],
           },
         ],
+        ...(providerThinkingLevel(options.provider) !== "off"
+          ? { reasoning: { effort: providerThinkingLevel(options.provider) } }
+          : {}),
         store: false,
         stream: true,
       }),
@@ -458,7 +468,7 @@ export async function runCodexResponsesTurn(options: {
 }
 
 function defaultFactory(): PiSessionFactory {
-  return async ({ customTools, model, modelRegistry, workspaceRoot }) => {
+  return async ({ customTools, model, modelRegistry, thinkingLevel, workspaceRoot }) => {
     const { session } = await createAgentSession({
       authStorage: modelRegistry.authStorage,
       customTools,
@@ -467,6 +477,7 @@ function defaultFactory(): PiSessionFactory {
       modelRegistry,
       noTools: "all",
       sessionManager: SessionManager.inMemory(),
+      ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
       tools: customTools.map((tool) => tool.name),
     });
     return session;
@@ -819,6 +830,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     customTools,
     model,
     modelRegistry,
+    thinkingLevel: providerThinkingLevel(options.provider),
     workspaceRoot: guard.root,
   });
 
