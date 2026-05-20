@@ -406,7 +406,7 @@ try {
   Bun.stdout.write(JSON.stringify({ ok: true, value: value === undefined ? null : value }));
 } catch (error) {
   Bun.stderr.write(error instanceof Error ? error.message : String(error));
-  Bun.exit(1);
+  process.exit(1);
 }
 `;
 }

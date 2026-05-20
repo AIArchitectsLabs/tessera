@@ -72,9 +72,7 @@ describe("built-in graph playbooks", () => {
       scriptSdkVersion: "test",
       compiledAt: "2026-05-16T00:00:00.000Z",
     });
-    const entry = loaded.find(
-      (candidate) => candidate.compiled.graph.id === "sales.meeting-brief"
-    );
+    const entry = loaded.find((candidate) => candidate.compiled.graph.id === "sales.meeting-brief");
     if (!entry) throw new Error("Missing Sales Meeting Brief built-in graph");
 
     expect(entry.compiled.graph.metadata?.outputs).toEqual([
@@ -119,9 +117,7 @@ describe("built-in graph playbooks", () => {
     expect(entry.sourceFiles["prompts/draft-risk-review.md"]).toContain(
       "Do not include internal working notes"
     );
-    expect(entry.sourceFiles["prompts/draft-risk-review.md"]).not.toContain(
-      "and source gaps"
-    );
+    expect(entry.sourceFiles["prompts/draft-risk-review.md"]).not.toContain("and source gaps");
   });
 
   test("weekly status digest exposes only the stakeholder-facing digest artifact", async () => {
@@ -148,9 +144,7 @@ describe("built-in graph playbooks", () => {
     expect(entry.sourceFiles["prompts/draft-status-digest.md"]).toContain(
       "Do not include internal working notes"
     );
-    expect(entry.sourceFiles["prompts/draft-status-digest.md"]).not.toContain(
-      "and source gaps"
-    );
+    expect(entry.sourceFiles["prompts/draft-status-digest.md"]).not.toContain("and source gaps");
   });
 
   test("activity snapshot preserves the legacy refreshable dashboard contract", async () => {

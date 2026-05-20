@@ -556,8 +556,12 @@ function artifactContractValue(input: {
   if (input.node.kind === "agent") {
     const text = agentOutputText(input.output);
     const parsed = text ? jsonParseCandidates(text) : [];
+    const usage = isRecord(input.output) ? input.output.usage : undefined;
     for (const candidate of parsed) {
       if (validateJsonSchemaValue(schemaSource.schema, candidate).length === 0) {
+        if (usage !== undefined && isRecord(candidate) && candidate.usage === undefined) {
+          return { ...candidate, usage };
+        }
         return candidate;
       }
     }

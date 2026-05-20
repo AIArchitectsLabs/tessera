@@ -1298,6 +1298,49 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("keeps OAuth access token refreshes out of graph execution fingerprints", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            agentProvider: {
+              provider: "openai-codex",
+              model: "gpt-test",
+            },
+            credential: {
+              authType: "codex-oauth",
+              accessToken: "volatile-access-token",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              accountId: "acct-stable",
+            },
+          }),
+        }),
+        { store }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: {
+          executionContext?: {
+            fingerprints: Record<string, unknown>;
+          };
+        };
+      };
+      const fingerprints = JSON.stringify(detail.run.executionContext?.fingerprints);
+      expect(fingerprints).toContain("acct-stable");
+      expect(fingerprints).not.toContain("volatile-access-token");
+      expect(fingerprints).not.toContain("runtimeAuthDigest");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("projects a pure graph run review surface from pinned run state", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunReviewSurface).toBeDefined();

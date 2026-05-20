@@ -788,7 +788,7 @@ function shouldShowInferredGraphOutput(kind: string, value: unknown): boolean {
   ) {
     return false;
   }
-  if (!playbookOutputArtifactPath(kind, value) && !artifactPreviewText(value)) return false;
+  if (!playbookOutputArtifactPath(kind, value)) return false;
   return !/scorecard/i.test(kind);
 }
 

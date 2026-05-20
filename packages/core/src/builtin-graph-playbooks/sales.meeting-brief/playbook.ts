@@ -69,8 +69,7 @@ export default {
       type: "string[]",
       required: true,
       label: "Research sources",
-      description:
-        "Sources to use internally when available while drafting the brief.",
+      description: "Sources to use internally when available while drafting the brief.",
       order: 5,
       group: "Research",
       default: ["web"],

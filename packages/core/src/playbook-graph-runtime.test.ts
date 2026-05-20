@@ -947,6 +947,7 @@ describe("drainPlaybookGraphRun", () => {
       pass: false,
       requiresRevision: true,
       findings: ["Brief needs deeper evidence."],
+      usage: { totalTokens: 100 },
     });
     expect(reworkInput).toEqual(review?.value);
     expect(artifacts.some((artifact) => artifact.artifactId === "final")).toBe(true);

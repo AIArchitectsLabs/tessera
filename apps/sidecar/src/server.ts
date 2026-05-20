@@ -1887,10 +1887,6 @@ function graphRunRuntimeAuthFingerprint(
     runtimeAuthKind: credential.authType,
     runtimeAuthBaseUrl: credential.baseUrl,
     ...(credential.accountId ? { runtimeAuthAccountId: credential.accountId } : {}),
-    runtimeAuthDigest: graphRunHash({
-      kind: credential.authType,
-      value: credential.accessToken,
-    }),
   };
 }
 

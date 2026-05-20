@@ -75,8 +75,7 @@ export default {
       type: "string[]",
       required: true,
       label: "Workspace sources",
-      description:
-        "Sources to use internally when available while drafting the digest.",
+      description: "Sources to use internally when available while drafting the digest.",
       order: 4,
       group: "Evidence",
       default: ["calendar", "mail", "drive"],

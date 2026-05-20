@@ -930,6 +930,19 @@ const seoCompletedGraphRunDetail = {
     {
       schemaVersion: 1,
       runId: "graph-run-seo-completed",
+      artifactId: "contentBriefDraft",
+      versionId: "content-brief-draft-v1",
+      producerQueueEntryId: "queue-draft-brief",
+      nodePath: "draftBrief",
+      contentHash: "sha256:content-brief-draft",
+      value: {
+        markdown: "# Raw content brief draft\n\nInternal draft.",
+      },
+      createdAt: "2026-05-18T12:30:45.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
       artifactId: "contentBrief",
       versionId: "content-brief-v1",
       producerQueueEntryId: "queue-synthesize-brief",
@@ -1732,6 +1745,7 @@ describe("PlaybooksView", () => {
       expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
       expect(view.getAllByText("Final Output Manifest").length).toBeGreaterThan(0);
       expect(view.getAllByText(/outputs\/final-output-manifest\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Content Brief Draft")).toBeNull();
       expect(view.queryByText("Article Scorecard")).toBeNull();
       expect(view.getByText("Input 2k tokens")).toBeTruthy();
       expect(view.getByText("Output 600 tokens")).toBeTruthy();
