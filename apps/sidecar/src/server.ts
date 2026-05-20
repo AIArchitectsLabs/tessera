@@ -48,6 +48,10 @@ import {
   type PlaybookGraphRunRecord,
   PlaybookGraphRunReviewSurfaceSchema,
   PlaybookListResultSchema,
+  PlaybookRunPreferenceReadRequestSchema,
+  PlaybookRunPreferenceReadResultSchema,
+  PlaybookRunPreferenceSaveRequestSchema,
+  PlaybookRunPreferenceSchema,
   type PlaybookRunProductAction,
   type PlaybookRunProductView,
   type PlaybookSummary,
@@ -131,6 +135,10 @@ import {
 import { type MemoryStore, createMemoryStore } from "./memory-store.js";
 import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
 import { runPlaybookGraphScript } from "./playbook-graph-script-runner.js";
+import {
+  type PlaybookRunPreferenceStore,
+  createPlaybookRunPreferenceStore,
+} from "./playbook-run-preference-store.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
 import { runTaskTurn } from "./task-runner.js";
@@ -193,6 +201,7 @@ const taskStore = createTaskStore(TASK_DB_PATH);
 const agentProfileStore = createAgentProfileStore(TASK_DB_PATH);
 const agentProfileStoresByUserKey = new Map<string, ReturnType<typeof createAgentProfileStore>>();
 const inboxStore = createInboxStore(TASK_DB_PATH);
+const playbookRunPreferenceStore = createPlaybookRunPreferenceStore(TASK_DB_PATH);
 const graphRunBackgroundWorkerRef: { current: GraphRunWorker | undefined } = {
   current: undefined,
 };
@@ -554,6 +563,7 @@ process.on("exit", () => {
     store.close();
   }
   inboxStore.close();
+  playbookRunPreferenceStore.close();
   memoryStore?.close();
 });
 for (const sig of ["SIGINT", "SIGTERM"]) {
@@ -4740,6 +4750,10 @@ interface PlaybookCatalogHandlerOptions {
   catalogState?: GraphPlaybookRegistryState;
 }
 
+interface PlaybookRunPreferenceHandlerOptions {
+  store?: PlaybookRunPreferenceStore;
+}
+
 function shouldRefreshGraphPlaybookCatalog(
   options: PlaybookCatalogHandlerOptions,
   catalogState: GraphPlaybookRegistryState
@@ -4815,6 +4829,61 @@ export async function handlePlaybookGet(
   const projection = entry ?? imported;
   if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
   return Response.json(graphPlaybookDetail(projection));
+}
+
+export async function handlePlaybookRunPreferenceRead(
+  req: Request,
+  playbookId: string,
+  options: PlaybookRunPreferenceHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const parsed = PlaybookRunPreferenceReadRequestSchema.safeParse({
+    workspaceRoot: searchParams.get("workspaceRoot") ?? "",
+  });
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const preference = (options.store ?? playbookRunPreferenceStore).get({
+    ownerUserKey: userKeyFromRequest(req) ?? LOCAL_GRAPH_RUN_OWNER_KEY,
+    workspaceRoot: parsed.data.workspaceRoot,
+    playbookId,
+  });
+  return Response.json(PlaybookRunPreferenceReadResultSchema.parse({ preference }));
+}
+
+export async function handlePlaybookRunPreferenceSave(
+  req: Request,
+  playbookId: string,
+  options: PlaybookRunPreferenceHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = PlaybookRunPreferenceSaveRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const preference = (options.store ?? playbookRunPreferenceStore).save({
+    ownerUserKey: userKeyFromRequest(req) ?? LOCAL_GRAPH_RUN_OWNER_KEY,
+    workspaceRoot: parsed.data.workspaceRoot,
+    playbookId,
+    assignmentPlan: parsed.data.assignmentPlan,
+  });
+  return Response.json(PlaybookRunPreferenceSchema.parse(preference));
 }
 
 function handleInboxList(req: Request): Response {
@@ -5879,6 +5948,16 @@ const server = Bun.serve({
 
     if (pathname === "/playbooks") {
       return handlePlaybookList(req);
+    }
+
+    const playbookRunPreferenceMatch = pathname.match(/^\/playbooks\/([^/]+)\/run-preference$/);
+    const playbookRunPreferenceId = playbookRunPreferenceMatch?.[1];
+    if (playbookRunPreferenceId) {
+      const decodedPlaybookId = decodeURIComponent(playbookRunPreferenceId);
+      if (req.method === "GET") {
+        return handlePlaybookRunPreferenceRead(req, decodedPlaybookId);
+      }
+      return handlePlaybookRunPreferenceSave(req, decodedPlaybookId);
     }
 
     if (pathname === "/inbox") {

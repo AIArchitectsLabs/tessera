@@ -11,6 +11,8 @@ import type {
   PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
+  PlaybookRunPreferenceReadResult,
+  WorkflowRunAssignmentPlan,
 } from "@tessera/contracts";
 import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { JSDOM } from "jsdom";
@@ -287,9 +289,12 @@ const graphRunSurface = {
       nodePath: "draft/score",
       contentHash: "sha256:brief-scorecard",
       value: {
-        overall: 60,
-        pass: false,
-        findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+        status: "completed",
+        text: JSON.stringify({
+          overall: 60,
+          pass: false,
+          findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+        }),
       },
       createdAt: "2026-05-15T00:00:45.000Z",
     },
@@ -331,9 +336,12 @@ const graphRunSurface = {
       contentHash: "sha256:brief-scorecard",
       active: true,
       value: {
-        overall: 60,
-        pass: false,
-        findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+        status: "completed",
+        text: JSON.stringify({
+          overall: 60,
+          pass: false,
+          findings: ["Brief needs stronger thesis, sources, or outline coverage."],
+        }),
       },
       createdAt: "2026-05-15T00:00:45.000Z",
     },
@@ -1180,6 +1188,7 @@ let useDeclaredImportedOutputs = false;
 let playbookListOverride: Promise<PlaybookListResult> | null = null;
 let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 let seoGraphRunSurfaceQueue: PlaybookGraphRunReviewSurface[] = [];
+let savedPlaybookAssignmentPlan: WorkflowRunAssignmentPlan | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   const currentImportedPlaybook = useDeclaredImportedOutputs
@@ -1213,6 +1222,30 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         sourceHash: importedPlaybook.sourceHash,
         warnings: [],
       };
+    case "playbook_run_preference_get":
+      return {
+        preference: savedPlaybookAssignmentPlan
+          ? {
+              workspaceRoot: args?.workspaceRoot as string,
+              playbookId: args?.playbookId as string,
+              assignmentPlan: savedPlaybookAssignmentPlan,
+              updatedAt: "2026-05-20T00:00:00.000Z",
+            }
+          : undefined,
+      } satisfies PlaybookRunPreferenceReadResult;
+    case "playbook_run_preference_save": {
+      const request = args?.request as
+        | { assignmentPlan?: WorkflowRunAssignmentPlan; workspaceRoot?: string }
+        | undefined;
+      if (!request?.assignmentPlan) throw new Error("Expected assignment plan");
+      savedPlaybookAssignmentPlan = request.assignmentPlan;
+      return {
+        workspaceRoot: request.workspaceRoot ?? "/tmp/workspace",
+        playbookId: args?.playbookId as string,
+        assignmentPlan: savedPlaybookAssignmentPlan,
+        updatedAt: "2026-05-20T00:00:00.000Z",
+      };
+    }
     case "graph_run_list":
       return {
         runs:
@@ -1417,6 +1450,7 @@ beforeEach(() => {
   playbookListOverride = null;
   graphRunSurfaceOverride = null;
   seoGraphRunSurfaceQueue = [];
+  savedPlaybookAssignmentPlan = null;
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -1595,6 +1629,35 @@ describe("PlaybooksView", () => {
     });
     expect(view.getByRole("button", { name: "Save selection" })).toBeTruthy();
     expect(view.queryByText("Graph runtime ready")).toBeNull();
+  });
+
+  test("persists agent setup selections across playbook view remounts", async () => {
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Change setup" }));
+    let agentSelect: HTMLSelectElement | null = null;
+    await waitFor(() => {
+      agentSelect = view.getByLabelText("Agent for Brief writer") as HTMLSelectElement;
+      expect(agentSelect).toBeTruthy();
+    });
+    if (!agentSelect) throw new Error("Expected agent select");
+    fireEvent.change(agentSelect, { target: { value: "analyst" } });
+    fireEvent.click(view.getByRole("button", { name: "Save selection" }));
+
+    await waitFor(() => {
+      expect(savedPlaybookAssignmentPlan?.assignments.draftBrief?.agentId).toBe("analyst");
+    });
+
+    view.unmount();
+    const reloaded = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(reloaded.getByText("Using saved setup: Analyst")).toBeTruthy();
+    });
   });
 
   test("shows completed graph run outputs", async () => {

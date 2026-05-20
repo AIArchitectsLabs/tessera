@@ -13,6 +13,7 @@ import {
 } from "@tessera/core";
 import type { GraphPlaybookRegistryEntry } from "./graph-playbook-registry.js";
 import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
+import { createPlaybookRunPreferenceStore } from "./playbook-run-preference-store.js";
 
 type RecordedFetchCall = {
   url: string;
@@ -49,6 +50,12 @@ let handleGraphRunGitMilestoneCommit:
   | undefined;
 let handlePlaybookGet: typeof import("./server.js").handlePlaybookGet | undefined;
 let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefined;
+let handlePlaybookRunPreferenceRead:
+  | typeof import("./server.js").handlePlaybookRunPreferenceRead
+  | undefined;
+let handlePlaybookRunPreferenceSave:
+  | typeof import("./server.js").handlePlaybookRunPreferenceSave
+  | undefined;
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let graphRunWorkspaceContext: typeof import("./server.js").graphRunWorkspaceContext | undefined;
@@ -93,6 +100,8 @@ beforeAll(async () => {
     handleGraphRunGitMilestoneCommit = serverModule.handleGraphRunGitMilestoneCommit;
     handlePlaybookGet = serverModule.handlePlaybookGet;
     handlePlaybookList = serverModule.handlePlaybookList;
+    handlePlaybookRunPreferenceRead = serverModule.handlePlaybookRunPreferenceRead;
+    handlePlaybookRunPreferenceSave = serverModule.handlePlaybookRunPreferenceSave;
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     graphRunWorkspaceContext = serverModule.graphRunWorkspaceContext;
@@ -966,6 +975,63 @@ describe("graph playbook import endpoint", () => {
           rm(root, { recursive: true, force: true })
         )
       );
+    }
+  });
+});
+
+describe("playbook run preference endpoints", () => {
+  test("saves and reads playbook agent setup by user and workspace", async () => {
+    expect(handlePlaybookRunPreferenceRead).toBeDefined();
+    expect(handlePlaybookRunPreferenceSave).toBeDefined();
+    const dbPath = join(
+      await mkdtemp(join(tmpdir(), "tessera-playbook-preferences-")),
+      "prefs.sqlite"
+    );
+    const store = createPlaybookRunPreferenceStore(dbPath);
+    try {
+      const assignmentPlan = testAssignmentPlan({ agentId: "analyst", agentLabel: "Analyst" });
+      const saveResponse = await handlePlaybookRunPreferenceSave?.(
+        new Request(
+          "http://localhost/playbooks/sales.meeting-brief/run-preference?userKey=user.test",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              workspaceRoot: "/tmp/workspace",
+              assignmentPlan,
+            }),
+          }
+        ),
+        "sales.meeting-brief",
+        { store }
+      );
+      expect(saveResponse?.status).toBe(200);
+
+      const readResponse = await handlePlaybookRunPreferenceRead?.(
+        new Request(
+          "http://localhost/playbooks/sales.meeting-brief/run-preference?userKey=user.test&workspaceRoot=/tmp/workspace"
+        ),
+        "sales.meeting-brief",
+        { store }
+      );
+      expect(readResponse?.status).toBe(200);
+      const result = (await readResponse?.json()) as {
+        preference?: { assignmentPlan?: WorkflowRunAssignmentPlan };
+      };
+      expect(result.preference?.assignmentPlan?.assignments.score?.agentId).toBe("analyst");
+
+      const otherWorkspaceResponse = await handlePlaybookRunPreferenceRead?.(
+        new Request(
+          "http://localhost/playbooks/sales.meeting-brief/run-preference?userKey=user.test&workspaceRoot=/tmp/other"
+        ),
+        "sales.meeting-brief",
+        { store }
+      );
+      expect(otherWorkspaceResponse?.status).toBe(200);
+      const otherWorkspace = (await otherWorkspaceResponse?.json()) as { preference?: unknown };
+      expect(otherWorkspace.preference).toBeUndefined();
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
 });

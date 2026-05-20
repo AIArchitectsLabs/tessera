@@ -1746,6 +1746,44 @@ async fn playbook_get(
 }
 
 #[tauri::command]
+async fn playbook_run_preference_get(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    workspace_root: String,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    push_workspace_root_param(&mut params, Some(&workspace_root));
+    let path = path_with_params(
+        format!("/playbooks/{}/run-preference", percent_encode(&playbook_id)),
+        params,
+    );
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_run_preference_save(
+    state: State<'_, SidecarHandle>,
+    playbook_id: String,
+    request: serde_json::Value,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(
+        format!("/playbooks/{}/run-preference", percent_encode(&playbook_id)),
+        params,
+    );
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn playbook_import(
     state: State<'_, SidecarHandle>,
     zip_path: String,
@@ -3123,6 +3161,8 @@ pub fn run() {
             playbook_get,
             playbook_import,
             playbook_list,
+            playbook_run_preference_get,
+            playbook_run_preference_save,
             sidecar_ping,
             skill_get,
             skill_list,

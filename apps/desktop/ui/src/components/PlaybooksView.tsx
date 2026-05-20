@@ -23,6 +23,7 @@ import type {
   PlaybookGraphRunReviewSurface,
   PlaybookListResult,
   PlaybookRunDetail,
+  PlaybookRunPreferenceReadResult,
   PlaybookSummary,
   TokenUsage,
   WorkflowCapabilityInventory,
@@ -366,17 +367,54 @@ function artifactPreviewText(value: unknown): string | null {
   return null;
 }
 
+function parseJsonObjectFromText(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  const candidates = [
+    trimmed,
+    trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim(),
+    trimmed.includes("{")
+      ? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1)
+      : undefined,
+  ].filter(
+    (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0
+  );
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function scorecardRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.overall === "number" ||
+    typeof record.pass === "boolean" ||
+    Array.isArray(record.findings)
+  ) {
+    return record;
+  }
+  return typeof record.text === "string" ? parseJsonObjectFromText(record.text) : null;
+}
+
 function isScorecardArtifact(artifact: GraphReviewArtifact): boolean {
   if (/scorecard/i.test(artifact.artifactId)) return true;
-  const value = artifact.value;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
+  const record = scorecardRecord(artifact.value);
+  if (!record) return false;
   return typeof record.overall === "number" || typeof record.pass === "boolean";
 }
 
 function scorecardSummary(value: unknown): ReviewScorecardSummary | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
+  const record = scorecardRecord(value);
+  if (!record) return null;
   const overall = typeof record.overall === "number" ? record.overall : undefined;
   const pass = typeof record.pass === "boolean" ? record.pass : undefined;
   const findings = Array.isArray(record.findings)
@@ -1623,6 +1661,31 @@ function buildGraphAssignmentPreview(
     blockers: [],
     sourceGaps: [],
     nodePreviews,
+  };
+}
+
+function assignmentPlanWithCurrentCandidates(
+  savedPlan: WorkflowRunAssignmentPlan,
+  preview: PlaybookAssignmentPreviewResult
+): WorkflowRunAssignmentPlan {
+  const assignments: WorkflowRunAssignmentPlan["assignments"] = {
+    ...(preview.assignmentPlan?.assignments ?? {}),
+  };
+
+  for (const nodePreview of preview.nodePreviews) {
+    const savedAssignment = savedPlan.assignments[nodePreview.stepId];
+    const currentCandidate = nodePreview.candidates.find(
+      (candidate) => candidate.agentId === savedAssignment?.agentId && !candidate.disabled
+    );
+    if (currentCandidate) {
+      assignments[nodePreview.stepId] = currentCandidate.assignment;
+    }
+  }
+
+  return {
+    resolverVersion: savedPlan.resolverVersion,
+    createdAt: savedPlan.createdAt,
+    assignments,
   };
 }
 
@@ -3936,7 +3999,9 @@ export function PlaybooksView({
     null
   );
   const [agentsConfirmed, setAgentsConfirmed] = useState(false);
+  const [savingPreference, setSavingPreference] = useState(false);
   const runListRequestRef = useRef(0);
+  const assignmentPreferenceRequestRef = useRef(0);
   const liveRunRefreshInFlightRef = useRef(false);
   const graphRunDrainInFlightRef = useRef(new Map<string, Promise<PlaybookGraphRunDetail>>());
   const selectedRunIdRef = useRef<string | null>(selectedRunId);
@@ -4037,6 +4102,7 @@ export function PlaybooksView({
   }, [contentScrollResetKey]);
 
   useEffect(() => {
+    const requestId = ++assignmentPreferenceRequestRef.current;
     if (!selectedPlaybookId || !workspaceRoot || !capabilityInventory) {
       setAssignmentPreview(null);
       setDraftAssignmentPlan(null);
@@ -4046,9 +4112,34 @@ export function PlaybooksView({
 
     if (selectedGraphHash) {
       const preview = buildGraphAssignmentPreview(selectedPlaybookForUi, capabilityInventory);
+      setSetupError(null);
       setAssignmentPreview(preview);
       setDraftAssignmentPlan(preview?.assignmentPlan ?? null);
       setAgentsConfirmed(true);
+      if (preview) {
+        void (async () => {
+          try {
+            const result = await invoke<PlaybookRunPreferenceReadResult>(
+              "playbook_run_preference_get",
+              {
+                playbookId: selectedPlaybookId,
+                workspaceRoot,
+                userKey,
+              }
+            );
+            if (assignmentPreferenceRequestRef.current !== requestId) return;
+            if (result.preference) {
+              setDraftAssignmentPlan(
+                assignmentPlanWithCurrentCandidates(result.preference.assignmentPlan, preview)
+              );
+              setAgentsConfirmed(true);
+            }
+          } catch (loadError) {
+            if (assignmentPreferenceRequestRef.current !== requestId) return;
+            setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
+          }
+        })();
+      }
       return;
     }
 
@@ -4060,6 +4151,7 @@ export function PlaybooksView({
     selectedGraphHash,
     selectedPlaybookForUi,
     selectedPlaybookId,
+    userKey,
     workspaceRoot,
   ]);
 
@@ -4590,7 +4682,25 @@ export function PlaybooksView({
   }
 
   async function confirmAgents() {
-    setAgentsConfirmed(true);
+    if (!selectedPlaybookId || !workspaceRoot || !draftAssignmentPlan) return;
+    setSavingPreference(true);
+    setSetupError(null);
+    try {
+      await invoke("playbook_run_preference_save", {
+        playbookId: selectedPlaybookId,
+        request: {
+          workspaceRoot,
+          assignmentPlan: draftAssignmentPlan,
+          ...(capabilityInventory ? { capabilityInventory } : {}),
+        },
+        userKey,
+      });
+      setAgentsConfirmed(true);
+    } catch (saveError) {
+      setSetupError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSavingPreference(false);
+    }
   }
 
   async function refreshDashboardRun() {
@@ -4937,10 +5047,13 @@ export function PlaybooksView({
             onFieldChange={(key, value) => setFormValues((prev) => ({ ...prev, [key]: value }))}
             onStart={() => void startRun()}
             onConfirmAgents={() => void confirmAgents()}
-            onAssignmentPlanChange={setDraftAssignmentPlan}
+            onAssignmentPlanChange={(plan) => {
+              setDraftAssignmentPlan(plan);
+              setAgentsConfirmed(false);
+            }}
             formReady={formReady}
             running={running || importingPlaybook}
-            savingPreference={false}
+            savingPreference={savingPreference}
             workspaceRoot={workspaceRoot}
             capabilityInventory={capabilityInventory}
             graphReady={!!selectedGraphHash}
