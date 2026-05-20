@@ -35,6 +35,7 @@ import {
   type PlaybookGraphNode,
   type PlaybookGraphOperationKind,
   type PlaybookGraphOperationRecord,
+  type PlaybookGraphPlatformContext,
   type PlaybookGraphQueueEntry,
   type PlaybookGraphResumeActionSpec,
   PlaybookGraphResumeActionSpecSchema,
@@ -47,6 +48,7 @@ import {
   PlaybookGraphRunListResultSchema,
   type PlaybookGraphRunRecord,
   PlaybookGraphRunReviewSurfaceSchema,
+  PlaybookGraphWritingStyleMetadataSchema,
   PlaybookListResultSchema,
   PlaybookRunPreferenceReadRequestSchema,
   PlaybookRunPreferenceReadResultSchema,
@@ -61,6 +63,7 @@ import {
   SidecarReadySchema,
   SpawnRequestSchema,
   type SpawnResult,
+  StyleComplianceSummarySchema,
   TaskCreateRequestSchema,
   TaskCreateTurnRequestSchema,
   TaskListResultSchema,
@@ -72,6 +75,9 @@ import {
   type WorkflowOutputDeclaration,
   WorkflowOutputDeclarationSchema,
   type WorkflowRunAssignmentPlan,
+  WorkspaceConfigSchema,
+  WorkspaceStyleGuideReadRequestSchema,
+  WorkspaceStyleGuideSaveRequestSchema,
   compileAgentRuntimeContext,
 } from "@tessera/contracts";
 import {
@@ -89,6 +95,7 @@ import {
   type PlaybookGraphScriptAdapterInput,
   type PlaybookGraphToolAdapterInput,
   type PlaybookGraphToolExecutionPolicy,
+  WorkspaceConfigConflictError,
   childPlaybookGraphNodePath,
   createGraphGitMilestoneService,
   createOptionalCapabilityManager,
@@ -110,7 +117,9 @@ import {
   parsePinnedCompiledGraph,
   playbookGraphExecutionContextDriftReason,
   readPlaybookGraphPackage,
+  readWorkspaceConfig,
   resolveSlashSkillInvocation,
+  saveWorkspaceConfig,
   softTimeoutMs,
   stableJsonStringify,
 } from "@tessera/core";
@@ -676,6 +685,17 @@ function graphPlaybookOutputs(entry: GraphPlaybookProjectionSource): WorkflowOut
   });
 }
 
+function graphPlaybookWritingStyle(
+  metadata: Record<string, unknown> | undefined
+): PlaybookSummary["writingStyle"] {
+  const raw =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? metadata.writingStyle
+      : undefined;
+  const parsed = PlaybookGraphWritingStyleMetadataSchema.safeParse(raw);
+  return parsed.success && parsed.data.enabled ? parsed.data : undefined;
+}
+
 function graphPlaybookSummary(entry: GraphPlaybookProjectionSource): PlaybookSummary {
   const graph = entry.compiled.graph;
   const metadata = graph.metadata;
@@ -697,6 +717,7 @@ function graphPlaybookSummary(entry: GraphPlaybookProjectionSource): PlaybookSum
     requiredCapabilities: graphPlaybookCapabilities(metadata, "requiredCapabilities"),
     optionalCapabilities: graphPlaybookCapabilities(metadata, "optionalCapabilities"),
     outputs: graphPlaybookOutputs(entry),
+    writingStyle: graphPlaybookWritingStyle(metadata),
     stepCount: graph.nodes.length,
     phases: graphMetadataStringArray(metadata, "phases"),
   });
@@ -1864,6 +1885,165 @@ function graphRunHash(value: unknown): string {
   return `sha256:${createHash("sha256").update(stableJsonStringify(value)).digest("hex")}`;
 }
 
+function graphWritingStyleMetadata(
+  graph: CompiledPlaybookGraph["graph"]
+): ReturnType<typeof PlaybookGraphWritingStyleMetadataSchema.parse> | undefined {
+  const parsed = PlaybookGraphWritingStyleMetadataSchema.safeParse(graph.metadata?.writingStyle);
+  return parsed.success && parsed.data.enabled ? parsed.data : undefined;
+}
+
+async function graphRunPlatformContext(input: {
+  compiledGraph: CompiledPlaybookGraph;
+  workspaceRoot?: string;
+  selection?: {
+    copyType?: string | undefined;
+    override?: string | undefined;
+    toneNudges?: string[] | undefined;
+  };
+}): Promise<PlaybookGraphPlatformContext | undefined> {
+  const writingStyle = graphWritingStyleMetadata(input.compiledGraph.graph);
+  if (!writingStyle || !input.workspaceRoot) return undefined;
+  const workspaceConfig = await readWorkspaceConfig(input.workspaceRoot);
+  if (!workspaceConfig.config.styleGuide) return undefined;
+  const workspaceGuide = WorkspaceConfigSchema.parse(workspaceConfig.config).styleGuide;
+  if (!workspaceGuide) return undefined;
+  const guide = workspaceGuide;
+  const copyType =
+    input.selection?.copyType ?? writingStyle.defaultCopyType ?? guide.profile.defaultCopyType;
+  const styleGuide = {
+    schemaVersion: 1 as const,
+    profileId: guide.profile.id,
+    profileName: guide.profile.name,
+    copyType,
+    source: "workspace" as const,
+    snapshot: guide,
+    ...(input.selection?.override ? { override: input.selection.override } : {}),
+    toneNudges: input.selection?.toneNudges ?? [],
+  };
+  const styleGuideHash = graphRunHash(styleGuide);
+  return { styleGuide, styleGuideHash };
+}
+
+function workspaceConfigErrorResponse(error: unknown): Response {
+  if (error instanceof WorkspaceConfigConflictError) {
+    return Response.json(
+      {
+        error: error.message,
+        currentFingerprint: error.currentFingerprint,
+      },
+      { status: 409 }
+    );
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const status =
+    error instanceof SyntaxError ||
+    (error instanceof Error && ["WorkspaceBoundaryError", "ZodError"].includes(error.name))
+      ? 400
+      : 500;
+  return Response.json({ error: message }, { status });
+}
+
+export async function handleWorkspaceStyleGuideRead(req: Request): Promise<Response> {
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const parsed = WorkspaceStyleGuideReadRequestSchema.safeParse({
+    workspaceRoot: searchParams.get("workspaceRoot") ?? "",
+  });
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    return Response.json(await readWorkspaceConfig(parsed.data.workspaceRoot));
+  } catch (error) {
+    return workspaceConfigErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceStyleGuideSave(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = WorkspaceStyleGuideSaveRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  try {
+    return Response.json(
+      await saveWorkspaceConfig({
+        workspaceRoot: parsed.data.workspaceRoot,
+        config: parsed.data.config,
+        ...(parsed.data.expectedFingerprint
+          ? { expectedFingerprint: parsed.data.expectedFingerprint }
+          : {}),
+        overwrite: parsed.data.overwrite,
+      })
+    );
+  } catch (error) {
+    return workspaceConfigErrorResponse(error);
+  }
+}
+
+function graphRunStylePromptSection(input: PlaybookGraphAgentAdapterInput): string | undefined {
+  const style = input.platformContext?.styleGuide;
+  if (!style) return undefined;
+  const guide = style.snapshot;
+  const copyType = guide.copyTypes[style.copyType];
+  const copyTypeLabel = copyType?.label ? `${copyType.label} (${style.copyType})` : style.copyType;
+  const targetWords =
+    copyType?.targetWords?.min && copyType.targetWords.max
+      ? `${copyType.targetWords.min}-${copyType.targetWords.max}`
+      : copyType?.targetWords?.min
+        ? `at least ${copyType.targetWords.min}`
+        : copyType?.targetWords?.max
+          ? `up to ${copyType.targetWords.max}`
+          : "";
+  return [
+    "Workspace Style Guide:",
+    `Profile: ${style.profileName}`,
+    `Copy type: ${copyTypeLabel}`,
+    copyType?.length ? `Length: ${copyType.length}` : "",
+    targetWords ? `Target words: ${targetWords}` : "",
+    copyType?.tone.length ? `Copy type tone: ${copyType.tone.join(", ")}` : "",
+    copyType?.formatRules.length ? `Format rules: ${copyType.formatRules.join("; ")}` : "",
+    guide.voice.persona ? `Persona: ${guide.voice.persona}` : "",
+    guide.voice.pointOfView ? `Point of view: ${guide.voice.pointOfView}` : "",
+    guide.tone.default.length > 0 ? `Tone: ${guide.tone.default.join(", ")}` : "",
+    guide.language.readingLevel ? `Reading level: ${guide.language.readingLevel}` : "",
+    guide.language.jargonPolicy ? `Jargon policy: ${guide.language.jargonPolicy}` : "",
+    guide.voice.principles.length > 0 ? `Principles: ${guide.voice.principles.join("; ")}` : "",
+    guide.language.preferredTerms.length > 0
+      ? `Preferred terms: ${guide.language.preferredTerms.join(", ")}`
+      : "",
+    guide.language.bannedTerms.length > 0
+      ? `Banned terms: ${guide.language.bannedTerms.join(", ")}`
+      : "",
+    guide.structure.introMaxWords ? `Intro max words: ${guide.structure.introMaxWords}` : "",
+    guide.structure.paragraphMaxSentences
+      ? `Paragraph max sentences: ${guide.structure.paragraphMaxSentences}`
+      : "",
+    guide.evidence.claimPolicy ? `Claim policy: ${guide.evidence.claimPolicy}` : "",
+    style.override ? `One-run override: ${style.override}` : "",
+    style.toneNudges.length > 0 ? `Tone nudges: ${style.toneNudges.join(", ")}` : "",
+    "Treat hard rules as binding for this node output.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function graphRunWorkspaceCli(
   options: GraphRunHandlerOptions
 ): (args: string[], timeoutMs?: number) => Promise<SpawnResult> {
@@ -2058,7 +2238,7 @@ export async function graphRunWorkspaceContext(
     .join("\n");
 }
 
-function graphRunAgentPrompt(
+export function graphRunAgentPrompt(
   input: PlaybookGraphAgentAdapterInput,
   workspaceContext?: string,
   agent?: AgentProfile
@@ -2068,9 +2248,11 @@ function graphRunAgentPrompt(
     nodeId: input.node.id,
     input: input.input,
     artifacts: input.artifacts,
+    platformContext: input.platformContext,
     branchItem: input.branchItem?.value,
   });
   const runtime = agent ? compileAgentRuntimeContext(agent) : undefined;
+  const styleSection = graphRunStylePromptSection(input);
   return [
     ...(agent
       ? [
@@ -2083,6 +2265,7 @@ function graphRunAgentPrompt(
         ].filter(Boolean)
       : []),
     input.prompt ?? `Execute graph agent node ${input.node.id}.`,
+    ...(styleSection ? ["", styleSection] : []),
     ...(workspaceContext ? ["", "Workspace context:", workspaceContext] : []),
     "",
     "Pinned graph runtime context:",
@@ -3006,6 +3189,135 @@ async function graphRunGitMilestonePreview(
   });
 }
 
+function graphNodeConsumesStyle(node: PlaybookGraphNode): boolean {
+  if (node.style?.consume === true) return true;
+  return node.kind === "agent" && node.output?.style?.consume === true;
+}
+
+function findGraphNodeByPath(
+  nodes: PlaybookGraphNode[],
+  nodePath: string
+): PlaybookGraphNode | null {
+  const nodeId = nodePath.split("/").at(-1);
+  if (!nodeId) return null;
+  for (const node of nodes) {
+    if (node.id === nodeId) return node;
+    if (node.kind === "parallelMap") {
+      const nested = findGraphNodeByPath(node.branch.nodes, nodePath);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function artifactText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "markdown", "content", "body", "article", "brief"]) {
+      if (typeof record[key] === "string") return record[key];
+    }
+  }
+  return "";
+}
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function sentenceCount(text: string): number {
+  return text
+    .split(/[.!?]+/)
+    .map((part) => part.trim())
+    .filter(Boolean).length;
+}
+
+function styleComplianceForDetail(
+  detail: GraphRunDetail
+): GraphRunReviewSurface["styleCompliance"] {
+  const styleContext = detail.run.platformContext?.styleGuide;
+  if (!styleContext) return undefined;
+  const compiled = parsePinnedCompiledGraph(detail.run.snapshot);
+  const guide = styleContext.snapshot;
+  const activeArtifacts = graphRunActiveArtifactRows(detail);
+  const findings: NonNullable<GraphRunReviewSurface["styleCompliance"]>["findings"] = [];
+
+  for (const artifact of activeArtifacts) {
+    const producer = findGraphNodeByPath(compiled.graph.nodes, artifact.nodePath);
+    if (!producer || !graphNodeConsumesStyle(producer)) continue;
+    const text = artifactText(artifact.value);
+    if (!text) continue;
+    const normalized = text.toLowerCase();
+
+    for (const term of guide.language.bannedTerms) {
+      if (!term.trim()) continue;
+      if (normalized.includes(term.toLowerCase())) {
+        findings.push({
+          artifactId: artifact.artifactId,
+          outputKind: artifact.artifactId,
+          nodePath: artifact.nodePath,
+          severity: "fail",
+          ruleId: "language.bannedTerms",
+          message: `Uses banned term: ${term}.`,
+          suggestedFix: "Replace it with a concrete, approved phrase or remove it.",
+        });
+      }
+    }
+
+    const paragraphs = text
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph && !paragraph.startsWith("#"));
+    const intro = paragraphs[0];
+    if (
+      intro &&
+      guide.structure.introMaxWords &&
+      wordCount(intro) > guide.structure.introMaxWords
+    ) {
+      findings.push({
+        artifactId: artifact.artifactId,
+        outputKind: artifact.artifactId,
+        nodePath: artifact.nodePath,
+        severity: "warning",
+        ruleId: "structure.introMaxWords",
+        message: `Intro is ${wordCount(intro)} words; limit is ${guide.structure.introMaxWords}.`,
+        suggestedFix: "Shorten the introduction and move detail into the body.",
+      });
+    }
+    if (guide.structure.paragraphMaxSentences) {
+      for (const paragraph of paragraphs) {
+        const count = sentenceCount(paragraph);
+        if (count > guide.structure.paragraphMaxSentences) {
+          findings.push({
+            artifactId: artifact.artifactId,
+            outputKind: artifact.artifactId,
+            nodePath: artifact.nodePath,
+            severity: "warning",
+            ruleId: "structure.paragraphMaxSentences",
+            message: `Paragraph has ${count} sentences; limit is ${guide.structure.paragraphMaxSentences}.`,
+            suggestedFix: "Split the paragraph into shorter, scannable blocks.",
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  const severity = findings.some((finding) => finding.severity === "fail")
+    ? "fail"
+    : findings.length > 0
+      ? "warning"
+      : "pass";
+  return StyleComplianceSummarySchema.parse({
+    schemaVersion: 1,
+    styleGuideHash: detail.run.platformContext?.styleGuideHash,
+    profileName: styleContext.profileName,
+    copyType: styleContext.copyType,
+    severity,
+    findings,
+  });
+}
+
 async function graphRunReviewSurfaceFromDetail(
   detail: GraphRunDetail,
   _options: GraphRunHandlerOptions
@@ -3021,6 +3333,7 @@ async function graphRunReviewSurfaceFromDetail(
     branches: graphRunBranchGroups(detail, activeArtifacts),
     actions,
     productView: graphRunProductView(detail, actions),
+    styleCompliance: styleComplianceForDetail(detail),
   });
 }
 
@@ -3594,12 +3907,18 @@ export async function handleGraphRunCreate(
       parsed.data.sourceFiles ??
       (await installedGraphRunSourceFiles(compiledGraph, graphPlaybookRuntimeOptions)) ??
       (await builtInGraphRunSourceFiles(compiledGraph));
+    const platformContext = await graphRunPlatformContext({
+      compiledGraph,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(parsed.data.styleGuideSelection ? { selection: parsed.data.styleGuideSelection } : {}),
+    });
 
     const run = await createPlaybookGraphRun({
       compiledGraph,
       ...(sourceFiles ? { sourceFiles } : {}),
       ownerUserKey: scope.ownerUserKey,
       input: parsed.data.input,
+      ...(platformContext ? { platformContext } : {}),
       ...(parsed.data.assignmentPlan ? { assignmentPlan: parsed.data.assignmentPlan } : {}),
       ...(executionContext !== undefined
         ? { executionContext }
@@ -5894,6 +6213,11 @@ const server = Bun.serve({
     if (pathname === "/graph-runs") {
       if (req.method === "GET") return handleGraphRunList(req);
       return handleGraphRunCreate(req);
+    }
+
+    if (pathname === "/workspace/style-guide") {
+      if (req.method === "GET") return handleWorkspaceStyleGuideRead(req);
+      return handleWorkspaceStyleGuideSave(req);
     }
 
     const graphRunDrainMatch = pathname.match(/^\/graph-runs\/([^/]+)\/drain$/);

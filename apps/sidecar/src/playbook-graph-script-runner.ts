@@ -460,11 +460,17 @@ export async function runPlaybookGraphScript(
         context: {
           input: options.input.input,
           artifacts: options.input.artifacts,
+          ...(options.input.platformContext
+            ? { platformContext: options.input.platformContext }
+            : {}),
           node: options.input.node,
           run: {
             runId: options.input.run.runId,
             playbookId: options.input.run.playbookId,
             input: options.input.run.input,
+            ...(options.input.run.platformContext
+              ? { platformContext: options.input.run.platformContext }
+              : {}),
           },
           queueEntry: {
             queueEntryId: options.input.queueEntry.queueEntryId,

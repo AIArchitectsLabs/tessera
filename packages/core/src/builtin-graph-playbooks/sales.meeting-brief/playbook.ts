@@ -16,6 +16,11 @@ export default {
         label: "Meeting brief",
       },
     ],
+    writingStyle: {
+      enabled: true,
+      defaultCopyType: "business.brief.medium",
+      supportedCopyTypes: ["business.brief.medium", "blog.article.long"],
+    },
     phases: ["Prepare", "Review"],
   },
   inputs: {
@@ -148,6 +153,7 @@ export default {
       output: {
         artifact: "meetingBrief",
         schema: "schemas/meetingBrief.schema.json",
+        style: { consume: true, purpose: "draft" },
       },
     },
     {

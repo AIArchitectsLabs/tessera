@@ -5,11 +5,13 @@ import type {
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
   PlaybookGraphOperationRecord,
+  PlaybookGraphPlatformContext,
   PlaybookGraphQueueEntry,
   PlaybookGraphReviewEvent,
   PlaybookGraphRunListFilter,
   PlaybookGraphRunRecord,
 } from "@tessera/contracts";
+import { WorkspaceConfigSchema } from "@tessera/contracts";
 import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
 import {
   type GraphRunStore,
@@ -563,6 +565,40 @@ function compiledGraph(graphPatch: Record<string, unknown> = {}): CompiledPlaybo
   });
 }
 
+function stylePlatformContext(): PlaybookGraphPlatformContext {
+  const config = WorkspaceConfigSchema.parse({
+    schemaVersion: 1,
+    styleGuide: {
+      profile: {
+        id: "brand",
+        name: "Brand Voice",
+        defaultCopyType: "business.brief.medium",
+      },
+      copyTypes: {
+        "business.brief.medium": {
+          label: "Business Brief",
+          length: "medium",
+          tone: ["direct"],
+          formatRules: ["summary first"],
+        },
+      },
+    },
+  });
+  if (!config.styleGuide) throw new Error("Expected style guide fixture");
+  return {
+    styleGuideHash: `sha256:${"a".repeat(64)}`,
+    styleGuide: {
+      schemaVersion: 1,
+      profileId: config.styleGuide.profile.id,
+      profileName: config.styleGuide.profile.name,
+      copyType: config.styleGuide.profile.defaultCopyType,
+      source: "workspace",
+      snapshot: config.styleGuide,
+      toneNudges: [],
+    },
+  };
+}
+
 describe("createPlaybookGraphSnapshot", () => {
   test("pins canonical compiled graph JSON and verifies snapshot hash", () => {
     const compiled = compiledGraph();
@@ -657,6 +693,87 @@ describe("createPlaybookGraphMemoKey", () => {
     expect(createPlaybookGraphMemoKey(first)).toBe(createPlaybookGraphMemoKey(second));
     expect(createPlaybookGraphMemoKey(first)).not.toBe(createPlaybookGraphMemoKey(changed));
   });
+
+  test("scopes platform context memo changes to style-consuming nodes", async () => {
+    const store = new MemoryGraphRunStore();
+    const compiled = compiledGraph({
+      nodes: [
+        {
+          id: "plan",
+          kind: "script",
+          run: "scripts/plan.ts",
+          inputs: {},
+          outputArtifact: "plan",
+          style: { consume: true },
+          onSuccess: "score",
+        },
+        {
+          id: "score",
+          kind: "script",
+          run: "scripts/score.ts",
+          inputs: { plan: { artifact: "plan" } },
+          outputArtifact: "scorecard",
+          onSuccess: "completed",
+        },
+      ],
+    });
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      store,
+      runId: "run-style-memo",
+      now: "2026-05-15T00:00:00.000Z",
+      platformContext: stylePlatformContext(),
+    });
+    const alternateRun: PlaybookGraphRunRecord = {
+      ...run,
+      platformContext: {
+        ...stylePlatformContext(),
+        styleGuideHash: `sha256:${"b".repeat(64)}`,
+      },
+    };
+    const [planNode, scoreNode] = compiled.graph.nodes;
+    if (!planNode || !scoreNode) throw new Error("Missing test nodes");
+    const planEntry = createPlaybookGraphQueueEntry({
+      runId: run.runId,
+      node: planNode,
+      nodePath: "plan",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const scoreEntry = createPlaybookGraphQueueEntry({
+      runId: run.runId,
+      node: scoreNode,
+      nodePath: "score",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const styleConsuming = createGraphNodeMemoKeyParts({
+      run,
+      node: planNode,
+      queueEntry: planEntry,
+      artifacts: [],
+    });
+    const styleConsumingChanged = createGraphNodeMemoKeyParts({
+      run: alternateRun,
+      node: planNode,
+      queueEntry: planEntry,
+      artifacts: [],
+    });
+    const styleAgnostic = createGraphNodeMemoKeyParts({
+      run,
+      node: scoreNode,
+      queueEntry: scoreEntry,
+      artifacts: [],
+    });
+    const styleAgnosticChanged = createGraphNodeMemoKeyParts({
+      run: alternateRun,
+      node: scoreNode,
+      queueEntry: scoreEntry,
+      artifacts: [],
+    });
+
+    expect(styleConsuming.platformContextHash).not.toBe(styleConsumingChanged.platformContextHash);
+    expect(styleAgnostic.platformContextHash).toBe(styleAgnosticChanged.platformContextHash);
+  });
 });
 
 describe("drainPlaybookGraphRun", () => {
@@ -672,6 +789,63 @@ describe("drainPlaybookGraphRun", () => {
 
     expect(run.assignmentPlan?.assignments.draft?.agentId).toBe("writer");
     expect((await store.getRun(run.runId))?.assignmentPlan).toEqual(assignmentPlan);
+  });
+
+  test("passes platform context only to style-consuming adapters", async () => {
+    const store = new MemoryGraphRunStore();
+    const compiled = compiledGraph({
+      nodes: [
+        {
+          id: "plan",
+          kind: "script",
+          run: "scripts/plan.ts",
+          inputs: {},
+          outputArtifact: "plan",
+          style: { consume: true },
+          onSuccess: "score",
+        },
+        {
+          id: "score",
+          kind: "script",
+          run: "scripts/score.ts",
+          inputs: { plan: { artifact: "plan" } },
+          outputArtifact: "scorecard",
+          onSuccess: "completed",
+        },
+      ],
+    });
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      store,
+      runId: "run-style-platform-context",
+      now: "2026-05-15T00:00:00.000Z",
+      platformContext: stylePlatformContext(),
+    });
+    const seen: Array<{
+      hasPlatformContext: boolean;
+      nodeId: string;
+      runHasPlatformContext: boolean;
+    }> = [];
+
+    await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-1",
+      store,
+      now: () => "2026-05-15T00:00:01.000Z",
+      scriptAdapter: (input) => {
+        seen.push({
+          nodeId: input.node.id,
+          hasPlatformContext: input.platformContext !== undefined,
+          runHasPlatformContext: input.run.platformContext !== undefined,
+        });
+        return input.node.outputArtifact === "plan" ? { title: "Plan" } : { score: 1 };
+      },
+    });
+
+    expect(seen).toEqual([
+      { nodeId: "plan", hasPlatformContext: true, runHasPlatformContext: true },
+      { nodeId: "score", hasPlatformContext: false, runHasPlatformContext: false },
+    ]);
   });
 
   test("does not persist a run when start queue creation fails", async () => {
@@ -1287,8 +1461,14 @@ describe("drainPlaybookGraphRun", () => {
       store,
       runId: "run-write",
       now: "2026-05-15T00:00:00.000Z",
+      platformContext: stylePlatformContext(),
     });
-    const writes: Array<{ path: string; value: unknown; versionId: string }> = [];
+    const writes: Array<{
+      path: string;
+      runHasPlatformContext: boolean;
+      value: unknown;
+      versionId: string;
+    }> = [];
 
     const result = await drainPlaybookGraphRun({
       runId: run.runId,
@@ -1297,8 +1477,13 @@ describe("drainPlaybookGraphRun", () => {
       scriptAdapter() {
         return { title: "Plan" };
       },
-      artifactWriteAdapter({ node, value, artifactVersion }) {
-        writes.push({ path: node.path, value, versionId: artifactVersion.versionId });
+      artifactWriteAdapter({ run, node, value, artifactVersion }) {
+        writes.push({
+          path: node.path,
+          runHasPlatformContext: run.platformContext !== undefined,
+          value,
+          versionId: artifactVersion.versionId,
+        });
         return { path: node.path, bytes: 16 };
       },
     });
@@ -1308,6 +1493,7 @@ describe("drainPlaybookGraphRun", () => {
     expect(writes).toEqual([
       {
         path: "out/plan.json",
+        runHasPlatformContext: false,
         value: { title: "Plan" },
         versionId: expect.stringContaining(":plan:v1"),
       },

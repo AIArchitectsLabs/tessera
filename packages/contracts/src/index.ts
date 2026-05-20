@@ -1579,6 +1579,204 @@ export type PlaybookGraphLimits = z.infer<typeof PlaybookGraphLimitsSchema>;
 const PlaybookGraphInputSchema = WorkflowInputDefinitionSchema;
 export type PlaybookGraphInput = WorkflowInputDefinition;
 
+export const WorkspaceStyleToneDimensionsSchema = z
+  .object({
+    formality: z.number().int().min(0).max(5).default(3),
+    warmth: z.number().int().min(0).max(5).default(2),
+    urgency: z.number().int().min(0).max(5).default(1),
+    playfulness: z.number().int().min(0).max(5).default(0),
+  })
+  .passthrough();
+export type WorkspaceStyleToneDimensions = z.infer<typeof WorkspaceStyleToneDimensionsSchema>;
+
+export const WorkspaceStyleCopyTypeSchema = z
+  .object({
+    label: z.string().min(1),
+    length: z.enum(["short", "medium", "long"]).optional(),
+    targetWords: z
+      .object({
+        min: z.number().int().nonnegative().optional(),
+        max: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+    tone: z.array(z.string().min(1)).default([]),
+    formatRules: z.array(z.string().min(1)).default([]),
+  })
+  .passthrough();
+export type WorkspaceStyleCopyType = z.infer<typeof WorkspaceStyleCopyTypeSchema>;
+
+export const WorkspaceStyleExampleSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    kind: z.enum(["positive", "negative"]).default("positive"),
+    text: z.string().min(1),
+    note: z.string().min(1).optional(),
+  })
+  .strict();
+export type WorkspaceStyleExample = z.infer<typeof WorkspaceStyleExampleSchema>;
+
+export const WorkspaceStyleGuideSchema = z
+  .object({
+    schemaVersion: z.literal(1).default(1),
+    profile: z
+      .object({
+        id: z.string().min(1).default("default"),
+        name: z.string().min(1).default("Default Brand Voice"),
+        locale: z.string().min(1).default("en-US"),
+        defaultCopyType: z.string().min(1).default("blog.article.long"),
+      })
+      .passthrough()
+      .default({}),
+    voice: z
+      .object({
+        pointOfView: z.string().default(""),
+        persona: z.string().default(""),
+        principles: z.array(z.string().min(1)).default([]),
+        avoid: z.array(z.string().min(1)).default([]),
+      })
+      .passthrough()
+      .default({}),
+    tone: z
+      .object({
+        default: z.array(z.string().min(1)).default([]),
+        dimensions: WorkspaceStyleToneDimensionsSchema.default({}),
+      })
+      .passthrough()
+      .default({}),
+    language: z
+      .object({
+        readingLevel: z.string().default(""),
+        jargonPolicy: z.string().default(""),
+        preferredTerms: z.array(z.string().min(1)).default([]),
+        bannedTerms: z.array(z.string().min(1)).default([]),
+      })
+      .passthrough()
+      .default({}),
+    structure: z
+      .object({
+        introMaxWords: z.number().int().positive().optional(),
+        paragraphMaxSentences: z.number().int().positive().optional(),
+        prefer: z.array(z.string().min(1)).default([]),
+        avoid: z.array(z.string().min(1)).default([]),
+      })
+      .passthrough()
+      .default({}),
+    evidence: z
+      .object({
+        claimPolicy: z.string().default(""),
+        citationStyle: z.string().default(""),
+        unsupportedClaims: z.string().default(""),
+      })
+      .passthrough()
+      .default({}),
+    seoGeo: z
+      .object({
+        directAnswerRequired: z.boolean().default(false),
+        answerWithinWords: z.number().int().positive().optional(),
+        entityGuidance: z.string().default(""),
+        snippetOptimization: z.array(z.string().min(1)).default([]),
+      })
+      .passthrough()
+      .default({}),
+    copyTypes: z.record(WorkspaceStyleCopyTypeSchema).default({}),
+    examples: z.array(WorkspaceStyleExampleSchema).default([]),
+    review: z
+      .object({
+        failOn: z.array(z.string().min(1)).default([]),
+        warnOn: z.array(z.string().min(1)).default([]),
+      })
+      .passthrough()
+      .default({}),
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (!containsSecretField(value)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Workspace style guide must not contain secret-bearing fields",
+    });
+  });
+export type WorkspaceStyleGuide = z.infer<typeof WorkspaceStyleGuideSchema>;
+
+export const WorkspaceConfigSchema = z
+  .object({
+    schemaVersion: z.literal(1).default(1),
+    styleGuide: WorkspaceStyleGuideSchema.optional(),
+  })
+  .catchall(z.unknown())
+  .superRefine((value, ctx) => {
+    if (!containsSecretField(value)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Workspace config must not contain secret-bearing fields",
+    });
+  });
+export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
+
+export const WorkspaceStyleGuideReadRequestSchema = z
+  .object({
+    workspaceRoot: z.string().min(1),
+  })
+  .strict();
+export type WorkspaceStyleGuideReadRequest = z.infer<typeof WorkspaceStyleGuideReadRequestSchema>;
+
+export const WorkspaceStyleGuideSaveRequestSchema = z
+  .object({
+    workspaceRoot: z.string().min(1),
+    config: WorkspaceConfigSchema,
+    expectedFingerprint: z.string().min(1).optional(),
+    overwrite: z.boolean().default(false),
+  })
+  .strict();
+export type WorkspaceStyleGuideSaveRequest = z.infer<typeof WorkspaceStyleGuideSaveRequestSchema>;
+
+export const WorkspaceStyleGuideReadResultSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    workspaceRoot: z.string().min(1),
+    exists: z.boolean(),
+    config: WorkspaceConfigSchema,
+    fingerprint: z.string().min(1),
+    updatedAt: z.string().datetime().optional(),
+  })
+  .strict();
+export type WorkspaceStyleGuideReadResult = z.infer<typeof WorkspaceStyleGuideReadResultSchema>;
+
+export const WorkspaceStyleGuideSaveResultSchema = WorkspaceStyleGuideReadResultSchema.extend({
+  savedAt: z.string().datetime(),
+}).strict();
+export type WorkspaceStyleGuideSaveResult = z.infer<typeof WorkspaceStyleGuideSaveResultSchema>;
+
+export const GraphRunStyleSelectionSchema = z
+  .object({
+    copyType: z.string().min(1).optional(),
+    override: z.string().max(2_000).optional(),
+    toneNudges: z.array(z.string().min(1).max(80)).default([]),
+  })
+  .strict();
+export type GraphRunStyleSelection = z.infer<typeof GraphRunStyleSelectionSchema>;
+
+export const PlaybookGraphWritingStyleMetadataSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    defaultCopyType: z.string().min(1).optional(),
+    supportedCopyTypes: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type PlaybookGraphWritingStyleMetadata = z.infer<
+  typeof PlaybookGraphWritingStyleMetadataSchema
+>;
+
+export const PlaybookGraphNodeStyleSchema = z
+  .object({
+    consume: z.boolean().default(false),
+    copyType: z.string().min(1).optional(),
+    purpose: z.enum(["draft", "rework", "review", "other"]).default("other"),
+  })
+  .strict();
+export type PlaybookGraphNodeStyle = z.infer<typeof PlaybookGraphNodeStyleSchema>;
+
 export type PlaybookGraphBranch = {
   start: string;
   nodes: PlaybookGraphNode[];
@@ -1589,16 +1787,19 @@ export type PlaybookGraphNodeBase = {
   label?: string;
   onSuccess?: string;
   onFailure?: string;
+  style?: PlaybookGraphNodeStyle;
 };
 
 export type PlaybookGraphNodeOutput =
   | {
       artifact: string;
       schema?: string;
+      style?: PlaybookGraphNodeStyle;
     }
   | {
       artifact?: string;
       schema: string;
+      style?: PlaybookGraphNodeStyle;
     };
 
 export type PlaybookGraphJoinNode = PlaybookGraphNodeBase & {
@@ -1684,6 +1885,7 @@ const PlaybookGraphNodeBaseSchema = z
     label: z.string().min(1).optional(),
     onSuccess: PlaybookGraphNodeIdSchema.optional(),
     onFailure: PlaybookGraphNodeIdSchema.optional(),
+    style: PlaybookGraphNodeStyleSchema.optional(),
   })
   .strict();
 
@@ -1691,6 +1893,7 @@ const PlaybookGraphNodeOutputSchema = z
   .object({
     artifact: z.string().min(1).optional(),
     schema: PlaybookGraphSourceRefSchema.optional(),
+    style: PlaybookGraphNodeStyleSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -1927,6 +2130,63 @@ export const PlaybookGraphNodePathSchema = z
   });
 export type PlaybookGraphNodePath = z.infer<typeof PlaybookGraphNodePathSchema>;
 
+export const GraphRunStyleContextSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    profileId: z.string().min(1),
+    profileName: z.string().min(1),
+    copyType: z.string().min(1),
+    source: z.enum(["defaults", "workspace"]),
+    snapshot: WorkspaceStyleGuideSchema,
+    override: z.string().max(2_000).optional(),
+    toneNudges: z.array(z.string().min(1).max(80)).default([]),
+  })
+  .strict();
+export type GraphRunStyleContext = z.infer<typeof GraphRunStyleContextSchema>;
+
+export const PlaybookGraphPlatformContextSchema = z
+  .object({
+    styleGuide: GraphRunStyleContextSchema.optional(),
+    styleGuideHash: Sha256DigestSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!containsSecretField(value)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Graph platform context must not contain secret-bearing fields",
+    });
+  });
+export type PlaybookGraphPlatformContext = z.infer<typeof PlaybookGraphPlatformContextSchema>;
+
+export const StyleComplianceSeveritySchema = z.enum(["pass", "warning", "fail"]);
+export type StyleComplianceSeverity = z.infer<typeof StyleComplianceSeveritySchema>;
+
+export const StyleComplianceFindingSchema = z
+  .object({
+    artifactId: z.string().min(1),
+    outputKind: z.string().min(1).optional(),
+    nodePath: PlaybookGraphNodePathSchema,
+    severity: StyleComplianceSeveritySchema,
+    ruleId: z.string().min(1),
+    message: z.string().min(1),
+    suggestedFix: z.string().min(1).optional(),
+  })
+  .strict();
+export type StyleComplianceFinding = z.infer<typeof StyleComplianceFindingSchema>;
+
+export const StyleComplianceSummarySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    styleGuideHash: Sha256DigestSchema.optional(),
+    profileName: z.string().min(1).optional(),
+    copyType: z.string().min(1).optional(),
+    severity: StyleComplianceSeveritySchema.default("pass"),
+    findings: z.array(StyleComplianceFindingSchema).default([]),
+  })
+  .strict();
+export type StyleComplianceSummary = z.infer<typeof StyleComplianceSummarySchema>;
+
 export const PlaybookGraphSnapshotSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -2000,6 +2260,7 @@ export const PlaybookGraphRunRecordSchema = z
     playbookId: SafePlaybookIdSchema,
     status: PlaybookGraphRunStatusSchema,
     input: z.record(z.unknown()).default({}),
+    platformContext: PlaybookGraphPlatformContextSchema.optional(),
     materialization: PlaybookGraphMaterializationTargetSchema.optional(),
     executionContext: PlaybookGraphExecutionContextSchema.optional(),
     assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
@@ -2230,6 +2491,7 @@ export const PlaybookGraphMemoKeyPartsSchema = z
     nodePath: PlaybookGraphNodePathSchema,
     nodeSpecHash: Sha256DigestSchema,
     executionContextHash: Sha256DigestSchema,
+    platformContextHash: Sha256DigestSchema.optional(),
     inputSnapshotHash: Sha256DigestSchema,
   })
   .strict()
@@ -2547,6 +2809,7 @@ export const PlaybookGraphRunCreateRequestSchema = z
     sourceHash: Sha256DigestSchema.optional(),
     drainDeterministic: z.boolean().default(false),
     workspaceRoot: z.string().min(1).optional(),
+    styleGuideSelection: GraphRunStyleSelectionSchema.optional(),
     executionContext: PlaybookGraphExecutionContextInputSchema.optional(),
     assignmentPlan: WorkflowRunAssignmentPlanSchema.optional(),
     agentId: z.string().min(1).default("default"),
@@ -2613,6 +2876,7 @@ export const PlaybookGraphRunReviewSurfaceSchema = z
     actions: z.array(PlaybookGraphResumeActionSpecSchema).default([]),
     gitMilestone: PlaybookGraphGitMilestonePreviewSchema.optional(),
     productView: PlaybookRunProductViewSchema.optional(),
+    styleCompliance: StyleComplianceSummarySchema.optional(),
   })
   .strict();
 export type PlaybookGraphRunReviewSurface = z.infer<typeof PlaybookGraphRunReviewSurfaceSchema>;
@@ -2630,6 +2894,7 @@ export const PlaybookSummarySchema = z.object({
   requiredCapabilities: z.array(WorkflowCapabilitySchema).default([]),
   optionalCapabilities: z.array(WorkflowCapabilitySchema).default([]),
   outputs: z.array(WorkflowOutputDeclarationSchema).optional(),
+  writingStyle: PlaybookGraphWritingStyleMetadataSchema.optional(),
   stepCount: z.number().int().nonnegative(),
   phases: z.array(z.string().min(1)).default([]),
 });
@@ -2771,13 +3036,13 @@ export type WorkflowResumeRequest = z.infer<typeof WorkflowResumeRequestSchema>;
 
 const SECRET_FIELD_NAMES = new Set([
   "apikey",
-  "api_key",
   "accesstoken",
-  "access_token",
   "token",
   "refreshtoken",
-  "refresh_token",
   "secret",
+  "clientsecret",
+  "secretkey",
+  "privatekey",
   "password",
   "credential",
   "authorization",
@@ -2788,7 +3053,7 @@ function containsSecretField(value: unknown): boolean {
   if (Array.isArray(value)) return value.some((item) => containsSecretField(item));
 
   return Object.entries(value).some(([key, nested]) => {
-    const normalized = key.toLowerCase().replace(/[-\s]/g, "_");
+    const normalized = key.toLowerCase().replace(/[-_\s]/g, "");
     return SECRET_FIELD_NAMES.has(normalized) || containsSecretField(nested);
   });
 }

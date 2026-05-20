@@ -53,6 +53,13 @@ export {
   type WorkspaceGuard,
 } from "./workspace-guard.js";
 export {
+  defaultWorkspaceConfig,
+  readWorkspaceConfig,
+  saveWorkspaceConfig,
+  WorkspaceConfigConflictError,
+  workspaceConfigRelativePath,
+} from "./workspace-config.js";
+export {
   createGraphGitMilestoneService,
   type GitServiceCommandInput,
   type GitServiceCommandResult,

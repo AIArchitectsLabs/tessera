@@ -1808,6 +1808,31 @@ async fn playbook_import(
 }
 
 #[tauri::command]
+async fn workspace_style_guide_get(
+    state: State<'_, SidecarHandle>,
+    workspace_root: String,
+) -> Result<serde_json::Value, String> {
+    let path = format!(
+        "/workspace/style-guide?workspaceRoot={}",
+        percent_encode(&workspace_root)
+    );
+    let json = state.get(&path).await.map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn workspace_style_guide_save(
+    state: State<'_, SidecarHandle>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let json = state
+        .post("/workspace/style-guide", &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn graph_run_create(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
@@ -3179,7 +3204,9 @@ pub fn run() {
             task_todo_apply,
             task_unsubscribe,
             task_update,
-            workspace_file_open
+            workspace_file_open,
+            workspace_style_guide_get,
+            workspace_style_guide_save
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Tessera")

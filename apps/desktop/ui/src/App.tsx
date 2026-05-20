@@ -522,7 +522,11 @@ export default function App() {
         onViewChange={setActiveView}
       />
       {settingsOpen ? (
-        <SettingsView onClose={() => setSettingsOpen(false)} userKey={authSession.userKey} />
+        <SettingsView
+          onClose={() => setSettingsOpen(false)}
+          userKey={authSession.userKey}
+          workspaceRoot={workspaceRoot}
+        />
       ) : activeView === "inbox" ? (
         <InboxView
           error={inboxError}

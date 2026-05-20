@@ -56,9 +56,16 @@ let handlePlaybookRunPreferenceRead:
 let handlePlaybookRunPreferenceSave:
   | typeof import("./server.js").handlePlaybookRunPreferenceSave
   | undefined;
+let handleWorkspaceStyleGuideRead:
+  | typeof import("./server.js").handleWorkspaceStyleGuideRead
+  | undefined;
+let handleWorkspaceStyleGuideSave:
+  | typeof import("./server.js").handleWorkspaceStyleGuideSave
+  | undefined;
 let createGraphRunWorker: typeof import("./server.js").createGraphRunWorker | undefined;
 let drainGraphRunWorkQueue: typeof import("./server.js").drainGraphRunWorkQueue | undefined;
 let graphRunWorkspaceContext: typeof import("./server.js").graphRunWorkspaceContext | undefined;
+let graphRunAgentPrompt: typeof import("./server.js").graphRunAgentPrompt | undefined;
 let graphRunAgentProfileForNode:
   | typeof import("./server.js").graphRunAgentProfileForNode
   | undefined;
@@ -102,9 +109,12 @@ beforeAll(async () => {
     handlePlaybookList = serverModule.handlePlaybookList;
     handlePlaybookRunPreferenceRead = serverModule.handlePlaybookRunPreferenceRead;
     handlePlaybookRunPreferenceSave = serverModule.handlePlaybookRunPreferenceSave;
+    handleWorkspaceStyleGuideRead = serverModule.handleWorkspaceStyleGuideRead;
+    handleWorkspaceStyleGuideSave = serverModule.handleWorkspaceStyleGuideSave;
     createGraphRunWorker = serverModule.createGraphRunWorker;
     drainGraphRunWorkQueue = serverModule.drainGraphRunWorkQueue;
     graphRunWorkspaceContext = serverModule.graphRunWorkspaceContext;
+    graphRunAgentPrompt = serverModule.graphRunAgentPrompt;
     graphRunAgentProfileForNode = serverModule.graphRunAgentProfileForNode;
     pollCodexDeviceToken = serverModule.pollCodexDeviceToken;
     refreshCodexOAuthCredential = serverModule.refreshCodexOAuthCredential;
@@ -1036,6 +1046,105 @@ describe("playbook run preference endpoints", () => {
   });
 });
 
+describe("workspace style guide endpoints", () => {
+  test("reads, saves, and detects stale workspace config writes", async () => {
+    expect(handleWorkspaceStyleGuideRead).toBeDefined();
+    expect(handleWorkspaceStyleGuideSave).toBeDefined();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-style-guide-endpoint-"));
+    try {
+      const readResponse = await handleWorkspaceStyleGuideRead?.(
+        new Request(
+          `http://localhost/workspace/style-guide?workspaceRoot=${encodeURIComponent(workspaceRoot)}`
+        )
+      );
+      expect(readResponse?.status).toBe(200);
+      const initial = (await readResponse?.json()) as {
+        exists: boolean;
+        fingerprint: string;
+      };
+      expect(initial.exists).toBe(false);
+      expect(initial.fingerprint).toBe("sha256:missing");
+
+      const saveResponse = await handleWorkspaceStyleGuideSave?.(
+        new Request("http://localhost/workspace/style-guide", {
+          method: "POST",
+          body: JSON.stringify({
+            workspaceRoot,
+            expectedFingerprint: initial.fingerprint,
+            config: {
+              schemaVersion: 1,
+              styleGuide: {
+                profile: {
+                  id: "brand",
+                  name: "Brand Voice",
+                  defaultCopyType: "business.brief.medium",
+                },
+                language: { bannedTerms: ["leverage"] },
+                copyTypes: {
+                  "business.brief.medium": {
+                    label: "Business Brief",
+                    length: "medium",
+                    tone: ["direct"],
+                    formatRules: ["summary first"],
+                  },
+                },
+              },
+            },
+          }),
+        })
+      );
+      expect(saveResponse?.status).toBe(200);
+      const saved = (await saveResponse?.json()) as {
+        config: { styleGuide?: { profile?: { name?: string } } };
+        fingerprint: string;
+      };
+      expect(saved.config.styleGuide?.profile?.name).toBe("Brand Voice");
+      expect(saved.fingerprint).not.toBe(initial.fingerprint);
+
+      const staleResponse = await handleWorkspaceStyleGuideSave?.(
+        new Request("http://localhost/workspace/style-guide", {
+          method: "POST",
+          body: JSON.stringify({
+            workspaceRoot,
+            expectedFingerprint: initial.fingerprint,
+            config: saved.config,
+          }),
+        })
+      );
+      expect(staleResponse?.status).toBe(409);
+      const stale = (await staleResponse?.json()) as { currentFingerprint?: string };
+      expect(stale.currentFingerprint).toBe(saved.fingerprint);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects secret-bearing workspace style config payloads", async () => {
+    expect(handleWorkspaceStyleGuideSave).toBeDefined();
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-style-guide-secret-"));
+    try {
+      for (const config of [
+        { schemaVersion: 1, clientSecret: "do-not-store" },
+        { schemaVersion: 1, client_secret: "do-not-store" },
+        { schemaVersion: 1, nested: { "secret-key": "do-not-store" } },
+      ]) {
+        const response = await handleWorkspaceStyleGuideSave?.(
+          new Request("http://localhost/workspace/style-guide", {
+            method: "POST",
+            body: JSON.stringify({ workspaceRoot, config }),
+          })
+        );
+
+        expect(response?.status).toBe(400);
+        const result = (await response?.json()) as { error?: string };
+        expect(result.error).toContain("secret-bearing");
+      }
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("graph run endpoints", () => {
   test("resolves graph agent profiles from node assignments", () => {
     expect(graphRunAgentProfileForNode).toBeDefined();
@@ -1793,6 +1902,7 @@ describe("graph run endpoints", () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
     const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-empty-graph-cache-"));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-workspace-"));
     const store = createPlaybookGraphRunStore(dbPath);
     try {
       const listResponse = await handlePlaybookList?.(
@@ -1826,9 +1936,9 @@ describe("graph run endpoints", () => {
               objective: "Prepare renewal discussion.",
               sources: ["web"],
               approvalTarget: "meeting-prep",
-              workspaceRoot: "/tmp/workspace",
+              workspaceRoot,
             },
-            workspaceRoot: "/tmp/workspace",
+            workspaceRoot,
           }),
         }),
         { store, cacheRoot }
@@ -1853,6 +1963,7 @@ describe("graph run endpoints", () => {
       await Promise.all([
         rm(dirname(dbPath), { recursive: true, force: true }),
         rm(cacheRoot, { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
       ]);
     }
   });
@@ -2273,6 +2384,143 @@ describe("graph run endpoints", () => {
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("snapshots workspace style guide and injects it into consuming graph agent prompts", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(graphRunAgentPrompt).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-style-run-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.style-agent",
+        version: "0.1.0",
+        name: "Style Agent Graph",
+        metadata: {
+          writingStyle: {
+            enabled: true,
+            defaultCopyType: "business.brief.medium",
+            supportedCopyTypes: ["business.brief.medium"],
+          },
+        },
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: { workspaceRoot: { input: "workspaceRoot" } },
+            tools: [],
+            output: { artifact: "draft", style: { consume: true, purpose: "draft" } },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft the brief.",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      await mkdir(join(workspaceRoot, ".tessera"), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, ".tessera/config.json"),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            styleGuide: {
+              profile: {
+                id: "brand",
+                name: "Brand Voice",
+                defaultCopyType: "business.brief.medium",
+              },
+              tone: { default: ["direct", "warm"] },
+              language: { bannedTerms: ["leverage"] },
+              structure: { introMaxWords: 75 },
+              copyTypes: {
+                "business.brief.medium": {
+                  label: "Business Brief",
+                  length: "medium",
+                  tone: ["executive-ready"],
+                  formatRules: ["summary first"],
+                },
+              },
+            },
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            workspaceRoot,
+            input: { workspaceRoot },
+            styleGuideSelection: {
+              copyType: "business.brief.medium",
+              toneNudges: ["more concise"],
+            },
+          }),
+        }),
+        { store }
+      );
+
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: {
+          runId: string;
+          input?: Record<string, unknown>;
+          platformContext?: {
+            styleGuide?: {
+              profileName?: string;
+              copyType?: string;
+              toneNudges?: string[];
+            };
+            styleGuideHash?: string;
+          };
+        };
+      };
+      expect(created.run.input).toEqual({ workspaceRoot });
+      expect(created.run.platformContext?.styleGuideHash).toMatch(/^sha256:/);
+      expect(created.run.platformContext?.styleGuide?.profileName).toBe("Brand Voice");
+      expect(created.run.platformContext?.styleGuide?.copyType).toBe("business.brief.medium");
+      expect(created.run.platformContext?.styleGuide?.toneNudges).toEqual(["more concise"]);
+
+      const promptText = graphRunAgentPrompt?.(
+        {
+          run: created.run,
+          node: compiled.graph.nodes[0],
+          input: { workspaceRoot },
+          artifacts: {},
+          prompt: "Draft the brief.",
+          platformContext: created.run.platformContext,
+        } as unknown as PlaybookGraphAgentAdapterInput,
+        undefined,
+        testAgentProfile()
+      );
+      expect(promptText).toContain("Workspace Style Guide");
+      expect(promptText).toContain("Profile: Brand Voice");
+      expect(promptText).toContain("Copy type: Business Brief");
+      expect(promptText).toContain("Banned terms: leverage");
+      expect(promptText).toContain("Format rules: summary first");
+      expect(promptText).toContain("Tone nudges: more concise");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+      await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
 

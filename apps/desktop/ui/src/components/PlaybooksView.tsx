@@ -10,6 +10,7 @@ import type {
   AgentProfileListResult,
   DashboardLayout,
   GraphPlaybookImportResult,
+  GraphRunStyleSelection,
   IntegrationSettingsRead,
   ModelSettingsRead,
   PlaybookAssignmentPreviewResult,
@@ -33,6 +34,7 @@ import type {
   WorkflowRunAssignmentPlan,
   WorkflowRunEvent,
   WorkflowRunStepRecord,
+  WorkspaceStyleGuideReadResult,
 } from "@tessera/contracts";
 import {
   AlertTriangle,
@@ -141,6 +143,22 @@ interface ReviewScorecardSummary {
   overall?: number;
   pass?: boolean;
   findings: string[];
+}
+
+function normalizedStyleSelection(
+  selection: GraphRunStyleSelection
+): GraphRunStyleSelection | undefined {
+  const copyType = selection.copyType?.trim();
+  const override = selection.override?.trim();
+  const toneNudges = (selection.toneNudges ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const next: GraphRunStyleSelection = {
+    toneNudges,
+    ...(copyType ? { copyType } : {}),
+    ...(override ? { override } : {}),
+  };
+  return copyType || override || toneNudges.length > 0 ? next : undefined;
 }
 
 const NODE_KIND_SOFT_MS: Record<GraphQueueEntry["nodeKind"], number | undefined> = {
@@ -2586,12 +2604,17 @@ function GuidedStart({
   onStart,
   onConfirmAgents,
   onAssignmentPlanChange,
+  onStyleSelectionChange,
   formReady,
   running,
   savingPreference,
   workspaceRoot,
   capabilityInventory,
   graphReady,
+  styleGuideError,
+  styleGuideLoading,
+  styleGuideResult,
+  styleSelection,
 }: {
   playbook: PlaybookSummary;
   playbookDetail: PlaybookDetail | null;
@@ -2603,12 +2626,17 @@ function GuidedStart({
   onStart: () => void;
   onConfirmAgents: () => void;
   onAssignmentPlanChange: (plan: WorkflowRunAssignmentPlan) => void;
+  onStyleSelectionChange: (selection: GraphRunStyleSelection) => void;
   formReady: boolean;
   running: boolean;
   savingPreference: boolean;
   workspaceRoot: string | null;
   capabilityInventory: WorkflowCapabilityInventory | null;
   graphReady: boolean;
+  styleGuideError: string | null;
+  styleGuideLoading: boolean;
+  styleGuideResult: WorkspaceStyleGuideReadResult | null;
+  styleSelection: GraphRunStyleSelection;
 }) {
   const ctaCopy = ctaCopyMap[playbook.id] ?? "Start playbook";
   const [setupEditorOpen, setSetupEditorOpen] = useState(false);
@@ -2650,6 +2678,22 @@ function GuidedStart({
   ];
   const savedSetupSummary =
     savedAgentLabels.length > 0 ? `Using saved setup: ${joinLabels(savedAgentLabels)}` : null;
+  const writingStyle =
+    playbookDetail?.writingStyle?.enabled || playbook.writingStyle?.enabled
+      ? (playbookDetail?.writingStyle ?? playbook.writingStyle)
+      : null;
+  const styleGuide = styleGuideResult?.config.styleGuide ?? null;
+  const supportedCopyTypes =
+    writingStyle?.supportedCopyTypes.length && styleGuide
+      ? writingStyle.supportedCopyTypes.filter((copyType) => styleGuide.copyTypes[copyType])
+      : Object.keys(styleGuide?.copyTypes ?? {});
+  const selectedCopyType =
+    styleSelection.copyType ??
+    writingStyle?.defaultCopyType ??
+    styleGuide?.profile.defaultCopyType ??
+    supportedCopyTypes[0] ??
+    "";
+  const copyTypeOptions = [...new Set([selectedCopyType, ...supportedCopyTypes].filter(Boolean))];
 
   function selectCandidate(stepId: string, agentId: string) {
     if (!draftAssignmentPlan) return;
@@ -2912,6 +2956,79 @@ function GuidedStart({
       </div>
     </div>
   );
+  const styleGuidePanel =
+    writingStyle && workspaceRoot ? (
+      <div className="rounded-lg border border-border bg-secondary/30 p-4">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-foreground">Writing style</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {styleGuide
+                ? `${styleGuide.profile.name} will guide this run.`
+                : "No workspace style guide is configured yet."}
+            </p>
+          </div>
+          {styleGuide ? (
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+              Active
+            </span>
+          ) : (
+            <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              Optional
+            </span>
+          )}
+        </div>
+
+        {styleGuideLoading ? (
+          <p className="text-xs text-muted-foreground">Loading workspace style guide...</p>
+        ) : styleGuideError ? (
+          <p className="text-xs text-destructive">{styleGuideError}</p>
+        ) : styleGuide ? (
+          <div className="space-y-3">
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">Copy type</span>
+              <select
+                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-2 text-sm text-foreground outline-none"
+                value={selectedCopyType}
+                disabled={running || copyTypeOptions.length === 0}
+                onChange={(event) =>
+                  onStyleSelectionChange({
+                    ...styleSelection,
+                    copyType: event.target.value,
+                  })
+                }
+              >
+                {copyTypeOptions.map((copyType) => (
+                  <option key={copyType} value={copyType}>
+                    {styleGuide.copyTypes[copyType]?.label ?? copyType}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">Run note</span>
+              <textarea
+                className="mt-1 min-h-20 w-full resize-y rounded-md border border-border bg-background px-2 py-2 text-sm text-foreground outline-none"
+                value={styleSelection.override ?? ""}
+                disabled={running}
+                placeholder="Optional voice or tone adjustment for this run"
+                onChange={(event) =>
+                  onStyleSelectionChange({
+                    ...styleSelection,
+                    override: event.target.value,
+                  })
+                }
+              />
+            </label>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Add a style guide from Settings to pass voice, tone, language, and review rules into
+            this playbook.
+          </p>
+        )}
+      </div>
+    ) : null;
 
   return (
     <div className="mx-auto w-full max-w-xl py-10">
@@ -2981,6 +3098,7 @@ function GuidedStart({
           ))}
 
           {preflightPanel}
+          {styleGuidePanel}
 
           {!workspaceRoot ? (
             <p className="text-sm text-muted-foreground">
@@ -2996,6 +3114,7 @@ function GuidedStart({
       ) : (
         <div className="space-y-4">
           {preflightPanel}
+          {styleGuidePanel}
           <Button
             type="button"
             size="lg"
@@ -3273,6 +3392,7 @@ function GuidedReview({
   playbook,
   reviewEvidence,
   productView,
+  styleCompliance,
   workspaceRoot,
   artifactWorkspaceRoot,
   onApprove,
@@ -3284,6 +3404,7 @@ function GuidedReview({
   playbook: PlaybookSummary | PlaybookDetail | null;
   reviewEvidence: ReviewEvidence | null;
   productView: PlaybookRunProductView | null;
+  styleCompliance: PlaybookGraphRunReviewSurface["styleCompliance"];
   workspaceRoot: string | null;
   artifactWorkspaceRoot: string | null;
   onApprove: () => void;
@@ -3357,6 +3478,27 @@ function GuidedReview({
               {reviewEvidence ? (
                 <div className="border-t border-amber-200 pt-4">
                   <ReviewEvidenceBlock evidence={reviewEvidence} compact />
+                </div>
+              ) : null}
+              {styleCompliance ? (
+                <div className="border-t border-amber-200 pt-4">
+                  <div className="font-medium">Style guide check</div>
+                  <p className="mt-1">
+                    {styleCompliance.severity === "pass"
+                      ? "No style issues found."
+                      : `${styleCompliance.findings.length} style ${
+                          styleCompliance.findings.length === 1 ? "issue" : "issues"
+                        } found for ${styleCompliance.profileName ?? "this profile"}.`}
+                  </p>
+                  {styleCompliance.findings.length > 0 ? (
+                    <ul className="mt-2 space-y-1">
+                      {styleCompliance.findings.slice(0, 3).map((finding) => (
+                        <li key={`${finding.nodePath}:${finding.ruleId}`} className="text-xs">
+                          {finding.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
               ) : null}
               <div>
@@ -3981,6 +4123,14 @@ export function PlaybooksView({
   );
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
+  const [styleGuideResult, setStyleGuideResult] = useState<WorkspaceStyleGuideReadResult | null>(
+    null
+  );
+  const [styleGuideLoading, setStyleGuideLoading] = useState(false);
+  const [styleGuideError, setStyleGuideError] = useState<string | null>(null);
+  const [styleSelection, setStyleSelection] = useState<GraphRunStyleSelection>({
+    toneNudges: [],
+  });
   const [showStartForm, setShowStartForm] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
   const hasInitialPlaybooks = initialPlaybooks != null && initialPlaybooks.length > 0;
@@ -4039,6 +4189,10 @@ export function PlaybooksView({
     selectedPlaybookDetail?.id === selectedPlaybook?.id ? selectedPlaybookDetail : selectedPlaybook;
   const selectedGraphHash = selectedPlaybookForUi?.graphHash;
   const selectedSourceHash = selectedPlaybookForUi?.sourceHash;
+  const selectedWritingStyle = selectedPlaybookForUi?.writingStyle?.enabled
+    ? selectedPlaybookForUi.writingStyle
+    : null;
+  const selectedStyleGuide = styleGuideResult?.config.styleGuide ?? null;
   const selectedRun = useMemo(() => {
     if (selectedGraphRunDetail?.run.runId === selectedRunId) {
       return graphRunToPlaybookRunDetail(
@@ -4100,6 +4254,61 @@ export function PlaybooksView({
     contentPane.scrollTop = 0;
     contentPane.scrollLeft = 0;
   }, [contentScrollResetKey]);
+
+  useEffect(() => {
+    let active = true;
+    if (!workspaceRoot) {
+      setStyleGuideResult(null);
+      setStyleGuideError(null);
+      setStyleGuideLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setStyleGuideLoading(true);
+    setStyleGuideError(null);
+    void invoke<WorkspaceStyleGuideReadResult>("workspace_style_guide_get", { workspaceRoot })
+      .then((result) => {
+        if (!active) return;
+        setStyleGuideResult(result);
+      })
+      .catch((loadError: unknown) => {
+        if (!active) return;
+        setStyleGuideResult(null);
+        setStyleGuideError(loadError instanceof Error ? loadError.message : String(loadError));
+      })
+      .finally(() => {
+        if (active) {
+          setStyleGuideLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [workspaceRoot]);
+
+  useEffect(() => {
+    if (!selectedWritingStyle) {
+      setStyleSelection({ toneNudges: [] });
+      return;
+    }
+    const guide = selectedStyleGuide;
+    const availableCopyTypes = guide ? Object.keys(guide.copyTypes) : [];
+    const supportedCopyTypes =
+      selectedWritingStyle.supportedCopyTypes.length > 0
+        ? selectedWritingStyle.supportedCopyTypes.filter((copyType) =>
+            availableCopyTypes.includes(copyType)
+          )
+        : availableCopyTypes;
+    const copyType =
+      selectedWritingStyle.defaultCopyType &&
+      supportedCopyTypes.includes(selectedWritingStyle.defaultCopyType)
+        ? selectedWritingStyle.defaultCopyType
+        : (guide?.profile.defaultCopyType ?? supportedCopyTypes[0]);
+    setStyleSelection(copyType ? { copyType, toneNudges: [] } : { toneNudges: [] });
+  }, [selectedWritingStyle, selectedStyleGuide]);
 
   useEffect(() => {
     const requestId = ++assignmentPreferenceRequestRef.current;
@@ -4648,12 +4857,17 @@ export function PlaybooksView({
       if (!selectedSourceHash) {
         throw new Error("This playbook is missing a graph source hash.");
       }
+      const runStyleSelection =
+        selectedWritingStyle && styleGuideResult?.config.styleGuide
+          ? normalizedStyleSelection(styleSelection)
+          : undefined;
       const request: PlaybookGraphRunCreateRequest = {
         playbookId: selectedPlaybook.id,
         graphHash: selectedGraphHash,
         sourceHash: selectedSourceHash,
         agentId: firstAssignedAgentId(assignmentPlan) ?? "default",
         ...(assignmentPlan ? { assignmentPlan } : {}),
+        ...(runStyleSelection ? { styleGuideSelection: runStyleSelection } : {}),
         input: fullInput,
         workspaceRoot,
         drainDeterministic: true,
@@ -5051,12 +5265,17 @@ export function PlaybooksView({
               setDraftAssignmentPlan(plan);
               setAgentsConfirmed(false);
             }}
+            onStyleSelectionChange={setStyleSelection}
             formReady={formReady}
             running={running || importingPlaybook}
             savingPreference={savingPreference}
             workspaceRoot={workspaceRoot}
             capabilityInventory={capabilityInventory}
             graphReady={!!selectedGraphHash}
+            styleGuideError={styleGuideError}
+            styleGuideLoading={styleGuideLoading}
+            styleGuideResult={styleGuideResult}
+            styleSelection={styleSelection}
           />
         ) : guidedState === "preparing" ? (
           <GuidedPreparing
@@ -5071,6 +5290,7 @@ export function PlaybooksView({
             playbook={selectedPlaybookForUi}
             reviewEvidence={selectedReviewEvidence}
             productView={selectedGraphRunSurface?.productView ?? null}
+            styleCompliance={selectedGraphRunSurface?.styleCompliance}
             workspaceRoot={workspaceRoot}
             artifactWorkspaceRoot={graphRunWorkspaceRoot(selectedGraphRunDetail)}
             onApprove={() => void resumeRun("approve")}

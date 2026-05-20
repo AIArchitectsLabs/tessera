@@ -10,6 +10,7 @@ import type {
   PlaybookGraphNode,
   PlaybookGraphNodeMemo,
   PlaybookGraphOperationRecord,
+  PlaybookGraphPlatformContext,
   PlaybookGraphQueueEntry,
   PlaybookGraphReviewEvent,
   PlaybookGraphRunListFilter,
@@ -21,6 +22,7 @@ import {
   CompiledPlaybookGraphSchema,
   PlaybookGraphBranchItemSchema,
   PlaybookGraphExecutionContextSchema,
+  PlaybookGraphPlatformContextSchema,
   PlaybookGraphQueueEntrySchema,
   PlaybookGraphRunRecordSchema,
 } from "@tessera/contracts";
@@ -172,6 +174,7 @@ export interface CreatePlaybookGraphRunOptions {
   input?: Record<string, unknown>;
   ownerUserKey?: string;
   materialization?: PlaybookGraphMaterializationTarget;
+  platformContext?: PlaybookGraphPlatformContext;
   executionContext?: unknown;
   assignmentPlan?: WorkflowRunAssignmentPlan;
   now?: string;
@@ -185,6 +188,7 @@ export interface PlaybookGraphScriptAdapterInput {
   queueEntry: PlaybookGraphQueueEntry;
   input: Record<string, unknown>;
   artifacts: Record<string, unknown>;
+  platformContext?: PlaybookGraphPlatformContext;
   branchItem?: PlaybookGraphBranchItem;
 }
 
@@ -194,6 +198,7 @@ export interface PlaybookGraphAgentAdapterInput {
   queueEntry: PlaybookGraphQueueEntry;
   input: Record<string, unknown>;
   artifacts: Record<string, unknown>;
+  platformContext?: PlaybookGraphPlatformContext;
   prompt?: string;
   branchItem?: PlaybookGraphBranchItem;
 }
@@ -204,6 +209,7 @@ export interface PlaybookGraphToolAdapterInput {
   queueEntry: PlaybookGraphQueueEntry;
   input: Record<string, unknown>;
   artifacts: Record<string, unknown>;
+  platformContext?: PlaybookGraphPlatformContext;
   branchItem?: PlaybookGraphBranchItem;
 }
 
@@ -364,6 +370,27 @@ async function withHeartbeatTicker<T>(
 
 function hashUnknown(value: unknown): string {
   return sha256(stableJsonStringify(value));
+}
+
+function nodeConsumesPlatformContext(node: PlaybookGraphNode): boolean {
+  if (node.style?.consume === true) return true;
+  if (node.kind === "agent" && node.output?.style?.consume === true) return true;
+  return false;
+}
+
+function platformContextForNode(
+  run: PlaybookGraphRunRecord,
+  node: PlaybookGraphNode
+): PlaybookGraphPlatformContext | undefined {
+  if (!run.platformContext || !nodeConsumesPlatformContext(node)) return undefined;
+  return run.platformContext;
+}
+
+function runForNode(run: PlaybookGraphRunRecord, node: PlaybookGraphNode): PlaybookGraphRunRecord {
+  const platformContext = platformContextForNode(run, node);
+  if (platformContext) return { ...run, platformContext };
+  const { platformContext: _platformContext, ...runWithoutPlatformContext } = run;
+  return runWithoutPlatformContext;
 }
 
 function normalizeExecutionContext(value: unknown): Record<string, unknown> {
@@ -680,17 +707,18 @@ async function materializeDeclaredArtifacts(
   for (const artifactVersion of versions) {
     const declaration = compiled.graph.artifacts[artifactVersion.artifactId];
     if (!declaration?.materialize) continue;
+    const node: Extract<PlaybookGraphNode, { kind: "artifactWrite" }> = {
+      id: `${queueEntry.nodeId}.${artifactVersion.artifactId}.materialize`,
+      kind: "artifactWrite",
+      artifact: artifactVersion.artifactId,
+      path: declaration.materialize,
+    };
     await options.artifactWriteAdapter({
-      run,
+      run: runForNode(run, node),
       queueEntry,
       artifactVersion,
       value: artifactVersion.value,
-      node: {
-        id: `${queueEntry.nodeId}.${artifactVersion.artifactId}.materialize`,
-        kind: "artifactWrite",
-        artifact: artifactVersion.artifactId,
-        path: declaration.materialize,
-      },
+      node,
     });
   }
 }
@@ -1521,6 +1549,9 @@ export async function createPlaybookGraphRun(
     playbookId: compiled.graph.id,
     status: "queued",
     input: options.input ?? {},
+    ...(options.platformContext
+      ? { platformContext: PlaybookGraphPlatformContextSchema.parse(options.platformContext) }
+      : {}),
     ...(options.materialization ? { materialization: options.materialization } : {}),
     ...(options.executionContext !== undefined
       ? { executionContext: createPlaybookGraphExecutionContextPin(options.executionContext) }
@@ -1561,6 +1592,7 @@ export function createGraphNodeMemoKeyParts(input: {
       scriptSdkVersion: input.run.snapshot.scriptSdkVersion,
     }),
     executionContextHash: hashUnknown(input.executionContext ?? {}),
+    platformContextHash: hashUnknown(platformContextForNode(input.run, input.node) ?? {}),
     inputSnapshotHash: hashUnknown({
       input: input.run.input,
       branchItem: input.branchItem
@@ -1949,16 +1981,19 @@ export async function drainPlaybookGraphRun(
     try {
       output = await withQueueLeaseRenewal(options, queueEntry, leaseMs, now, () =>
         withHeartbeatTicker(options, queueEntry, now, async () => {
+          const platformContext = platformContextForNode(claimedRun, resolvedNode);
+          const adapterRun = runForNode(claimedRun, resolvedNode);
           if (node.kind === "script") {
             if (!options.scriptAdapter) {
               throw new Error("Script adapter is required for graph script nodes");
             }
             return options.scriptAdapter({
-              run: claimedRun,
+              run: adapterRun,
               node: resolvedNode as Extract<PlaybookGraphNode, { kind: "script" }>,
               queueEntry,
               input: branchInput(claimedRun.input, branchItem),
               artifacts,
+              ...(platformContext ? { platformContext } : {}),
               ...(branchItem ? { branchItem } : {}),
             });
           }
@@ -1967,11 +2002,12 @@ export async function drainPlaybookGraphRun(
               throw new Error("Agent adapter is required for graph agent nodes");
             }
             return options.agentAdapter({
-              run: claimedRun,
+              run: adapterRun,
               node: resolvedNode as Extract<PlaybookGraphNode, { kind: "agent" }>,
               queueEntry,
               input: branchInput(claimedRun.input, branchItem),
               artifacts,
+              ...(platformContext ? { platformContext } : {}),
               ...(claimedRun.snapshot.sourceFiles?.[node.prompt] === undefined
                 ? {}
                 : { prompt: claimedRun.snapshot.sourceFiles[node.prompt] }),
@@ -1983,11 +2019,12 @@ export async function drainPlaybookGraphRun(
               throw new Error("Tool adapter is required for graph tool nodes");
             }
             return options.toolAdapter({
-              run: claimedRun,
+              run: adapterRun,
               node: resolvedNode as Extract<PlaybookGraphNode, { kind: "tool" }>,
               queueEntry,
               input: branchInput(claimedRun.input, branchItem),
               artifacts,
+              ...(platformContext ? { platformContext } : {}),
               ...(branchItem ? { branchItem } : {}),
             });
           }
@@ -2011,7 +2048,7 @@ export async function drainPlaybookGraphRun(
               throw new Error(`Missing artifact version for artifactWrite: ${node.artifact}`);
             }
             return options.artifactWriteAdapter?.({
-              run: claimedRun,
+              run: adapterRun,
               node,
               queueEntry,
               artifactVersion,

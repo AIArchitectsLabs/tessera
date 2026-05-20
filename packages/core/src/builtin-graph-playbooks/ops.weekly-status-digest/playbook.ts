@@ -16,6 +16,11 @@ export default {
         label: "Weekly status digest",
       },
     ],
+    writingStyle: {
+      enabled: true,
+      defaultCopyType: "operations.digest.medium",
+      supportedCopyTypes: ["operations.digest.medium", "business.brief.medium"],
+    },
     phases: ["Summarize", "Review"],
   },
   inputs: {
@@ -143,6 +148,7 @@ export default {
       output: {
         artifact: "statusDigest",
         schema: "schemas/statusDigest.schema.json",
+        style: { consume: true, purpose: "draft" },
       },
     },
     {

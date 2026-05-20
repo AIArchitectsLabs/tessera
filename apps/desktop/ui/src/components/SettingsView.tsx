@@ -20,6 +20,7 @@ import {
 } from "@/lib/modelSettings";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { WorkspaceConfigSchema, type WorkspaceStyleGuide } from "@tessera/contracts";
 import type {
   AgentProviderConfig,
   IntegrationConnectionTestRequest,
@@ -39,6 +40,9 @@ import type {
   ModelSettingsRead,
   SearchMode,
   SearchProvider,
+  WorkspaceConfig,
+  WorkspaceStyleGuideReadResult,
+  WorkspaceStyleGuideSaveResult,
 } from "@tessera/contracts";
 import {
   AlertTriangle,
@@ -48,6 +52,7 @@ import {
   Check,
   Database,
   Download,
+  FileText,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -57,12 +62,13 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSettingsView } from "./AgentSettingsView";
 
 interface SettingsViewProps {
   onClose: () => void;
   userKey: string;
+  workspaceRoot?: string | null;
 }
 
 type StatusTone = "error" | "info" | "success";
@@ -123,6 +129,120 @@ type CodexPollResult =
 
 const GOOGLE_WORKSPACE_CAPABILITIES = ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"];
 
+const DEFAULT_WORKSPACE_STYLE_CONFIG: WorkspaceConfig = {
+  schemaVersion: 1,
+  styleGuide: {
+    schemaVersion: 1,
+    profile: {
+      id: "default",
+      name: "Default Brand Voice",
+      locale: "en-US",
+      defaultCopyType: "blog.article.long",
+    },
+    voice: {
+      pointOfView: "",
+      persona: "",
+      principles: ["Be clear, specific, and useful."],
+      avoid: ["Generic AI filler", "Unsupported superlatives"],
+    },
+    tone: {
+      default: ["clear", "practical", "authoritative", "calm"],
+      dimensions: { formality: 3, warmth: 2, urgency: 1, playfulness: 0 },
+    },
+    language: {
+      readingLevel: "Accessible business reader",
+      jargonPolicy: "Use domain terms only when useful; define them in plain English.",
+      preferredTerms: [],
+      bannedTerms: [],
+    },
+    structure: {
+      introMaxWords: 100,
+      paragraphMaxSentences: 4,
+      prefer: ["direct answer first", "scannable headings"],
+      avoid: ["summary-only conclusions"],
+    },
+    evidence: {
+      claimPolicy: "Factual claims need source support or clear qualification.",
+      citationStyle: "Preserve source URLs.",
+      unsupportedClaims:
+        "Reject ranking, market-share, performance, or legal claims without evidence.",
+    },
+    seoGeo: {
+      directAnswerRequired: true,
+      answerWithinWords: 100,
+      entityGuidance: "Include primary entities naturally; do not keyword-stuff.",
+      snippetOptimization: ["clear definition", "steps", "comparison table"],
+    },
+    copyTypes: {
+      "business.brief.medium": {
+        label: "Business Brief",
+        length: "medium",
+        targetWords: { min: 500, max: 900 },
+        tone: ["clear", "executive-ready", "specific"],
+        formatRules: ["short summary first", "evidence before recommendation"],
+      },
+      "blog.article.long": {
+        label: "Blog Article",
+        length: "long",
+        targetWords: { min: 900, max: 1500 },
+        tone: ["authoritative", "practical", "source-backed"],
+        formatRules: ["one H1", "H2/H3 hierarchy", "at least two lists or tables"],
+      },
+      "operations.digest.medium": {
+        label: "Operations Digest",
+        length: "medium",
+        targetWords: { min: 400, max: 800 },
+        tone: ["direct", "calm", "decision-oriented"],
+        formatRules: ["progress, risks, decisions, follow-ups", "bullets over paragraphs"],
+      },
+      "social.post.short": {
+        label: "Social Post",
+        length: "short",
+        targetWords: { max: 120 },
+        tone: ["direct", "human", "specific"],
+        formatRules: ["one clear hook", "no unsupported claims"],
+      },
+    },
+    examples: [],
+    review: {
+      failOn: ["unsupported factual claims", "banned terms"],
+      warnOn: ["long introductions", "generic filler"],
+    },
+  },
+};
+
+type WorkspaceStyleCopyTypeDraft = WorkspaceStyleGuide["copyTypes"][string];
+type WorkspaceStyleExampleDraft = WorkspaceStyleGuide["examples"][number];
+
+function cloneWorkspaceConfig(config: WorkspaceConfig): WorkspaceConfig {
+  return JSON.parse(JSON.stringify(config)) as WorkspaceConfig;
+}
+
+function parseWorkspaceStyleDraft(text: string): WorkspaceConfig | null {
+  try {
+    return WorkspaceConfigSchema.parse(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
+function listToText(items: string[] | undefined): string {
+  return (items ?? []).join("\n");
+}
+
+function textToList(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function optionalPositiveInteger(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 async function invokeWithTimeout<T>(
   command: Parameters<typeof invoke>[0],
   args?: Parameters<typeof invoke>[1],
@@ -145,7 +265,7 @@ async function invokeWithTimeout<T>(
   }
 }
 
-export function SettingsView({ onClose, userKey }: SettingsViewProps) {
+export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewProps) {
   const [settings, setSettings] = useState<ModelSettingsRead | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationSettingsRead | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryRuntimeStatus | null>(null);
@@ -153,8 +273,13 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
     active: [],
     candidates: [],
   });
+  const [styleGuideResult, setStyleGuideResult] = useState<WorkspaceStyleGuideReadResult | null>(
+    null
+  );
+  const [styleGuideDraft, setStyleGuideDraft] = useState("");
   const [memoryStatusMessage, setMemoryStatusMessage] = useState<StatusMessage | null>(null);
   const [memoryReviewMessage, setMemoryReviewMessage] = useState<StatusMessage | null>(null);
+  const [styleGuideStatus, setStyleGuideStatus] = useState<StatusMessage | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider>("openai");
   const [selectedIntegration, setSelectedIntegration] =
     useState<IntegrationProvider>("google-workspace");
@@ -180,6 +305,9 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
   const [loading, setLoading] = useState(true);
   const [memoryLoading, setMemoryLoading] = useState(true);
   const [memoryReviewLoading, setMemoryReviewLoading] = useState(true);
+  const [styleGuideLoading, setStyleGuideLoading] = useState(false);
+  const [styleGuideSaving, setStyleGuideSaving] = useState(false);
+  const [styleGuideCopyTypeKey, setStyleGuideCopyTypeKey] = useState("blog.article.long");
   const [activeModelAction, setActiveModelAction] = useState<
     "codexSignIn" | "remove" | "save" | "test" | null
   >(null);
@@ -190,15 +318,47 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
     null
   );
   const [activeMemoryAction, setActiveMemoryAction] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"model" | "integrations" | "memory" | "agents">(
-    "model"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "model" | "integrations" | "memory" | "agents" | "styleGuide"
+  >("model");
   const modelRequestIdRef = useRef(0);
   const integrationRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
   const googleWorkspaceClientIdRef = useRef<HTMLInputElement>(null);
   const googleWorkspaceClientSecretRef = useRef<HTMLInputElement>(null);
+  const styleGuideDraftRef = useRef("");
   const mountedRef = useRef(true);
+  const styleGuideEditorConfig = useMemo(
+    () => parseWorkspaceStyleDraft(styleGuideDraft),
+    [styleGuideDraft]
+  );
+  const styleGuideEditor = styleGuideEditorConfig?.styleGuide ?? null;
+  const styleGuideCopyTypeKeys = Object.keys(styleGuideEditor?.copyTypes ?? {});
+  const selectedStyleGuideCopyTypeKey = styleGuideCopyTypeKeys.includes(styleGuideCopyTypeKey)
+    ? styleGuideCopyTypeKey
+    : (styleGuideCopyTypeKeys[0] ?? "");
+  const selectedStyleGuideCopyType = selectedStyleGuideCopyTypeKey
+    ? styleGuideEditor?.copyTypes[selectedStyleGuideCopyTypeKey]
+    : undefined;
+  const styleGuideConflict =
+    styleGuideStatus?.tone === "error" &&
+    styleGuideStatus.message.includes("changed outside Tessera");
+
+  const setStyleGuideDraftText = useCallback(
+    (next: string | ((currentDraft: string) => string)) => {
+      if (typeof next === "function") {
+        setStyleGuideDraft((currentDraft) => {
+          const resolved = next(currentDraft);
+          styleGuideDraftRef.current = resolved;
+          return resolved;
+        });
+        return;
+      }
+      styleGuideDraftRef.current = next;
+      setStyleGuideDraft(next);
+    },
+    []
+  );
 
   useEffect(() => {
     let active = true;
@@ -310,6 +470,63 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!workspaceRoot) {
+      setStyleGuideResult(null);
+      setStyleGuideDraftText("");
+      setStyleGuideLoading(false);
+      setStyleGuideStatus(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    async function loadStyleGuide() {
+      setStyleGuideLoading(true);
+      setStyleGuideStatus(null);
+      try {
+        const next = await invokeWithTimeout<WorkspaceStyleGuideReadResult>(
+          "workspace_style_guide_get",
+          { workspaceRoot },
+          20_000
+        );
+        if (!active || !mountedRef.current) {
+          return;
+        }
+        setStyleGuideResult(next);
+        setStyleGuideDraftText(JSON.stringify(next.config, null, 2));
+        setStyleGuideCopyTypeKey(
+          next.config.styleGuide?.profile.defaultCopyType ??
+            Object.keys(next.config.styleGuide?.copyTypes ?? {})[0] ??
+            "blog.article.long"
+        );
+      } catch (error) {
+        if (!active || !mountedRef.current) {
+          return;
+        }
+        setStyleGuideResult(null);
+        setStyleGuideDraftText(JSON.stringify(DEFAULT_WORKSPACE_STYLE_CONFIG, null, 2));
+        setStyleGuideCopyTypeKey("blog.article.long");
+        setStyleGuideStatus({
+          message: error instanceof Error ? error.message : String(error),
+          tone: "error",
+        });
+      } finally {
+        if (active && mountedRef.current) {
+          setStyleGuideLoading(false);
+        }
+      }
+    }
+
+    void loadStyleGuide();
+
+    return () => {
+      active = false;
+    };
+  }, [setStyleGuideDraftText, workspaceRoot]);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
   const hasIntegrationCredential = integrations?.providers.googleWorkspace.hasCredential ?? false;
@@ -622,6 +839,156 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
     } finally {
       if (mountedRef.current && modelRequestIdRef.current === requestId) {
         setActiveModelAction(null);
+      }
+    }
+  }
+
+  function resetStyleGuideDraftToDefaults() {
+    setStyleGuideDraftText(JSON.stringify(DEFAULT_WORKSPACE_STYLE_CONFIG, null, 2));
+    setStyleGuideCopyTypeKey("blog.article.long");
+    setStyleGuideStatus({ message: "Default style guide ready to edit", tone: "info" });
+  }
+
+  function updateStyleGuideDraft(update: (styleGuide: WorkspaceStyleGuide) => void) {
+    const parsed = parseWorkspaceStyleDraft(styleGuideDraftRef.current);
+    if (!parsed) {
+      setStyleGuideStatus({
+        message: "Fix the advanced JSON before editing fields.",
+        tone: "error",
+      });
+      return;
+    }
+
+    const next = parsed.styleGuide
+      ? cloneWorkspaceConfig(parsed)
+      : {
+          ...cloneWorkspaceConfig(parsed),
+          styleGuide: cloneWorkspaceConfig(DEFAULT_WORKSPACE_STYLE_CONFIG).styleGuide,
+        };
+    if (!next.styleGuide) {
+      return;
+    }
+    update(next.styleGuide);
+    setStyleGuideDraftText(JSON.stringify(WorkspaceConfigSchema.parse(next), null, 2));
+    setStyleGuideStatus({ message: "Unsaved style guide changes", tone: "info" });
+  }
+
+  function updateSelectedCopyType(update: (copyType: WorkspaceStyleCopyTypeDraft) => void) {
+    if (!selectedStyleGuideCopyTypeKey) return;
+    updateStyleGuideDraft((guide) => {
+      const existing = guide.copyTypes[selectedStyleGuideCopyTypeKey] ?? {
+        label: selectedStyleGuideCopyTypeKey,
+        tone: [],
+        formatRules: [],
+      };
+      const nextCopyType: WorkspaceStyleCopyTypeDraft = { ...existing };
+      update(nextCopyType);
+      guide.copyTypes = {
+        ...guide.copyTypes,
+        [selectedStyleGuideCopyTypeKey]: nextCopyType,
+      };
+    });
+  }
+
+  function updateFirstExample(update: (example: WorkspaceStyleExampleDraft) => void) {
+    updateStyleGuideDraft((guide) => {
+      const examples = [...guide.examples];
+      const nextExample: WorkspaceStyleExampleDraft = {
+        kind: "positive",
+        label: "Example",
+        text: "Example copy goes here.",
+        ...(examples[0] ?? {}),
+      };
+      update(nextExample);
+      examples[0] = nextExample;
+      guide.examples = examples;
+    });
+  }
+
+  async function handleReloadStyleGuide() {
+    if (!workspaceRoot || styleGuideLoading || styleGuideSaving) {
+      return;
+    }
+
+    setStyleGuideLoading(true);
+    setStyleGuideStatus(null);
+    try {
+      const next = await invokeWithTimeout<WorkspaceStyleGuideReadResult>(
+        "workspace_style_guide_get",
+        { workspaceRoot },
+        20_000
+      );
+      if (!mountedRef.current) {
+        return;
+      }
+      setStyleGuideResult(next);
+      setStyleGuideDraftText(JSON.stringify(next.config, null, 2));
+      setStyleGuideCopyTypeKey(
+        next.config.styleGuide?.profile.defaultCopyType ??
+          Object.keys(next.config.styleGuide?.copyTypes ?? {})[0] ??
+          "blog.article.long"
+      );
+      setStyleGuideStatus({ message: "Style guide reloaded", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setStyleGuideStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setStyleGuideLoading(false);
+      }
+    }
+  }
+
+  async function handleSaveStyleGuide(options: { overwrite?: boolean } = {}) {
+    if (!workspaceRoot || styleGuideSaving) {
+      return;
+    }
+
+    try {
+      const config = WorkspaceConfigSchema.parse(JSON.parse(styleGuideDraftRef.current));
+      setStyleGuideSaving(true);
+      setStyleGuideStatus(null);
+      const next = await invokeWithTimeout<WorkspaceStyleGuideSaveResult>(
+        "workspace_style_guide_save",
+        {
+          request: {
+            workspaceRoot,
+            config,
+            ...(styleGuideResult?.fingerprint
+              ? { expectedFingerprint: styleGuideResult.fingerprint }
+              : {}),
+            ...(options.overwrite ? { overwrite: true } : {}),
+          },
+        },
+        20_000
+      );
+      if (!mountedRef.current) {
+        return;
+      }
+      setStyleGuideResult(next);
+      setStyleGuideDraftText(JSON.stringify(next.config, null, 2));
+      setStyleGuideCopyTypeKey(
+        next.config.styleGuide?.profile.defaultCopyType ??
+          Object.keys(next.config.styleGuide?.copyTypes ?? {})[0] ??
+          "blog.article.long"
+      );
+      setStyleGuideStatus({ message: "Style guide saved", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+      setStyleGuideStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      if (mountedRef.current) {
+        setStyleGuideSaving(false);
       }
     }
   }
@@ -1237,6 +1604,19 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
         >
           <Database size={16} />
           Memory
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("styleGuide")}
+          className={cn(
+            "rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors flex items-center gap-2",
+            activeTab === "styleGuide"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+          )}
+        >
+          <FileText size={16} />
+          Style Guide
         </button>
         <button
           type="button"
@@ -2051,6 +2431,621 @@ export function SettingsView({ onClose, userKey }: SettingsViewProps) {
                   )}
                 </div>
               </section>
+            </div>
+          </div>
+        ) : activeTab === "styleGuide" ? (
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-8 py-6">
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-5">
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold text-foreground">Style Guide</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Workspace-local writing style for playbooks that opt into voice guidance.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <section className="rounded-xl border border-border bg-background px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <FileText size={18} className="text-muted-foreground" />
+                      <h2 className="text-sm font-semibold text-foreground">
+                        .tessera/config.json
+                      </h2>
+                    </div>
+                    <p className="mt-1 break-all text-sm text-muted-foreground">
+                      {workspaceRoot ?? "Select a workspace to edit its local style guide."}
+                    </p>
+                  </div>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                      styleGuideLoading
+                        ? "bg-secondary text-muted-foreground"
+                        : styleGuideResult?.exists
+                          ? "bg-emerald-50 text-emerald-800"
+                          : "bg-amber-50 text-amber-800"
+                    )}
+                  >
+                    {styleGuideLoading
+                      ? "Loading"
+                      : styleGuideResult?.exists
+                        ? "Configured"
+                        : "Defaults"}
+                  </span>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                      Profile
+                    </div>
+                    <div className="mt-1 truncate text-sm font-medium text-foreground">
+                      {styleGuideResult?.config.styleGuide?.profile.name ?? "Not configured"}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                      Copy Types
+                    </div>
+                    <div className="mt-1 text-sm font-medium text-foreground">
+                      {Object.keys(styleGuideResult?.config.styleGuide?.copyTypes ?? {}).length}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                      Fingerprint
+                    </div>
+                    <div className="mt-1 truncate text-sm font-medium text-foreground">
+                      {styleGuideResult?.fingerprint ?? "Not loaded"}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="text-sm font-semibold text-foreground">Style fields</h2>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={resetStyleGuideDraftToDefaults}
+                    disabled={!workspaceRoot || styleGuideLoading || styleGuideSaving}
+                  >
+                    Start from defaults
+                  </Button>
+                </div>
+
+                {!workspaceRoot ? (
+                  <div className="rounded-xl border border-border bg-secondary/30 px-4 py-4 text-sm text-muted-foreground">
+                    Select a workspace to create or edit its local style guide.
+                  </div>
+                ) : !styleGuideEditor ? (
+                  <div className="rounded-xl border border-border bg-secondary/30 px-4 py-4 text-sm text-muted-foreground">
+                    {styleGuideEditorConfig
+                      ? "No style guide is configured yet. Start from defaults to create one."
+                      : "The advanced JSON is invalid. Fix it or start from defaults."}
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <h3 className="text-sm font-semibold text-foreground">Profile</h3>
+                        <div className="mt-3 grid gap-3">
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Profile name
+                            <input
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.profile.name}
+                              disabled={styleGuideSaving}
+                              onInput={(event) => {
+                                const value = event.currentTarget.value;
+                                updateStyleGuideDraft((guide) => {
+                                  guide.profile.name = value;
+                                });
+                              }}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.profile.name = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Locale
+                            <input
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.profile.locale}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.profile.locale = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Default copy type
+                            <select
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.profile.defaultCopyType}
+                              disabled={styleGuideSaving}
+                              onChange={(event) => {
+                                setStyleGuideCopyTypeKey(event.target.value);
+                                updateStyleGuideDraft((guide) => {
+                                  guide.profile.defaultCopyType = event.target.value;
+                                });
+                              }}
+                            >
+                              {styleGuideCopyTypeKeys.map((copyType) => (
+                                <option key={copyType} value={copyType}>
+                                  {styleGuideEditor.copyTypes[copyType]?.label ?? copyType}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <h3 className="text-sm font-semibold text-foreground">Voice</h3>
+                        <div className="mt-3 grid gap-3">
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Persona
+                            <input
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.voice.persona}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.voice.persona = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Point of view
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.voice.pointOfView}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.voice.pointOfView = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Voice principles
+                            <textarea
+                              className="min-h-24 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.voice.principles)}
+                              disabled={styleGuideSaving}
+                              onInput={(event) => {
+                                const value = event.currentTarget.value;
+                                updateStyleGuideDraft((guide) => {
+                                  guide.voice.principles = textToList(value);
+                                });
+                              }}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.voice.principles = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <h3 className="text-sm font-semibold text-foreground">Tone and language</h3>
+                        <div className="mt-3 grid gap-3">
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Tone words
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.tone.default)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.tone.default = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                          <div className="grid gap-3 sm:grid-cols-4">
+                            {(["formality", "warmth", "urgency", "playfulness"] as const).map(
+                              (dimension) => (
+                                <label
+                                  key={dimension}
+                                  className="grid gap-1 text-xs font-medium text-muted-foreground"
+                                >
+                                  {dimension}
+                                  <input
+                                    className="rounded-lg border border-border bg-background px-2 py-2 text-sm text-foreground outline-none focus:border-primary"
+                                    type="number"
+                                    min={0}
+                                    max={5}
+                                    value={styleGuideEditor.tone.dimensions[dimension] ?? 0}
+                                    disabled={styleGuideSaving}
+                                    onChange={(event) =>
+                                      updateStyleGuideDraft((guide) => {
+                                        guide.tone.dimensions[dimension] = Number.parseInt(
+                                          event.target.value,
+                                          10
+                                        );
+                                      })
+                                    }
+                                  />
+                                </label>
+                              )
+                            )}
+                          </div>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Reading level
+                            <input
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.language.readingLevel}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.language.readingLevel = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Banned terms
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.language.bannedTerms)}
+                              disabled={styleGuideSaving}
+                              onInput={(event) => {
+                                const value = event.currentTarget.value;
+                                updateStyleGuideDraft((guide) => {
+                                  guide.language.bannedTerms = textToList(value);
+                                });
+                              }}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.language.bannedTerms = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <h3 className="text-sm font-semibold text-foreground">
+                          Structure and evidence
+                        </h3>
+                        <div className="mt-3 grid gap-3">
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                              Intro max words
+                              <input
+                                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                                type="number"
+                                min={1}
+                                value={styleGuideEditor.structure.introMaxWords ?? ""}
+                                disabled={styleGuideSaving}
+                                onChange={(event) =>
+                                  updateStyleGuideDraft((guide) => {
+                                    const value = optionalPositiveInteger(event.target.value);
+                                    if (value === undefined)
+                                      guide.structure.introMaxWords = undefined;
+                                    else guide.structure.introMaxWords = value;
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                              Paragraph max sentences
+                              <input
+                                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                                type="number"
+                                min={1}
+                                value={styleGuideEditor.structure.paragraphMaxSentences ?? ""}
+                                disabled={styleGuideSaving}
+                                onChange={(event) =>
+                                  updateStyleGuideDraft((guide) => {
+                                    const value = optionalPositiveInteger(event.target.value);
+                                    if (value === undefined)
+                                      guide.structure.paragraphMaxSentences = undefined;
+                                    else guide.structure.paragraphMaxSentences = value;
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Structure preferences
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.structure.prefer)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.structure.prefer = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Claim policy
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={styleGuideEditor.evidence.claimPolicy}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.evidence.claimPolicy = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    </div>
+
+                    <section className="rounded-xl border border-border bg-background px-4 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-foreground">Copy type preset</h3>
+                        <select
+                          className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                          value={selectedStyleGuideCopyTypeKey}
+                          disabled={styleGuideSaving}
+                          onChange={(event) => setStyleGuideCopyTypeKey(event.target.value)}
+                        >
+                          {styleGuideCopyTypeKeys.map((copyType) => (
+                            <option key={copyType} value={copyType}>
+                              {copyType}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {selectedStyleGuideCopyType ? (
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Copy type label
+                            <input
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={selectedStyleGuideCopyType.label}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateSelectedCopyType((copyType) => {
+                                  copyType.label = event.target.value;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Length
+                            <select
+                              className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={selectedStyleGuideCopyType.length ?? ""}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateSelectedCopyType((copyType) => {
+                                  if (!event.target.value) copyType.length = undefined;
+                                  else
+                                    copyType.length = event.target.value as
+                                      | "long"
+                                      | "medium"
+                                      | "short";
+                                })
+                              }
+                            >
+                              <option value="">Unspecified</option>
+                              <option value="short">Short</option>
+                              <option value="medium">Medium</option>
+                              <option value="long">Long</option>
+                            </select>
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Copy type tone
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(selectedStyleGuideCopyType.tone)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateSelectedCopyType((copyType) => {
+                                  copyType.tone = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Format rules
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(selectedStyleGuideCopyType.formatRules)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateSelectedCopyType((copyType) => {
+                                  copyType.formatRules = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+                    </section>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <h3 className="text-sm font-semibold text-foreground">Examples</h3>
+                          {styleGuideEditor.examples.length === 0 ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => updateFirstExample(() => undefined)}
+                            >
+                              Add example
+                            </Button>
+                          ) : null}
+                        </div>
+                        {styleGuideEditor.examples[0] ? (
+                          <div className="mt-3 grid gap-3">
+                            <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                              Example label
+                              <input
+                                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                                value={styleGuideEditor.examples[0].label ?? ""}
+                                disabled={styleGuideSaving}
+                                onChange={(event) =>
+                                  updateFirstExample((example) => {
+                                    example.label = event.target.value || undefined;
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                              Example text
+                              <textarea
+                                className="min-h-24 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                                value={styleGuideEditor.examples[0].text}
+                                disabled={styleGuideSaving}
+                                onChange={(event) =>
+                                  updateFirstExample((example) => {
+                                    example.text = event.target.value;
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        ) : (
+                          <p className="mt-3 text-sm text-muted-foreground">
+                            Add a positive or negative sample when the team has a canonical example.
+                          </p>
+                        )}
+                      </section>
+
+                      <section className="rounded-xl border border-border bg-background px-4 py-4">
+                        <h3 className="text-sm font-semibold text-foreground">Review rules</h3>
+                        <div className="mt-3 grid gap-3">
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Fail on
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.review.failOn)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.review.failOn = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="grid gap-1 text-xs font-medium text-muted-foreground">
+                            Warn on
+                            <textarea
+                              className="min-h-20 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+                              value={listToText(styleGuideEditor.review.warnOn)}
+                              disabled={styleGuideSaving}
+                              onChange={(event) =>
+                                updateStyleGuideDraft((guide) => {
+                                  guide.review.warnOn = textToList(event.target.value);
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                )}
+
+                <details className="rounded-xl border border-border bg-background px-4 py-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-foreground">
+                    Advanced JSON
+                  </summary>
+                  <textarea
+                    aria-label="Style guide JSON"
+                    className="mt-3 min-h-[24rem] w-full resize-y rounded-lg border border-border bg-background px-3 py-3 font-mono text-xs leading-5 text-foreground outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    value={styleGuideDraft}
+                    disabled={!workspaceRoot || styleGuideLoading || styleGuideSaving}
+                    spellCheck={false}
+                    onInput={(event) => setStyleGuideDraftText(event.currentTarget.value)}
+                    onChange={(event) => setStyleGuideDraftText(event.target.value)}
+                  />
+                </details>
+              </section>
+
+              {styleGuideStatus && (
+                <div
+                  className={cn(
+                    "rounded-xl border px-3 py-2 text-sm",
+                    styleGuideStatus.tone === "error" &&
+                      "border-destructive/25 bg-destructive/5 text-destructive",
+                    styleGuideStatus.tone === "info" &&
+                      "border-border bg-secondary text-foreground",
+                    styleGuideStatus.tone === "success" &&
+                      "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span>{styleGuideStatus.message}</span>
+                    {styleGuideConflict ? (
+                      <span className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleReloadStyleGuide()}
+                          disabled={styleGuideLoading || styleGuideSaving}
+                        >
+                          <RefreshCw size={14} />
+                          Reload
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => void handleSaveStyleGuide({ overwrite: true })}
+                          disabled={styleGuideLoading || styleGuideSaving}
+                        >
+                          Overwrite
+                        </Button>
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  onClick={() => void handleSaveStyleGuide()}
+                  disabled={!workspaceRoot || styleGuideLoading || styleGuideSaving}
+                >
+                  {styleGuideSaving ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Check size={16} />
+                  )}
+                  Save style guide
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    if (styleGuideResult) {
+                      setStyleGuideDraftText(JSON.stringify(styleGuideResult.config, null, 2));
+                    }
+                  }}
+                  disabled={!styleGuideResult || styleGuideLoading || styleGuideSaving}
+                >
+                  Revert
+                </Button>
+              </div>
             </div>
           </div>
         ) : activeTab === "memory" ? (

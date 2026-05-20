@@ -11,6 +11,7 @@ import type {
   MemoryRuntimeStatus,
   ModelSettingsRead,
   SearchProvider,
+  WorkspaceConfig,
 } from "@tessera/contracts";
 import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { JSDOM } from "jsdom";
@@ -220,6 +221,20 @@ let googleWorkspaceConnectionStatusResult: IntegrationConnectionTestResult = {
   message: "Google Workspace connected.",
   provider: "google-workspace",
 };
+let workspaceStyleConfig: WorkspaceConfig = { schemaVersion: 1 };
+let workspaceStyleExists = false;
+let workspaceStyleFingerprint = "sha256:missing";
+let workspaceStyleConflictOnce = false;
+
+function workspaceStyleReadResult() {
+  return {
+    schemaVersion: 1,
+    workspaceRoot: "/tmp/workspace",
+    exists: workspaceStyleExists,
+    config: workspaceStyleConfig,
+    fingerprint: workspaceStyleFingerprint,
+  };
+}
 
 function updateSearchState(provider: SearchProvider, request?: Record<string, unknown>) {
   const search = (request?.search as IntegrationSettingsSaveRequest["search"] | undefined) ?? {
@@ -448,6 +463,26 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         },
       };
       return integrationSettings;
+    case "workspace_style_guide_get":
+      return workspaceStyleReadResult();
+    case "workspace_style_guide_save": {
+      const request = args?.request as
+        | { config?: WorkspaceConfig; overwrite?: boolean; expectedFingerprint?: string }
+        | undefined;
+      if (!request?.config) throw new Error("Missing style guide config");
+      if (workspaceStyleConflictOnce && !request.overwrite) {
+        workspaceStyleConflictOnce = false;
+        workspaceStyleExists = true;
+        workspaceStyleFingerprint = "sha256:external";
+        throw new Error(
+          "Sidecar returned error: The workspace style guide changed outside Tessera."
+        );
+      }
+      workspaceStyleConfig = request.config;
+      workspaceStyleExists = true;
+      workspaceStyleFingerprint = request.overwrite ? "sha256:overwrite" : "sha256:saved";
+      return workspaceStyleReadResult();
+    }
     default:
       throw new Error(`Unexpected invoke command: ${command}`);
   }
@@ -550,6 +585,10 @@ beforeEach(() => {
     message: "Google Workspace connected.",
     provider: "google-workspace",
   };
+  workspaceStyleConfig = { schemaVersion: 1 };
+  workspaceStyleExists = false;
+  workspaceStyleFingerprint = "sha256:missing";
+  workspaceStyleConflictOnce = false;
 });
 
 afterEach(() => {
@@ -599,6 +638,25 @@ async function renderMemoryView() {
   return view;
 }
 
+async function renderStyleGuideView(workspaceRoot: string | null = "/tmp/workspace") {
+  const view = render(
+    React.createElement(SettingsView, {
+      onClose: () => undefined,
+      userKey: "user.test",
+      workspaceRoot,
+    })
+  );
+
+  await waitFor(() => {
+    expect(invokeCalls.some((call) => call.command === "model_settings_get")).toBe(true);
+  });
+
+  fireEvent.click(view.getByRole("button", { name: /style guide/i }));
+
+  await view.findByRole("heading", { name: "Style Guide" });
+  return view;
+}
+
 function searchModeSection(view: ReturnType<typeof render>) {
   const heading = view.getByText("Search mode");
   return heading.closest("section");
@@ -620,6 +678,94 @@ function setInputValue(input: Element, value: string) {
   setter.call(input, value);
   fireEvent.change(input, { bubbles: true });
 }
+
+function setTextAreaValue(textarea: Element, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value"
+  )?.set;
+  if (!setter) throw new Error("Missing textarea value setter");
+  setter.call(textarea, value);
+  fireEvent.change(textarea, { bubbles: true });
+}
+
+describe("SettingsView style guide flow", () => {
+  test("renders workspace-scoped empty state without a selected workspace", async () => {
+    const view = await renderStyleGuideView(null);
+
+    expect(
+      view.getByText("Select a workspace to create or edit its local style guide.")
+    ).toBeTruthy();
+    expect(view.getByRole("button", { name: "Start from defaults" }).hasAttribute("disabled")).toBe(
+      true
+    );
+  });
+
+  test("starts from defaults, edits major fields, and saves workspace config", async () => {
+    const view = await renderStyleGuideView();
+
+    fireEvent.click(view.getByRole("button", { name: "Start from defaults" }));
+    await view.findByLabelText("Profile name");
+
+    fireEvent.input(view.getByLabelText("Profile name"), {
+      target: { value: "Teserra Editorial Voice" },
+    });
+    fireEvent.input(view.getByLabelText("Voice principles"), {
+      target: { value: "Lead with a direct answer\nPrefer specific evidence" },
+    });
+    fireEvent.input(view.getByLabelText("Banned terms"), {
+      target: { value: "synergy\nbest-in-class" },
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Save style guide" }));
+
+    await waitFor(() => {
+      const saveCall = invokeCalls.find((call) => call.command === "workspace_style_guide_save");
+      const config = saveCall?.args?.request?.config as WorkspaceConfig | undefined;
+      expect(config?.styleGuide?.profile.name).toBe("Teserra Editorial Voice");
+      expect(config?.styleGuide?.voice.principles).toEqual([
+        "Lead with a direct answer",
+        "Prefer specific evidence",
+      ]);
+      expect(config?.styleGuide?.language.bannedTerms).toEqual(["synergy", "best-in-class"]);
+    });
+    expect(await view.findByText("Style guide saved")).toBeTruthy();
+  });
+
+  test("validates malformed JSON before saving", async () => {
+    const view = await renderStyleGuideView();
+
+    const jsonEditor = view.getByLabelText("Style guide JSON") as HTMLTextAreaElement;
+    fireEvent.input(jsonEditor, { target: { value: "{not-json" } });
+    await waitFor(() => {
+      expect(jsonEditor.value).toBe("{not-json");
+    });
+    fireEvent.click(view.getByRole("button", { name: "Save style guide" }));
+
+    await waitFor(() => {
+      expect(view.getAllByText(/Expected property name|JSON/).length).toBeGreaterThan(0);
+    });
+    expect(invokeCalls.some((call) => call.command === "workspace_style_guide_save")).toBe(false);
+  });
+
+  test("stale save conflicts offer reload and intentional overwrite", async () => {
+    workspaceStyleConflictOnce = true;
+    const view = await renderStyleGuideView();
+
+    fireEvent.click(view.getByRole("button", { name: "Start from defaults" }));
+    fireEvent.click(view.getByRole("button", { name: "Save style guide" }));
+
+    await view.findByText(/changed outside Tessera/);
+    expect(view.getByRole("button", { name: "Reload" })).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => {
+      const saveCalls = invokeCalls.filter((call) => call.command === "workspace_style_guide_save");
+      expect(saveCalls[saveCalls.length - 1]?.args?.request?.overwrite).toBe(true);
+    });
+    expect(await view.findByText("Style guide saved")).toBeTruthy();
+  });
+});
 
 describe("SettingsView model flow", () => {
   test("legacy settings missing the selected provider fall back without crashing", async () => {

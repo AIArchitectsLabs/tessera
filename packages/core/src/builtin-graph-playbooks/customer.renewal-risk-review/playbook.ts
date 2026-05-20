@@ -16,6 +16,11 @@ export default {
         label: "Renewal risk brief",
       },
     ],
+    writingStyle: {
+      enabled: true,
+      defaultCopyType: "business.brief.medium",
+      supportedCopyTypes: ["business.brief.medium", "blog.article.long"],
+    },
     phases: ["Analyze", "Review"],
   },
   inputs: {
@@ -144,6 +149,7 @@ export default {
       output: {
         artifact: "businessBrief",
         schema: "schemas/businessBrief.schema.json",
+        style: { consume: true, purpose: "draft" },
       },
     },
     {
