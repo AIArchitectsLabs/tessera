@@ -10,8 +10,8 @@ Last updated: 2026-05-21
 | 1. SEO/GEO recipe | Complete | writer | `docs/playbook-authoring/recipe-001-seo-geo.md`, `docs/playbook-authoring/authoring-checklist.md`, SEO/GEO validator evidence: 0 errors, 0 warnings, 0 info |
 | 2A. Validation CLI first | Planned | executor + test-engineer | Text and JSON diagnostics, exit-code tests, failing fixture with repair hint |
 | 2B. Minimal authoring SDK helpers | Planned | executor | Helpers justified by SEO/GEO or supply-chain usage, placeholder scaffold validation |
-| 3. Supply-chain recipe | Planned | writer + architect | Inputs, artifacts, graph phases, review gates, and `riskSignal[]` provenance contract |
-| 4. External supply-chain scaffold | Planned | executor | Loadable external package with minimal graph, fixtures, no standalone runner |
+| 3. Supply-chain recipe | Complete | writer + architect | Inputs, artifacts, graph phases, review gates, and `riskSignal[]` provenance contract |
+| 4. External supply-chain scaffold | Complete | executor | Loadable external package with minimal graph, fixtures, no standalone runner |
 | 5. V1 supply-chain flow | Planned | executor + test-engineer | Fixture-only final packet before live Gmail/web/feed paths |
 | 6. Tessera import/runtime polish | Planned | executor | Import, capability preview, provenance trace, review surfaces, final output materialization |
 | 7. Cookbook and agent authoring skill | Planned | writer | Cookbook docs and portable agent instructions tested by a third-playbook scaffold |
@@ -28,8 +28,8 @@ Status semantics: `Planned` means scoped in this plan but not yet proven by comm
 | Validator CLI text mode | 2A | Tessera repo | Not started | `tessera playbook validate <path>` returns deterministic summary and exit codes |
 | Validator CLI JSON mode | 2A | Tessera repo | Not started | `tessera playbook validate <path> --json` emits stable diagnostic codes and repair hints |
 | Minimal SDK helpers | 2B | Tessera repo | Not started | Helpers are used by at least SEO/GEO or supply-chain and stay domain-neutral |
-| Supply-chain recipe document | 3 | External supply-chain repo | Not started | Documents inputs, graph phases, artifacts, review gates, and final outputs |
-| External supply-chain scaffold | 4 | `/Users/utpal/Code/projects/supply-chain-risk-playbook` | Not started | Package loads through Tessera loader and validates without live connectors |
+| Supply-chain recipe document | 3 | External supply-chain repo | Complete | Documents inputs, graph phases, artifacts, review gates, and final outputs |
+| External supply-chain scaffold | 4 | `/Users/utpal/Code/projects/supply-chain-risk-playbook` | Complete | Package loads through Tessera loader and validates without live connectors |
 | Fixture-only V1 flow | 5 | External supply-chain repo | Not started | Fixtures produce risk registers and final disruption packet |
 | Import/runtime polish | 6 | Tessera repo | Not started | Tessera imports package, previews capabilities, shows provenance, and writes final files |
 | Cookbook and agent skill | 7 | Tessera docs and portable skill package | Not started | A third playbook can be scaffolded, validated, fixture-run, packaged, and imported |
