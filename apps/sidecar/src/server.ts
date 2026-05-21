@@ -527,6 +527,32 @@ function defaultAgentProfile(userKey?: string): AgentProfile {
   return mergeDefaultAgentProfile(DEFAULT_AGENT_PROFILE, store.get("default"));
 }
 
+function pinnedGraphRunAgentProfileId(run: PlaybookGraphRunRecord): string | undefined {
+  const id = run.executionContext?.fingerprints.agentProfileId;
+  return typeof id === "string" && id.trim() ? id.trim() : undefined;
+}
+
+function graphRunAgentProfileForExistingRun(input: {
+  run: PlaybookGraphRunRecord;
+  userKey?: string;
+  fallbackAgent?: AgentProfile;
+}): { agentProfile: AgentProfile; pinnedAgentResolved: boolean } {
+  if (input.fallbackAgent) {
+    return { agentProfile: input.fallbackAgent, pinnedAgentResolved: true };
+  }
+  const pinnedAgentId = pinnedGraphRunAgentProfileId(input.run);
+  if (pinnedAgentId) {
+    const profile = profileForAgentId(pinnedAgentId, input.userKey);
+    if (profile.id === pinnedAgentId) {
+      return { agentProfile: profile, pinnedAgentResolved: true };
+    }
+  }
+  return {
+    agentProfile: defaultAgentProfile(input.userKey),
+    pinnedAgentResolved: !pinnedAgentId,
+  };
+}
+
 function allowedSkillIdsForAgent(agentId: string, userKey?: string): string[] {
   return profileForAgentId(agentId, userKey).skills ?? [];
 }
@@ -3993,24 +4019,34 @@ export async function handleGraphRunDrain(
         : options.workspaceRoot;
     const requestedAssignmentPlan = parsed.data.assignmentPlan;
     const assignmentPlan = requestedAssignmentPlan ?? run.assignmentPlan;
+    const { agentProfile, pinnedAgentResolved } = graphRunAgentProfileForExistingRun({
+      run,
+      ...(userKey ? { userKey } : {}),
+      ...(options.agentProfile ? { fallbackAgent: options.agentProfile } : {}),
+    });
     const runtimeOptions = graphRunOptionsWithAssignmentPlan(
       graphRunOptionsWithAgentRuntime(options, {
-        agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
+        agentProfile,
         ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
         ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
       }),
       assignmentPlan
     );
     const runtimeProvider = graphRunAgentProvider(runtimeOptions);
-    const executionContext = graphRunExecutionContextWithAssignments(
+    const activeExecutionContext = runtimeProvider
+      ? graphRunAgentExecutionContext({
+          agent: runtimeOptions.agentProfile ?? agentProfile,
+          provider: runtimeProvider,
+          ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+        })
+      : options.executionContext;
+    const baseExecutionContext =
       parsed.data.executionContext ??
-        (runtimeProvider
-          ? graphRunAgentExecutionContext({
-              agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
-              provider: runtimeProvider,
-              ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
-            })
-          : options.executionContext),
+      (pinnedAgentResolved
+        ? (activeExecutionContext ?? run.executionContext?.fingerprints)
+        : (run.executionContext?.fingerprints ?? activeExecutionContext));
+    const executionContext = graphRunExecutionContextWithAssignments(
+      baseExecutionContext,
       assignmentPlan
     );
 
@@ -4508,24 +4544,34 @@ export async function handleGraphRunResume(
     const now = options.now ? options.now() : new Date().toISOString();
     const requestedAssignmentPlan = parsed.data.assignmentPlan;
     const assignmentPlan = requestedAssignmentPlan ?? run.assignmentPlan;
+    const { agentProfile, pinnedAgentResolved } = graphRunAgentProfileForExistingRun({
+      run,
+      ...(userKey ? { userKey } : {}),
+      ...(options.agentProfile ? { fallbackAgent: options.agentProfile } : {}),
+    });
     const runtimeOptions = graphRunOptionsWithAssignmentPlan(
       graphRunOptionsWithAgentRuntime(options, {
-        agentProfile: options.agentProfile ?? defaultAgentProfile(userKey),
+        agentProfile,
         ...(parsed.data.agentProvider ? { agentProvider: parsed.data.agentProvider } : {}),
         ...(parsed.data.credential ? { credential: parsed.data.credential } : {}),
       }),
       assignmentPlan
     );
     const runtimeProvider = graphRunAgentProvider(runtimeOptions);
-    const executionContext = graphRunExecutionContextWithAssignments(
+    const activeExecutionContext = runtimeProvider
+      ? graphRunAgentExecutionContext({
+          agent: runtimeOptions.agentProfile ?? agentProfile,
+          provider: runtimeProvider,
+          ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
+        })
+      : options.executionContext;
+    const baseExecutionContext =
       parsed.data.executionContext ??
-        (runtimeProvider
-          ? graphRunAgentExecutionContext({
-              agent: runtimeOptions.agentProfile ?? defaultAgentProfile(userKey),
-              provider: runtimeProvider,
-              ...(runtimeOptions.credential ? { credential: runtimeOptions.credential } : {}),
-            })
-          : options.executionContext),
+      (pinnedAgentResolved
+        ? (activeExecutionContext ?? run.executionContext?.fingerprints)
+        : (run.executionContext?.fingerprints ?? activeExecutionContext));
+    const executionContext = graphRunExecutionContextWithAssignments(
+      baseExecutionContext,
       assignmentPlan
     );
 

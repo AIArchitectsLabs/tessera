@@ -10,6 +10,7 @@ import {
   compilePlaybookGraph,
   createOptionalCapabilityManager,
   createPlaybookGraphCache,
+  stableJsonStringify,
 } from "@tessera/core";
 import type { GraphPlaybookRegistryEntry } from "./graph-playbook-registry.js";
 import { createPlaybookGraphRunStore } from "./playbook-graph-run-store.js";
@@ -127,6 +128,10 @@ beforeAll(async () => {
 
 function sha256(data: Buffer): string {
   return createHash("sha256").update(data).digest("hex");
+}
+
+function testGraphRunHash(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJsonStringify(value)).digest("hex")}`;
 }
 
 const crcTable = new Uint32Array(256);
@@ -3730,6 +3735,176 @@ describe("graph run endpoints", () => {
         },
       });
       expect(analyst.name).toBe("Analyst");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("drain endpoint preserves the pinned top-level agent context", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunDrain).toBeDefined();
+    if (!handleGraphRunDrain) throw new Error("handleGraphRunDrain was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const provider = { provider: "openai-codex" as const, model: "gpt-5.4" };
+    const assignmentPlan = testAssignmentPlan({
+      agentId: "writer",
+      agentLabel: "Content Writer",
+      stepId: "score",
+    });
+    const originalContext = {
+      agentProfileId: "writer",
+      agentProfileUpdatedAt: "2026-05-20T10:32:38.986Z",
+      provider: provider.provider,
+      model: provider.model,
+      providerFingerprint: "sha256:writer-provider",
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            agentId: "writer",
+            agentProvider: provider,
+            executionContext: originalContext,
+            assignmentPlan,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; executionContext?: { executionContextHash: string } };
+      };
+      const pinnedHash = created.run.executionContext?.executionContextHash;
+      expect(pinnedHash).toBeTruthy();
+
+      let calls = 0;
+      const drainResponse = await handleGraphRunDrain(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/drain`, {
+          method: "POST",
+          body: JSON.stringify({ agentProvider: provider }),
+        }),
+        created.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            calls += 1;
+            return { ok: true };
+          },
+        }
+      );
+
+      expect(drainResponse.status).toBe(200);
+      const drained = (await drainResponse.json()) as {
+        run: {
+          status: string;
+          blockedReason?: string;
+          executionContext?: { executionContextHash: string };
+        };
+        queue: Array<{ status: string }>;
+      };
+      expect(calls).toBe(1);
+      expect(drained.run.status).toBe("completed");
+      expect(drained.run.blockedReason).toBeUndefined();
+      expect(drained.run.executionContext?.executionContextHash).toBe(pinnedHash);
+      expect(drained.queue[0]?.status).toBe("succeeded");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("context-change approval resumes queued work with the pinned top-level agent context", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    if (!handleGraphRunResume) throw new Error("handleGraphRunResume was not loaded");
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const provider = { provider: "openai-codex" as const, model: "gpt-5.4" };
+    const writer = testAgentProfile({
+      id: "writer",
+      name: "Content Writer",
+      updatedAt: "2026-05-20T10:32:38.986Z",
+    });
+    const assignmentPlan = testAssignmentPlan({
+      agentId: writer.id,
+      agentLabel: writer.name,
+      stepId: "score",
+    });
+    const originalContext = {
+      agentProfileId: writer.id,
+      agentProfileUpdatedAt: writer.updatedAt,
+      provider: provider.provider,
+      model: provider.model,
+      providerFingerprint: testGraphRunHash(provider),
+    };
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testCompiledGraph(),
+            agentId: writer.id,
+            agentProvider: provider,
+            executionContext: originalContext,
+            assignmentPlan,
+          }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string; executionContext?: { executionContextHash: string } };
+      };
+      const pinnedHash = created.run.executionContext?.executionContextHash;
+      expect(pinnedHash).toBeTruthy();
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "blocked",
+        blockedReason:
+          "Graph execution context changed; expected sha256:old, got sha256:new. Approval is required before continuing.",
+      });
+
+      let calls = 0;
+      const resumeResponse = await handleGraphRunResume(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve_context_change",
+            agentProvider: provider,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          agentProfile: writer,
+          scriptAdapter() {
+            calls += 1;
+            return { ok: true };
+          },
+        }
+      );
+
+      expect(resumeResponse.status).toBe(200);
+      const resumed = (await resumeResponse.json()) as {
+        run: {
+          status: string;
+          blockedReason?: string;
+          executionContext?: { executionContextHash: string };
+        };
+        queue: Array<{ status: string }>;
+      };
+      expect(calls).toBe(1);
+      expect(resumed.run.status).toBe("completed");
+      expect(resumed.run.blockedReason).toBeUndefined();
+      expect(resumed.run.executionContext?.executionContextHash).toBe(pinnedHash);
+      expect(resumed.queue[0]?.status).toBe("succeeded");
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
