@@ -7,7 +7,7 @@ Last updated: 2026-05-21
 | Phase | Status | Owner lane | Next evidence required |
 | --- | --- | --- | --- |
 | 0. Lock the boundary | Planned | architect | Boundary note with explicit Tessera-vs-external ownership checks |
-| 1. SEO/GEO recipe | Planned | writer | `recipe-001-seo-geo.md`, `authoring-checklist.md`, SEO/GEO validation or tracked validator gaps |
+| 1. SEO/GEO recipe | Complete | writer | `docs/playbook-authoring/recipe-001-seo-geo.md`, `docs/playbook-authoring/authoring-checklist.md`, SEO/GEO validator evidence: 0 errors, 0 warnings, 0 info |
 | 2A. Validation CLI first | Planned | executor + test-engineer | Text and JSON diagnostics, exit-code tests, failing fixture with repair hint |
 | 2B. Minimal authoring SDK helpers | Planned | executor | Helpers justified by SEO/GEO or supply-chain usage, placeholder scaffold validation |
 | 3. Supply-chain recipe | Planned | writer + architect | Inputs, artifacts, graph phases, review gates, and `riskSignal[]` provenance contract |
@@ -23,8 +23,8 @@ Status semantics: `Planned` means scoped in this plan but not yet proven by comm
 | Deliverable | Phase | Repository | Readiness | Verification gate |
 | --- | --- | --- | --- | --- |
 | Boundary architecture note | 0 | Tessera docs or `.omx/plans` follow-up | Not started | Confirms no supply-chain domain concepts enter Tessera core |
-| `recipe-001-seo-geo.md` | 1 | External SEO/GEO repo or Tessera docs mirror | Not started | New author can classify copy-vs-rewrite files |
-| `authoring-checklist.md` | 1 | External SEO/GEO repo or Tessera docs mirror | Not started | Checklist covers intake, schemas, prompts, scripts, review loops, fixtures, package validation |
+| `recipe-001-seo-geo.md` | 1 | Tessera docs mirror | Complete | New author can classify copy-vs-rewrite files |
+| `authoring-checklist.md` | 1 | Tessera docs mirror | Complete | Checklist covers intake, schemas, prompts, scripts, review loops, fixtures, package validation |
 | Validator CLI text mode | 2A | Tessera repo | Not started | `tessera playbook validate <path>` returns deterministic summary and exit codes |
 | Validator CLI JSON mode | 2A | Tessera repo | Not started | `tessera playbook validate <path> --json` emits stable diagnostic codes and repair hints |
 | Minimal SDK helpers | 2B | Tessera repo | Not started | Helpers are used by at least SEO/GEO or supply-chain and stay domain-neutral |
