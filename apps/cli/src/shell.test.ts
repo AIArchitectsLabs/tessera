@@ -1,11 +1,194 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { executeCliCommand } from "./shell.js";
 import type { ExecuteCliCommandOptions } from "./shell.js";
 
+async function writePlaybookPackageFile(
+  root: string,
+  relativePath: string,
+  content: string
+): Promise<void> {
+  const absolutePath = join(root, relativePath);
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, content, "utf8");
+}
+
+async function makeValidPlaybookPackage(
+  options: {
+    capabilities?: string[];
+    nodeTools?: string[];
+    includeOutputSchema?: boolean;
+    includeArtifactWrite?: boolean;
+  } = {}
+): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "tessera-cli-playbook-"));
+  const capabilities = options.capabilities ?? ["web.search"];
+  const nodeTools = options.nodeTools ?? ["web.search"];
+  const includeOutputSchema = options.includeOutputSchema ?? true;
+  const includeArtifactWrite = options.includeArtifactWrite ?? true;
+  const graph = {
+    schemaVersion: 1,
+    id: "operations.playbook-validation-fixture",
+    version: "0.1.0",
+    name: "Playbook Validation Fixture",
+    capabilities,
+    artifacts: {
+      brief: {
+        schema: "schemas/brief.schema.json",
+      },
+    },
+    start: "draftBrief",
+    nodes: [
+      {
+        id: "draftBrief",
+        kind: "agent",
+        prompt: "prompts/draft.md",
+        inputs: {},
+        tools: nodeTools,
+        output: {
+          artifact: "brief",
+          ...(includeOutputSchema ? { schema: "schemas/brief.schema.json" } : {}),
+        },
+        onSuccess: includeArtifactWrite ? "writeBrief" : "completed",
+      },
+      ...(includeArtifactWrite
+        ? [
+            {
+              id: "writeBrief",
+              kind: "artifactWrite",
+              artifact: "brief",
+              path: "Brief.md",
+              onSuccess: "completed",
+            },
+          ]
+        : []),
+    ],
+  };
+
+  await writePlaybookPackageFile(
+    root,
+    "manifest.json",
+    JSON.stringify({
+      schemaVersion: 1,
+      id: graph.id,
+      version: graph.version,
+      name: graph.name,
+      entrypoint: "playbook.ts",
+    })
+  );
+  await writePlaybookPackageFile(
+    root,
+    "playbook.ts",
+    `export default ${JSON.stringify(graph, null, 2)};\n`
+  );
+  await writePlaybookPackageFile(root, "prompts/draft.md", "Draft a brief.\n");
+  await writePlaybookPackageFile(root, "schemas/brief.schema.json", '{"type":"object"}\n');
+  return root;
+}
+
 describe("workspace cli shell commands", () => {
+  test("validates a playbook package in text mode", async () => {
+    const root = await makeValidPlaybookPackage();
+
+    const result = await executeCliCommand(["playbook", "validate", root]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Playbook validation passed");
+    expect(result.stdout).toContain("Summary: 0 error(s), 0 warning(s), 0 info");
+  });
+
+  test("returns structured playbook validation diagnostics in json mode", async () => {
+    const root = await makeValidPlaybookPackage({
+      nodeTools: [],
+      includeOutputSchema: false,
+      includeArtifactWrite: false,
+    });
+
+    const result = await executeCliCommand(["playbook", "validate", root, "--json"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe("");
+    const payload = JSON.parse(result.stdout);
+    expect(payload).toMatchObject({
+      ok: false,
+      summary: {
+        errors: 1,
+        warnings: 1,
+        info: 0,
+      },
+    });
+    expect(payload.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "agent_output_missing_schema",
+          severity: "error",
+          nodeId: "draftBrief",
+          artifact: "brief",
+        }),
+        expect.objectContaining({
+          code: "missing_final_materialization",
+          severity: "warning",
+          path: "playbook.ts",
+        }),
+      ])
+    );
+  });
+
+  test("maps undeclared playbook capabilities to repairable validation diagnostics", async () => {
+    const root = await makeValidPlaybookPackage({
+      capabilities: [],
+    });
+
+    const result = await executeCliCommand(["playbook", "validate", root, "--json"]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.diagnostics[0]).toMatchObject({
+      code: "undeclared_capability",
+      severity: "error",
+    });
+    expect(payload.diagnostics[0].repairHint).toContain("Declare the capability");
+  });
+
+  test("maps missing playbook source refs to repairable validation diagnostics", async () => {
+    const root = await makeValidPlaybookPackage();
+    await writePlaybookPackageFile(
+      root,
+      "playbook.ts",
+      `export default {
+  schemaVersion: 1,
+  id: "operations.playbook-validation-fixture",
+  version: "0.1.0",
+  name: "Playbook Validation Fixture",
+  artifacts: { brief: { schema: "schemas/missing.schema.json" } },
+  capabilities: [],
+  start: "writeBrief",
+  nodes: [{ id: "writeBrief", kind: "artifactWrite", artifact: "brief", path: "Brief.md", onSuccess: "completed" }]
+};\n`
+    );
+
+    const result = await executeCliCommand(["playbook", "validate", root, "--json"]);
+
+    expect(result.exitCode).toBe(1);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.diagnostics[0]).toMatchObject({
+      code: "missing_source_ref",
+      severity: "error",
+    });
+    expect(payload.diagnostics[0].repairHint).toContain("Create the referenced package file");
+  });
+
+  test("treats unreadable playbook paths as cli usage failures", async () => {
+    const result = await executeCliCommand(["playbook", "validate", "/path/that/does/not/exist"]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("no such file or directory");
+  });
+
   test("returns normalized web search results", async () => {
     const result = await executeCliCommand(["web-search", "search", "tessera"], {
       fetchImpl: async () =>

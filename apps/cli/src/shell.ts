@@ -7,7 +7,13 @@ import {
   type SearchProvider,
   SearchSettingsSchema,
 } from "@tessera/contracts";
-import { type WebSearchRuntime, executeWebSearch } from "@tessera/core";
+import {
+  CORE_VERSION,
+  type LoadedGraphPlaybookPackage,
+  type WebSearchRuntime,
+  executeWebSearch,
+  loadGraphPlaybookPackage,
+} from "@tessera/core";
 import { NodeHtmlMarkdown } from "node-html-markdown";
 import {
   type CommandResult,
@@ -43,6 +49,8 @@ export class CliCommandError extends Error {
 }
 
 export interface ExecuteCliCommandOptions {
+  playbookCompilerVersion?: string;
+  playbookScriptSdkVersion?: string;
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   getBraveApiKey?: () => Promise<string | null>;
   getTavilyApiKey?: () => Promise<string | null>;
@@ -57,6 +65,10 @@ export async function executeCliCommand(
 ): Promise<CliCommandResult> {
   try {
     const [command, subcommand, ...args] = argv;
+    if (command === "playbook" && subcommand === "validate") {
+      return await runPlaybookValidate(args, options);
+    }
+
     if (command === "web-search" && subcommand === "search") {
       const payload = await runWebSearch(args, options);
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
@@ -120,6 +132,289 @@ export async function executeCliCommand(
           : 1;
     return { exitCode, stdout: "", stderr: `${message}\n` };
   }
+}
+
+type PlaybookValidationSeverity = "error" | "warning" | "info";
+type LoadedPlaybookGraph = LoadedGraphPlaybookPackage["compiled"]["graph"];
+type LoadedPlaybookGraphBranch = {
+  start: string;
+  nodes: LoadedPlaybookGraph["nodes"];
+};
+
+type PlaybookValidationDiagnostic = {
+  code: string;
+  severity: PlaybookValidationSeverity;
+  message: string;
+  path?: string;
+  nodeId?: string;
+  artifact?: string;
+  ref?: string;
+  repairHint: string;
+};
+
+type PlaybookValidationResult = {
+  ok: boolean;
+  summary: Record<"errors" | "warnings" | "info", number>;
+  diagnostics: PlaybookValidationDiagnostic[];
+};
+
+const PLAYBOOK_USAGE = "Usage: playbook validate <path> [--json]";
+
+async function runPlaybookValidate(
+  args: string[],
+  options: ExecuteCliCommandOptions
+): Promise<CliCommandResult> {
+  const parsed = parsePlaybookValidateArgs(args);
+  const compilerVersion = options.playbookCompilerVersion ?? CORE_VERSION;
+  const scriptSdkVersion = options.playbookScriptSdkVersion ?? CORE_VERSION;
+
+  try {
+    const loaded = await loadGraphPlaybookPackage({
+      root: parsed.path,
+      compilerVersion,
+      scriptSdkVersion,
+    });
+    const diagnostics = collectAuthoringDiagnostics(loaded);
+    const result = createPlaybookValidationResult(diagnostics);
+    return {
+      exitCode: result.ok ? 0 : 1,
+      stdout: parsed.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : formatPlaybookValidationText(parsed.path, result),
+      stderr: "",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isUnreadablePathError(error)) {
+      throw new CliCommandError(message, 2);
+    }
+
+    const diagnostic = diagnosticFromLoaderError(message);
+    const result = createPlaybookValidationResult([diagnostic]);
+    return {
+      exitCode: 1,
+      stdout: parsed.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : formatPlaybookValidationText(parsed.path, result),
+      stderr: "",
+    };
+  }
+}
+
+function parsePlaybookValidateArgs(args: string[]): { path: string; json: boolean } {
+  let json = false;
+  const positional: string[] = [];
+
+  for (const arg of args) {
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new CliCommandError(PLAYBOOK_USAGE);
+    }
+    positional.push(arg);
+  }
+
+  if (positional.length !== 1) {
+    throw new CliCommandError(PLAYBOOK_USAGE);
+  }
+
+  return { path: positional[0] ?? "", json };
+}
+
+function isUnreadablePathError(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM";
+}
+
+function createPlaybookValidationResult(
+  diagnostics: PlaybookValidationDiagnostic[]
+): PlaybookValidationResult {
+  const summary = { errors: 0, warnings: 0, info: 0 };
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.severity === "error") summary.errors += 1;
+    if (diagnostic.severity === "warning") summary.warnings += 1;
+    if (diagnostic.severity === "info") summary.info += 1;
+  }
+
+  return {
+    ok: summary.errors === 0,
+    summary,
+    diagnostics,
+  };
+}
+
+function diagnosticFromLoaderError(message: string): PlaybookValidationDiagnostic {
+  const lower = message.toLowerCase();
+  let code = "package_validation_failed";
+  let repairHint =
+    "Fix the package, manifest, graph, or referenced source files, then run validation again.";
+
+  if (lower.includes("source ref is missing")) {
+    code = "missing_source_ref";
+    repairHint =
+      "Create the referenced package file or update the graph source ref to an existing package-relative file.";
+  } else if (lower.includes("dangerous imports")) {
+    code = "dangerous_import";
+    repairHint =
+      "Remove Node/runtime imports from the playbook package; keep domain logic in declared scripts and Tessera capabilities.";
+  } else if (lower.includes("dynamic import") || lower.includes("require()")) {
+    code = "disallowed_import_form";
+    repairHint =
+      "Use static ES imports only, and reference package-relative files or @tessera/plugin-sdk.";
+  } else if (lower.includes("manifest") && lower.includes("match")) {
+    code = "manifest_graph_mismatch";
+    repairHint = "Make manifest id, version, and name match the default-exported graph.";
+  } else if (lower.includes("unknown transition") || lower.includes("unknown start node")) {
+    code = "invalid_graph_transition";
+    repairHint =
+      "Update start, onSuccess/onFailure, condition, or review transitions to target existing nodes or terminal states.";
+  } else if (lower.includes("unknown artifact")) {
+    code = "undeclared_artifact";
+    repairHint =
+      "Declare the artifact in graph.artifacts or update the node to use an existing artifact name.";
+  } else if (lower.includes("undeclared capability") || lower.includes("undeclared agent tool")) {
+    code = "undeclared_capability";
+    repairHint =
+      "Declare the capability in graph.capabilities or remove the tool reference from the node.";
+  } else if (lower.includes("package.json") && lower.includes("dependencies")) {
+    code = "disallowed_dependency_field";
+    repairHint =
+      "Remove dependency fields from package.json; external playbooks must rely only on Tessera SDK/contracts.";
+  }
+
+  return {
+    code,
+    severity: "error",
+    message,
+    repairHint,
+  };
+}
+
+function formatPlaybookValidationText(path: string, result: PlaybookValidationResult): string {
+  const lines = [
+    result.ok ? `Playbook validation passed: ${path}` : `Playbook validation failed: ${path}`,
+    `Summary: ${result.summary.errors} error(s), ${result.summary.warnings} warning(s), ${result.summary.info} info`,
+  ];
+
+  for (const diagnostic of result.diagnostics) {
+    const location = [diagnostic.path, diagnostic.nodeId, diagnostic.artifact]
+      .filter((value): value is string => Boolean(value))
+      .join(" ");
+    lines.push(
+      `- [${diagnostic.severity}] ${diagnostic.code}${location ? ` (${location})` : ""}: ${diagnostic.message}`,
+      `  Repair: ${diagnostic.repairHint}`
+    );
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function collectAuthoringDiagnostics(
+  loaded: LoadedGraphPlaybookPackage
+): PlaybookValidationDiagnostic[] {
+  const diagnostics: PlaybookValidationDiagnostic[] = [];
+  collectGraphAuthoringDiagnostics({
+    diagnostics,
+    graph: loaded.compiled.graph,
+    branch: { start: loaded.compiled.graph.start, nodes: loaded.compiled.graph.nodes },
+    path: loaded.manifest.entrypoint,
+  });
+
+  if (!graphHasFinalMaterialization(loaded.compiled.graph)) {
+    diagnostics.push({
+      code: "missing_final_materialization",
+      severity: "warning",
+      message: "Graph has no artifactWrite node and no artifact materialize target.",
+      path: loaded.manifest.entrypoint,
+      repairHint:
+        "Add an artifactWrite node or a materialize path for at least one final artifact.",
+    });
+  }
+
+  return diagnostics;
+}
+
+function collectGraphAuthoringDiagnostics(options: {
+  diagnostics: PlaybookValidationDiagnostic[];
+  graph: LoadedPlaybookGraph;
+  branch: LoadedPlaybookGraphBranch;
+  path: string;
+}): void {
+  const declaredCapabilities = new Set(options.graph.capabilities);
+
+  for (const node of options.branch.nodes) {
+    if (node.kind === "tool" && !declaredCapabilities.has(node.capability)) {
+      options.diagnostics.push({
+        code: "undeclared_capability",
+        severity: "error",
+        message: `Tool node uses undeclared capability ${node.capability}.`,
+        path: options.path,
+        nodeId: node.id,
+        ref: node.capability,
+        repairHint:
+          "Add the capability to graph.capabilities or update the node to use a declared capability.",
+      });
+    }
+
+    if (node.kind === "agent") {
+      for (const tool of node.tools) {
+        if (!declaredCapabilities.has(tool)) {
+          options.diagnostics.push({
+            code: "undeclared_capability",
+            severity: "error",
+            message: `Agent node declares undeclared tool capability ${tool}.`,
+            path: options.path,
+            nodeId: node.id,
+            ref: tool,
+            repairHint:
+              "Add the capability to graph.capabilities or remove it from the agent tool list.",
+          });
+        }
+      }
+      if (node.output !== undefined && node.output.schema === undefined) {
+        options.diagnostics.push({
+          code: "agent_output_missing_schema",
+          severity: "error",
+          message: "Agent output is missing a schema ref.",
+          path: options.path,
+          nodeId: node.id,
+          ...(node.output.artifact === undefined ? {} : { artifact: node.output.artifact }),
+          repairHint:
+            "Declare node.output.schema so external-agent repair loops can validate structured output.",
+        });
+      }
+    }
+
+    if (node.kind === "parallelMap") {
+      collectGraphAuthoringDiagnostics({
+        diagnostics: options.diagnostics,
+        graph: options.graph,
+        branch: node.branch,
+        path: `${options.path}#${node.id}.branch`,
+      });
+    }
+  }
+}
+
+function graphHasFinalMaterialization(graph: LoadedPlaybookGraph): boolean {
+  if (Object.values(graph.artifacts).some((artifact) => artifact.materialize !== undefined)) {
+    return true;
+  }
+
+  return branchHasArtifactWrite({ start: graph.start, nodes: graph.nodes });
+}
+
+function branchHasArtifactWrite(branch: LoadedPlaybookGraphBranch): boolean {
+  for (const node of branch.nodes) {
+    if (node.kind === "artifactWrite") return true;
+    if (node.kind === "parallelMap" && branchHasArtifactWrite(node.branch)) return true;
+  }
+  return false;
 }
 
 async function runWebSearch(args: string[], options: ExecuteCliCommandOptions) {

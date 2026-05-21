@@ -154,6 +154,84 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Agent output schema mismatch/);
   });
 
+  test("rejects tool nodes that use undeclared capabilities", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["web.search"],
+        start: "search",
+        nodes: [
+          {
+            id: "search",
+            kind: "tool",
+            capability: "web.fetch",
+            args: {},
+            outputArtifact: "researchPlan",
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/Undeclared capability/);
+  });
+
+  test("rejects agent tool use that is missing from graph capabilities", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["web.search"],
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "./prompts/draft.md",
+            inputs: {},
+            tools: ["gmail.search"],
+            output: {
+              artifact: "scorecard",
+              schema: "./schemas/scorecard.schema.json",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/Undeclared agent tool/);
+  });
+
+  test("accepts declared tool and agent capability use", () => {
+    const parsed = validatePlaybookGraph({
+      ...graph,
+      capabilities: ["web.search", "gmail.search"],
+      start: "search",
+      nodes: [
+        {
+          id: "search",
+          kind: "tool",
+          capability: "web.search",
+          args: {},
+          outputArtifact: "researchPlan",
+          onSuccess: "draft",
+        },
+        {
+          id: "draft",
+          kind: "agent",
+          prompt: "./prompts/draft.md",
+          inputs: {
+            researchPlan: { artifact: "researchPlan" },
+          },
+          tools: ["gmail.search"],
+          output: {
+            artifact: "scorecard",
+            schema: "./schemas/scorecard.schema.json",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    });
+
+    expect(parsed.capabilities).toEqual(["web.search", "gmail.search"]);
+  });
+
   test("rejects consumed artifacts that are not declared by the graph", () => {
     const secondNode = requireNode(graph.nodes, 1);
 
