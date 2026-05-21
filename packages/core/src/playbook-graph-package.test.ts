@@ -212,6 +212,70 @@ describe("readPlaybookGraphPackage", () => {
     await expect(readPlaybookGraphPackage(root)).rejects.toThrow(/postinstall/i);
   });
 
+  test.each(["start", "dev", "serve", "run", "execute", "playbook"])(
+    "rejects standalone runner script %s",
+    async (scriptName) => {
+      const root = await makeRoot();
+      await writePackageFile(
+        root,
+        "manifest.json",
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "content.seo-blog",
+          version: "0.1.0",
+          name: "SEO Blog Article",
+          entrypoint: "playbook.ts",
+        })
+      );
+      await writePackageFile(root, "playbook.ts", "export default {};\n");
+      await writePackageFile(
+        root,
+        "package.json",
+        JSON.stringify({
+          name: "demo",
+          version: "0.1.0",
+          scripts: {
+            test: "bun test",
+            [scriptName]: "bun run playbook.ts",
+          },
+        })
+      );
+
+      await expect(readPlaybookGraphPackage(root)).rejects.toThrow(
+        new RegExp(`scripts\\.${scriptName}`)
+      );
+    }
+  );
+
+  test("rejects package.json bin entrypoints", async () => {
+    const root = await makeRoot();
+    await writePackageFile(
+      root,
+      "manifest.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        id: "content.seo-blog",
+        version: "0.1.0",
+        name: "SEO Blog Article",
+        entrypoint: "playbook.ts",
+      })
+    );
+    await writePackageFile(root, "playbook.ts", "export default {};\n");
+    await writePackageFile(
+      root,
+      "package.json",
+      JSON.stringify({
+        name: "demo",
+        version: "0.1.0",
+        bin: {
+          "demo-runner": "./run.js",
+        },
+      })
+    );
+
+    await expect(readPlaybookGraphPackage(root)).rejects.toThrow(/package\.json bin/i);
+  });
+
   test.each([
     "dependencies",
     "devDependencies",

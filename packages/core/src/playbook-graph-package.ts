@@ -33,6 +33,14 @@ const DEPENDENCY_FIELDS = new Set([
   "bundleDependencies",
   "bundledDependencies",
 ]);
+const STANDALONE_RUNNER_SCRIPT_NAMES = new Set([
+  "start",
+  "dev",
+  "serve",
+  "run",
+  "execute",
+  "playbook",
+]);
 
 function isFileError(error: unknown, code: string): error is FileError {
   return typeof error === "object" && error !== null && (error as FileError).code === code;
@@ -143,6 +151,22 @@ async function readManifestPackageJson(absolutePath: string): Promise<void> {
   }
 
   if (record) {
+    if (Object.prototype.hasOwnProperty.call(record, "bin")) {
+      throw new Error(
+        `package.json bin is not allowed in graph playbook packages: ${absolutePath}`
+      );
+    }
+
+    if (scripts) {
+      for (const scriptName of Object.keys(scripts)) {
+        if (STANDALONE_RUNNER_SCRIPT_NAMES.has(scriptName)) {
+          throw new Error(
+            `package.json scripts.${scriptName} is not allowed in graph playbook packages: ${absolutePath}`
+          );
+        }
+      }
+    }
+
     for (const field of DEPENDENCY_FIELDS) {
       if (Object.prototype.hasOwnProperty.call(record, field)) {
         throw new Error(`package.json ${field} is not allowed: ${absolutePath}`);

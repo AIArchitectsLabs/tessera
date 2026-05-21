@@ -141,6 +141,7 @@ function consumedArtifacts(node: PlaybookGraphNode): string[] {
 
 function validateGraphNodes(options: {
   artifacts: PlaybookGraph["artifacts"];
+  declaredCapabilities: Set<string>;
   nodes: PlaybookGraphNode[];
   start: string;
   path: string;
@@ -173,6 +174,20 @@ function validateGraphNodes(options: {
 
     validateAgentOutputContract({ artifacts: options.artifacts, node, path: options.path });
 
+    if (node.kind === "tool" && !options.declaredCapabilities.has(node.capability)) {
+      throw new Error(
+        `Undeclared capability used by ${options.path}.${node.id}: ${node.capability}`
+      );
+    }
+
+    if (node.kind === "agent") {
+      for (const tool of node.tools) {
+        if (!options.declaredCapabilities.has(tool)) {
+          throw new Error(`Undeclared agent tool used by ${options.path}.${node.id}: ${tool}`);
+        }
+      }
+    }
+
     for (const artifact of consumedArtifacts(node)) {
       if (options.artifacts[artifact] === undefined) {
         throw new Error(`Unknown artifact consumed by ${options.path}.${node.id}: ${artifact}`);
@@ -182,6 +197,7 @@ function validateGraphNodes(options: {
     if (node.kind === "parallelMap") {
       validateGraphNodes({
         artifacts: options.artifacts,
+        declaredCapabilities: options.declaredCapabilities,
         nodes: node.branch.nodes,
         start: node.branch.start,
         path: `${options.path}.${node.id}.branch`,
@@ -195,6 +211,7 @@ export function validatePlaybookGraph(graph: unknown): PlaybookGraph {
 
   validateGraphNodes({
     artifacts: parsed.artifacts,
+    declaredCapabilities: new Set(parsed.capabilities),
     nodes: parsed.nodes,
     start: parsed.start,
     path: parsed.id,
