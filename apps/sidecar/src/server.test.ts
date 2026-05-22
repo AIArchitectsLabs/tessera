@@ -1538,6 +1538,7 @@ describe("graph run endpoints", () => {
           state: string;
           title: string;
           primaryAction?: { decision: string; label: string; queueEntryId?: string };
+          secondaryActions?: Array<{ decision: string; label: string; queueEntryId?: string }>;
           technicalSummary?: { internalStatus: string; queueEntryId?: string };
         };
       };
@@ -1582,6 +1583,18 @@ describe("graph run endpoints", () => {
           label: "Approve brief",
           queueEntryId: reviewEntry.queueEntryId,
         },
+        secondaryActions: [
+          {
+            decision: "request_changes",
+            label: "Request changes",
+            queueEntryId: reviewEntry.queueEntryId,
+          },
+          {
+            decision: "deny",
+            label: "Stop run",
+            queueEntryId: reviewEntry.queueEntryId,
+          },
+        ],
         technicalSummary: {
           internalStatus: "blocked:blocked",
           queueEntryId: reviewEntry.queueEntryId,
@@ -2312,6 +2325,7 @@ describe("graph run endpoints", () => {
           draft: { schema: "schemas/draft.schema.json" },
           ticket: { schema: "schemas/ticket.schema.json" },
         },
+        capabilities: ["integration.crm.write"],
         start: "draft",
         nodes: [
           {
@@ -2649,6 +2663,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           search: { schema: "schemas/search.schema.json" },
         },
+        capabilities: ["web.search"],
         start: "search",
         nodes: [
           {
@@ -2732,6 +2747,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           calendar: { schema: "schemas/calendar.schema.json" },
         },
+        capabilities: ["integration.calendar.events.read"],
         start: "calendar",
         nodes: [
           {
@@ -3477,6 +3493,114 @@ describe("graph run endpoints", () => {
         `${detail.run.runId}:review/revise/review`,
       ]);
       expect(changed.queue.filter((entry) => entry.nodeId === "review")).toHaveLength(2);
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("request changes can emit a feedback artifact for downstream rework", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.review-feedback",
+        version: "0.1.0",
+        name: "Review Feedback Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+          feedback: { schema: "schemas/feedback.schema.json" },
+        },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "draft",
+            actions: [
+              {
+                id: "approveDraft",
+                decision: "approve",
+                label: "Approve draft",
+                target: "completed",
+              },
+              {
+                id: "sendBack",
+                decision: "request_changes",
+                label: "Send back for rework",
+                target: "revise",
+                outputArtifact: "feedback",
+                payloadFields: [{ path: "notes", label: "Feedback", kind: "string" }],
+              },
+            ],
+          },
+          {
+            id: "revise",
+            kind: "script",
+            run: "scripts/revise.ts",
+            inputs: { feedback: { artifact: "feedback" } },
+            outputArtifact: "draft",
+            onSuccess: "review",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        { store, scriptAdapter() {} }
+      );
+      const detail = (await response?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; status: string }>;
+      };
+      const reviewEntryId = detail.queue[0]?.queueEntryId;
+      expect(detail.run.status).toBe("blocked");
+
+      const changeResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${detail.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: detail.run.runId,
+            actionId: `${reviewEntryId}:sendBack`,
+            queueEntryId: reviewEntryId,
+            decision: "request_changes",
+            payload: { notes: "Tighten the finance examples." },
+          }),
+        }),
+        detail.run.runId,
+        {
+          store,
+          scriptAdapter() {
+            return { revised: true };
+          },
+        }
+      );
+
+      expect(changeResponse?.status).toBe(200);
+      const feedback = (await store.listArtifactVersions(detail.run.runId)).find(
+        (artifact) => artifact.artifactId === "feedback"
+      );
+      expect(feedback?.value).toMatchObject({
+        actionId: "sendBack",
+        decision: "request_changes",
+        notes: "Tighten the finance examples.",
+        payload: { notes: "Tighten the finance examples." },
+      });
+      expect((await store.listReviewEvents(detail.run.runId))[0]).toMatchObject({
+        decision: "request_changes",
+        payload: { notes: "Tighten the finance examples." },
+      });
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
@@ -5389,6 +5513,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           ticket: { schema: "schemas/ticket.schema.json" },
         },
+        capabilities: ["integration.crm.upsert"],
         start: "ticket",
         nodes: [
           {

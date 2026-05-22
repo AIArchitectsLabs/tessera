@@ -692,6 +692,11 @@ function outputArtifacts(node: PlaybookGraphNode): string[] {
   if (node.kind === "agent" && node.output?.artifact) {
     return [node.output.artifact];
   }
+  if (node.kind === "humanReview") {
+    return node.actions
+      .map((action) => (typeof action === "string" ? undefined : action.outputArtifact))
+      .filter((artifact): artifact is string => typeof artifact === "string");
+  }
   return [];
 }
 

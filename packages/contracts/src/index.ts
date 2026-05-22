@@ -1802,6 +1802,39 @@ export type PlaybookGraphNodeOutput =
       style?: PlaybookGraphNodeStyle;
     };
 
+export const PlaybookGraphReviewActionDecisionSchema = z.enum([
+  "approve",
+  "request_changes",
+  "deny",
+]);
+export type PlaybookGraphReviewActionDecision = z.infer<
+  typeof PlaybookGraphReviewActionDecisionSchema
+>;
+
+export const PlaybookGraphActionToneSchema = z.enum(["primary", "secondary", "danger"]);
+export type PlaybookGraphActionTone = z.infer<typeof PlaybookGraphActionToneSchema>;
+
+export const PlaybookGraphReviewPayloadFieldSchema = z
+  .object({
+    path: z.string().min(1),
+    label: z.string().min(1),
+    kind: z.enum(["string", "json", "object", "compiledGraph", "sourceFiles"]),
+    required: z.boolean().default(true),
+  })
+  .strict();
+export type PlaybookGraphReviewPayloadField = z.infer<typeof PlaybookGraphReviewPayloadFieldSchema>;
+
+export type PlaybookGraphHumanReviewAction = {
+  id: string;
+  decision: PlaybookGraphReviewActionDecision;
+  label?: string;
+  description?: string;
+  target?: string;
+  tone?: PlaybookGraphActionTone;
+  payloadFields?: PlaybookGraphReviewPayloadField[];
+  outputArtifact?: string;
+};
+
 export type PlaybookGraphJoinNode = PlaybookGraphNodeBase & {
   kind: "join";
   inputs: string[];
@@ -1825,7 +1858,7 @@ export type PlaybookGraphToolNode = PlaybookGraphNodeBase & {
 export type PlaybookGraphHumanReviewNode = PlaybookGraphNodeBase & {
   kind: "humanReview";
   artifact: string;
-  actions: string[];
+  actions: Array<string | PlaybookGraphHumanReviewAction>;
   onApprove?: string;
   onRequestChanges?: string;
 };
@@ -1939,10 +1972,23 @@ const PlaybookGraphToolNodeSchema = PlaybookGraphNodeBaseSchema.extend({
   outputArtifact: z.string().min(1).optional(),
 }).strict();
 
+const PlaybookGraphHumanReviewActionSchema = z
+  .object({
+    id: PlaybookGraphNodeIdSchema,
+    decision: PlaybookGraphReviewActionDecisionSchema,
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
+    target: PlaybookGraphNodeIdSchema.optional(),
+    tone: PlaybookGraphActionToneSchema.optional(),
+    payloadFields: z.array(PlaybookGraphReviewPayloadFieldSchema).default([]),
+    outputArtifact: z.string().min(1).optional(),
+  })
+  .strict();
+
 const PlaybookGraphHumanReviewNodeSchema = PlaybookGraphNodeBaseSchema.extend({
   kind: z.literal("humanReview"),
   artifact: z.string().min(1),
-  actions: z.array(z.string().min(1)).min(1),
+  actions: z.array(z.union([z.string().min(1), PlaybookGraphHumanReviewActionSchema])).min(1),
   onApprove: PlaybookGraphNodeIdSchema.optional(),
   onRequestChanges: PlaybookGraphNodeIdSchema.optional(),
 }).strict();
@@ -2523,6 +2569,7 @@ export type PlaybookGraphNodeMemo = z.infer<typeof PlaybookGraphNodeMemoSchema>;
 export const PlaybookGraphResumeDecisionSchema = z
   .object({
     runId: z.string().min(1),
+    actionId: z.string().min(1).optional(),
     decision: z.enum([
       "approve",
       "deny",
@@ -2553,23 +2600,13 @@ export const PlaybookGraphResumeActionSpecSchema = z
     decision: PlaybookGraphResumeDecisionSchema.shape.decision,
     label: z.string().min(1),
     description: z.string().min(1).optional(),
+    tone: PlaybookGraphActionToneSchema.optional(),
     queueEntryId: z.string().min(1).optional(),
     nodePath: PlaybookGraphNodePathSchema.optional(),
     nodeKind: PlaybookGraphQueueEntrySchema.shape.nodeKind.optional(),
     allowedRunStatuses: z.array(PlaybookGraphRunStatusSchema).min(1),
     allowedQueueStatuses: z.array(PlaybookGraphQueueStatusSchema).default([]),
-    requiredPayloadFields: z
-      .array(
-        z
-          .object({
-            path: z.string().min(1),
-            label: z.string().min(1),
-            kind: z.enum(["string", "json", "object", "compiledGraph", "sourceFiles"]),
-            required: z.boolean().default(true),
-          })
-          .strict()
-      )
-      .default([]),
+    requiredPayloadFields: z.array(PlaybookGraphReviewPayloadFieldSchema).default([]),
     sideEffect: z.enum(["none", "resume", "invalidate_downstream", "terminal", "git_commit"]),
     destructive: z.boolean().default(false),
     invalidatesDownstream: z.boolean().default(false),
@@ -2597,7 +2634,7 @@ export const PlaybookRunProductActionSchema = z
     actionId: z.string().min(1),
     label: z.string().min(1),
     description: z.string().min(1).optional(),
-    tone: z.enum(["primary", "secondary", "danger"]).default("primary"),
+    tone: PlaybookGraphActionToneSchema.default("primary"),
     decision: PlaybookGraphResumeDecisionSchema.shape.decision,
     queueEntryId: z.string().min(1).optional(),
   })

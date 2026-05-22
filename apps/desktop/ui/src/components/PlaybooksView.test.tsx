@@ -374,7 +374,15 @@ const graphRunSurface = {
       decision: "approve",
       queueEntryId: "queue-review",
     },
-    secondaryActions: [],
+    secondaryActions: [
+      {
+        actionId: "queue-review:request_changes",
+        label: "Request changes",
+        tone: "secondary",
+        decision: "request_changes",
+        queueEntryId: "queue-review",
+      },
+    ],
     technicalSummary: {
       internalStatus: "blocked:blocked",
       queueEntryId: "queue-review",
@@ -2326,6 +2334,47 @@ describe("PlaybooksView", () => {
     ).toBeNull();
   });
 
+  test("submits request-changes feedback from the main review card", async () => {
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected human review run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByRole("button", { name: "Request changes" })).toBeTruthy();
+      expect(view.getByPlaceholderText("Notes")).toBeTruthy();
+    });
+
+    const notesTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
+    fireEvent.change(notesTextarea, {
+      target: { value: "Add examples from finance teams." },
+    });
+    await waitFor(() => {
+      expect(notesTextarea.value).toBe("Add examples from finance teams.");
+    });
+    const guidedRequestChangesButton = view.getAllByRole("button", { name: "Request changes" })[0];
+    if (!guidedRequestChangesButton) throw new Error("Expected guided request changes button");
+    fireEvent.click(guidedRequestChangesButton);
+
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(([command]) => command === "graph_run_resume");
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        request: {
+          actionId: "queue-review:request_changes",
+          decision: "request_changes",
+          queueEntryId: "queue-review",
+          payload: { notes: "Add examples from finance teams." },
+        },
+      });
+    });
+  });
+
   test("renders graph review surface actions and submits action payloads", async () => {
     const view = renderPlaybooksView();
 
@@ -2374,14 +2423,19 @@ describe("PlaybooksView", () => {
 
     expect(view.queryByRole("button", { name: "Edit input" })).toBeNull();
     expect(view.queryByPlaceholderText(/JSON payload/i)).toBeNull();
-    const payloadTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
+    const payloadTextareas = view.getAllByPlaceholderText("Notes") as HTMLTextAreaElement[];
+    const payloadTextarea = payloadTextareas[payloadTextareas.length - 1];
+    if (!payloadTextarea) throw new Error("Expected review payload field");
     fireEvent.change(payloadTextarea, {
       target: { value: "Revise tone" },
     });
     await waitFor(() => {
       expect(payloadTextarea.value).toBe("Revise tone");
     });
-    fireEvent.click(view.getByRole("button", { name: "Request changes" }));
+    const requestChangesButtons = view.getAllByRole("button", { name: "Request changes" });
+    const advancedRequestChangesButton = requestChangesButtons[requestChangesButtons.length - 1];
+    if (!advancedRequestChangesButton) throw new Error("Expected advanced request changes button");
+    fireEvent.click(advancedRequestChangesButton);
 
     await waitFor(() => {
       const resumeCall = invoke.mock.calls.find(([command]) => command === "graph_run_resume");

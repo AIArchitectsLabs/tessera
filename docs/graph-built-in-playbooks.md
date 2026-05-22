@@ -112,6 +112,11 @@ Author `humanReview` nodes with:
 - `onApprove`
 - `onRequestChanges`
 
+`actions` may use the legacy string form (`"approve"`, `"request_changes"`,
+`"deny"`) or typed action objects. Use typed actions when a review decision
+needs a custom button label, payload fields, a branch target, or a feedback
+artifact for downstream rework.
+
 Use `artifactWrite` when the review result should be written back into the workspace. Author it with:
 
 - `artifact`

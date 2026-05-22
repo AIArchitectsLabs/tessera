@@ -72,6 +72,9 @@ External playbooks own:
 - Prompts should tell agents to produce schema-conformant output.
 - Review/rework loops must return to a clear downstream node.
 - Human review actions must have explicit approved and change-requested paths.
+- Use typed human review actions when user feedback should fork to a rework
+  path. The action should declare its target, payload fields, and feedback
+  artifact so downstream nodes can consume the user's notes as graph data.
 
 ## Artifact Rules
 

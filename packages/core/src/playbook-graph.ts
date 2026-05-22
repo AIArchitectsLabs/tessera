@@ -48,6 +48,9 @@ function transitionTargets(node: PlaybookGraphNode): string[] {
   if (node.kind === "humanReview") {
     if (node.onApprove !== undefined) targets.push(node.onApprove);
     if (node.onRequestChanges !== undefined) targets.push(node.onRequestChanges);
+    for (const action of node.actions) {
+      if (typeof action !== "string" && action.target !== undefined) targets.push(action.target);
+    }
   }
 
   return targets;
@@ -64,6 +67,12 @@ function outputArtifacts(node: PlaybookGraphNode): string[] {
 
   if (node.kind === "agent" && node.output?.artifact !== undefined) {
     return [node.output.artifact];
+  }
+
+  if (node.kind === "humanReview") {
+    return node.actions
+      .map((action) => (typeof action === "string" ? undefined : action.outputArtifact))
+      .filter((artifact): artifact is string => typeof artifact === "string");
   }
 
   return [];

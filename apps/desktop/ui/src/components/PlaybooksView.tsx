@@ -3392,11 +3392,13 @@ function GuidedReview({
   playbook,
   reviewEvidence,
   productView,
+  reviewActions,
   styleCompliance,
   workspaceRoot,
   artifactWorkspaceRoot,
   onApprove,
   onStop,
+  onAction,
   onViewDetails,
   running,
 }: {
@@ -3404,11 +3406,13 @@ function GuidedReview({
   playbook: PlaybookSummary | PlaybookDetail | null;
   reviewEvidence: ReviewEvidence | null;
   productView: PlaybookRunProductView | null;
+  reviewActions: PlaybookGraphResumeActionSpec[];
   styleCompliance: PlaybookGraphRunReviewSurface["styleCompliance"];
   workspaceRoot: string | null;
   artifactWorkspaceRoot: string | null;
   onApprove: () => void;
   onStop: () => void;
+  onAction: (action: PlaybookGraphResumeActionSpec, payload?: Record<string, unknown>) => void;
   onViewDetails: () => void;
   running: boolean;
 }) {
@@ -3420,8 +3424,24 @@ function GuidedReview({
     reviewEvidence?.preparedSummary ??
     (showReviewCopy ? (productView?.message ?? approvalCopy.prepared) : approvalCopy.prepared);
   const approveCopy = reviewEvidence?.approveSummary ?? approvalCopy.approve;
+  const primaryAction =
+    (productView?.primaryAction
+      ? reviewActions.find((action) => action.actionId === productView.primaryAction?.actionId)
+      : undefined) ?? reviewActions.find((action) => action.decision === "approve");
+  const secondaryActions =
+    productView?.secondaryActions
+      .map((action) => reviewActions.find((candidate) => candidate.actionId === action.actionId))
+      .filter((action): action is PlaybookGraphResumeActionSpec => action !== undefined) ??
+    reviewActions.filter(
+      (action) =>
+        action.actionId !== primaryAction?.actionId &&
+        (action.decision === "request_changes" || action.decision === "deny")
+    );
   const primaryActionLabel =
-    productView?.primaryAction?.label ?? reviewEvidence?.approveLabel ?? "Approve";
+    productView?.primaryAction?.label ??
+    primaryAction?.label ??
+    reviewEvidence?.approveLabel ??
+    "Approve";
   const recoveryNextCopy =
     productState === "retry_available"
       ? "Tessera will retry this step and continue the run."
@@ -3432,8 +3452,16 @@ function GuidedReview({
     productState === "retry_available" ? "What happens if you retry" : "What happens next";
   const [openingArtifact, setOpeningArtifact] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [payloadError, setPayloadError] = useState<string | null>(null);
+  const reviewRootRef = useRef<HTMLDivElement | null>(null);
   const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
   const canOpenArtifact = !!openWorkspaceRoot && !!reviewEvidence?.artifactPath;
+  const actionsWithPayloadFields = [primaryAction, ...secondaryActions].filter(
+    (action): action is PlaybookGraphResumeActionSpec =>
+      action !== undefined && action.requiredPayloadFields.length > 0
+  );
+  const hasStopAction = secondaryActions.some((action) => action.decision === "deny");
 
   async function openReviewArtifact() {
     if (!openWorkspaceRoot || !reviewEvidence?.artifactPath) return;
@@ -3451,6 +3479,37 @@ function GuidedReview({
     }
   }
 
+  const updatePayloadDraft = (actionId: string, path: string, value: string) => {
+    setPayloadDrafts((current) => ({
+      ...current,
+      [actionId]: {
+        ...(current[actionId] ?? {}),
+        [path]: value,
+      },
+    }));
+  };
+
+  function submitReviewAction(action: PlaybookGraphResumeActionSpec) {
+    try {
+      setPayloadError(null);
+      const localDrafts = { ...(payloadDrafts[action.actionId] ?? {}) };
+      const fieldElements =
+        reviewRootRef.current?.querySelectorAll<HTMLTextAreaElement>(
+          "[data-guided-review-action][data-payload-field]"
+        ) ?? [];
+      for (const fieldElement of fieldElements) {
+        if (fieldElement.dataset.guidedReviewAction !== action.actionId) continue;
+        const fieldPath = fieldElement.dataset.payloadField;
+        if (fieldPath) localDrafts[fieldPath] = fieldElement.value;
+      }
+      onAction(action, parseGraphActionPayload(action, localDrafts));
+    } catch (payloadParseError) {
+      setPayloadError(
+        payloadParseError instanceof Error ? payloadParseError.message : String(payloadParseError)
+      );
+    }
+  }
+
   return (
     <div className="mx-auto w-full max-w-xl py-10">
       <div className="mb-8">
@@ -3462,7 +3521,7 @@ function GuidedReview({
         <h2 className="text-2xl font-semibold text-foreground">{playbook?.name ?? "Playbook"}</h2>
       </div>
 
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-6">
+      <div ref={reviewRootRef} className="rounded-lg border border-amber-200 bg-amber-50 p-6">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-900">
           <AlertTriangle size={16} />
           {heading}
@@ -3522,9 +3581,42 @@ function GuidedReview({
             <div className="font-medium">What happens if you stop</div>
             <p className="mt-1">The run stops here and nothing changes in your workspace.</p>
           </div>
+          {actionsWithPayloadFields.length > 0 ? (
+            <div className="border-t border-amber-200 pt-4">
+              {actionsWithPayloadFields.map((action) => (
+                <div key={action.actionId} className="space-y-2">
+                  {action.requiredPayloadFields.map((field) => {
+                    const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
+                    return (
+                      <label key={field.path} className="block">
+                        <span className="font-medium">{field.label}</span>
+                        <textarea
+                          data-guided-review-action={action.actionId}
+                          data-payload-field={field.path}
+                          className="mt-1 min-h-20 w-full resize-y rounded-md border border-amber-200 bg-white px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+                          value={value}
+                          placeholder={
+                            field.kind === "string"
+                              ? field.label
+                              : field.kind === "object"
+                                ? "{ }"
+                                : "JSON value"
+                          }
+                          onChange={(event) =>
+                            updatePayloadDraft(action.actionId, field.path, event.target.value)
+                          }
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              ))}
+              {payloadError ? <p className="text-xs text-red-700">{payloadError}</p> : null}
+            </div>
+          ) : null}
         </div>
 
-        <div className="mt-6 flex gap-3">
+        <div className="mt-6 flex flex-wrap gap-3">
           {canOpenArtifact ? (
             <Button
               type="button"
@@ -3542,22 +3634,37 @@ function GuidedReview({
             type="button"
             size="sm"
             className="h-9 rounded-md px-5"
-            onClick={onApprove}
+            onClick={primaryAction ? () => submitReviewAction(primaryAction) : onApprove}
             disabled={running}
           >
             {running ? <Loader2 size={14} className="animate-spin" /> : null}
             {primaryActionLabel}
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-9 rounded-md px-5"
-            onClick={onStop}
-            disabled={running}
-          >
-            Stop run
-          </Button>
+          {secondaryActions.map((action) => (
+            <Button
+              key={action.actionId}
+              type="button"
+              size="sm"
+              variant={action.decision === "deny" ? "outline" : "secondary"}
+              className="h-9 rounded-md px-5"
+              onClick={() => submitReviewAction(action)}
+              disabled={running}
+            >
+              {action.label}
+            </Button>
+          ))}
+          {!hasStopAction ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 rounded-md px-5"
+              onClick={onStop}
+              disabled={running}
+            >
+              Stop run
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="sm"
@@ -4939,7 +5046,11 @@ export function PlaybooksView({
     }
   }
 
-  async function resumeRun(decision: "approve" | "deny") {
+  async function resumeRun(
+    decision: "approve" | "deny",
+    action?: PlaybookGraphResumeActionSpec,
+    payload?: Record<string, unknown>
+  ) {
     if (!selectedRun) return;
     setRunning(true);
     setError(null);
@@ -4952,12 +5063,15 @@ export function PlaybooksView({
             : selectedRun.approval?.reasonCode === "graph_needs_attention_retry"
               ? "retry_needs_attention"
               : "approve";
-      const actionDecision = decision === "approve" ? approvalDecision : "deny";
+      const actionDecision =
+        action?.decision ?? (decision === "approve" ? approvalDecision : "deny");
       const productActionId =
-        decision === "approve"
+        action?.actionId ??
+        (decision === "approve"
           ? selectedGraphRunSurface?.productView?.primaryAction?.actionId
-          : null;
-      const action =
+          : null);
+      const selectedAction =
+        action ??
         (productActionId
           ? selectedGraphRunSurface?.actions.find((item) => item.actionId === productActionId)
           : undefined) ??
@@ -4966,8 +5080,10 @@ export function PlaybooksView({
         runId: selectedRun.runId,
         request: {
           runId: selectedRun.runId,
+          ...(selectedAction?.actionId ? { actionId: selectedAction.actionId } : {}),
           decision: actionDecision,
-          ...(action?.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
+          ...(selectedAction?.queueEntryId ? { queueEntryId: selectedAction.queueEntryId } : {}),
+          ...(payload && Object.keys(payload).length > 0 ? { payload } : {}),
         },
         userKey,
         workspaceRoot,
@@ -5001,6 +5117,7 @@ export function PlaybooksView({
         runId: selectedGraphRunDetail.run.runId,
         request: {
           runId: selectedGraphRunDetail.run.runId,
+          actionId: action.actionId,
           decision: action.decision,
           ...(action.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
           ...(payload && Object.keys(payload).length > 0 ? { payload } : {}),
@@ -5290,11 +5407,15 @@ export function PlaybooksView({
             playbook={selectedPlaybookForUi}
             reviewEvidence={selectedReviewEvidence}
             productView={selectedGraphRunSurface?.productView ?? null}
+            reviewActions={selectedGraphRunSurface?.actions ?? []}
             styleCompliance={selectedGraphRunSurface?.styleCompliance}
             workspaceRoot={workspaceRoot}
             artifactWorkspaceRoot={graphRunWorkspaceRoot(selectedGraphRunDetail)}
             onApprove={() => void resumeRun("approve")}
             onStop={() => void resumeRun("deny")}
+            onAction={(action, payload) =>
+              void resumeRun(action.decision === "deny" ? "deny" : "approve", action, payload)
+            }
             onViewDetails={() => setShowDetails(true)}
             running={running}
           />

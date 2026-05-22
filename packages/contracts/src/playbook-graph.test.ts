@@ -94,6 +94,53 @@ describe("PlaybookGraphSchema", () => {
     expect(graph.artifacts.brief?.materialize).toBe("brief.md");
   });
 
+  test("accepts typed humanReview actions with payload fields and feedback artifacts", () => {
+    const graph = PlaybookGraphSchema.parse({
+      ...validGraph,
+      artifacts: {
+        ...validGraph.artifacts,
+        briefFeedback: { schema: "./schemas/brief-feedback.schema.json" },
+      },
+      nodes: [
+        ...validGraph.nodes.slice(0, -1),
+        {
+          id: "approveBrief",
+          kind: "humanReview",
+          artifact: "brief",
+          actions: [
+            {
+              id: "approveBrief",
+              decision: "approve",
+              label: "Approve brief",
+              target: "completed",
+            },
+            {
+              id: "requestBriefRework",
+              decision: "request_changes",
+              label: "Send back for rework",
+              target: "scoreBrief",
+              tone: "secondary",
+              outputArtifact: "briefFeedback",
+              payloadFields: [{ path: "notes", label: "Feedback", kind: "string" }],
+            },
+          ],
+        },
+      ],
+    });
+
+    const review = graph.nodes.find((node) => node.id === "approveBrief");
+    expect(review?.kind).toBe("humanReview");
+    if (review?.kind !== "humanReview") throw new Error("Expected human review node");
+    const reworkAction = review.actions.find(
+      (action) => typeof action !== "string" && action.id === "requestBriefRework"
+    );
+    expect(reworkAction).toMatchObject({
+      decision: "request_changes",
+      outputArtifact: "briefFeedback",
+      payloadFields: [{ path: "notes", label: "Feedback", kind: "string", required: true }],
+    });
+  });
+
   test("accepts planned tool, condition, and artifactWrite nodes", () => {
     const toolGraph = PlaybookGraphSchema.parse({
       schemaVersion: 1,

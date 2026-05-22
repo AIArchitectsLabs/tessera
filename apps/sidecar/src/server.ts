@@ -40,7 +40,9 @@ import {
   type PlaybookGraphResumeActionSpec,
   PlaybookGraphResumeActionSpecSchema,
   PlaybookGraphResumeDecisionSchema,
+  type PlaybookGraphReviewActionDecision,
   type PlaybookGraphReviewEvent,
+  type PlaybookGraphReviewPayloadField,
   PlaybookGraphRunCreateRequestSchema,
   PlaybookGraphRunDetailSchema,
   PlaybookGraphRunDrainRequestSchema,
@@ -2813,6 +2815,217 @@ function graphReviewApproveLabel(
   return "Approve";
 }
 
+type GraphHumanReviewNode = Extract<PlaybookGraphNode, { kind: "humanReview" }>;
+
+type NormalizedHumanReviewAction = {
+  id: string;
+  decision: PlaybookGraphReviewActionDecision;
+  label?: string;
+  description?: string;
+  target?: string;
+  tone?: PlaybookRunProductAction["tone"];
+  requiredPayloadFields: PlaybookGraphReviewPayloadField[];
+  outputArtifact?: string;
+};
+
+function normalizeHumanReviewDecision(
+  value: string
+): PlaybookGraphReviewActionDecision | undefined {
+  const normalized = value.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  switch (normalized.replaceAll("-", "_").toLowerCase()) {
+    case "approve":
+    case "approved":
+      return "approve";
+    case "request_changes":
+    case "request_change":
+    case "changes_requested":
+      return "request_changes";
+    case "deny":
+    case "denied":
+    case "stop":
+    case "stop_run":
+      return "deny";
+    default:
+      return undefined;
+  }
+}
+
+function defaultHumanReviewActionId(decision: PlaybookGraphReviewActionDecision): string {
+  return decision;
+}
+
+function defaultHumanReviewPayloadFields(
+  decision: PlaybookGraphReviewActionDecision,
+  fields: PlaybookGraphReviewPayloadField[]
+): PlaybookGraphReviewPayloadField[] {
+  if (fields.length > 0 || decision !== "request_changes") return fields;
+  return [{ path: "notes", label: "Notes", kind: "string", required: false }];
+}
+
+function normalizeHumanReviewAction(
+  action: GraphHumanReviewNode["actions"][number]
+): NormalizedHumanReviewAction | undefined {
+  if (typeof action === "string") {
+    const decision = normalizeHumanReviewDecision(action);
+    if (!decision) return undefined;
+    return {
+      id: defaultHumanReviewActionId(decision),
+      decision,
+      requiredPayloadFields: defaultHumanReviewPayloadFields(decision, []),
+    };
+  }
+
+  return {
+    id: action.id,
+    decision: action.decision,
+    ...(action.label ? { label: action.label } : {}),
+    ...(action.description ? { description: action.description } : {}),
+    ...(action.target ? { target: action.target } : {}),
+    ...(action.tone ? { tone: action.tone } : {}),
+    requiredPayloadFields: defaultHumanReviewPayloadFields(
+      action.decision,
+      action.payloadFields ?? []
+    ),
+    ...(action.outputArtifact ? { outputArtifact: action.outputArtifact } : {}),
+  };
+}
+
+function fallbackHumanReviewAction(
+  decision: PlaybookGraphReviewActionDecision
+): NormalizedHumanReviewAction {
+  return {
+    id: defaultHumanReviewActionId(decision),
+    decision,
+    requiredPayloadFields: defaultHumanReviewPayloadFields(decision, []),
+  };
+}
+
+function humanReviewActions(node: GraphHumanReviewNode): NormalizedHumanReviewAction[] {
+  const actions = node.actions
+    .map((action) => normalizeHumanReviewAction(action))
+    .filter((action): action is NormalizedHumanReviewAction => action !== undefined);
+  const hasDecision = (decision: PlaybookGraphReviewActionDecision) =>
+    actions.some((action) => action.decision === decision);
+
+  if (!hasDecision("approve")) actions.push(fallbackHumanReviewAction("approve"));
+  if (node.onRequestChanges && !hasDecision("request_changes")) {
+    actions.push(fallbackHumanReviewAction("request_changes"));
+  }
+  if (!hasDecision("deny")) actions.push(fallbackHumanReviewAction("deny"));
+
+  return actions;
+}
+
+function humanReviewActionLabel(
+  action: NormalizedHumanReviewAction,
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry,
+  node: GraphHumanReviewNode
+): string {
+  if (action.label) return action.label;
+  if (action.decision === "approve") return graphReviewApproveLabel(detail, entry, node);
+  if (action.decision === "request_changes") return "Request changes";
+  return "Stop run";
+}
+
+function humanReviewActionTarget(
+  node: GraphHumanReviewNode,
+  action: NormalizedHumanReviewAction
+): string | undefined {
+  if (action.target) return action.target;
+  if (action.decision === "approve") return node.onApprove ?? node.onSuccess ?? "completed";
+  if (action.decision === "request_changes") return node.onRequestChanges;
+  return "denied";
+}
+
+function humanReviewActionSpec(
+  action: NormalizedHumanReviewAction,
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry,
+  node: GraphHumanReviewNode
+): PlaybookGraphResumeActionSpec {
+  const sideEffect =
+    action.decision === "approve"
+      ? "resume"
+      : action.decision === "request_changes"
+        ? "invalidate_downstream"
+        : "terminal";
+  return PlaybookGraphResumeActionSpecSchema.parse({
+    schemaVersion: 1,
+    actionId: `${entry.queueEntryId}:${action.id}`,
+    decision: action.decision,
+    label: humanReviewActionLabel(action, detail, entry, node),
+    ...(action.description ? { description: action.description } : {}),
+    tone:
+      action.tone ??
+      (action.decision === "deny"
+        ? "danger"
+        : action.decision === "request_changes"
+          ? "secondary"
+          : "primary"),
+    queueEntryId: entry.queueEntryId,
+    nodePath: entry.nodePath,
+    nodeKind: entry.nodeKind,
+    allowedRunStatuses: ["blocked"],
+    allowedQueueStatuses: ["blocked"],
+    requiredPayloadFields: action.requiredPayloadFields,
+    sideEffect,
+    destructive: action.decision === "deny",
+    invalidatesDownstream: action.decision === "request_changes",
+  });
+}
+
+function humanReviewActionMatches(
+  action: NormalizedHumanReviewAction,
+  entry: PlaybookGraphQueueEntry,
+  decision: PlaybookGraphReviewActionDecision,
+  actionId?: string
+): boolean {
+  if (actionId) {
+    return actionId === action.id || actionId === `${entry.queueEntryId}:${action.id}`;
+  }
+  return action.decision === decision;
+}
+
+function validateHumanReviewActionPayload(
+  action: NormalizedHumanReviewAction,
+  payload: Record<string, unknown>
+): string | undefined {
+  for (const field of action.requiredPayloadFields) {
+    const value = payload[field.path];
+    if ((value === undefined || value === null || value === "") && field.required) {
+      return `${field.label} is required`;
+    }
+    if (value === undefined || value === null || value === "") continue;
+    if (field.kind === "string" && typeof value !== "string") {
+      return `${field.label} must be a string`;
+    }
+    if (field.kind === "object" && (!value || typeof value !== "object" || Array.isArray(value))) {
+      return `${field.label} must be an object`;
+    }
+  }
+  return undefined;
+}
+
+function humanReviewFeedbackValue(input: {
+  action: NormalizedHumanReviewAction;
+  event: PlaybookGraphReviewEvent;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    actionId: input.action.id,
+    decision: input.action.decision,
+    artifactId: input.event.artifactId,
+    ...(input.event.artifactVersionId ? { artifactVersionId: input.event.artifactVersionId } : {}),
+    reviewEventId: input.event.reviewEventId,
+    notes: typeof input.payload.notes === "string" ? input.payload.notes : "",
+    payload: input.payload,
+    createdAt: input.createdAt,
+  };
+}
+
 function graphRunBranchGroups(
   detail: GraphRunDetail,
   activeArtifacts: GraphRunReviewSurface["activeArtifacts"]
@@ -2873,54 +3086,12 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
   for (const entry of blocked) {
     if (entry.nodeKind === "humanReview") {
       const node = graphRunNodeForQueueEntry(detail, entry);
-      actions.push(
-        actionSpec({
-          schemaVersion: 1,
-          actionId: `${entry.queueEntryId}:approve`,
-          decision: "approve",
-          label: graphReviewApproveLabel(detail, entry, node),
-          queueEntryId: entry.queueEntryId,
-          nodePath: entry.nodePath,
-          nodeKind: entry.nodeKind,
-          allowedRunStatuses: ["blocked"],
-          allowedQueueStatuses: ["blocked"],
-          sideEffect: "resume",
-        })
-      );
-      if (node?.kind === "humanReview" && node.onRequestChanges) {
-        actions.push(
-          actionSpec({
-            schemaVersion: 1,
-            actionId: `${entry.queueEntryId}:request_changes`,
-            decision: "request_changes",
-            label: "Request changes",
-            queueEntryId: entry.queueEntryId,
-            nodePath: entry.nodePath,
-            nodeKind: entry.nodeKind,
-            allowedRunStatuses: ["blocked"],
-            allowedQueueStatuses: ["blocked"],
-            requiredPayloadFields: [
-              { path: "notes", label: "Notes", kind: "string", required: false },
-            ],
-            sideEffect: "invalidate_downstream",
-            invalidatesDownstream: true,
-          })
-        );
+      if (node?.kind === "humanReview") {
+        for (const action of humanReviewActions(node)) {
+          actions.push(humanReviewActionSpec(action, detail, entry, node));
+        }
       }
       actions.push(
-        actionSpec({
-          schemaVersion: 1,
-          actionId: `${entry.queueEntryId}:deny`,
-          decision: "deny",
-          label: "Stop run",
-          queueEntryId: entry.queueEntryId,
-          nodePath: entry.nodePath,
-          nodeKind: entry.nodeKind,
-          allowedRunStatuses: ["blocked"],
-          allowedQueueStatuses: ["blocked"],
-          sideEffect: "terminal",
-          destructive: true,
-        }),
         actionSpec({
           schemaVersion: 1,
           actionId: `${entry.queueEntryId}:edit_artifact`,
@@ -3065,7 +3236,7 @@ function productActionFromSpec(
     actionId: action.actionId,
     label: action.label,
     ...(action.description ? { description: action.description } : {}),
-    tone,
+    tone: action.tone ?? tone,
     decision: action.decision,
     ...(action.queueEntryId ? { queueEntryId: action.queueEntryId } : {}),
   };
@@ -3157,19 +3328,35 @@ function graphRunProductView(
     (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
   );
   if (reviewEntry) {
+    const reviewActions = actions.filter(
+      (action) => action.queueEntryId === reviewEntry.queueEntryId
+    );
     const approveAction = actions.find(
       (action) => action.decision === "approve" && action.queueEntryId === reviewEntry.queueEntryId
     );
-    const stopAction = actions.find(
-      (action) => action.decision === "deny" && action.queueEntryId === reviewEntry.queueEntryId
-    );
+    const secondaryActions = reviewActions
+      .filter(
+        (action) =>
+          action.actionId !== approveAction?.actionId &&
+          (action.decision === "request_changes" || action.decision === "deny")
+      )
+      .sort((left, right) => {
+        const priority = { request_changes: 0, deny: 1 } as const;
+        return (
+          priority[left.decision as keyof typeof priority] -
+            priority[right.decision as keyof typeof priority] ||
+          left.actionId.localeCompare(right.actionId)
+        );
+      });
     return {
       schemaVersion: 1,
       state: "waiting_for_review",
       title: "Review needed",
       message: "Review what Tessera prepared before the run continues.",
       ...(approveAction ? { primaryAction: productActionFromSpec(approveAction) } : {}),
-      secondaryActions: stopAction ? [productActionFromSpec(stopAction, "danger")] : [],
+      secondaryActions: secondaryActions.map((action) =>
+        productActionFromSpec(action, action.decision === "deny" ? "danger" : "secondary")
+      ),
       technicalSummary: {
         internalStatus: `${detail.run.status}:${reviewEntry.status}`,
         queueEntryId: reviewEntry.queueEntryId,
@@ -4592,15 +4779,19 @@ export async function handleGraphRunResume(
     const affectedQueueEntryIds = new Set<string>();
     let shouldDrain = false;
     let drainOptions = graphRunOptionsWithExecutionContext(runtimeOptions, executionContext);
+    let operationActionSpecId =
+      parsed.data.actionId ?? `${parsed.data.queueEntryId ?? runId}:${parsed.data.decision}`;
+    let operationIntent = parsed.data.decision.replaceAll("_", " ");
 
     const addReviewEvent = async (
       input: Omit<Parameters<typeof buildHumanReviewEvent>[0], "store" | "runId" | "createdAt">
-    ) => {
+    ): Promise<PlaybookGraphReviewEvent> => {
       const event = await buildHumanReviewEvent({ store, runId, createdAt: now, ...input });
       mutation.reviewEvents.push(event);
       affectedReviewEventIds.add(event.reviewEventId);
       affectedQueueEntryIds.add(event.queueEntryId);
       affectedArtifactIds.add(event.artifactId);
+      return event;
     };
 
     if (parsed.data.decision === "deny") {
@@ -4925,6 +5116,7 @@ export async function handleGraphRunResume(
       );
       shouldDrain = true;
     } else if (parsed.data.decision === "approve" || parsed.data.decision === "request_changes") {
+      const reviewDecision = parsed.data.decision;
       const queue = await store.getQueue(runId);
       const blocked = queue.find(
         (entry) =>
@@ -4948,24 +5140,55 @@ export async function handleGraphRunResume(
           { error: `${node.kind} queue entries cannot be approved through human review resume` },
           { status: 409 }
         );
-      } else if (parsed.data.decision === "request_changes" && !node.onRequestChanges) {
-        return Response.json(
-          { error: "Blocked human review has no request-changes transition" },
-          { status: 409 }
-        );
       } else {
-        await addReviewEvent({
+        const reviewAction = humanReviewActions(node).find((action) =>
+          humanReviewActionMatches(action, blocked, reviewDecision, parsed.data.actionId)
+        );
+        if (!reviewAction) {
+          return Response.json(
+            { error: "Blocked human review has no matching review action" },
+            { status: 409 }
+          );
+        }
+        const payloadError = validateHumanReviewActionPayload(reviewAction, parsed.data.payload);
+        if (payloadError) {
+          return Response.json({ error: payloadError }, { status: 400 });
+        }
+        operationActionSpecId = `${blocked.queueEntryId}:${reviewAction.id}`;
+        operationIntent = reviewAction.label ?? reviewAction.decision.replaceAll("_", " ");
+        const event = await addReviewEvent({
           queueEntry: blocked,
           artifactId: node.artifact,
-          decision: parsed.data.decision === "approve" ? "approved" : "request_changes",
+          decision: reviewDecision === "approve" ? "approved" : "request_changes",
           payload: parsed.data.payload,
         });
+        if (reviewAction.outputArtifact) {
+          const value = humanReviewFeedbackValue({
+            action: reviewAction,
+            event,
+            payload: parsed.data.payload,
+            createdAt: now,
+          });
+          const feedbackVersion: PlaybookGraphArtifactVersion = {
+            schemaVersion: 1,
+            runId,
+            artifactId: reviewAction.outputArtifact,
+            versionId: `${blocked.queueEntryId}:${reviewAction.outputArtifact}:${randomUUID()}`,
+            producerQueueEntryId: blocked.queueEntryId,
+            nodePath: blocked.nodePath,
+            contentHash: graphRunContentHash(value),
+            value,
+            createdAt: now,
+          };
+          mutation.artifactVersions.push(feedbackVersion);
+          affectedArtifactIds.add(feedbackVersion.artifactId);
+        }
       }
       if (node?.kind === "humanReview") {
-        const target =
-          parsed.data.decision === "approve"
-            ? (node.onApprove ?? node.onSuccess ?? "completed")
-            : node.onRequestChanges;
+        const reviewAction = humanReviewActions(node).find((action) =>
+          humanReviewActionMatches(action, blocked, reviewDecision, parsed.data.actionId)
+        );
+        const target = reviewAction ? humanReviewActionTarget(node, reviewAction) : undefined;
         if (!target) {
           return Response.json(
             { error: "Blocked human review has no resume target" },
@@ -5026,7 +5249,10 @@ export async function handleGraphRunResume(
               updatedAt: now,
             };
           } else {
-            const artifactVersions = await store.listArtifactVersions(run.runId);
+            const artifactVersions = [
+              ...(await store.listArtifactVersions(run.runId)),
+              ...mutation.artifactVersions,
+            ];
             const nextQueueEntry = createPlaybookGraphQueueEntry({
               runId: run.runId,
               node: next,
@@ -5076,10 +5302,10 @@ export async function handleGraphRunResume(
       reviewEvents: mutation.reviewEvents,
       operationRecord: graphRunOperationRecord({
         runId,
-        actionSpecId: `${parsed.data.queueEntryId ?? runId}:${parsed.data.decision}`,
+        actionSpecId: operationActionSpecId,
         kind: graphRunOperationKind(parsed.data.decision),
         status: "succeeded",
-        operatorIntent: parsed.data.decision.replaceAll("_", " "),
+        operatorIntent: operationIntent,
         createdAt: now,
         affectedArtifactIds: Array.from(affectedArtifactIds).sort(),
         affectedReviewEventIds: Array.from(affectedReviewEventIds).sort(),

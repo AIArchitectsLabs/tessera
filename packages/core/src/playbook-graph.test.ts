@@ -120,6 +120,65 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Unknown transition/);
   });
 
+  test("validates typed human review action targets and output artifacts", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        artifacts: {
+          ...graph.artifacts,
+          feedback: { schema: "./schemas/feedback.schema.json" },
+        },
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "scorecard",
+            actions: [
+              {
+                id: "requestRework",
+                decision: "request_changes",
+                target: "revise",
+                outputArtifact: "feedback",
+                payloadFields: [{ path: "notes", label: "Feedback", kind: "string" }],
+              },
+            ],
+          },
+          {
+            id: "revise",
+            kind: "script",
+            run: "./scripts/score.ts",
+            inputs: { feedback: { artifact: "feedback" } },
+            outputArtifact: "scorecard",
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).not.toThrow();
+
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        start: "review",
+        nodes: [
+          {
+            id: "review",
+            kind: "humanReview",
+            artifact: "scorecard",
+            actions: [
+              {
+                id: "requestRework",
+                decision: "request_changes",
+                target: "missing",
+                outputArtifact: "missingFeedback",
+              },
+            ],
+          },
+        ],
+      })
+    ).toThrow(/Unknown transition/);
+  });
+
   test("rejects output artifacts not declared by the graph", () => {
     const firstNode = requireNode(graph.nodes, 0);
 
