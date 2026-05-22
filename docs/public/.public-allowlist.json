@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "docs.json",
+      "kind": "config",
+      "source": "approved Mintlify public docs plan",
+      "sanitized": true
+    },
+    {
+      "path": ".mintignore",
+      "kind": "config",
+      "source": "approved Mintlify public docs plan",
+      "sanitized": true
+    },
+    {
+      "path": ".mintlify-dashboard.json",
+      "kind": "config",
+      "source": "approved Mintlify public docs plan",
+      "sanitized": true
+    },
+    {
+      "path": "index.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/package-contract.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "playbook-authoring/overview.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/authoring-checklist.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "playbook-authoring/package-contract.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/package-contract.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "playbook-authoring/validation-loop.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/validation-loop.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "playbook-authoring/authoring-checklist.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/authoring-checklist.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "playbook-authoring/brief-template.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/authoring-brief-template.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "recipes/seo-geo.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/recipe-001-seo-geo.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "recipes/supply-chain-risk.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/recipe-002-supply-chain.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "runtime-boundary/overview.mdx",
+      "kind": "page",
+      "source": "docs/playbook-authoring/tessera-external-boundary.md",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "reference/graph-contracts.mdx",
+      "kind": "page",
+      "source": "packages/contracts/src/index.ts",
+      "sanitized": true,
+      "hidden": false
+    },
+    {
+      "path": "reference/cli-validation.mdx",
+      "kind": "page",
+      "source": "apps/cli/src/shell.ts",
+      "sanitized": true,
+      "hidden": false
+    }
+  ]
+}

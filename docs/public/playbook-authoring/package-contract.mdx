@@ -1,0 +1,36 @@
+---
+title: "Package Contract"
+description: "The public contract for external Tessera playbook packages."
+---
+
+External playbook packages are authored outside Tessera and executed inside Tessera. This keeps business-domain logic portable while preserving one governed runtime.
+
+## Required Surface
+
+A package must expose:
+
+- Playbook graph definition.
+- Prompt references.
+- Script references when scripts are used.
+- Schema references for agent outputs and structured artifacts.
+- Declared artifacts.
+- Declared capabilities.
+- Fixture and golden inputs for deterministic package-local tests.
+- Final materialization targets for Markdown, CSV, or JSON outputs.
+
+## File Reference Rules
+
+Use package-relative references. Do not use absolute paths, parent-directory escapes, or symlinks that leave the package. Do not reference generated files that cannot be recreated or validated.
+
+## Agent Output Rules
+
+Every agent output must declare a schema. Prompts should tell agents to produce schema-conformant output. Review and rework loops must return to clear downstream nodes, and human review actions need explicit approved and change-requested paths.
+
+## Artifact Rules
+
+Every final artifact must be materializable. V1 materialization targets are Markdown, CSV, and JSON. Final artifacts should name their audience and acceptance check.
+
+## Capability Rules
+
+Every tool or connector use must be declared. Prefer generic capabilities such as Gmail, web search, web fetch, or package-local deterministic scripts. Domain-specific connector semantics should stay inside the external package until promoted as a generic Tessera primitive.
+

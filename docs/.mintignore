@@ -1,0 +1,10 @@
+# Backstop if a broader docs root is ever selected by mistake.
+superpowers/**
+**/.omx/**
+**/plans/**
+**/drafts/**
+**/private/**
+**/fixtures/**
+**/generated/**
+**/*candidate-log*
+**/forward-test-*

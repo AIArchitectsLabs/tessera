@@ -1,0 +1,25 @@
+---
+title: "CLI Validation"
+description: "Validate a playbook package before import."
+---
+
+The CLI validation command checks package shape, source references, manifest alignment, graph structure, capability declarations, artifact declarations, and final materialization readiness.
+
+## Text Mode
+
+```bash
+bun run --cwd apps/cli src/index.ts playbook validate <package-path>
+```
+
+## JSON Mode
+
+```bash
+bun run --cwd apps/cli src/index.ts playbook validate <package-path> --json
+```
+
+JSON mode is useful for authoring agents and repair loops because diagnostics can be parsed and mapped to concrete package edits.
+
+## Ready State
+
+A package is ready to import when validation reports zero errors. Reference-quality packages should also resolve warnings unless the package notes include a clear rationale.
+

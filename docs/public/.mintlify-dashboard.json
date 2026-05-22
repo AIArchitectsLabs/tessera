@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "monorepoPath": "/docs/public",
+  "githubAppScope": "repository",
+  "preview": {
+    "enabled": false,
+    "visibility": "disabled-until-audit",
+    "authRequiredBeforeEnablement": true
+  },
+  "planTierDependencies": {
+    "previewDeployments": "requires-confirmation",
+    "previewAuthentication": "requires-confirmation",
+    "mcpControls": "requires-confirmation"
+  },
+  "docsMcp": {
+    "enabled": false
+  },
+  "mintlifyMcp": {
+    "enabled": false
+  },
+  "searchAndAiIndexing": {
+    "enabled": false,
+    "noindex": true
+  },
+  "approval": {
+    "status": "locked",
+    "approver": "ralph-public-docs-gate",
+    "date": "2026-05-22"
+  }
+}

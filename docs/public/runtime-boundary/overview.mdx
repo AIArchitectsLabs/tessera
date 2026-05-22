@@ -1,0 +1,33 @@
+---
+title: "Runtime Boundary"
+description: "What Tessera owns and what external playbooks own."
+---
+
+Tessera is the only runtime. External packages can be authored and validated outside Tessera, but graph execution, import, review, artifact history, and materialization happen through Tessera.
+
+## Tessera Owns
+
+- Graph schema and validation.
+- Package loading, path containment, source-reference checks, and unsafe import rejection.
+- Durable graph execution.
+- Artifact history and materialization.
+- Human review pauses and review action routing.
+- Capability declarations and runtime capability policy.
+- Generic connector adapters.
+- Run trace and provenance surfaces.
+- Author-facing validation diagnostics.
+
+## External Playbooks Own
+
+- Domain schemas.
+- Domain prompts.
+- Domain scoring scripts.
+- Domain-specific source plans.
+- Domain-specific normalization.
+- Fixtures, golden tests, and noisy examples.
+- Final output templates and final packet shapes.
+
+## Runtime Rule
+
+Do not create local graph execution wrappers in playbook packages. Test deterministic scripts and fixtures locally, then use Tessera validation and import for runtime behavior.
+

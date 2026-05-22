@@ -1,0 +1,18 @@
+---
+title: "Graph Contracts"
+description: "Where the public playbook graph contract lives."
+---
+
+The canonical playbook graph shape is defined in Tessera contracts and enforced by core validation.
+
+## Contract Anchors
+
+- `packages/contracts/src/index.ts` defines graph, node, artifact, and package manifest schemas.
+- `packages/core/src/playbook-graph.ts` validates graph reachability, transitions, artifacts, capabilities, and source references.
+- `packages/core/src/playbook-graph-package-loader.ts` validates package loading, import safety, and manifest-to-graph alignment.
+- `@tessera/plugin-sdk` provides author ergonomics, including `definePlaybook`, but it is not the canonical runtime contract.
+
+## Author Guidance
+
+Use the SDK for authoring convenience. Use validation diagnostics to confirm that the package matches the runtime contract. If guidance here conflicts with validation behavior, fix the docs or package against the validation behavior.
+

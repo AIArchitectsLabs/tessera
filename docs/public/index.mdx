@@ -1,0 +1,25 @@
+---
+title: "Tessera Playbooks"
+description: "Author and run business playbooks through Tessera's governed runtime."
+---
+
+Tessera playbooks turn repeatable business work into guided, reviewable workflows. A playbook package contains the domain-specific schemas, prompts, deterministic scripts, fixtures, and final output templates. Tessera provides the runtime that validates, imports, executes, reviews, stores, and materializes those packages.
+
+This documentation starts with two jobs:
+
+- Help a business user understand what a playbook does before running it.
+- Help a playbook author build a package that validates cleanly before import.
+
+The first public docs surface is intentionally small. It explains the authoring contract, validation loop, runtime boundary, and two recipe patterns without exposing private implementation notes or local workspace paths.
+
+## Authoring Path
+
+1. Start with the business outcome and final user-facing artifacts.
+2. Define schemas for intake, source records, working outputs, review outputs, and final artifacts.
+3. Write deterministic scripts for normalization, planning, scoring, and materialization.
+4. Add prompts only after the script and artifact contracts are stable.
+5. Validate the package through Tessera before import.
+
+## Runtime Rule
+
+Tessera is the only playbook runtime. External repositories may author packages, validate shape, repair diagnostics, and test deterministic package scripts over fixtures. They do not simulate graph execution outside Tessera.

@@ -1,0 +1,28 @@
+---
+title: "Authoring Overview"
+description: "The shape of a Tessera playbook package."
+---
+
+A Tessera playbook package is a source-first folder that describes one repeatable business workflow. It should be portable, deterministic where possible, and explicit about the capabilities it needs.
+
+Every package should provide:
+
+- A manifest that identifies the package.
+- A `playbook.ts` entrypoint that defines the graph.
+- Prompt files referenced by the graph.
+- Schema files for agent outputs and structured artifacts.
+- Deterministic scripts for normalization, scoring, aggregation, or materialization.
+- Fixtures and golden examples for package-local script tests.
+- Final artifact declarations for the user-facing outputs.
+
+## Authoring Order
+
+1. Define the final business packet.
+2. Design the normalized data and artifact schemas.
+3. Add deterministic scripts.
+4. Add the graph shape.
+5. Add prompts and review loops.
+6. Run validation and repair all errors before import.
+
+The package should never include a standalone graph runner. Tessera owns graph loading, validation, durable execution, review pauses, artifact history, capability policy, connector adapters, and materialization.
+

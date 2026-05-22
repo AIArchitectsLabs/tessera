@@ -1,0 +1,44 @@
+---
+title: "Validation Loop"
+description: "Validate and repair a playbook package before importing it."
+---
+
+Run validation before importing a package into Tessera. Treat validation diagnostics as the authoring repair queue.
+
+## Commands
+
+From the Tessera workspace:
+
+```bash
+bun run --cwd apps/cli src/index.ts playbook validate <package-path>
+bun run --cwd apps/cli src/index.ts playbook validate <package-path> --json
+```
+
+When an installed Tessera CLI is available:
+
+```bash
+tessera playbook validate <package-path>
+tessera playbook validate <package-path> --json
+```
+
+## Repair Order
+
+1. Fix error diagnostics first.
+2. Fix warnings for reference-quality packages unless there is a written rationale.
+3. Preserve useful info diagnostics as authoring guidance.
+4. Re-run text and JSON validation after each repair pass.
+
+## Common Failure Classes
+
+- Missing prompt, script, or schema references.
+- Unsafe source paths.
+- Unreachable nodes.
+- Undeclared artifacts.
+- Undeclared capabilities.
+- Agent outputs without schemas.
+- Final artifacts without materialization.
+- Review loops without a clear downstream step.
+- Package/runtime version mismatches.
+- Standalone runner metadata or disallowed dependency fields.
+- Dangerous imports or dynamic import forms.
+
