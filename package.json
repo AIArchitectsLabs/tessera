@@ -18,6 +18,7 @@
     "docs:check-style": "bun run scripts/docs-check-style.ts",
     "docs:validate": "cd docs/public && bunx mint@4.2.569 validate",
     "docs:check": "bun run docs:audit-public && bun run docs:check-style && bun run docs:validate",
+    "docs:dev": "cd docs/public && bunx mint@4.2.569 dev",
     "test": "bun run --filter '*' test"
   },
   "config": {
