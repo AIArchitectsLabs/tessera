@@ -1653,6 +1653,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.read"],
         start: "lookup",
         nodes: [
           {
@@ -1703,6 +1704,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.read"],
         artifacts: {
           items: { schema: "schemas/items.schema.json" },
           lookup: { schema: "schemas/lookup.schema.json" },
@@ -1787,6 +1789,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         start: "lookup",
         nodes: [
           {

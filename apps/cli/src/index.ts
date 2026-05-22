@@ -26,6 +26,7 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("");
   console.log("Commands:");
   console.log("  ping          Health-check; prints JSON and exits 0");
+  console.log("  playbook      Validate playbook packages");
   console.log("  web-search    Run a configured web search");
   console.log("  web-fetch     Fetch and extract a public web page");
   console.log("  gcal          Read Google Calendar events");
