@@ -1,0 +1,69 @@
+name: Publish Docs to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/public/**"
+      - "scripts/docs-audit-public.ts"
+      - "scripts/docs-check-style.ts"
+      - "package.json"
+      - "bun.lock"
+      - ".node-version"
+      - ".github/workflows/docs-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/configure-pages@v5
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run docs:check
+
+      - run: bun run docs:export
+
+      - name: Unpack docs export
+        run: |
+          mkdir -p docs-site
+          unzip -q docs-export.zip -d docs-site
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs-site
+
+  deploy:
+    name: Deploy docs
+    runs-on: ubuntu-latest
+    needs: build
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

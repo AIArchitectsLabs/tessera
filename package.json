@@ -19,6 +19,7 @@
     "docs:validate": "cd docs/public && bunx mint@4.2.569 validate",
     "docs:check": "bun run docs:audit-public && bun run docs:check-style && bun run docs:validate",
     "docs:dev": "cd docs/public && bunx mint@4.2.569 dev",
+    "docs:export": "cd docs/public && bunx mint@4.2.569 export --output ../../docs-export.zip",
     "test": "bun run --filter '*' test"
   },
   "config": {
