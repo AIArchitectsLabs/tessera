@@ -874,7 +874,9 @@ describe("SettingsView search flow", () => {
     fireEvent.click(view.getByRole("button", { name: /google ai studio/i }));
 
     await waitFor(() => {
-      expect(view.getByDisplayValue("gemini-2.5-flash")).toBeTruthy();
+      expect((view.getByLabelText("Model") as HTMLSelectElement).value).toBe(
+        "gemini-2.5-flash"
+      );
     });
   });
 
