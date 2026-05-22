@@ -2,19 +2,20 @@
 
 ## Execution Status
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
 | Phase | Status | Owner lane | Next evidence required |
 | --- | --- | --- | --- |
-| 0. Lock the boundary | Planned | architect | Boundary note with explicit Tessera-vs-external ownership checks |
+| 0. Lock the boundary | Complete | architect | `docs/playbook-authoring/tessera-external-boundary.md` defines Tessera-vs-external ownership and confirms supply-chain concepts stay external |
 | 1. SEO/GEO recipe | Complete | writer | `docs/playbook-authoring/recipe-001-seo-geo.md`, `docs/playbook-authoring/authoring-checklist.md`, SEO/GEO validator evidence: 0 errors, 0 warnings, 0 info |
-| 2A. Validation CLI first | Planned | executor + test-engineer | Text and JSON diagnostics, exit-code tests, failing fixture with repair hint |
-| 2B. Minimal authoring SDK helpers | Planned | executor | Helpers justified by SEO/GEO or supply-chain usage, placeholder scaffold validation |
+| 2A. Validation CLI first | Complete | executor + test-engineer | `playbook validate <path>` text/JSON diagnostics, exit-code tests, negative fixtures, repair hints, and SEO/GEO/supply-chain validation evidence |
+| 2A.5. Playbook authoring skill | Complete | writer + architect + test-engineer | Repo-canonical docs, local `tessera-playbook-author` skill wrapper, structural skill validation, and third-domain authoring-brief forward test are complete |
+| 2B. Minimal authoring SDK helpers | Planned | executor | Helpers justified by SEO/GEO, supply-chain, or Phase 2A.5 forward-test friction; placeholder scaffold validation |
 | 3. Supply-chain recipe | Complete | writer + architect | `/Users/utpal/Code/projects/supply-chain-risk-playbook/docs/recipe-002-supply-chain-risk.md` defines inputs, artifacts, graph phases, review gates, V1 free-source strategy, final outputs, and `riskSignal[]` provenance contract |
 | 4. External supply-chain scaffold | Complete | executor | `/Users/utpal/Code/projects/supply-chain-risk-playbook` validates through Tessera CLI and package tests without live connector access |
 | 5. V1 supply-chain flow | Planned | executor + test-engineer | Fixture-only final packet before live Gmail/web/feed paths |
 | 6. Tessera import/runtime polish | Planned | executor | Import, capability preview, provenance trace, review surfaces, final output materialization |
-| 7. Cookbook and agent authoring skill | Planned | writer | Cookbook docs and portable agent instructions tested by a third-playbook scaffold |
+| 7. Cookbook portability polish | Planned | writer | Portable agent instructions and third-playbook proof refined after Phase 2A.5 and Phase 2B |
 
 Status semantics: `Planned` means scoped in this plan but not yet proven by command output; upgrade to `In progress` or `Complete` only when the phase has fresh verification evidence.
 
@@ -22,17 +23,20 @@ Status semantics: `Planned` means scoped in this plan but not yet proven by comm
 
 | Deliverable | Phase | Repository | Readiness | Verification gate |
 | --- | --- | --- | --- | --- |
-| Boundary architecture note | 0 | Tessera docs or `.omx/plans` follow-up | Not started | Confirms no supply-chain domain concepts enter Tessera core |
+| Boundary architecture note | 0 | Tessera docs | Complete | `docs/playbook-authoring/tessera-external-boundary.md` confirms no supply-chain domain concepts enter Tessera core |
 | `recipe-001-seo-geo.md` | 1 | Tessera docs mirror | Complete | New author can classify copy-vs-rewrite files |
 | `authoring-checklist.md` | 1 | Tessera docs mirror | Complete | Checklist covers intake, schemas, prompts, scripts, review loops, fixtures, package validation |
-| Validator CLI text mode | 2A | Tessera repo | Not started | `tessera playbook validate <path>` returns deterministic summary and exit codes |
-| Validator CLI JSON mode | 2A | Tessera repo | Not started | `tessera playbook validate <path> --json` emits stable diagnostic codes and repair hints |
+| Validator CLI text mode | 2A | Tessera repo | Complete | `bun run --cwd apps/cli src/index.ts playbook validate <path>` returns deterministic summary and exit codes |
+| Validator CLI JSON mode | 2A | Tessera repo | Complete | `bun run --cwd apps/cli src/index.ts playbook validate <path> --json` emits stable diagnostic codes and repair hints |
+| Authoring contract docs | 2A.5 | Tessera docs | Complete | `authoring-brief-template.md`, `package-contract.md`, `validation-loop.md`, and `sdk-helper-candidate-log.md` are repo-canonical under `docs/playbook-authoring/` |
+| `tessera-playbook-author` skill V0 | 2A.5 | Local skill package | Complete | `/Users/utpal/.codex/skills/tessera-playbook-author` validates structurally, points to canonical docs, and requires an authoring brief before generation |
+| Third-domain forward test | 2A.5 | Tessera docs / local skill evidence | Complete | `docs/playbook-authoring/forward-test-001-customer-support-escalation.md` proves the skill produces a third-domain authoring brief and stops before generation when requirements are unclear |
 | Minimal SDK helpers | 2B | Tessera repo | Not started | Helpers are used by at least SEO/GEO or supply-chain and stay domain-neutral |
 | Supply-chain recipe document | 3 | External supply-chain repo | Complete | `docs/recipe-002-supply-chain-risk.md` documents inputs, graph phases, artifacts, review gates, final outputs, V1 free-source strategy, and `riskSignal[]` provenance |
 | External supply-chain scaffold | 4 | `/Users/utpal/Code/projects/supply-chain-risk-playbook` | Complete | Package loads through Tessera loader and validates without live connectors |
 | Fixture-only V1 flow | 5 | External supply-chain repo | Not started | Fixtures produce risk registers and final disruption packet |
 | Import/runtime polish | 6 | Tessera repo | Not started | Tessera imports package, previews capabilities, shows provenance, and writes final files |
-| Cookbook and agent skill | 7 | Tessera docs and portable skill package | Not started | A third playbook can be scaffolded, validated, fixture-run, packaged, and imported |
+| Cookbook portability polish | 7 | Tessera docs and portable skill package | Not started | Third-playbook proof and portable external-agent instructions are refined after skill V0 and SDK helper evidence |
 
 ## Requirements Summary
 
@@ -127,6 +131,13 @@ Boundary matrix:
 | Source safety | Package reader, source-ref validation, path containment | Package-relative refs only | Error on unsafe paths, missing refs, dangerous imports |
 | Authoring UX | CLI diagnostics, JSON repair output | Tests and fixtures | Error/warning/info diagnostics with repair hints |
 
+Completion evidence:
+
+- Boundary note added at `docs/playbook-authoring/tessera-external-boundary.md`.
+- Tessera work remains domain-neutral: no supply-chain-specific contract, sidecar, desktop UI, or runtime type was added for Phases 3/4.
+- Supply-chain schemas, prompts, scripts, scoring, fixtures, and `riskSignal[]` provenance contract live in `/Users/utpal/Code/projects/supply-chain-risk-playbook`.
+- Both external reference packages validate through the Tessera CLI with 0 diagnostics.
+
 ## Phase 1: Recipe From Existing SEO/GEO Playbook
 
 Outcome:
@@ -175,8 +186,8 @@ CLI:
 
 Repo-local fallback until the installed binary path is settled:
 
-- `bun run --filter './apps/cli' -- playbook validate <path>`
-- `bun run --filter './apps/cli' -- playbook validate <path> --json`
+- `bun run --cwd apps/cli src/index.ts playbook validate <path>`
+- `bun run --cwd apps/cli src/index.ts playbook validate <path> --json`
 
 Diagnostics:
 
@@ -251,11 +262,85 @@ Acceptance criteria:
 - At least one failing fixture proves repair hints are useful.
 - No substantial SDK helper expansion happens before this phase lands.
 
+Completion evidence:
+
+- CLI route exists for `playbook validate <path>` and `playbook validate <path> --json`.
+- Text and JSON modes are covered by `apps/cli/src/shell.test.ts`.
+- Negative fixtures cover missing source refs, undeclared capabilities, agent output without schemas, missing final materialization warnings, unreadable paths, unsafe package surfaces, standalone runner metadata, and disallowed dependency fields.
+- SEO/GEO reference package validates with 0 errors, 0 warnings, and 0 info.
+- Supply-chain reference package validates with 0 errors, 0 warnings, and 0 info.
+- SDK helper extraction remains deferred to Phase 2B after Phase 2A.5 captures authoring friction.
+
+## Phase 2A.5: Repo-Canonical Authoring Contract And Skill V0
+
+Outcome:
+
+- Create the interview-first authoring process before adding SDK sugar.
+- Keep Tessera repo docs/templates as the canonical authoring contract.
+- Project that contract into a local `tessera-playbook-author` skill wrapper for Codex and later portable agent usage.
+
+Canonical repo-owned files:
+
+- `docs/playbook-authoring/authoring-brief-template.md`
+- `docs/playbook-authoring/package-contract.md`
+- `docs/playbook-authoring/validation-loop.md`
+- `docs/playbook-authoring/sdk-helper-candidate-log.md`
+
+Local skill package:
+
+- `/Users/utpal/.codex/skills/tessera-playbook-author/SKILL.md`
+- `/Users/utpal/.codex/skills/tessera-playbook-author/references/authoring-interview.md`
+- `/Users/utpal/.codex/skills/tessera-playbook-author/references/package-contract.md`
+- `/Users/utpal/.codex/skills/tessera-playbook-author/references/validation-loop.md`
+- `/Users/utpal/.codex/skills/tessera-playbook-author/references/sdk-helper-candidates.md`
+- `/Users/utpal/.codex/skills/tessera-playbook-author/agents/openai.yaml`
+
+Authoring workflow:
+
+1. Confirm Tessera-only runtime and external package path.
+2. Brainstorm the business workflow, user, recurring decision, cadence, data sources, capabilities, review gates, and expected artifacts.
+3. Emit an authoring brief before generating or repairing package files.
+4. Stop before generation if the brief is incoherent, runtime assumptions are wrong, or material business inputs are missing.
+5. Generate or repair package files only after the brief is coherent.
+6. Run `playbook validate <path>` and `playbook validate <path> --json`, then fix diagnostics.
+7. Record SDK helper candidates only when friction repeats across SEO/GEO, supply-chain, or the Phase 2A.5 forward test.
+
+Boundary rules:
+
+- The skill may author, validate, repair, package, and test deterministic scripts/golden fixtures in external repos.
+- The skill must not create standalone runners, `bin` entrypoints, lockfiles, dependency fields, or local graph execution wrappers.
+- Graph runs, import smoke tests, artifact materialization, and capability exercises happen only through Tessera runtime.
+
+Acceptance criteria:
+
+- Phase 2A.5 exists before Phase 2B in this plan.
+- Repo-owned docs/templates are the source of truth; the local skill wrapper points back to them.
+- The skill follows skill-creator guidance and passes structural validation.
+- The skill requires an authoring brief before package generation.
+- The authoring brief template includes runtime boundary, package path, business outcome, users, cadence, sources, capabilities, graph phases, schemas, prompts, deterministic scripts, review gates, final artifacts, validation commands, no-runner checks, and SDK friction notes.
+- A non-hypothetical third-domain forward test proves the skill can produce or critique an authoring brief.
+- The forward test proves the skill stops before generation when requirements are unclear.
+- No Tessera runtime, contract, sidecar, or desktop code changes are required by this phase.
+
+Completion evidence:
+
+- Repo-canonical authoring contract files added:
+  - `docs/playbook-authoring/authoring-brief-template.md`
+  - `docs/playbook-authoring/package-contract.md`
+  - `docs/playbook-authoring/validation-loop.md`
+  - `docs/playbook-authoring/sdk-helper-candidate-log.md`
+- Local skill wrapper created at `/Users/utpal/.codex/skills/tessera-playbook-author`.
+- Skill references point to the repo-owned contract and keep `SKILL.md` concise.
+- Forward-test evidence added at `docs/playbook-authoring/forward-test-001-customer-support-escalation.md`.
+- The forward test stops before package generation because package path, source scope, schema fields, review gates, and final acceptance checks are missing.
+- No package files were generated in the forward test, so `playbook validate` was not applicable.
+- Phase 2B remains planned and gated on SEO/GEO, supply-chain, or Phase 2A.5 friction evidence.
+
 ## Phase 2B: Minimal Authoring SDK Helpers
 
 Outcome:
 
-- Add only the SDK affordances needed by SEO/GEO plus the planned supply-chain playbook.
+- Add only the SDK affordances justified by SEO/GEO, the supply-chain playbook, or repeated friction captured during Phase 2A.5.
 
 SDK candidates:
 
@@ -273,7 +358,7 @@ CLI candidates after validation:
 
 Acceptance criteria:
 
-- Helpers are promoted only when they are used by SEO/GEO or needed by supply-chain and are not domain-specific.
+- Helpers are promoted only when they are used by SEO/GEO, needed by supply-chain, or evidenced by the Phase 2A.5 forward test, and are not domain-specific.
 - A placeholder supply-chain package scaffold validates before domain logic is added.
 - Validation errors are author-facing and actionable.
 - `tessera playbook init` remains deferred unless repeated scaffold errors prove it is needed.
@@ -474,18 +559,18 @@ Acceptance criteria:
 - Capability preview shows Gmail, web search/fetch, and any public feed URL access before live runs.
 - Provenance is visible in the review surface or run trace for Gmail and web/fetched feed evidence.
 
-## Phase 7: Cookbook And Agent Authoring Skill
+## Phase 7: Cookbook Portability Polish
 
 Outcome:
 
-- Make the process reproducible for Claude Code, Codex, Claude Cowork, Pi Agent, and Tessera itself.
+- Polish the Phase 2A.5 authoring contract and skill into broader portable instructions for Claude Code, Codex, Claude Cowork, Pi Agent, and Tessera itself after SDK helper evidence exists.
 
 Deliverables:
 
 - `docs/playbook-authoring-recipe.md`
 - `docs/playbook-patterns.md`
 - `docs/playbook-validation-guide.md`
-- portable `tessera-playbook-author` skill/instructions
+- portable `tessera-playbook-author` instructions generated from the repo-canonical contract
 - validator-driven repair loop guidance
 - example prompts for external agents:
   - create a new playbook from recipe
@@ -496,8 +581,8 @@ Deliverables:
 
 Acceptance criteria:
 
-- An external agent can scaffold a third playbook using the recipe.
-- The third playbook can scaffold, validate, fixture-run, package, and import without needing supply-chain or SEO-specific knowledge.
+- An external agent can scaffold a third playbook using the recipe after Phase 2A.5 and Phase 2B.
+- The third playbook can scaffold, validate, package, and import without needing supply-chain or SEO-specific knowledge.
 - The cookbook clearly separates SDK helpers, domain scripts, and runtime responsibilities.
 - Agent prompts explicitly forbid external playbook execution and reinforce Tessera-only runtime.
 
