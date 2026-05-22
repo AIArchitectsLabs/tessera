@@ -2312,6 +2312,7 @@ describe("graph run endpoints", () => {
           draft: { schema: "schemas/draft.schema.json" },
           ticket: { schema: "schemas/ticket.schema.json" },
         },
+        capabilities: ["integration.crm.write"],
         start: "draft",
         nodes: [
           {
@@ -2649,6 +2650,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           search: { schema: "schemas/search.schema.json" },
         },
+        capabilities: ["web.search"],
         start: "search",
         nodes: [
           {
@@ -2732,6 +2734,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           calendar: { schema: "schemas/calendar.schema.json" },
         },
+        capabilities: ["integration.calendar.events.read"],
         start: "calendar",
         nodes: [
           {
@@ -5389,6 +5392,7 @@ describe("graph run endpoints", () => {
         artifacts: {
           ticket: { schema: "schemas/ticket.schema.json" },
         },
+        capabilities: ["integration.crm.upsert"],
         start: "ticket",
         nodes: [
           {

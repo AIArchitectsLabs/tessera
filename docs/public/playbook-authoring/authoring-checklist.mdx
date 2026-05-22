@@ -1,0 +1,37 @@
+---
+title: "Authoring Checklist"
+description: "A short checklist for package readiness."
+---
+
+Use this checklist before packaging or importing a playbook.
+
+## Boundary
+
+- The package has no standalone runner.
+- The package does not import Tessera app, sidecar, desktop, or runtime internals.
+- Domain schemas, prompts, scripts, fixtures, scoring, and templates live in the package.
+- Tessera remains the runtime, validator, importer, capability boundary, artifact store, review surface, and materializer.
+
+## Package Skeleton
+
+- `manifest.json` exists and matches graph identity.
+- `playbook.ts` default-exports the graph.
+- Prompt, schema, and script references are package-relative.
+- No unsafe absolute paths, parent-directory escapes, dependency directories, or lockfiles are included.
+
+## Schemas
+
+- Every agent output declares a schema.
+- Source outputs are normalized before fan-in.
+- Review outputs include pass/fail, findings, and revision routing fields.
+- Final output schemas are distinct from intermediate research or review schemas.
+
+## Graph Shape
+
+- The graph starts with deterministic intake normalization.
+- Tool nodes use only declared capabilities.
+- Fanout nodes have generated item and concurrency limits.
+- Review and rework loops are bounded.
+- Human review pauses on artifacts the user can inspect.
+- Final artifacts materialize as Markdown, CSV, or JSON.
+

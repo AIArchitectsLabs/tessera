@@ -1,0 +1,19 @@
+---
+title: "Recipe: Supply Chain Risk"
+description: "A reusable pattern for risk-monitoring playbooks."
+---
+
+The supply-chain risk recipe shows how to keep domain-specific semantics outside Tessera core while still using Tessera for validation, execution, review, and materialization.
+
+## Reusable Pattern
+
+- Normalize suppliers, SKUs, lanes, materials, ports, and regions into domain-owned schemas.
+- Collect source signals through declared capabilities.
+- Preserve provenance, severity, confidence, and source-quality fields.
+- Aggregate signals into risk registers or disruption packets.
+- Pause for review before materializing executive-facing outputs.
+
+## Boundary
+
+Tessera should not gain supply-chain-specific contract types, routes, or UI behavior unless a later release promotes a truly generic primitive. The package owns source parsing, scoring, prompts, fixtures, and templates.
+

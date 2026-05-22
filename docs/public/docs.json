@@ -1,0 +1,43 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Tessera Docs",
+  "colors": {
+    "primary": "#2F6B5F"
+  },
+  "seo": {
+    "metatags": {
+      "robots": "noindex"
+    }
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Start",
+        "pages": ["index"]
+      },
+      {
+        "group": "Playbook Authoring",
+        "pages": [
+          "playbook-authoring/overview",
+          "playbook-authoring/package-contract",
+          "playbook-authoring/validation-loop",
+          "playbook-authoring/authoring-checklist",
+          "playbook-authoring/brief-template"
+        ]
+      },
+      {
+        "group": "Recipes",
+        "pages": ["recipes/seo-geo", "recipes/supply-chain-risk"]
+      },
+      {
+        "group": "Runtime Boundary",
+        "pages": ["runtime-boundary/overview"]
+      },
+      {
+        "group": "Reference",
+        "pages": ["reference/graph-contracts", "reference/cli-validation"]
+      }
+    ]
+  }
+}

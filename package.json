@@ -14,7 +14,15 @@
     "build": "bun run --filter '*' build",
     "build:sidecar": "bun run scripts/build-sidecar.ts",
     "check": "biome check . && bun run --filter '*' typecheck",
+    "docs:audit-public": "bun run scripts/docs-audit-public.ts",
+    "docs:check-style": "bun run scripts/docs-check-style.ts",
+    "docs:validate": "cd docs/public && bunx mint@4.2.569 validate",
+    "docs:check": "bun run docs:audit-public && bun run docs:check-style && bun run docs:validate",
     "test": "bun run --filter '*' test"
+  },
+  "config": {
+    "mintlifyCliPackage": "mint",
+    "mintlifyCliVersion": "4.2.569"
   },
   "devDependencies": {
     "@biomejs/biome": "^1",

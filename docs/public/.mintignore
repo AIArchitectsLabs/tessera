@@ -1,0 +1,10 @@
+# Files matched here are excluded from Mintlify processing and visitor access.
+private/**
+drafts/**
+fixtures/**
+generated/**
+.omx/**
+**/*.local.*
+**/*.tmp
+**/*candidate-log*
+**/forward-test-*
