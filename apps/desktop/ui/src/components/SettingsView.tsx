@@ -3370,6 +3370,12 @@ function providerConfigFromSettings(
         model: settings.model,
         apiKeyEnv: "OPENROUTER_API_KEY",
       };
+    case "google":
+      return {
+        provider: "google",
+        model: settings.model,
+        apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
+      };
     case "local":
       return {
         provider: "local",

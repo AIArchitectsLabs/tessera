@@ -858,6 +858,11 @@ fn provider_config_json(provider: &model_settings::ProviderConfig) -> serde_json
             "model": provider.model,
             "apiKeyEnv": "OPENROUTER_API_KEY"
         }),
+        model_settings::ModelProvider::Google => serde_json::json!({
+            "provider": "google",
+            "model": provider.model,
+            "apiKeyEnv": "GOOGLE_AI_STUDIO_API_KEY"
+        }),
         model_settings::ModelProvider::Local => serde_json::json!({
             "provider": "local",
             "model": provider.model,
@@ -1048,6 +1053,7 @@ fn parse_model_provider(provider: &str) -> Result<model_settings::ModelProvider,
         "openai-codex" => Ok(model_settings::ModelProvider::OpenaiCodex),
         "anthropic" => Ok(model_settings::ModelProvider::Anthropic),
         "openrouter" => Ok(model_settings::ModelProvider::Openrouter),
+        "google" => Ok(model_settings::ModelProvider::Google),
         "local" => Ok(model_settings::ModelProvider::Local),
         other => Err(format!("Unsupported provider: {}", other)),
     }
@@ -3322,6 +3328,18 @@ mod tests {
         let (args, env_name) = search_connection_command(SearchProvider::DuckDuckGo);
         assert_eq!(args, vec!["web-search", "search", "tessera"]);
         assert_eq!(env_name, None);
+    }
+
+    #[test]
+    fn parse_model_provider_accepts_google_ai_studio() {
+        assert_eq!(
+            super::parse_model_provider("google").expect("google provider"),
+            crate::model_settings::ModelProvider::Google
+        );
+        assert_eq!(
+            super::parse_model_provider("gemini").expect_err("unsupported provider"),
+            "Unsupported provider: gemini"
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ export const MODEL_PROVIDERS: ModelProvider[] = [
   "openai-codex",
   "anthropic",
   "openrouter",
+  "google",
   "local",
 ];
 
@@ -51,6 +52,16 @@ export const MODEL_OPTIONS_BY_PROVIDER: Record<ModelProvider, ModelOption[]> = {
     { label: "Mistral Medium 3.5", value: "mistralai/mistral-medium-3-5" },
     { label: "Z.ai GLM 4.6", value: "z-ai/glm-4.6" },
   ],
+  google: [
+    { label: "Gemini 3.5 Flash", value: "gemini-3.5-flash" },
+    { label: "Gemini 3.1 Pro Preview", value: "gemini-3.1-pro-preview" },
+    { label: "Gemini 3 Flash Preview", value: "gemini-3-flash-preview" },
+    { label: "Gemini 3.1 Flash-Lite", value: "gemini-3.1-flash-lite" },
+    { label: "Gemini 3.1 Flash-Lite Preview", value: "gemini-3.1-flash-lite-preview" },
+    { label: "Gemini 2.5 Pro", value: "gemini-2.5-pro" },
+    { label: "Gemini 2.5 Flash", value: "gemini-2.5-flash" },
+    { label: "Gemini 2.5 Flash-Lite", value: "gemini-2.5-flash-lite" },
+  ],
   local: [],
 };
 
@@ -64,6 +75,8 @@ export function providerLabel(provider: ModelProvider): string {
       return "Anthropic";
     case "openrouter":
       return "OpenRouter";
+    case "google":
+      return "Google AI Studio";
     case "local":
       return "Local OpenAI-compatible";
   }
@@ -106,6 +119,12 @@ export function defaultDraftForProvider(provider: ModelProvider): AgentProviderC
         provider: "openrouter",
         model: modelPlaceholderForProvider("openrouter"),
         apiKeyEnv: "OPENROUTER_API_KEY",
+      };
+    case "google":
+      return {
+        provider: "google",
+        model: modelPlaceholderForProvider("google"),
+        apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
       };
     case "local":
       return {

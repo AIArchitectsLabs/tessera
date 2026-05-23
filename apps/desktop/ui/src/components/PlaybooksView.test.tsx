@@ -1177,6 +1177,7 @@ const modelSettings: ModelSettingsRead = {
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
+    google: { provider: "google", model: "gemini-3.5-flash", hasCredential: false },
     local: {
       provider: "local",
       model: "llama3.1",

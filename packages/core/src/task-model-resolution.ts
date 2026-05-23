@@ -41,6 +41,7 @@ export const DEFAULT_AGENT_PROFILE: AgentProfile = {
 function apiKeyEnvFor(provider: Exclude<ModelProvider, "local" | "openai-codex">): string {
   if (provider === "anthropic") return "ANTHROPIC_API_KEY";
   if (provider === "openrouter") return "OPENROUTER_API_KEY";
+  if (provider === "google") return "GOOGLE_AI_STUDIO_API_KEY";
   return "OPENAI_API_KEY";
 }
 
@@ -72,7 +73,8 @@ function requiresCredential(provider: AgentProviderConfig): boolean {
     provider.provider === "openai" ||
     provider.provider === "openai-codex" ||
     provider.provider === "anthropic" ||
-    provider.provider === "openrouter"
+    provider.provider === "openrouter" ||
+    provider.provider === "google"
   );
 }
 
