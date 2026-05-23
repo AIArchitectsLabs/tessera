@@ -330,6 +330,76 @@ describe("shell runtime", () => {
     });
   });
 
+  test("parses successful mail draft payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            draft: {
+              id: "draft-1",
+              messageId: "msg-1",
+              threadId: "thread-1",
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 9,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "mail",
+      subcommand: "draft",
+      args: [],
+    });
+
+    expect(result.parsed).toEqual({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+  });
+
+  test("parses successful mail send-draft payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            message: {
+              id: "msg-1",
+              threadId: "thread-1",
+              snippet: "sent",
+              labels: ["SENT"],
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 9,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "mail",
+      subcommand: "send-draft",
+      args: ["draft-1"],
+    });
+
+    expect(result.parsed).toEqual({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        snippet: "sent",
+        labels: ["SENT"],
+      },
+    });
+  });
+
   test("parses successful drive search payloads from workspace cli stdout", async () => {
     const executor = createSpawnShellExecutor({
       async runWorkspaceCli(): Promise<SpawnResult> {

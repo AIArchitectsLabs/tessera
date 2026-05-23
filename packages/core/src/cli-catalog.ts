@@ -43,7 +43,8 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
       { subcommand: "list", approval: "allow", help: "List recent mail." },
       { subcommand: "read", approval: "allow", help: "Read one message." },
       { subcommand: "search", approval: "allow", help: "Search mail." },
-      { subcommand: "draft", approval: "ask", help: "Draft a reply." },
+      { subcommand: "draft", approval: "ask", help: "Create a Gmail draft." },
+      { subcommand: "send-draft", approval: "ask", help: "Send an existing Gmail draft." },
     ],
   },
   {

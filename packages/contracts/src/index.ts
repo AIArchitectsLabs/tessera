@@ -438,6 +438,25 @@ export const MailReadResultSchema = z.object({
 });
 export type MailReadResult = z.infer<typeof MailReadResultSchema>;
 
+export const MailDraftResultSchema = z.object({
+  draft: z.object({
+    id: z.string().min(1),
+    messageId: z.string().optional(),
+    threadId: z.string().optional(),
+  }),
+});
+export type MailDraftResult = z.infer<typeof MailDraftResultSchema>;
+
+export const MailSendDraftResultSchema = z.object({
+  message: z.object({
+    id: z.string().min(1),
+    threadId: z.string().optional(),
+    labels: z.array(z.string()).default([]),
+    snippet: z.string().optional(),
+  }),
+});
+export type MailSendDraftResult = z.infer<typeof MailSendDraftResultSchema>;
+
 export const DriveFileSummarySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),

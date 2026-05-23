@@ -55,19 +55,46 @@ describe("evaluatePermission", () => {
       preview: "mail draft 123",
     });
 
+    const sendDecision = evaluatePermission({
+      toolId: "shell",
+      args: { command: "mail", subcommand: "send-draft", args: ["draft-1"] },
+      capability: "write",
+      risk: writableRisk,
+      preview: "mail send-draft draft-1",
+    });
+
     expect(allowDecision.decision).toBe("allow");
     expect(askDecision.decision).toBe("ask");
+    expect(sendDecision.decision).toBe("ask");
   });
 
-  test("allows approval-gated shell calls after a tool grant", () => {
+  test("keeps approval-gated shell calls ask-gated after a tool grant", () => {
     const grants: PermissionGrant[] = [{ type: "tool", toolId: "shell" }];
     const decision = evaluatePermission(
       {
         toolId: "shell",
-        args: { command: "gcal", subcommand: "create", args: ["--dry-run"] },
+        args: { command: "mail", subcommand: "send-draft", args: ["draft-1"] },
         capability: "write",
         risk: writableRisk,
-        preview: "gcal create --dry-run",
+        preview: "mail send-draft draft-1",
+      },
+      grants
+    );
+
+    expect(decision.decision).toBe("ask");
+    expect(decision.reason).toBe("shell_command_requires_approval");
+  });
+
+  test("allows approval-gated shell calls after an exact grant", () => {
+    const args = { command: "mail", subcommand: "send-draft", args: ["draft-1"] };
+    const grants: PermissionGrant[] = [{ type: "exact", toolId: "shell", args }];
+    const decision = evaluatePermission(
+      {
+        toolId: "shell",
+        args,
+        capability: "write",
+        risk: writableRisk,
+        preview: "mail send-draft draft-1",
       },
       grants
     );

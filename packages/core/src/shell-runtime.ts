@@ -4,8 +4,10 @@ import {
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
   type ShellToolCall,
   type ShellToolResult,
   ShellToolResultSchema,
@@ -60,6 +62,12 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   }
   if (call.command === "mail" && call.subcommand === "read") {
     return MailReadResultSchema.parse(json);
+  }
+  if (call.command === "mail" && call.subcommand === "draft") {
+    return MailDraftResultSchema.parse(json);
+  }
+  if (call.command === "mail" && call.subcommand === "send-draft") {
+    return MailSendDraftResultSchema.parse(json);
   }
   if (call.command === "drive" && call.subcommand === "search") {
     return DriveSearchResultSchema.parse(json);

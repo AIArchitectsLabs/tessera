@@ -11,8 +11,10 @@ import {
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
   WebFetchResultSchema,
   WebSearchResultSchema,
 } from "./index.js";
@@ -259,6 +261,31 @@ describe("integration settings contracts", () => {
     expect(parsed.message.text).toBe("");
   });
 
+  test("parses normalized mail draft payloads", () => {
+    const parsed = MailDraftResultSchema.parse({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+
+    expect(parsed.draft.id).toBe("draft-1");
+  });
+
+  test("parses normalized mail send-draft payloads", () => {
+    const parsed = MailSendDraftResultSchema.parse({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        labels: ["SENT"],
+        snippet: "Message sent",
+      },
+    });
+
+    expect(parsed.message.id).toBe("msg-1");
+  });
+
   test("parses normalized drive search payloads", () => {
     const parsed = DriveSearchResultSchema.parse({
       files: [
@@ -386,6 +413,34 @@ describe("shell parsed payload contracts", () => {
 
     expect(parsed.provider).toBe("brave-search");
     expect(parsed.results[0]?.position).toBe(1);
+  });
+
+  test("parses draft payloads", () => {
+    const parsed = MailDraftResultSchema.parse({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+
+    expect(parsed.draft.id).toBe("draft-1");
+    expect(parsed.draft.messageId).toBe("msg-1");
+    expect(parsed.draft.threadId).toBe("thread-1");
+  });
+
+  test("parses send-draft payloads", () => {
+    const parsed = MailSendDraftResultSchema.parse({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        labels: ["SENT"],
+        snippet: "Sent",
+      },
+    });
+
+    expect(parsed.message.id).toBe("msg-1");
+    expect(parsed.message.labels).toEqual(["SENT"]);
   });
 });
 

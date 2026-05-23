@@ -642,6 +642,18 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("validates draft command usage", async () => {
+    const result = await executeCliCommand(
+      ["mail", "draft", "--to", "prospect@example.com", "--subject", "Weekly Update"],
+      {
+        runGwsCli: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
+      }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Usage: mail draft");
+  });
+
   test("returns normalized mail read results without splitting quoted recipients", async () => {
     let capturedArgs: string[] = [];
     const result = await executeCliCommand(["mail", "read", "msg-1"], {
@@ -694,6 +706,151 @@ describe("workspace cli shell commands", () => {
         labels: ["INBOX"],
       },
     });
+  });
+
+  test("creates a draft through gmail drafts create with encoded MIME", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Draft title",
+        "--body",
+        "Hello team\nSecond line",
+        "--cc",
+        "team@example.com",
+      ],
+      {
+        runGwsCli: async (args) => {
+          capturedArgs = args;
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              id: "draft-1",
+              message: {
+                id: "msg-1",
+                threadId: "thread-1",
+              },
+            }),
+            stderr: "",
+          };
+        },
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "drafts", "create"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    const bodyArg = JSON.parse(capturedArgs[capturedArgs.indexOf("--json") + 1] ?? "{}");
+    expect(params).toEqual({ userId: "me" });
+    const rawMessage = Buffer.from(bodyArg.message.raw, "base64url").toString("utf8");
+    expect(rawMessage).toContain("Hello team");
+    expect(rawMessage).toContain("Second line");
+    expect(rawMessage).toContain("Subject: Draft title");
+    expect(rawMessage).toContain("To: jane@example.com");
+    expect(rawMessage).toContain("Cc: team@example.com");
+    expect(rawMessage).toContain("Content-Transfer-Encoding: 8bit");
+    expect(rawMessage).not.toContain("Bcc:");
+    expect(JSON.parse(result.stdout)).toEqual({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+  });
+
+  test("sends an existing gmail draft by id", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["mail", "send-draft", "draft-1"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            id: "msg-1",
+            threadId: "thread-1",
+            labelIds: ["SENT", "INBOX"],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "drafts", "send"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    const jsonArg = JSON.parse(capturedArgs[capturedArgs.indexOf("--json") + 1] ?? "{}");
+    expect(params).toEqual({ userId: "me" });
+    expect(jsonArg).toEqual({ id: "draft-1" });
+    expect(JSON.parse(result.stdout)).toEqual({
+      message: {
+        id: "msg-1",
+        labels: ["SENT", "INBOX"],
+        threadId: "thread-1",
+        snippet: "",
+      },
+    });
+  });
+
+  test("returns usage error for incomplete mail draft args", async () => {
+    const result = await executeCliCommand(["mail", "draft", "--to", "jane@example.com"], {
+      runGwsCli: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain(
+      "Usage: mail draft --to <address> --subject <subject> --body <body>"
+    );
+  });
+
+  test("rejects line breaks in mail draft headers", async () => {
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Hello\nBcc: attacker@example.com",
+        "--body",
+        "Safe body",
+      ],
+      {
+        runGwsCli: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("mail headers cannot contain line breaks");
+  });
+
+  test("surfaces compose-scope guidance for mail draft scope failures", async () => {
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Draft title",
+        "--body",
+        "Hello team",
+      ],
+      {
+        runGwsCli: async () => ({
+          exitCode: 1,
+          stdout: "",
+          stderr: "Request had insufficient authentication scopes.",
+        }),
+      }
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Reconnect with Gmail compose access");
   });
 
   test("returns normalized drive search results", async () => {

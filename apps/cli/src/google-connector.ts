@@ -4,8 +4,10 @@ import type {
   DriveSearchResult,
   GcalListResult,
   GcalReadResult,
+  MailDraftResult,
   MailListResult,
   MailReadResult,
+  MailSendDraftResult,
 } from "@tessera/contracts";
 import {
   ContactsLookupResultSchema,
@@ -13,8 +15,10 @@ import {
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
 } from "@tessera/contracts";
 
 export interface GoogleWorkspaceConnector {
@@ -23,6 +27,8 @@ export interface GoogleWorkspaceConnector {
   listMail(request: { limit: number; query?: string }): Promise<MailListResult>;
   searchMail(request: { query: string; limit: number }): Promise<MailListResult>;
   readMail(request: { messageId: string }): Promise<MailReadResult>;
+  createMailDraft(request: { raw: string }): Promise<MailDraftResult>;
+  sendMailDraft(request: { draftId: string }): Promise<MailSendDraftResult>;
   searchDrive(request: { query: string; limit: number }): Promise<DriveSearchResult>;
   readDriveFile(request: {
     fileId: string;
@@ -121,6 +127,69 @@ export function createGwsGoogleWorkspaceConnector(options: {
           to: splitHeaderValues(headerValue(message, "To")),
           cc: splitHeaderValues(headerValue(message, "Cc")),
           text: decodeMailText(message),
+        },
+      });
+    },
+
+    async createMailDraft(request) {
+      const payload = await runGwsJson(options, [
+        "gmail",
+        "users",
+        "drafts",
+        "create",
+        "--params",
+        JSON.stringify({
+          userId: "me",
+        }),
+        "--json",
+        JSON.stringify({
+          message: {
+            raw: request.raw,
+          },
+        }),
+      ]);
+      const payloadRecord = isRecord(payload) ? payload : {};
+      const draftMessage = isRecord(payloadRecord.message) ? payloadRecord.message : {};
+      const draft: {
+        id: string;
+        messageId?: string;
+        threadId?: string;
+      } = {
+        id: stringField(payloadRecord, "id"),
+        messageId: stringField(draftMessage, "id"),
+      };
+      if (stringField(draftMessage, "threadId")) {
+        draft.threadId = stringField(draftMessage, "threadId");
+      }
+      return MailDraftResultSchema.parse({ draft });
+    },
+
+    async sendMailDraft(request) {
+      const payload = await runGwsJson(options, [
+        "gmail",
+        "users",
+        "drafts",
+        "send",
+        "--params",
+        JSON.stringify({
+          userId: "me",
+        }),
+        "--json",
+        JSON.stringify({
+          id: request.draftId,
+        }),
+      ]);
+
+      const message = isRecord(payload) ? payload : {};
+      const parsedLabels = Array.isArray(message.labelIds)
+        ? message.labelIds.filter((value): value is string => typeof value === "string")
+        : [];
+      return MailSendDraftResultSchema.parse({
+        message: {
+          id: stringField(message, "id"),
+          threadId: stringField(message, "threadId"),
+          snippet: stringField(message, "snippet"),
+          labels: parsedLabels,
         },
       });
     },
@@ -249,6 +318,9 @@ async function runGwsJson(
 function normalizeGwsError(stderr: string): string {
   const message = stderr.trim();
   if (!message) return "";
+  if (/scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication/i.test(message)) {
+    return "Google Workspace is connected with read-only access. Reconnect with Gmail compose access in Settings > Integrations to create or send drafts.";
+  }
   if (/auth|credential|login|token/i.test(message)) {
     return "Google Workspace is not connected. Connect Google Workspace in Settings > Integrations.";
   }
