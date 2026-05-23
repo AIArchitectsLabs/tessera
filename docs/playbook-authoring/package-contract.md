@@ -1,6 +1,6 @@
 # Tessera External Playbook Package Contract
 
-This contract is the source of truth for external playbook package authoring. The local `tessera-playbook-author` skill should point back here instead of becoming a separate standard.
+This contract is the source of truth for external playbook package authoring. The portable `docs/playbook-authoring/skills/tessera-playbook-author` skill should point back here instead of becoming a separate standard.
 
 ## Runtime Contract
 
