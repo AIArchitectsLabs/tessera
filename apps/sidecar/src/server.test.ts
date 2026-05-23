@@ -2796,6 +2796,68 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("still blocks mail send-draft under read-only mail capability", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.mail-send-draft-denied",
+        version: "0.1.0",
+        name: "Mail Send Draft Denied",
+        artifacts: {
+          message: { schema: "schemas/message.schema.json" },
+        },
+        capabilities: ["integration.mail.messages.read"],
+        start: "mail",
+        nodes: [
+          {
+            id: "mail",
+            kind: "tool",
+            capability: "integration.mail.messages.read",
+            args: { command: "mail", subcommand: "send-draft", args: ["draft-1"] },
+            outputArtifact: "message",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    let cliCalls = 0;
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli() {
+            cliCalls += 1;
+            return { stdout: "{}", stderr: "", exitCode: 0, signal: null, durationMs: 1 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; error?: string };
+        queue: Array<{ nodeId: string; status: string; error?: string }>;
+      };
+      expect(cliCalls).toBe(0);
+      expect(detail.run.status).toBe("failed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "mail", status: "failed" });
+      expect(detail.queue[0]?.error).toContain("cannot execute mail send-draft");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("drains parallelMap branch work and exposes branch items in graph details", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
@@ -5724,6 +5786,69 @@ describe("graph run endpoints", () => {
       expect((await store.getRun(detail.run.runId))?.status).toBe("needs_attention");
       expect(queueEntry?.status).toBe("needs_attention");
       expect(queueEntry?.attentionEvidence?.code).toBe("hard_timeout");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("blocks mail draft shell subcommands under read-only mail graph capabilities", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.mail-draft-denied",
+        version: "0.1.0",
+        name: "Mail Draft Denied Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        capabilities: ["integration.mail.messages.read"],
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "tool",
+            capability: "integration.mail.messages.read",
+            args: {
+              command: "mail",
+              subcommand: "draft",
+              args: ["--to", "prospect@example.com", "--subject", "Hi", "--body", "Test"],
+            },
+            outputArtifact: "draft",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli() {
+            return { stdout: "{}", stderr: "", exitCode: 0, signal: null, durationMs: 1 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; error?: string };
+        queue: Array<{ nodeId: string; status: string; error?: string }>;
+      };
+      expect(detail.run.status).toBe("failed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "draft", status: "failed" });
+      expect(detail.queue[0]?.error).toContain("cannot execute mail draft");
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });

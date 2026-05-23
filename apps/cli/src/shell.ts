@@ -104,6 +104,16 @@ export async function executeCliCommand(
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
     }
 
+    if (command === "mail" && subcommand === "draft") {
+      const payload = await runMailDraft(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "mail" && subcommand === "send-draft") {
+      const payload = await runMailSendDraft(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
     if (command === "drive" && subcommand === "search") {
       const payload = await runDriveSearch(args, options);
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
@@ -877,6 +887,18 @@ async function runMailRead(args: string[], options: ExecuteCliCommandOptions) {
   return createGoogleWorkspaceConnector(options).readMail({ messageId });
 }
 
+async function runMailDraft(args: string[], options: ExecuteCliCommandOptions) {
+  const request = parseMailDraftArgs(args);
+  return createGoogleWorkspaceConnector(options).createMailDraft({
+    raw: buildMailDraftRaw(request),
+  });
+}
+
+async function runMailSendDraft(args: string[], options: ExecuteCliCommandOptions) {
+  const request = parseMailSendDraftArgs(args);
+  return createGoogleWorkspaceConnector(options).sendMailDraft({ draftId: request.draftId });
+}
+
 async function runDriveSearch(args: string[], options: ExecuteCliCommandOptions) {
   const { query, limit } = parseDriveSearchArgs(args);
   return createGoogleWorkspaceConnector(options).searchDrive({ query, limit });
@@ -1145,6 +1167,131 @@ function parseMailReadArgs(args: string[]): { messageId: string } {
     throw new CliCommandError("Usage: mail read <messageId>");
   }
   return { messageId };
+}
+
+const MAIL_DRAFT_USAGE =
+  "Usage: mail draft --to <address> --subject <subject> --body <body> [--cc <cc>] [--bcc <bcc>]";
+
+function parseMailDraftArgs(args: string[]): {
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  body: string;
+} {
+  let to = "";
+  let cc: string | undefined;
+  let bcc: string | undefined;
+  let subject = "";
+  let body = "";
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) {
+      throw new CliCommandError(MAIL_DRAFT_USAGE);
+    }
+    if (arg === "--to") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError(MAIL_DRAFT_USAGE);
+      }
+      validateHeaderValue(value);
+      to = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--cc") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError(MAIL_DRAFT_USAGE);
+      }
+      validateHeaderValue(value);
+      cc = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--bcc") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError(MAIL_DRAFT_USAGE);
+      }
+      validateHeaderValue(value);
+      bcc = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--subject") {
+      const value = args[index + 1]?.trim();
+      if (!value) {
+        throw new CliCommandError(MAIL_DRAFT_USAGE);
+      }
+      validateHeaderValue(value);
+      subject = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--body") {
+      const value = args[index + 1];
+      if (value === undefined || value === "") {
+        throw new CliCommandError(MAIL_DRAFT_USAGE);
+      }
+      body = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new CliCommandError(MAIL_DRAFT_USAGE);
+    }
+    throw new CliCommandError(MAIL_DRAFT_USAGE);
+  }
+
+  if (!to || !subject || !body) {
+    throw new CliCommandError(MAIL_DRAFT_USAGE);
+  }
+
+  return {
+    to,
+    ...(cc ? { cc } : {}),
+    ...(bcc ? { bcc } : {}),
+    subject,
+    body,
+  };
+}
+
+function parseMailSendDraftArgs(args: string[]): { draftId: string } {
+  const draftId = args[0]?.trim();
+  if (!draftId || args.length !== 1) {
+    throw new CliCommandError("Usage: mail send-draft <draftId>");
+  }
+  return { draftId };
+}
+
+function buildMailDraftRaw(request: {
+  to: string;
+  subject: string;
+  body: string;
+  cc?: string;
+  bcc?: string;
+}): string {
+  const lines = [
+    `To: ${request.to}`,
+    ...(request.cc ? [`Cc: ${request.cc}`] : []),
+    ...(request.bcc ? [`Bcc: ${request.bcc}`] : []),
+    `Subject: ${request.subject}`,
+    "MIME-Version: 1.0",
+    `Content-Type: text/plain; charset="UTF-8"`,
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    request.body.replace(/\r?\n/g, "\r\n"),
+  ];
+  const source = `${lines.join("\r\n")}\r\n`;
+  return Buffer.from(source, "utf8").toString("base64url");
+}
+
+function validateHeaderValue(value: string) {
+  if (/\r|\n/.test(value)) {
+    throw new CliCommandError("mail headers cannot contain line breaks");
+  }
 }
 
 function parseDriveSearchArgs(args: string[]): { query: string; limit: number } {

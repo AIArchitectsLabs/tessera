@@ -80,7 +80,7 @@ function shellDecision(
   if (policy.approval === "allow") {
     return allow(request.toolId, "shell_command_allowed");
   }
-  if (hasToolGrant(grants, request) || hasExactGrant(grants, request)) {
+  if (hasExactGrant(grants, request)) {
     return allow(request.toolId, "shell_command_granted");
   }
   return ask(request, "shell_command_requires_approval");
