@@ -489,6 +489,150 @@ export const DriveReadResultSchema = z
   });
 export type DriveReadResult = z.infer<typeof DriveReadResultSchema>;
 
+export const SheetsTableNameSchema = z.enum([
+  "Suppliers",
+  "RFQs",
+  "Messages",
+  "Quotes",
+  "FollowUps",
+  "Decisions",
+]);
+export type SheetsTableName = z.infer<typeof SheetsTableNameSchema>;
+
+export const SheetsRowOperationSchema = z.enum([
+  "upsert",
+  "append",
+  "updateStatus",
+  "createWorkbook",
+]);
+export type SheetsRowOperation = z.infer<typeof SheetsRowOperationSchema>;
+
+export const SheetsSupplierWorkbookHeaders = {
+  Suppliers: ["supplier id", "name", "contact", "email", "platform URL", "country", "status"],
+  RFQs: ["batch id", "product spec", "quantity", "due date", "requested fields"],
+  Messages: ["supplier id", "thread id", "last sent", "last received", "follow-up count"],
+  Quotes: [
+    "supplier id",
+    "price",
+    "currency",
+    "MOQ",
+    "lead time",
+    "incoterm",
+    "confidence",
+    "source message id",
+  ],
+  FollowUps: ["supplier id", "reason", "draft", "approval status", "sent timestamp"],
+  Decisions: ["shortlisted", "rejected", "sample requested", "rationale"],
+} as const satisfies Record<z.infer<typeof SheetsTableNameSchema>, readonly string[]>;
+
+export const SheetsSupplierWorkbookTableSchema = z.object({
+  table: SheetsTableNameSchema,
+  headers: z.array(z.string().min(1)).min(1),
+});
+export type SheetsSupplierWorkbookTable = z.infer<typeof SheetsSupplierWorkbookTableSchema>;
+
+export const SheetsRowPreviewSchema = z.object({
+  action: SheetsRowOperationSchema,
+  spreadsheetId: z.string().min(1).optional(),
+  table: SheetsTableNameSchema.optional(),
+  key: z
+    .object({
+      column: z.string().min(1),
+      value: z.string().min(1),
+    })
+    .optional(),
+  before: z.record(z.unknown()).nullable().optional(),
+  after: z.record(z.unknown()).optional(),
+  changedCells: z
+    .array(
+      z.object({
+        column: z.string().min(1),
+        before: z.unknown().optional(),
+        after: z.unknown().optional(),
+      })
+    )
+    .default([]),
+  warnings: z.array(z.string()).default([]),
+});
+export type SheetsRowPreview = z.infer<typeof SheetsRowPreviewSchema>;
+
+export const SheetsWritePreviewResultSchema = z.object({
+  dryRun: z.literal(true),
+  operation: SheetsRowOperationSchema,
+  preview: SheetsRowPreviewSchema,
+  idempotencyKey: z.string().min(1),
+});
+export type SheetsWritePreviewResult = z.infer<typeof SheetsWritePreviewResultSchema>;
+
+export const SheetsWriteCommitResultSchema = z.object({
+  dryRun: z.literal(false),
+  operation: SheetsRowOperationSchema,
+  spreadsheetId: z.string().min(1),
+  table: SheetsTableNameSchema.optional(),
+  updatedRange: z.string().min(1).optional(),
+  updates: z.unknown().optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1),
+});
+export type SheetsWriteCommitResult = z.infer<typeof SheetsWriteCommitResultSchema>;
+
+export const SheetsWorkbookCreateResultSchema = z.object({
+  dryRun: z.boolean(),
+  operation: z.literal("createWorkbook").default("createWorkbook"),
+  spreadsheetId: z.string().min(1).optional(),
+  spreadsheetUrl: z.string().url().optional(),
+  title: z.string().min(1),
+  sheets: z.array(SheetsSupplierWorkbookTableSchema).min(1),
+  headers: z.record(z.array(z.string().min(1))).optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1).optional(),
+});
+export type SheetsWorkbookCreateResult = z.infer<typeof SheetsWorkbookCreateResultSchema>;
+
+export const DocsOperationSchema = z.enum(["createDocument", "appendText", "replacePlaceholders"]);
+export type DocsOperation = z.infer<typeof DocsOperationSchema>;
+
+export const DocsWritePreviewResultSchema = z.object({
+  dryRun: z.literal(true),
+  operation: DocsOperationSchema,
+  target: z
+    .object({
+      documentId: z.string().min(1).optional(),
+      title: z.string().min(1).optional(),
+    })
+    .default({}),
+  preview: z.object({
+    text: z.string().optional(),
+    replacements: z.record(z.string()).optional(),
+    warnings: z.array(z.string()).default([]),
+  }),
+  idempotencyKey: z.string().min(1),
+});
+export type DocsWritePreviewResult = z.infer<typeof DocsWritePreviewResultSchema>;
+
+export const DocsWriteCommitResultSchema = z.object({
+  dryRun: z.literal(false),
+  operation: DocsOperationSchema,
+  documentId: z.string().min(1),
+  documentUrl: z.string().url().optional(),
+  revisionId: z.string().min(1).optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1),
+});
+export type DocsWriteCommitResult = z.infer<typeof DocsWriteCommitResultSchema>;
+
+export const DocsCreateResultSchema = z.object({
+  dryRun: z.boolean(),
+  operation: z.literal("createDocument").default("createDocument"),
+  documentId: z.string().min(1).optional(),
+  title: z.string().min(1),
+  documentUrl: z.string().url().optional(),
+  textPreview: z.string().optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1).optional(),
+});
+export type DocsCreateResult = z.infer<typeof DocsCreateResultSchema>;
+
 export const ContactSummarySchema = z.object({
   resourceName: z.string().min(1),
   displayName: z.string().min(1),
@@ -612,6 +756,8 @@ export const ShellCommandNameSchema = z.enum([
   "gcal",
   "mail",
   "drive",
+  "sheets",
+  "docs",
   "contacts",
 ]);
 export type ShellCommandName = z.infer<typeof ShellCommandNameSchema>;
@@ -3137,7 +3283,14 @@ export const InboxMessageTypeSchema = z.enum([
 ]);
 export type InboxMessageType = z.infer<typeof InboxMessageTypeSchema>;
 
-export const InboxStatusSchema = z.enum(["open", "snoozed", "resolved", "expired", "cancelled"]);
+export const InboxStatusSchema = z.enum([
+  "open",
+  "snoozed",
+  "resolved",
+  "expired",
+  "cancelled",
+  "consumed",
+]);
 export type InboxStatus = z.infer<typeof InboxStatusSchema>;
 
 export const InboxSeveritySchema = z.enum(["info", "warning", "critical"]);
@@ -3179,6 +3332,7 @@ export const InboxMessageSchema = z.object({
   deadline: z.string().datetime().optional(),
   snoozedUntil: z.string().datetime().optional(),
   resolvedAt: z.string().datetime().optional(),
+  consumedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   audit: z.array(InboxAuditEntrySchema).default([]),

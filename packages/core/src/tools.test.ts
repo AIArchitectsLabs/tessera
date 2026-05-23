@@ -103,6 +103,33 @@ describe("createTesseraTools", () => {
     expect(summary.status).toBe("blocked");
   });
 
+  test("accepts sheets command shape but blocks execute bypass without a grant", async () => {
+    const calls: unknown[] = [];
+    const tools = createTesseraTools({
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
+      shell: {
+        async executeShell(call) {
+          calls.push(call);
+          return { ...shellResult, command: "sheets", subcommand: "rows.append" };
+        },
+      },
+    });
+
+    const shell = tools.find((tool) => tool.name === "shell");
+    const result = await shell?.execute("call-1", {
+      command: "sheets",
+      subcommand: "rows.append",
+      args: ["--execute", "--approval", "approval-1", "--idempotency-key", "idem-1"],
+    });
+
+    expect(result?.terminate).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
   test("routes browser actions through the browser runtime", async () => {
     const calls: string[] = [];
     const tools = createTesseraTools({

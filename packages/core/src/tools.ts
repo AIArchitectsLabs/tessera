@@ -147,7 +147,16 @@ function missingRuntimeResult(message: string): AgentToolResult<unknown> {
 
 export function createTesseraTools(options: ToolRegistryOptions): AgentTool<TSchema, unknown>[] {
   const shellArgsSchema = z.object({
-    command: z.enum(["web-search", "web-fetch", "gcal", "mail", "drive", "contacts"]),
+    command: z.enum([
+      "web-search",
+      "web-fetch",
+      "gcal",
+      "mail",
+      "drive",
+      "sheets",
+      "docs",
+      "contacts",
+    ]),
     subcommand: z.string().min(1),
     args: z.array(z.string()).default([]),
   });

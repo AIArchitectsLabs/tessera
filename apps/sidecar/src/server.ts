@@ -5615,6 +5615,39 @@ async function handleInboxCancel(req: Request, messageId: string): Promise<Respo
   return Response.json(message);
 }
 
+async function handleInboxConsume(req: Request, messageId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const actor =
+    typeof body === "object" && body !== null && "actor" in body
+      ? String((body as { actor?: unknown }).actor)
+      : "system";
+  if (!actor.trim()) {
+    return Response.json({ error: "actor must be provided" }, { status: 400 });
+  }
+
+  const existing = inboxStore.get(messageId);
+  if (!existing) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+  try {
+    const message = inboxStore.consume(messageId, actor);
+    return Response.json(message);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 }
+    );
+  }
+}
+
 function handleTaskList(req: Request): Response {
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -6591,7 +6624,7 @@ const server = Bun.serve({
       if (req.method === "DELETE") return handleAgentProfileDelete(req, agentProfileId);
     }
 
-    const inboxActionMatch = pathname.match(/^\/inbox\/([^/]+)\/(resolve|snooze|cancel)$/);
+    const inboxActionMatch = pathname.match(/^\/inbox\/([^/]+)\/(resolve|snooze|consume|cancel)$/);
     const inboxActionId = inboxActionMatch?.[1];
     const inboxAction = inboxActionMatch?.[2];
     if (inboxActionId && inboxAction) {
@@ -6600,6 +6633,9 @@ const server = Bun.serve({
       }
       if (inboxAction === "snooze") {
         return handleInboxSnooze(req, decodeURIComponent(inboxActionId));
+      }
+      if (inboxAction === "consume") {
+        return handleInboxConsume(req, decodeURIComponent(inboxActionId));
       }
       return handleInboxCancel(req, decodeURIComponent(inboxActionId));
     }

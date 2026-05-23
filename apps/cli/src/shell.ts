@@ -6,6 +6,8 @@ import {
   IntegrationSettingsReadSchema,
   type SearchProvider,
   SearchSettingsSchema,
+  SheetsSupplierWorkbookHeaders,
+  SheetsTableNameSchema,
 } from "@tessera/contracts";
 import {
   CORE_VERSION,
@@ -21,6 +23,7 @@ import {
   GoogleWorkspaceConnectorError,
   createGwsGoogleWorkspaceConnector,
   runGwsCli,
+  runGwsWriteCli,
 } from "./google-connector.js";
 
 const KEYCHAIN_SERVICE = "Tessera";
@@ -121,6 +124,16 @@ export async function executeCliCommand(
 
     if (command === "drive" && subcommand === "read") {
       const payload = await runDriveRead(args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "sheets") {
+      const payload = await runSheetsCommand(subcommand, args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
+    if (command === "docs") {
+      const payload = await runDocsCommand(subcommand, args, options);
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
     }
 
@@ -911,6 +924,783 @@ async function runDriveRead(args: string[], options: ExecuteCliCommandOptions) {
 async function runContactsLookup(args: string[], options: ExecuteCliCommandOptions) {
   const { query, limit } = parseContactsLookupArgs(args);
   return createGoogleWorkspaceConnector(options).lookupContacts({ query, limit });
+}
+
+type WriteMode =
+  | { mode: "dry-run"; idempotencyKey: string }
+  | { mode: "execute"; approvalId: string; idempotencyKey: string };
+
+type ParsedFlagArgs = { flags: Map<string, string>; mode: WriteMode };
+
+const WRITE_EXECUTION_TOKEN_ENV = "TESSERA_GWS_WRITE_EXECUTION_TOKEN";
+
+async function runSheetsCommand(
+  subcommand: string | undefined,
+  args: string[],
+  options: ExecuteCliCommandOptions
+) {
+  if (subcommand === "rows.upsert") return runSheetsRowsUpsert(args, options);
+  if (subcommand === "rows.append") return runSheetsRowsAppend(args, options);
+  if (subcommand === "rows.updateStatus") return runSheetsRowsUpdateStatus(args, options);
+  if (subcommand === "workbook.create") return runSheetsWorkbookCreate(args, options);
+  throw new CliCommandError(
+    "Unsupported sheets subcommand. Allowed: rows.upsert, rows.append, rows.updateStatus, workbook.create"
+  );
+}
+
+async function runDocsCommand(
+  subcommand: string | undefined,
+  args: string[],
+  options: ExecuteCliCommandOptions
+) {
+  if (subcommand === "documents.create") return runDocsDocumentsCreate(args, options);
+  if (subcommand === "documents.appendText") return runDocsDocumentsAppendText(args, options);
+  if (subcommand === "documents.replacePlaceholders")
+    return runDocsDocumentsReplacePlaceholders(args, options);
+  throw new CliCommandError(
+    "Unsupported docs subcommand. Allowed: documents.create, documents.appendText, documents.replacePlaceholders"
+  );
+}
+
+function parseWriteArgs(args: string[], usage: string, allowedFlags: string[]): ParsedFlagArgs {
+  const flags = new Map<string, string>();
+  let dryRun = false;
+  let execute = false;
+  const allowed = new Set([
+    ...allowedFlags,
+    "--dry-run",
+    "--execute",
+    "--approval",
+    "--idempotency-key",
+  ]);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
+    if (arg === "--execute") {
+      execute = true;
+      continue;
+    }
+    if (!arg || !allowed.has(arg)) throw new CliCommandError(usage);
+    const value = args[index + 1]?.trim();
+    if (!value) throw new CliCommandError(usage);
+    flags.set(arg, value);
+    index += 1;
+  }
+
+  if (dryRun === execute) throw new CliCommandError(usage);
+  const idempotencyKey = flags.get("--idempotency-key");
+  if (!idempotencyKey) throw new CliCommandError(`${usage} (requires --idempotency-key <key>)`);
+  if (execute) {
+    const approvalId = flags.get("--approval");
+    if (!approvalId) throw new CliCommandError(`${usage} (execute requires --approval <id>)`);
+    assertSidecarWriteExecutionBinding(approvalId, idempotencyKey);
+    return { flags, mode: { mode: "execute", approvalId, idempotencyKey } };
+  }
+  if (flags.has("--approval"))
+    throw new CliCommandError(`${usage} (--approval is only valid with --execute)`);
+  return { flags, mode: { mode: "dry-run", idempotencyKey } };
+}
+
+function assertSidecarWriteExecutionBinding(approvalId: string, idempotencyKey: string): void {
+  const token = process.env[WRITE_EXECUTION_TOKEN_ENV]?.trim();
+  if (!token) {
+    throw new CliCommandError(
+      "Google Workspace write execute requires a sidecar-consumed Action Inbox grant; --approval alone is not authority."
+    );
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as {
+      approvalId?: unknown;
+      idempotencyKey?: unknown;
+      expiresAt?: unknown;
+    };
+    if (parsed.approvalId !== approvalId || parsed.idempotencyKey !== idempotencyKey) {
+      throw new Error("mismatched approval binding");
+    }
+    if (typeof parsed.expiresAt === "string" && Date.parse(parsed.expiresAt) <= Date.now()) {
+      throw new Error("expired approval binding");
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new CliCommandError(`Invalid Google Workspace write execution binding: ${reason}`);
+  }
+}
+
+function requiredFlag(flags: Map<string, string>, name: string, usage: string): string {
+  const value = flags.get(name)?.trim();
+  if (!value) throw new CliCommandError(usage);
+  return value;
+}
+
+function parseTable(value: string, usage: string) {
+  const parsed = SheetsTableNameSchema.safeParse(value);
+  if (!parsed.success) throw new CliCommandError(`${usage} (unknown table: ${value})`);
+  return parsed.data;
+}
+
+function parseJsonObject(value: string, usage: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("not an object");
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new CliCommandError(`${usage} (invalid JSON object: ${reason})`);
+  }
+}
+
+async function runGoogleWriteJson(
+  options: ExecuteCliCommandOptions,
+  command: string[],
+  body?: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const runner = options.runGwsCli ?? runGwsWriteCli;
+  const result = await runner(body ? [...command, "--json", JSON.stringify(body)] : command);
+  if (result.exitCode !== 0) {
+    throw new GoogleWorkspaceConnectorError(
+      result.stderr.trim() || `Google Workspace CLI exited with status ${result.exitCode}`,
+      result.exitCode
+    );
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    throw new GoogleWorkspaceConnectorError("Google Workspace CLI returned invalid JSON output.");
+  }
+}
+
+function headersForTable(table: keyof typeof SheetsSupplierWorkbookHeaders): readonly string[] {
+  return SheetsSupplierWorkbookHeaders[table] as readonly string[];
+}
+
+function validateRowForTable(
+  table: keyof typeof SheetsSupplierWorkbookHeaders,
+  row: Record<string, unknown>,
+  usage: string,
+  extraColumns: string[] = []
+): void {
+  const allowed = new Set<string>([...headersForTable(table), ...extraColumns]);
+  const unknown = Object.keys(row).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new CliCommandError(`${usage} (unsupported ${table} column(s): ${unknown.join(", ")})`);
+  }
+}
+
+function changedCellsFromRow(row: Record<string, unknown>) {
+  return Object.entries(row).map(([column, after]) => ({ column, after }));
+}
+
+type SheetCellValue = string | number | boolean | null;
+
+interface SheetTableData {
+  headers: string[];
+  rows: SheetCellValue[][];
+}
+
+function quoteSheetsRangeTitle(title: string): string {
+  return `'${title.replace(/'/g, "''")}'`;
+}
+
+function columnName(index: number): string {
+  let value = index + 1;
+  let label = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    value = Math.floor((value - 1) / 26);
+  }
+  return label;
+}
+
+function normalizeSheetValues(values: unknown): SheetCellValue[][] {
+  if (!Array.isArray(values)) return [];
+  return values.filter(Array.isArray).map((row) =>
+    row.map((cell) => {
+      if (cell === null || cell === undefined) return "";
+      if (["string", "number", "boolean"].includes(typeof cell)) return cell as SheetCellValue;
+      return JSON.stringify(cell);
+    })
+  );
+}
+
+async function readSheetTable(
+  options: ExecuteCliCommandOptions,
+  spreadsheetId: string,
+  table: keyof typeof SheetsSupplierWorkbookHeaders
+): Promise<SheetTableData> {
+  const range = `${quoteSheetsRangeTitle(table)}!A1:${columnName(headersForTable(table).length - 1)}`;
+  const payload = await runGoogleWriteJson(options, [
+    "sheets",
+    "spreadsheets",
+    "values",
+    "get",
+    "--params",
+    JSON.stringify({ spreadsheetId, range }),
+  ]);
+  const values = normalizeSheetValues(payload.values);
+  const headers = (values[0] ?? []).map((value) => String(value));
+  if (headers.length === 0) {
+    throw new CliCommandError(`${table} does not have a header row.`);
+  }
+  return { headers, rows: values.slice(1) };
+}
+
+function validateExistingHeaders(
+  table: keyof typeof SheetsSupplierWorkbookHeaders,
+  headers: string[],
+  requiredHeaders: readonly string[] = headersForTable(table)
+): void {
+  const missing = requiredHeaders.filter((header) => !headers.includes(header));
+  if (missing.length > 0) {
+    throw new CliCommandError(`${table} is missing required header(s): ${missing.join(", ")}`);
+  }
+}
+
+function rowObject(headers: string[], row: SheetCellValue[]): Record<string, SheetCellValue> {
+  return Object.fromEntries(headers.map((header, index) => [header, row[index] ?? ""]));
+}
+
+function rowValues(headers: string[], row: Record<string, unknown>): SheetCellValue[] {
+  return headers.map((header) => {
+    const value = row[header];
+    if (value === undefined || value === null) return "";
+    if (["string", "number", "boolean"].includes(typeof value)) return value as SheetCellValue;
+    return JSON.stringify(value);
+  });
+}
+
+function tableRowRange(
+  table: keyof typeof SheetsSupplierWorkbookHeaders,
+  rowNumber: number,
+  columnCount: number
+): string {
+  return `${quoteSheetsRangeTitle(table)}!A${rowNumber}:${columnName(columnCount - 1)}${rowNumber}`;
+}
+
+function findRowIndexByKey(tableData: SheetTableData, keyColumn: string, keyValue: string): number {
+  const keyColumnIndex = tableData.headers.indexOf(keyColumn);
+  if (keyColumnIndex < 0) throw new CliCommandError(`Key column does not exist: ${keyColumn}`);
+  return tableData.rows.findIndex((row) => String(row[keyColumnIndex] ?? "") === keyValue);
+}
+
+function sheetsCommitBase(
+  operation: "upsert" | "append" | "updateStatus" | "createWorkbook",
+  spreadsheetId: string,
+  mode: Extract<WriteMode, { mode: "execute" }>
+) {
+  return {
+    dryRun: false,
+    operation,
+    spreadsheetId,
+    idempotencyKey: mode.idempotencyKey,
+    approvalId: mode.approvalId,
+  };
+}
+
+async function runSheetsRowsUpsert(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: sheets rows.upsert --spreadsheet <id> --table <name> --key-column <column> --key-value <value> --row-json <row> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, [
+    "--spreadsheet",
+    "--table",
+    "--key-column",
+    "--key-value",
+    "--row-json",
+  ]);
+  const spreadsheetId = requiredFlag(flags, "--spreadsheet", usage);
+  const table = parseTable(requiredFlag(flags, "--table", usage), usage);
+  const keyColumn = requiredFlag(flags, "--key-column", usage);
+  const keyValue = requiredFlag(flags, "--key-value", usage);
+  const row = parseJsonObject(requiredFlag(flags, "--row-json", usage), usage);
+  validateRowForTable(table, row, usage);
+  if (!headersForTable(table).includes(keyColumn)) {
+    throw new CliCommandError(`${usage} (key column is not valid for ${table}: ${keyColumn})`);
+  }
+  if (mode.mode === "execute") {
+    const tableData = await readSheetTable(options, spreadsheetId, table);
+    validateExistingHeaders(table, tableData.headers);
+    if (!tableData.headers.includes(keyColumn)) {
+      throw new CliCommandError(`${usage} (key column is not present in ${table}: ${keyColumn})`);
+    }
+    const existingIndex = findRowIndexByKey(tableData, keyColumn, keyValue);
+    const before =
+      existingIndex >= 0 ? rowObject(tableData.headers, tableData.rows[existingIndex] ?? []) : null;
+    const after = { ...(before ?? {}), ...row };
+    const values = [rowValues(tableData.headers, after)];
+    if (existingIndex >= 0) {
+      const updatedRange = tableRowRange(table, existingIndex + 2, tableData.headers.length);
+      const updates = await runGoogleWriteJson(
+        options,
+        [
+          "sheets",
+          "spreadsheets",
+          "values",
+          "update",
+          "--params",
+          JSON.stringify({ spreadsheetId, range: updatedRange, valueInputOption: "USER_ENTERED" }),
+        ],
+        { values }
+      );
+      return {
+        ...sheetsCommitBase("upsert", spreadsheetId, mode),
+        table,
+        updatedRange,
+        updates,
+      };
+    }
+    const appendRange = `${quoteSheetsRangeTitle(table)}!A1`;
+    const updates = await runGoogleWriteJson(
+      options,
+      [
+        "sheets",
+        "spreadsheets",
+        "values",
+        "append",
+        "--params",
+        JSON.stringify({ spreadsheetId, range: appendRange, valueInputOption: "USER_ENTERED" }),
+      ],
+      { values }
+    );
+    return {
+      ...sheetsCommitBase("upsert", spreadsheetId, mode),
+      table,
+      updatedRange:
+        typeof updates.updates === "object" &&
+        updates.updates !== null &&
+        "updatedRange" in updates.updates
+          ? String((updates.updates as Record<string, unknown>).updatedRange)
+          : undefined,
+      updates,
+    };
+  }
+  return {
+    dryRun: true,
+    operation: "upsert",
+    preview: {
+      action: "upsert",
+      spreadsheetId,
+      table,
+      key: { column: keyColumn, value: keyValue },
+      before: null,
+      after: row,
+      changedCells: changedCellsFromRow(row),
+      warnings: [
+        "Preview only: current sheet state is re-read by the sidecar before approved execution.",
+      ],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+async function runSheetsRowsAppend(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: sheets rows.append --spreadsheet <id> --table <name> --row-json <row> --client-row-id <id> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, [
+    "--spreadsheet",
+    "--table",
+    "--row-json",
+    "--client-row-id",
+  ]);
+  const spreadsheetId = requiredFlag(flags, "--spreadsheet", usage);
+  const table = parseTable(requiredFlag(flags, "--table", usage), usage);
+  const clientRowId = requiredFlag(flags, "--client-row-id", usage);
+  const row = parseJsonObject(requiredFlag(flags, "--row-json", usage), usage);
+  validateRowForTable(table, row, usage, ["tessera_client_row_id"]);
+  const after = { ...row, tessera_client_row_id: clientRowId };
+  if (mode.mode === "execute") {
+    const tableData = await readSheetTable(options, spreadsheetId, table);
+    validateExistingHeaders(table, tableData.headers);
+    const clientRowIdColumn = tableData.headers.indexOf("tessera_client_row_id");
+    if (clientRowIdColumn >= 0) {
+      const existingIndex = tableData.rows.findIndex(
+        (item) => String(item[clientRowIdColumn] ?? "") === clientRowId
+      );
+      if (existingIndex >= 0) {
+        return {
+          ...sheetsCommitBase("append", spreadsheetId, mode),
+          table,
+          updatedRange: tableRowRange(table, existingIndex + 2, tableData.headers.length),
+          updates: { status: "already_exists", clientRowId },
+        };
+      }
+    }
+    const appendableRow = clientRowIdColumn >= 0 ? after : row;
+    const updates = await runGoogleWriteJson(
+      options,
+      [
+        "sheets",
+        "spreadsheets",
+        "values",
+        "append",
+        "--params",
+        JSON.stringify({
+          spreadsheetId,
+          range: `${quoteSheetsRangeTitle(table)}!A1`,
+          valueInputOption: "USER_ENTERED",
+        }),
+      ],
+      { values: [rowValues(tableData.headers, appendableRow)] }
+    );
+    return {
+      ...sheetsCommitBase("append", spreadsheetId, mode),
+      table,
+      updatedRange:
+        typeof updates.updates === "object" &&
+        updates.updates !== null &&
+        "updatedRange" in updates.updates
+          ? String((updates.updates as Record<string, unknown>).updatedRange)
+          : undefined,
+      updates,
+    };
+  }
+  return {
+    dryRun: true,
+    operation: "append",
+    preview: {
+      action: "append",
+      spreadsheetId,
+      table,
+      before: null,
+      after,
+      changedCells: changedCellsFromRow(after),
+      warnings: [
+        "Append is idempotent by tessera_client_row_id when that header exists; otherwise the single-use approval grant prevents direct replay.",
+      ],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+async function runSheetsRowsUpdateStatus(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: sheets rows.updateStatus --spreadsheet <id> --table <name> --key-column <column> --key-value <value> --status <value> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, [
+    "--spreadsheet",
+    "--table",
+    "--key-column",
+    "--key-value",
+    "--status",
+  ]);
+  const spreadsheetId = requiredFlag(flags, "--spreadsheet", usage);
+  const table = parseTable(requiredFlag(flags, "--table", usage), usage);
+  const keyColumn = requiredFlag(flags, "--key-column", usage);
+  const keyValue = requiredFlag(flags, "--key-value", usage);
+  const status = requiredFlag(flags, "--status", usage);
+  const statusColumn = headersForTable(table).find((header) => /status/i.test(header));
+  if (!statusColumn)
+    throw new CliCommandError(`${usage} (${table} does not expose a status-like column)`);
+  if (!headersForTable(table).includes(keyColumn)) {
+    throw new CliCommandError(`${usage} (key column is not valid for ${table}: ${keyColumn})`);
+  }
+  if (mode.mode === "execute") {
+    const tableData = await readSheetTable(options, spreadsheetId, table);
+    validateExistingHeaders(table, tableData.headers);
+    const existingIndex = findRowIndexByKey(tableData, keyColumn, keyValue);
+    if (existingIndex < 0) {
+      throw new CliCommandError(`${table} row not found for ${keyColumn}=${keyValue}`);
+    }
+    const statusColumnIndex = tableData.headers.indexOf(statusColumn);
+    if (statusColumnIndex < 0) {
+      throw new CliCommandError(`${usage} (status column is not present in ${table})`);
+    }
+    const rowNumber = existingIndex + 2;
+    const updatedRange = `${quoteSheetsRangeTitle(table)}!${columnName(statusColumnIndex)}${rowNumber}:${columnName(statusColumnIndex)}${rowNumber}`;
+    const updates = await runGoogleWriteJson(
+      options,
+      [
+        "sheets",
+        "spreadsheets",
+        "values",
+        "update",
+        "--params",
+        JSON.stringify({ spreadsheetId, range: updatedRange, valueInputOption: "USER_ENTERED" }),
+      ],
+      { values: [[status]] }
+    );
+    return {
+      ...sheetsCommitBase("updateStatus", spreadsheetId, mode),
+      table,
+      updatedRange,
+      updates,
+    };
+  }
+  return {
+    dryRun: true,
+    operation: "updateStatus",
+    preview: {
+      action: "updateStatus",
+      spreadsheetId,
+      table,
+      key: { column: keyColumn, value: keyValue },
+      before: null,
+      after: { [statusColumn]: status },
+      changedCells: [{ column: statusColumn, after: status }],
+      warnings: [
+        "Only the approved status-like column will be mutated after preview drift checks.",
+      ],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+async function runSheetsWorkbookCreate(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: sheets workbook.create --title <title> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, ["--title"]);
+  const title = requiredFlag(flags, "--title", usage);
+  const sheets = Object.entries(SheetsSupplierWorkbookHeaders).map(([table, headers]) => ({
+    table,
+    headers: [...headers],
+  }));
+  if (mode.mode === "execute") {
+    const created = await runGoogleWriteJson(
+      options,
+      [
+        "sheets",
+        "spreadsheets",
+        "create",
+        "--params",
+        JSON.stringify({ fields: "spreadsheetId,spreadsheetUrl,sheets(properties(title))" }),
+      ],
+      {
+        properties: { title },
+        sheets: sheets.map((sheet) => ({ properties: { title: sheet.table } })),
+      }
+    );
+    const spreadsheetId = typeof created.spreadsheetId === "string" ? created.spreadsheetId : "";
+    if (!spreadsheetId) {
+      throw new GoogleWorkspaceConnectorError(
+        "Google Sheets create response did not include a spreadsheetId."
+      );
+    }
+    const data = sheets.map((sheet) => ({
+      range: `${quoteSheetsRangeTitle(sheet.table)}!A1:${columnName(sheet.headers.length - 1)}1`,
+      values: [sheet.headers],
+    }));
+    const updates = await runGoogleWriteJson(
+      options,
+      [
+        "sheets",
+        "spreadsheets",
+        "values",
+        "batchUpdate",
+        "--params",
+        JSON.stringify({ spreadsheetId }),
+      ],
+      { valueInputOption: "USER_ENTERED", data }
+    );
+    return {
+      dryRun: false,
+      operation: "createWorkbook",
+      spreadsheetId,
+      spreadsheetUrl:
+        typeof created.spreadsheetUrl === "string" ? created.spreadsheetUrl : undefined,
+      title,
+      sheets,
+      headers: Object.fromEntries(sheets.map((sheet) => [sheet.table, sheet.headers])),
+      updates,
+      idempotencyKey: mode.idempotencyKey,
+      approvalId: mode.approvalId,
+    };
+  }
+  return {
+    dryRun: true,
+    operation: "createWorkbook",
+    title,
+    sheets,
+    headers: Object.fromEntries(sheets.map((sheet) => [sheet.table, sheet.headers])),
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+function documentUrl(documentId: string): string {
+  return `https://docs.google.com/document/d/${documentId}/edit`;
+}
+
+function documentEndIndex(payload: Record<string, unknown>): number {
+  const body = payload.body;
+  const content =
+    body && typeof body === "object" && "content" in body
+      ? (body as { content?: unknown }).content
+      : undefined;
+  if (!Array.isArray(content)) return 1;
+  const endIndexes = content
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .map((item) => item.endIndex)
+    .filter((item): item is number => typeof item === "number" && Number.isFinite(item));
+  const maxEnd = Math.max(1, ...endIndexes);
+  return Math.max(1, maxEnd - 1);
+}
+
+async function runDocsDocumentsCreate(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: docs documents.create --title <title> [--text <text>|--text-file <path>] [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, ["--title", "--text", "--text-file"]);
+  const title = requiredFlag(flags, "--title", usage);
+  const text = await readInlineOrFileText(flags, usage);
+  if (mode.mode === "execute") {
+    const created = await runGoogleWriteJson(options, ["docs", "documents", "create"], { title });
+    const documentId = typeof created.documentId === "string" ? created.documentId : "";
+    if (!documentId) {
+      throw new GoogleWorkspaceConnectorError(
+        "Google Docs create response did not include a documentId."
+      );
+    }
+    if (text) {
+      await runGoogleWriteJson(
+        options,
+        ["docs", "documents", "batchUpdate", "--params", JSON.stringify({ documentId })],
+        { requests: [{ insertText: { location: { index: 1 }, text } }] }
+      );
+    }
+    return {
+      dryRun: false,
+      operation: "createDocument",
+      title,
+      documentId,
+      documentUrl: documentUrl(documentId),
+      textPreview: text || undefined,
+      idempotencyKey: mode.idempotencyKey,
+      approvalId: mode.approvalId,
+    };
+  }
+  return {
+    dryRun: true,
+    operation: "createDocument",
+    target: { title },
+    preview: {
+      text,
+      warnings: ["Preview only: document creation requires Action Inbox approval."],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+async function runDocsDocumentsAppendText(args: string[], options: ExecuteCliCommandOptions) {
+  const usage =
+    "Usage: docs documents.appendText --document <id> --text <text> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, ["--document", "--text"]);
+  const documentId = requiredFlag(flags, "--document", usage);
+  const text = requiredFlag(flags, "--text", usage);
+  if (mode.mode === "execute") {
+    const document = await runGoogleWriteJson(options, [
+      "docs",
+      "documents",
+      "get",
+      "--params",
+      JSON.stringify({ documentId, fields: "body/content(endIndex),revisionId" }),
+    ]);
+    const update = await runGoogleWriteJson(
+      options,
+      ["docs", "documents", "batchUpdate", "--params", JSON.stringify({ documentId })],
+      {
+        requests: [{ insertText: { location: { index: documentEndIndex(document) }, text } }],
+      }
+    );
+    return buildDocsCommit("appendText", documentId, mode, update);
+  }
+  return {
+    dryRun: true,
+    operation: "appendText",
+    target: { documentId },
+    preview: {
+      text,
+      warnings: ["Preview only: current document end position is re-read before execution."],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+async function runDocsDocumentsReplacePlaceholders(
+  args: string[],
+  options: ExecuteCliCommandOptions
+) {
+  const usage =
+    "Usage: docs documents.replacePlaceholders --document <id> --replacements-json <json> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
+  const { flags, mode } = parseWriteArgs(args, usage, ["--document", "--replacements-json"]);
+  const documentId = requiredFlag(flags, "--document", usage);
+  const replacements = parseStringRecord(requiredFlag(flags, "--replacements-json", usage), usage);
+  if (mode.mode === "execute") {
+    const requests = Object.entries(replacements).map(([containsText, replaceText]) => ({
+      replaceAllText: {
+        containsText: { text: containsText, matchCase: true },
+        replaceText,
+      },
+    }));
+    const update = await runGoogleWriteJson(
+      options,
+      ["docs", "documents", "batchUpdate", "--params", JSON.stringify({ documentId })],
+      { requests }
+    );
+    return buildDocsCommit("replacePlaceholders", documentId, mode, update);
+  }
+  return {
+    dryRun: true,
+    operation: "replacePlaceholders",
+    target: { documentId },
+    preview: {
+      replacements,
+      warnings: ["Only explicit placeholder tokens are eligible for replacement."],
+    },
+    idempotencyKey: mode.idempotencyKey,
+  };
+}
+
+function buildDocsCommit(
+  operation: "appendText" | "replacePlaceholders",
+  documentId: string,
+  mode: Extract<WriteMode, { mode: "execute" }>,
+  update: Record<string, unknown> = {}
+) {
+  return {
+    dryRun: false,
+    operation,
+    documentId,
+    documentUrl: documentUrl(documentId),
+    revisionId:
+      typeof update.writeControl === "object" &&
+      update.writeControl !== null &&
+      "requiredRevisionId" in update.writeControl
+        ? String((update.writeControl as Record<string, unknown>).requiredRevisionId)
+        : undefined,
+    idempotencyKey: mode.idempotencyKey,
+    approvalId: mode.approvalId,
+  };
+}
+
+function parseStringRecord(value: string, usage: string): Record<string, string> {
+  const parsed = parseJsonObject(value, usage);
+  const invalid = Object.entries(parsed).find(([, item]) => typeof item !== "string");
+  if (invalid)
+    throw new CliCommandError(`${usage} (replacement for ${invalid[0]} must be a string)`);
+  return parsed as Record<string, string>;
+}
+
+async function readInlineOrFileText(
+  flags: Map<string, string>,
+  usage: string
+): Promise<string | undefined> {
+  const text = flags.get("--text");
+  const textFile = flags.get("--text-file");
+  if (text && textFile)
+    throw new CliCommandError(`${usage} (use only one of --text or --text-file)`);
+  if (textFile) {
+    try {
+      return await readFile(textFile, "utf8");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new CliCommandError(`${usage} (could not read --text-file: ${reason})`);
+    }
+  }
+  return text;
 }
 
 function createGoogleWorkspaceConnector(

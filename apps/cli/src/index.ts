@@ -32,6 +32,8 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("  gcal          Read Google Calendar events");
   console.log("  mail          Read and draft Gmail messages (draft/send requires approval)");
   console.log("  drive         Read Drive files and folders");
+  console.log("  sheets        Preview approved Google Sheets writes");
+  console.log("  docs          Preview approved Google Docs writes");
   console.log("  contacts      Read Google Contacts");
   console.log("  run <agent>   Run an agent headlessly");
   console.log("");
