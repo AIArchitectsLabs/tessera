@@ -17,6 +17,7 @@ const STATUS_LABELS: Record<InboxStatus, string> = {
   resolved: "Resolved",
   expired: "Expired",
   cancelled: "Cancelled",
+  consumed: "Consumed",
 };
 
 export function inboxTypeLabel(type: InboxMessageType): string {

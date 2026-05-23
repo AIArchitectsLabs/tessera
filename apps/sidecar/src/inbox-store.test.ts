@@ -167,4 +167,29 @@ describe("inbox store", () => {
       second.close();
     }
   });
+
+  test("consumes messages once and records consumed audit", () => {
+    const store = createInboxStore(tempDbPath("inbox-consume.sqlite"));
+    try {
+      const message = store.create({
+        source: "system",
+        type: "approval",
+        severity: "info",
+        title: "Write to sheet rows.append",
+        context: { command: "sheets", subcommand: "rows.append" },
+        actions: [{ id: "approve", label: "Approve", style: "primary" }],
+      });
+
+      const consumed = store.consume(message.id, "agent:test");
+      expect(consumed?.status).toBe("consumed");
+      expect(consumed?.consumedAt).toBeString();
+      expect(consumed?.audit.at(-1)?.event).toBe("consumed");
+
+      expect(() => store.consume(message.id, "agent:test")).toThrow(
+        "Inbox message cannot be consumed in current state: consumed"
+      );
+    } finally {
+      store.close();
+    }
+  });
 });

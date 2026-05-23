@@ -208,13 +208,19 @@ export function createGwsGoogleWorkspaceConnector(options: {
   };
 }
 
-export async function runGwsCli(args: string[]): Promise<CommandResult> {
+export async function runGwsCli(
+  args: string[],
+  profile: "read" | "write" = "read"
+): Promise<CommandResult> {
   const binary = process.env.TESSERA_GWS_CLI_PATH?.trim() || "gws";
+  const configDir =
+    profile === "write"
+      ? process.env.TESSERA_GWS_WRITE_CONFIG_DIR?.trim() ||
+        process.env.TESSERA_GWS_CONFIG_DIR?.trim()
+      : process.env.TESSERA_GWS_CONFIG_DIR?.trim();
   const env = {
     ...process.env,
-    ...(process.env.TESSERA_GWS_CONFIG_DIR?.trim()
-      ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: process.env.TESSERA_GWS_CONFIG_DIR.trim() }
-      : {}),
+    ...(configDir ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir } : {}),
   };
   const proc = Bun.spawn([binary, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -223,6 +229,10 @@ export async function runGwsCli(args: string[]): Promise<CommandResult> {
     proc.exited,
   ]);
   return { exitCode, stdout, stderr };
+}
+
+export async function runGwsWriteCli(args: string[]): Promise<CommandResult> {
+  return runGwsCli(args, "write");
 }
 
 async function runGwsJson(

@@ -406,6 +406,122 @@ describe("shell runtime", () => {
     });
   });
 
+  test("parses sheets dry-run previews and commit payloads from workspace cli stdout", async () => {
+    const previewExecutor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            dryRun: true,
+            operation: "upsert",
+            idempotencyKey: "idem-1",
+            preview: {
+              action: "upsert",
+              spreadsheetId: "sheet-1",
+              table: "Suppliers",
+              key: { column: "supplier id", value: "sup-1" },
+              before: null,
+              after: { "supplier id": "sup-1" },
+              changedCells: [{ column: "supplier id", after: "sup-1" }],
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 8,
+        };
+      },
+    });
+
+    await expect(
+      previewExecutor.executeShell({ command: "sheets", subcommand: "rows.upsert", args: [] })
+    ).resolves.toMatchObject({ parsed: { dryRun: true, operation: "upsert" } });
+
+    const commitExecutor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            dryRun: false,
+            operation: "append",
+            spreadsheetId: "sheet-1",
+            table: "Suppliers",
+            updatedRange: "Suppliers!A2:G2",
+            idempotencyKey: "idem-1",
+            approvalId: "approval-1",
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 8,
+        };
+      },
+    });
+
+    await expect(
+      commitExecutor.executeShell({ command: "sheets", subcommand: "rows.append", args: [] })
+    ).resolves.toMatchObject({ parsed: { dryRun: false, operation: "append" } });
+  });
+
+  test("parses docs dry-run previews and commit payloads from workspace cli stdout", async () => {
+    const previewExecutor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            dryRun: true,
+            operation: "createDocument",
+            target: { title: "RFQ" },
+            preview: { text: "Hello" },
+            idempotencyKey: "idem-doc",
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 8,
+        };
+      },
+    });
+
+    await expect(
+      previewExecutor.executeShell({ command: "docs", subcommand: "documents.create", args: [] })
+    ).resolves.toMatchObject({ parsed: { dryRun: true, operation: "createDocument" } });
+
+    const commitExecutor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            dryRun: false,
+            operation: "appendText",
+            documentId: "doc-1",
+            idempotencyKey: "idem-doc",
+            approvalId: "approval-doc",
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 8,
+        };
+      },
+    });
+
+    await expect(
+      commitExecutor.executeShell({ command: "docs", subcommand: "documents.appendText", args: [] })
+    ).resolves.toMatchObject({ parsed: { dryRun: false, operation: "appendText" } });
+  });
+
+  test("rejects unsupported raw sheets and docs write subcommands", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        throw new Error("should not spawn unsupported commands");
+      },
+    });
+
+    await expect(
+      executor.executeShell({ command: "sheets", subcommand: "range.write", args: [] })
+    ).rejects.toThrow(/Unsupported shell command/);
+    await expect(
+      executor.executeShell({ command: "docs", subcommand: "documents.batchUpdate", args: [] })
+    ).rejects.toThrow(/Unsupported shell command/);
+  });
+
   test("parses successful contacts lookup payloads from workspace cli stdout", async () => {
     const executor = createSpawnShellExecutor({
       async runWorkspaceCli(): Promise<SpawnResult> {

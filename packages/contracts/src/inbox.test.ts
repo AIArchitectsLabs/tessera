@@ -79,6 +79,51 @@ describe("inbox contracts", () => {
     expect(parsed.type).toBe("approval");
   });
 
+  test("accepts external write approval messages with typed sheets preview context", () => {
+    const parsed = InboxMessageSchema.parse({
+      id: "inbox-sheets-approval",
+      source: "agent",
+      type: "approval",
+      severity: "critical",
+      status: "open",
+      title: "Approve Sheets write",
+      context: {
+        approval: {
+          toolId: "shell",
+          args: { command: "sheets", subcommand: "rows.upsert" },
+          capability: "write",
+          risk: {
+            mutates: true,
+            destructive: false,
+            external: true,
+            reversible: true,
+            dryRunSupported: true,
+          },
+          preview: "Upsert supplier row",
+          reasonCode: "shell_command_requires_approval",
+        },
+        grant: {
+          approvalId: "inbox-sheets-approval",
+          command: "sheets",
+          subcommand: "rows.upsert",
+          previewHash: "sha256:test",
+          idempotencyKey: "idem-1",
+          target: { spreadsheetId: "sheet-1", table: "Suppliers" },
+          state: "pending",
+        },
+      },
+      actions: [
+        { id: "approve", label: "Approve", style: "primary" },
+        { id: "deny", label: "Deny", style: "danger" },
+      ],
+      createdAt,
+      updatedAt: createdAt,
+      audit: [],
+    });
+
+    expect(parsed.context).toMatchObject({ grant: { command: "sheets" } });
+  });
+
   test("rejects secret-bearing fields in create requests", () => {
     const parsed = InboxCreateRequestSchema.safeParse({
       source: "integration",
