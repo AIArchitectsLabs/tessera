@@ -838,7 +838,7 @@ const seoCompletedGraphRunDetail = {
               "Reference graph playbook for a blog article workflow using generic Tessera orchestration.",
             outputs: [
               { kind: "contentBrief", label: "Content Brief" },
-              { kind: "articleDraft", label: "Blog Article Draft" },
+              { kind: "finalArticle", label: "Final Article" },
             ],
           },
           artifacts: {
@@ -980,6 +980,20 @@ const seoCompletedGraphRunDetail = {
         markdown: "# AI workspace governance for finance teams\n\nA practical content brief.",
       },
       createdAt: "2026-05-18T12:31:30.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
+      artifactId: "briefReview",
+      versionId: "brief-review-v1",
+      producerQueueEntryId: "queue-brief-review",
+      nodePath: "briefReview",
+      contentHash: "sha256:brief-review",
+      value: {
+        permissionDecisions: [],
+        status: "completed",
+      },
+      createdAt: "2026-05-18T12:31:35.000Z",
     },
     {
       schemaVersion: 1,
@@ -1726,7 +1740,7 @@ describe("PlaybooksView", () => {
     expect(view.queryByText(/May 9/)).toBeNull();
   });
 
-  test("shows materialized graph artifacts when playbook output declarations are empty", async () => {
+  test("shows declared final graph outputs without intermediate artifacts", async () => {
     includeImportedPlaybook = true;
     const view = renderPlaybooksView();
 
@@ -1751,9 +1765,9 @@ describe("PlaybooksView", () => {
       expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
       expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
       expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
-      expect(view.getAllByText("Final Output Manifest").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/final-output-manifest\.md/).length).toBeGreaterThan(0);
-      expect(view.queryByText("Content Brief Draft")).toBeNull();
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
+      expect(view.queryByText("Final Output Manifest")).toBeNull();
       expect(view.queryByText("Article Scorecard")).toBeNull();
       expect(view.getByText("Input 2k tokens")).toBeTruthy();
       expect(view.getByText("Output 600 tokens")).toBeTruthy();
@@ -1837,8 +1851,10 @@ describe("PlaybooksView", () => {
       expect(view.getByTestId("result-output-list").className).toContain("grid");
       expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
       expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
-      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
       expect(view.queryByText("Draft Article")).toBeNull();
       expect(view.queryByText("Structure Article Draft")).toBeNull();
     });
@@ -1887,8 +1903,10 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
-      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
     });
   });
 

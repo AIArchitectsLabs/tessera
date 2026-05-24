@@ -688,6 +688,8 @@ function visiblePlaybookOutputs(
   const declaredOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
   );
+  if (declaredOutputs.length > 0) return declaredOutputs;
+
   const declaredKinds = new Set(declaredOutputs.map((output) => output.kind));
 
   const materializedOutputs = Object.entries(runOutputs).flatMap(([kind, value]) => {
@@ -723,6 +725,8 @@ function graphRunResultOutputDeclarations(
 ): WorkflowOutputDeclaration[] {
   if (!detail) return [];
   const declared = graphSnapshotOutputDeclarations(detail);
+  if (declared.length > 0) return declared;
+
   const declaredKinds = new Set(declared.map((output) => output.kind));
   const runOutputs = graphRunOutputs(detail);
   const artifactIds = [...new Set(detail.artifacts.map((artifact) => artifact.artifactId))];
