@@ -141,7 +141,7 @@ describe("PlaybookGraphSchema", () => {
     });
   });
 
-  test("accepts planned tool, condition, and artifactWrite nodes", () => {
+  test("accepts planned tool, condition, effect, and artifactWrite nodes", () => {
     const toolGraph = PlaybookGraphSchema.parse({
       schemaVersion: 1,
       id: "demo.tool-graph",
@@ -190,9 +190,41 @@ describe("PlaybookGraphSchema", () => {
         },
       ],
     });
+    const effectGraph = PlaybookGraphSchema.parse({
+      schemaVersion: 1,
+      id: "demo.effect-graph",
+      version: "0.1.0",
+      name: "Effect Graph",
+      capabilities: ["tool.workspace.write"],
+      start: "write",
+      nodes: [
+        {
+          id: "write",
+          kind: "effect",
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          sideEffect: "write",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "workspace.write:demo",
+          input: {
+            sourceArtifact: "brief",
+            value: { artifact: "brief" },
+            path: "brief.md",
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write brief",
+            summary: "Write the brief to the workspace.",
+          },
+        },
+      ],
+    });
 
     expect(toolGraph.nodes[0]?.kind).toBe("tool");
     expect(conditionGraph.nodes[0]?.kind).toBe("condition");
+    expect(effectGraph.nodes[0]?.kind).toBe("effect");
     expect(artifactWriteGraph.nodes[0]?.kind).toBe("artifactWrite");
   });
 

@@ -30,8 +30,8 @@ Use this checklist before packaging or importing a playbook.
 
 - The graph starts with deterministic intake normalization.
 - Tool nodes use only declared capabilities.
+- Mutating writes use first-class `effect` nodes with preview, approval, and idempotency.
 - Fanout nodes have generated item and concurrency limits.
 - Review and rework loops are bounded.
 - Human review pauses on artifacts the user can inspect.
-- Final artifacts materialize as Markdown, CSV, or JSON.
-
+- Final outputs are committed as Markdown, CSV, JSON, or connector-backed evidence through effect records.

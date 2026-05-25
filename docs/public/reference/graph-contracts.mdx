@@ -12,7 +12,18 @@ The canonical playbook graph shape is defined in Tessera contracts and enforced 
 - `packages/core/src/playbook-graph-package-loader.ts` validates package loading, import safety, and manifest-to-graph alignment.
 - `@tessera/plugin-sdk` provides author ergonomics, including `definePlaybook`, but it is not the canonical runtime contract.
 
+## Effect Nodes
+
+Use first-class `effect` nodes for mutating work such as workspace writes or connector-backed writes. An effect node declares:
+
+- `effectId`, `adapterId`, and `capability`
+- `sideEffect` as `write` or `external`
+- `approval` and `preview`
+- `idempotency` and `idempotencyKey`
+- `input` bindings for artifacts, paths, and adapter payload
+
+The runtime records preview, approval or denial, commit status, idempotency key, output reference, and replay evidence before advancing the graph.
+
 ## Author Guidance
 
 Use the SDK for authoring convenience. Use validation diagnostics to confirm that the package matches the runtime contract. If guidance here conflicts with validation behavior, fix the docs or package against the validation behavior.
-

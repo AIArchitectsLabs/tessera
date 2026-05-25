@@ -441,6 +441,96 @@ function testReviewCompiledGraph() {
   });
 }
 
+function testEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.effect-surface",
+      version: "0.1.0",
+      name: "Effect Surface Graph",
+      capabilities: ["tool.workspace.write"],
+      start: "writeBrief",
+      nodes: [
+        {
+          id: "writeBrief",
+          kind: "effect",
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          sideEffect: "write",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "workspace.write:test-effect",
+          input: { path: "out/brief.md", value: "Brief" },
+          preview: {
+            schemaVersion: 1,
+            title: "Write brief",
+            summary: "Write the brief to the workspace.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testArtifactEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.artifact-effect-surface",
+      version: "0.1.0",
+      name: "Artifact Effect Surface Graph",
+      artifacts: {
+        brief: { schema: "schemas/brief.schema.json" },
+      },
+      capabilities: ["tool.workspace.write"],
+      start: "draft",
+      nodes: [
+        {
+          id: "draft",
+          kind: "script",
+          run: "scripts/draft.ts",
+          inputs: {},
+          outputArtifact: "brief",
+          onSuccess: "writeBrief",
+        },
+        {
+          id: "writeBrief",
+          kind: "effect",
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          sideEffect: "write",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "workspace.write:artifact-effect",
+          input: { path: "out/brief.md", value: { artifact: "brief" } },
+          preview: {
+            schemaVersion: 1,
+            title: "Write brief",
+            summary: "Write the brief to the workspace.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+      "scripts/draft.ts": "export default function draft() {}\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
 async function expectGraphPackageInstallBadRequest(sourceRoot: string): Promise<string> {
   const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
   const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
@@ -1872,6 +1962,362 @@ describe("graph run endpoints", () => {
     } finally {
       store.close();
       await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("rolls back effect approval records when operation ledger transaction fails", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed"]);
+
+      const failOperationLedger = async () => {
+        throw new Error("operation ledger unavailable");
+      };
+      const failingStore: GraphRunStore = {
+        ...store,
+        addOperationRecord: failOperationLedger,
+        applyGraphMutationWithOperationRecord: failOperationLedger,
+      };
+      const response = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store: failingStore, workspaceRoot }
+      );
+
+      expect(response?.status).toBe(500);
+      expect((await store.getRun(created.run.runId))?.status).toBe("blocked");
+      expect(
+        (await store.getQueue(created.run.runId)).find(
+          (entry) => entry.queueEntryId === effectEntry.queueEntryId
+        )?.status
+      ).toBe("blocked");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed"]);
+      expect(await store.listOperationRecords(created.run.runId)).toEqual([]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("approves effect nodes through the graph resume API and commits once", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store }
+      );
+      expect(surfaceResponse?.status).toBe(200);
+      const surface = (await surfaceResponse?.json()) as {
+        actions: Array<{ decision: string; queueEntryId?: string; sideEffect: string }>;
+      };
+      expect(surface.actions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+            sideEffect: "resume",
+          }),
+          expect.objectContaining({
+            decision: "deny",
+            queueEntryId: effectEntry.queueEntryId,
+            sideEffect: "terminal",
+          }),
+        ])
+      );
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed", "approved", "committed"]);
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe("Brief\n");
+
+      const queuedEffect = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.queueEntryId === effectEntry.queueEntryId
+      );
+      if (!queuedEffect) throw new Error("missing committed effect queue entry");
+      const completedRun = await store.getRun(created.run.runId);
+      if (!completedRun) throw new Error("missing completed effect run");
+      await store.updateRun({
+        ...completedRun,
+        status: "running",
+        completedAt: undefined,
+      });
+      await store.updateQueueEntry({
+        ...queuedEffect,
+        status: "queued",
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        completedAt: undefined,
+      });
+      const replayResponse = await handleGraphRunDrain?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/drain`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(replayResponse?.status).toBe(200);
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed", "approved", "committed", "replayed"]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("denies effect nodes through the graph resume API before commit", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+
+      const denyResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "deny",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(denyResponse?.status).toBe(200);
+      const denied = (await denyResponse?.json()) as { run: { status: string } };
+      expect(denied.run.status).toBe("denied");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed", "denied"]);
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).rejects.toThrow();
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("edited artifact content creates a new effect preview instead of replaying stale writes", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testArtifactEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return "Initial brief";
+          },
+        }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const firstEffect = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      if (!firstEffect) throw new Error("missing first effect queue entry");
+      expect(created.run.status).toBe("blocked");
+
+      const firstApprove = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: firstEffect.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(firstApprove?.status).toBe(200);
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe(
+        "Initial brief\n"
+      );
+
+      const editResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_artifact",
+            payload: {
+              artifactId: "brief",
+              value: "Edited brief",
+            },
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(editResponse?.status).toBe(200);
+      const edited = (await editResponse?.json()) as { run: { status: string } };
+      expect(edited.run.status).toBe("blocked");
+      let effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (record) => record.status
+      );
+      expect(effectStatuses.filter((status) => status === "previewed")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "approved")).toHaveLength(1);
+      expect(effectStatuses.filter((status) => status === "committed")).toHaveLength(1);
+      expect(effectStatuses).not.toContain("replayed");
+
+      const secondEffect = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.nodeId === "writeBrief" && entry.status === "blocked"
+      );
+      if (!secondEffect) throw new Error("missing second effect preview");
+      const secondApprove = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: secondEffect.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(secondApprove?.status).toBe(200);
+      const approved = (await secondApprove?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe(
+        "Edited brief\n"
+      );
+      effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (record) => record.status
+      );
+      expect(effectStatuses.filter((status) => status === "previewed")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "approved")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "committed")).toHaveLength(2);
+      expect(effectStatuses).not.toContain("replayed");
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
     }
   });
 

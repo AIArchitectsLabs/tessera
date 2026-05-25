@@ -166,6 +166,7 @@ const NODE_KIND_SOFT_MS: Record<GraphQueueEntry["nodeKind"], number | undefined>
   condition: 5_000,
   join: 5_000,
   tool: 120_000,
+  effect: 30_000,
   agent: 300_000,
   artifactWrite: 30_000,
   humanReview: undefined,

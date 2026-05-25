@@ -2020,6 +2020,36 @@ export type PlaybookGraphToolNode = PlaybookGraphNodeBase & {
   outputArtifact?: string;
 };
 
+export const PlaybookGraphEffectSideEffectSchema = z.enum(["write", "external"]);
+export type PlaybookGraphEffectSideEffect = z.infer<typeof PlaybookGraphEffectSideEffectSchema>;
+
+export const PlaybookGraphEffectApprovalModeSchema = z.enum(["required", "none"]);
+export type PlaybookGraphEffectApprovalMode = z.infer<typeof PlaybookGraphEffectApprovalModeSchema>;
+
+export const PlaybookGraphEffectIdempotencySchema = z.enum(["required", "none"]);
+export type PlaybookGraphEffectIdempotency = z.infer<typeof PlaybookGraphEffectIdempotencySchema>;
+
+export type PlaybookGraphEffectPreview = {
+  schemaVersion: 1;
+  title: string;
+  summary: string;
+  payload?: Record<string, unknown>;
+};
+
+export type PlaybookGraphEffectNode = PlaybookGraphNodeBase & {
+  kind: "effect";
+  effectId: string;
+  capability: string;
+  adapterId: string;
+  sideEffect: PlaybookGraphEffectSideEffect;
+  approval: PlaybookGraphEffectApprovalMode;
+  idempotency: PlaybookGraphEffectIdempotency;
+  idempotencyKey?: string;
+  input: Record<string, unknown>;
+  preview?: PlaybookGraphEffectPreview;
+  outputArtifact?: string;
+};
+
 export type PlaybookGraphHumanReviewNode = PlaybookGraphNodeBase & {
   kind: "humanReview";
   artifact: string;
@@ -2071,6 +2101,7 @@ export type PlaybookGraphNode =
   | PlaybookGraphJoinNode
   | PlaybookGraphScriptNode
   | PlaybookGraphToolNode
+  | PlaybookGraphEffectNode
   | PlaybookGraphHumanReviewNode
   | PlaybookGraphParallelMapNode
   | PlaybookGraphAgentNode
@@ -2137,6 +2168,30 @@ const PlaybookGraphToolNodeSchema = PlaybookGraphNodeBaseSchema.extend({
   outputArtifact: z.string().min(1).optional(),
 }).strict();
 
+export const PlaybookGraphEffectPreviewSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    payload: z.record(z.unknown()).optional(),
+  })
+  .strict();
+export type EffectPreview = z.infer<typeof PlaybookGraphEffectPreviewSchema>;
+
+const PlaybookGraphEffectNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("effect"),
+  effectId: z.string().min(1),
+  capability: z.string().min(1),
+  adapterId: z.string().min(1),
+  sideEffect: PlaybookGraphEffectSideEffectSchema,
+  approval: PlaybookGraphEffectApprovalModeSchema.default("required"),
+  idempotency: PlaybookGraphEffectIdempotencySchema.default("required"),
+  idempotencyKey: z.string().min(1).optional(),
+  input: z.record(z.unknown()).default({}),
+  preview: PlaybookGraphEffectPreviewSchema.optional(),
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
 const PlaybookGraphHumanReviewActionSchema = z
   .object({
     id: PlaybookGraphNodeIdSchema,
@@ -2192,6 +2247,7 @@ export const PlaybookGraphNodeSchema = z.lazy(() =>
     PlaybookGraphJoinNodeSchema,
     PlaybookGraphScriptNodeSchema,
     PlaybookGraphToolNodeSchema,
+    PlaybookGraphEffectNodeSchema,
     PlaybookGraphHumanReviewNodeSchema,
     PlaybookGraphParallelMapNodeSchema,
     PlaybookGraphAgentNodeSchema,
@@ -2558,6 +2614,7 @@ export const PlaybookGraphQueueEntrySchema = z
       "join",
       "script",
       "tool",
+      "effect",
       "humanReview",
       "parallelMap",
       "agent",
@@ -2635,6 +2692,43 @@ export const PlaybookGraphReviewEventSchema = z
   })
   .strict();
 export type PlaybookGraphReviewEvent = z.infer<typeof PlaybookGraphReviewEventSchema>;
+
+export const EffectExecutionStatusSchema = z.enum([
+  "previewed",
+  "approved",
+  "denied",
+  "committed",
+  "replayed",
+  "failed",
+  "skipped",
+]);
+export type EffectExecutionStatus = z.infer<typeof EffectExecutionStatusSchema>;
+
+export const EffectExecutionRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    effectExecutionRecordId: z.string().min(1),
+    runId: z.string().min(1),
+    queueEntryId: z.string().min(1),
+    nodeId: z.string().min(1),
+    nodePath: PlaybookGraphNodePathSchema,
+    effectId: z.string().min(1),
+    capability: z.string().min(1),
+    adapterId: z.string().min(1),
+    sideEffect: PlaybookGraphEffectSideEffectSchema,
+    status: EffectExecutionStatusSchema,
+    idempotencyKey: z.string().min(1).optional(),
+    preview: PlaybookGraphEffectPreviewSchema.optional(),
+    reviewerDecision: z.enum(["approved", "denied"]).optional(),
+    commitStatus: z.enum(["not_attempted", "committed", "replayed", "failed"]).optional(),
+    outputArtifactId: z.string().min(1).optional(),
+    outputReference: z.string().min(1).optional(),
+    error: z.string().min(1).optional(),
+    createdAt: z.string().datetime(),
+    completedAt: z.string().datetime().optional(),
+  })
+  .strict();
+export type EffectExecutionRecord = z.infer<typeof EffectExecutionRecordSchema>;
 
 export const PlaybookGraphOperationKindSchema = z.enum([
   "resume",
@@ -3062,6 +3156,7 @@ export const PlaybookGraphRunDetailSchema = z
     branchItems: z.array(PlaybookGraphBranchItemSchema).default([]),
     artifacts: z.array(PlaybookGraphArtifactVersionSchema).default([]),
     reviews: z.array(PlaybookGraphReviewEventSchema).default([]),
+    effects: z.array(EffectExecutionRecordSchema).default([]),
     operations: z.array(PlaybookGraphOperationRecordSchema).default([]),
   })
   .strict();

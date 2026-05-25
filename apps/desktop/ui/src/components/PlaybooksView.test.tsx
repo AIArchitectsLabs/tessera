@@ -260,6 +260,7 @@ const graphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -603,6 +604,7 @@ const contextDriftGraphRunDetail = {
   branchItems: [],
   artifacts: [],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -665,6 +667,7 @@ const interruptedGraphRunDetail = {
   branchItems: [],
   artifacts: [],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -814,6 +817,7 @@ const completedGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -1071,6 +1075,7 @@ const seoCompletedGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -1181,6 +1186,7 @@ const dashboardGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 

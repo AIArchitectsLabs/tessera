@@ -117,7 +117,7 @@ export default {
       schema: "schemas/statusDigest.schema.json",
     },
   },
-  capabilities: ["calendar", "mail", "drive"],
+  capabilities: ["calendar", "mail", "drive", "tool.workspace.write"],
   limits: {},
   start: "draftStatusDigest",
   nodes: [
@@ -163,9 +163,26 @@ export default {
     {
       id: "writeStatusDigest",
       label: "Write weekly status digest",
-      kind: "artifactWrite",
-      artifact: "statusDigest",
-      path: "Weekly Status Digest - {{inputs.team}} - {{inputs.weekEnding}}.md",
+      kind: "effect",
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      approval: "required",
+      idempotency: "required",
+      idempotencyKey:
+        "workspace.write:ops.weekly-status-digest:{{inputs.team}}:{{inputs.weekEnding}}",
+      input: {
+        sourceArtifact: "statusDigest",
+        value: { artifact: "statusDigest" },
+        path: "Weekly Status Digest - {{inputs.team}} - {{inputs.weekEnding}}.md",
+        format: "markdown",
+      },
+      preview: {
+        schemaVersion: 1,
+        title: "Write weekly status digest",
+        summary: "Write the approved weekly status digest to the selected workspace.",
+      },
       onSuccess: "completed",
     },
   ],

@@ -132,6 +132,9 @@ function consumedArtifacts(node: PlaybookGraphNode): string[] {
   if (node.kind === "script" || node.kind === "agent") {
     collectArtifactRefs(node.inputs, refs);
   }
+  if (node.kind === "effect") {
+    collectArtifactRefs(node.input, refs);
+  }
   if (node.kind === "parallelMap") {
     collectArtifactRefs(node.items, refs);
   }
@@ -187,6 +190,20 @@ function validateGraphNodes(options: {
       throw new Error(
         `Undeclared capability used by ${options.path}.${node.id}: ${node.capability}`
       );
+    }
+
+    if (node.kind === "effect" && !options.declaredCapabilities.has(node.capability)) {
+      throw new Error(
+        `Undeclared capability used by ${options.path}.${node.id}: ${node.capability}`
+      );
+    }
+
+    if (node.kind === "effect" && node.idempotency === "required" && !node.idempotencyKey) {
+      throw new Error(`Effect node ${options.path}.${node.id} requires an idempotency key`);
+    }
+
+    if (node.kind === "effect" && node.approval === "required" && !node.preview) {
+      throw new Error(`Effect node ${options.path}.${node.id} requires a preview`);
     }
 
     if (node.kind === "agent") {

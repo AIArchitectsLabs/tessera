@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
   CompiledPlaybookGraph,
+  EffectExecutionRecord,
   PlaybookGraphArtifactVersion,
   PlaybookGraphArtifactVersionRef,
   PlaybookGraphBranchItem,
+  PlaybookGraphEffectPreview,
   PlaybookGraphExecutionContext,
   PlaybookGraphMaterializationTarget,
   PlaybookGraphMemoKeyParts,
@@ -47,6 +49,7 @@ const NODE_KIND_TIMEOUTS: Record<TimeoutKind, NodeKindTimeouts> = {
   condition: { heartbeatMs: 10_000, softMs: 5_000, hardMs: 30_000 },
   join: { heartbeatMs: 10_000, softMs: 5_000, hardMs: 30_000 },
   tool: { heartbeatMs: 10_000, softMs: 2 * 60_000, hardMs: 10 * 60_000 },
+  effect: { heartbeatMs: 10_000, softMs: 30_000, hardMs: 2 * 60_000 },
   agent: { heartbeatMs: 10_000, softMs: 5 * 60_000, hardMs: 30 * 60_000 },
   artifactWrite: { heartbeatMs: 10_000, softMs: 30_000, hardMs: 2 * 60_000 },
   humanReview: {},
@@ -127,6 +130,15 @@ export interface GraphRunStore {
 
   listReviewEvents(runId: string): Promise<PlaybookGraphReviewEvent[]>;
   addReviewEvent(event: PlaybookGraphReviewEvent): Promise<void>;
+  listEffectExecutionRecords(runId: string): Promise<EffectExecutionRecord[]>;
+  addEffectExecutionRecord(record: EffectExecutionRecord): Promise<void>;
+  findCommittedEffectExecutionRecord(input: {
+    runId: string;
+    nodePath: string;
+    capability: string;
+    adapterId: string;
+    idempotencyKey: string;
+  }): Promise<EffectExecutionRecord | undefined>;
   listOperationRecords(runId: string): Promise<PlaybookGraphOperationRecord[]>;
   addOperationRecord(record: PlaybookGraphOperationRecord): Promise<void>;
   applyGraphMutationWithOperationRecord(input: {
@@ -135,6 +147,7 @@ export interface GraphRunStore {
     branchItems?: PlaybookGraphBranchItem[];
     artifactVersions?: PlaybookGraphArtifactVersion[];
     reviewEvents?: PlaybookGraphReviewEvent[];
+    effectRecords?: EffectExecutionRecord[];
     operationRecord: PlaybookGraphOperationRecord;
   }): Promise<void>;
 
@@ -227,6 +240,33 @@ export interface PlaybookGraphToolExecutionPolicy {
   sideEffect: "read" | "write" | "external";
 }
 
+export interface PlaybookGraphEffectExecutionPolicy {
+  effectId: string;
+  capability: string;
+  adapterId: string;
+  idempotent: boolean;
+  sideEffect: "write" | "external";
+  previewRequired: boolean;
+  approvalRequired: boolean;
+}
+
+export interface PlaybookGraphEffectAdapterInput {
+  run: PlaybookGraphRunRecord;
+  node: Extract<PlaybookGraphNode, { kind: "effect" }>;
+  queueEntry: PlaybookGraphQueueEntry;
+  input: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+  preview: PlaybookGraphEffectPreview;
+  idempotencyKey?: string;
+  platformContext?: PlaybookGraphPlatformContext;
+  branchItem?: PlaybookGraphBranchItem;
+}
+
+export interface PlaybookGraphEffectAdapterResult {
+  output?: unknown;
+  outputReference?: string;
+}
+
 export interface PlaybookGraphRuntimeOptions {
   runId: string;
   runtimeId: string;
@@ -245,6 +285,13 @@ export interface PlaybookGraphRuntimeOptions {
   toolAdapter?: (input: PlaybookGraphToolAdapterInput) => Promise<unknown> | unknown;
   toolPolicies?: Record<string, PlaybookGraphToolExecutionPolicy>;
   toolCapabilities?: string[];
+  effectAdapter?: (
+    input: PlaybookGraphEffectAdapterInput
+  ) =>
+    | Promise<PlaybookGraphEffectAdapterResult | unknown>
+    | PlaybookGraphEffectAdapterResult
+    | unknown;
+  effectPolicies?: Record<string, PlaybookGraphEffectExecutionPolicy>;
   artifactWriteAdapter?: (
     input: PlaybookGraphArtifactWriteAdapterInput
   ) => Promise<unknown> | unknown;
@@ -732,9 +779,78 @@ function shouldMemoizeNode(
   node: PlaybookGraphNode,
   toolPolicy: PlaybookGraphToolExecutionPolicy | undefined
 ): boolean {
-  if (node.kind === "humanReview" || node.kind === "parallelMap") return false;
+  if (node.kind === "humanReview" || node.kind === "parallelMap" || node.kind === "effect") {
+    return false;
+  }
   if (node.kind !== "tool") return true;
   return toolPolicy?.idempotent === true;
+}
+
+function effectPolicyKey(node: Extract<PlaybookGraphNode, { kind: "effect" }>): string {
+  return `${node.adapterId}:${node.effectId}`;
+}
+
+function effectIdempotencyKey(input: {
+  node: Extract<PlaybookGraphNode, { kind: "effect" }>;
+  queueEntry: PlaybookGraphQueueEntry;
+  run: PlaybookGraphRunRecord;
+}): string | undefined {
+  if (input.node.idempotency === "none") return undefined;
+  const inputHash = hashUnknown(input.node.input);
+  if (input.node.idempotencyKey) return `${input.node.idempotencyKey}:input:${inputHash}`;
+  return `${input.run.snapshot.snapshotHash}:${input.queueEntry.nodePath}:${inputHash}`;
+}
+
+function effectPreview(
+  node: Extract<PlaybookGraphNode, { kind: "effect" }>
+): PlaybookGraphEffectPreview {
+  return (
+    node.preview ?? {
+      schemaVersion: 1,
+      title: node.label ?? node.effectId,
+      summary: `${node.effectId} is ready to commit.`,
+    }
+  );
+}
+
+type EffectRecordPreview = NonNullable<EffectExecutionRecord["preview"]>;
+
+function effectExecutionRecord(input: {
+  run: PlaybookGraphRunRecord;
+  queueEntry: PlaybookGraphQueueEntry;
+  node: Extract<PlaybookGraphNode, { kind: "effect" }>;
+  status: EffectExecutionRecord["status"];
+  createdAt: string;
+  idempotencyKey?: string;
+  preview?: EffectRecordPreview;
+  reviewerDecision?: EffectExecutionRecord["reviewerDecision"];
+  commitStatus?: EffectExecutionRecord["commitStatus"];
+  outputArtifactId?: string;
+  outputReference?: string;
+  error?: string;
+}): EffectExecutionRecord {
+  return {
+    schemaVersion: 1,
+    effectExecutionRecordId: `${input.queueEntry.queueEntryId}:effect:${input.status}:${randomUUID()}`,
+    runId: input.run.runId,
+    queueEntryId: input.queueEntry.queueEntryId,
+    nodeId: input.node.id,
+    nodePath: input.queueEntry.nodePath,
+    effectId: input.node.effectId,
+    capability: input.node.capability,
+    adapterId: input.node.adapterId,
+    sideEffect: input.node.sideEffect,
+    status: input.status,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+    ...(input.preview ? { preview: input.preview } : {}),
+    ...(input.reviewerDecision ? { reviewerDecision: input.reviewerDecision } : {}),
+    ...(input.commitStatus ? { commitStatus: input.commitStatus } : {}),
+    ...(input.outputArtifactId ? { outputArtifactId: input.outputArtifactId } : {}),
+    ...(input.outputReference ? { outputReference: input.outputReference } : {}),
+    ...(input.error ? { error: input.error } : {}),
+    createdAt: input.createdAt,
+    completedAt: input.status === "previewed" ? undefined : input.createdAt,
+  };
 }
 
 function collectArtifactIds(value: unknown, refs: Set<string>): void {
@@ -766,6 +882,8 @@ function inputArtifactIds(node: PlaybookGraphNode): string[] {
     collectArtifactIds(node.inputs, refs);
   } else if (node.kind === "tool") {
     collectArtifactIds(node.args, refs);
+  } else if (node.kind === "effect") {
+    collectArtifactIds(node.input, refs);
   } else if (node.kind === "parallelMap") {
     collectArtifactIds(node.items, refs);
   } else if (node.kind === "humanReview") {
@@ -1187,6 +1305,20 @@ function resolveNodePayload<T extends PlaybookGraphNode>(input: {
     return {
       ...input.node,
       args: resolveGraphValue({ ...input, value: input.node.args }) as Record<string, unknown>,
+    };
+  }
+  if (input.node.kind === "effect") {
+    return {
+      ...input.node,
+      ...(typeof input.node.idempotencyKey === "string"
+        ? {
+            idempotencyKey: resolveGraphValue({
+              ...input,
+              value: input.node.idempotencyKey,
+            }) as string,
+          }
+        : {}),
+      input: resolveGraphValue({ ...input, value: input.node.input }) as Record<string, unknown>,
     };
   }
   if (input.node.kind === "agent") {
@@ -1760,6 +1892,8 @@ export async function drainPlaybookGraphRun(
     const branchItems = await options.store.listBranchItems(run.runId);
     const branchItem = branchItemForNodePath(queueEntry.nodePath, branchItems);
     const toolPolicy = node.kind === "tool" ? options.toolPolicies?.[node.capability] : undefined;
+    const effectPolicy =
+      node.kind === "effect" ? options.effectPolicies?.[effectPolicyKey(node)] : undefined;
     if (node.kind === "tool" && !toolPolicy) {
       const updatedAt = now();
       const blocked = {
@@ -1782,6 +1916,92 @@ export async function drainPlaybookGraphRun(
       };
       await options.store.updateRun(run);
       return { run, executed };
+    }
+    if (node.kind === "effect" && !effectPolicy) {
+      const updatedAt = now();
+      const blocked = {
+        ...queueEntry,
+        status: "blocked" as const,
+        blockedReason: `Effect execution policy is required for ${node.adapterId}:${node.effectId}`,
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        updatedAt,
+      };
+      await options.store.updateQueueEntry(blocked);
+      run = {
+        ...run,
+        status: "blocked",
+        currentQueueEntryId: blocked.queueEntryId,
+        blockedReason: blocked.blockedReason,
+        updatedAt,
+      };
+      await options.store.updateRun(run);
+      return { run, executed };
+    }
+    if (
+      node.kind === "effect" &&
+      effectPolicy &&
+      (effectPolicy.capability !== node.capability ||
+        effectPolicy.adapterId !== node.adapterId ||
+        effectPolicy.effectId !== node.effectId ||
+        effectPolicy.sideEffect !== node.sideEffect)
+    ) {
+      const updatedAt = now();
+      const blocked = {
+        ...queueEntry,
+        status: "blocked" as const,
+        blockedReason: `Effect execution policy does not match ${node.adapterId}:${node.effectId}`,
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        updatedAt,
+      };
+      await options.store.updateQueueEntry(blocked);
+      run = {
+        ...run,
+        status: "blocked",
+        currentQueueEntryId: blocked.queueEntryId,
+        blockedReason: blocked.blockedReason,
+        updatedAt,
+      };
+      await options.store.updateRun(run);
+      return { run, executed };
+    }
+    if (node.kind === "effect" && effectPolicy) {
+      const safetyReason =
+        effectPolicy.approvalRequired && node.approval !== "required"
+          ? `Effect execution policy requires approval for ${node.adapterId}:${node.effectId}`
+          : effectPolicy.previewRequired && !node.preview
+            ? `Effect execution policy requires an explicit preview for ${node.adapterId}:${node.effectId}`
+            : effectPolicy.idempotent && node.idempotency !== "required"
+              ? `Effect execution policy requires idempotency for ${node.adapterId}:${node.effectId}`
+              : undefined;
+      if (safetyReason) {
+        const updatedAt = now();
+        const blocked = {
+          ...queueEntry,
+          status: "blocked" as const,
+          blockedReason: safetyReason,
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt,
+        };
+        await options.store.updateQueueEntry(blocked);
+        run = {
+          ...run,
+          status: "blocked",
+          currentQueueEntryId: blocked.queueEntryId,
+          blockedReason: blocked.blockedReason,
+          updatedAt,
+        };
+        await options.store.updateRun(run);
+        return { run, executed };
+      }
     }
     if (
       node.kind === "tool" &&
@@ -1980,6 +2200,173 @@ export async function drainPlaybookGraphRun(
       artifacts,
       ...(branchItem ? { branchItem } : {}),
     });
+    if (node.kind === "effect") {
+      const resolvedEffectNode = resolvedNode as Extract<PlaybookGraphNode, { kind: "effect" }>;
+      const idempotencyKey = effectIdempotencyKey({
+        node: resolvedEffectNode,
+        queueEntry,
+        run: claimedRun,
+      });
+      if (node.idempotency === "required" && !idempotencyKey) {
+        throw new Error(`Effect ${node.id} requires an idempotency key`);
+      }
+      const committed =
+        idempotencyKey === undefined
+          ? undefined
+          : await options.store.findCommittedEffectExecutionRecord({
+              runId: claimedRun.runId,
+              nodePath: queueEntry.nodePath,
+              capability: node.capability,
+              adapterId: node.adapterId,
+              idempotencyKey,
+            });
+      if (committed) {
+        const completedAt = now();
+        if (!idempotencyKey) {
+          throw new Error(`Committed effect ${node.id} is missing an idempotency key`);
+        }
+        await options.store.addEffectExecutionRecord(
+          effectExecutionRecord({
+            run: claimedRun,
+            queueEntry,
+            node: resolvedEffectNode,
+            status: "replayed",
+            idempotencyKey,
+            ...(committed.preview ? { preview: committed.preview } : {}),
+            commitStatus: "replayed",
+            ...(committed.outputReference ? { outputReference: committed.outputReference } : {}),
+            ...(committed.outputArtifactId ? { outputArtifactId: committed.outputArtifactId } : {}),
+            createdAt: completedAt,
+          })
+        );
+        const succeeded = {
+          ...queueEntry,
+          status: "succeeded" as const,
+          updatedAt: completedAt,
+          completedAt,
+        };
+        const advanced = advanceTarget({
+          compiled,
+          run: claimedRun,
+          queueEntry: succeeded,
+          target: successTarget(node, artifacts),
+          artifactVersions,
+          now: completedAt,
+          ...(branchItem ? { branchItem } : {}),
+        });
+        run = advanced.run;
+        const queueEntriesForCheckpoint = await preserveExistingQueueDurability({
+          store: options.store,
+          runId: run.runId,
+          entries: advanced.queueEntry ? [advanced.queueEntry] : [],
+        });
+        await options.store.checkpointNodeSuccess({
+          run,
+          queueEntry: succeeded,
+          ...(queueEntriesForCheckpoint.length > 0
+            ? { queueEntries: queueEntriesForCheckpoint }
+            : {}),
+        });
+        executed += 1;
+        continue;
+      }
+      const records = await options.store.listEffectExecutionRecords(claimedRun.runId);
+      const matchingRecords = records.filter(
+        (record) =>
+          record.queueEntryId === queueEntry.queueEntryId &&
+          record.nodePath === queueEntry.nodePath &&
+          record.effectId === node.effectId &&
+          record.adapterId === node.adapterId &&
+          (idempotencyKey === undefined
+            ? record.idempotencyKey === undefined
+            : record.idempotencyKey === idempotencyKey)
+      );
+      if (matchingRecords.some((record) => record.status === "denied")) {
+        const updatedAt = now();
+        const failed = {
+          ...queueEntry,
+          status: "failed" as const,
+          error: "Effect execution denied by reviewer",
+          updatedAt,
+          completedAt: updatedAt,
+        };
+        run = {
+          ...claimedRun,
+          status: "denied",
+          currentQueueEntryId: failed.queueEntryId,
+          error: failed.error,
+          updatedAt,
+          completedAt: updatedAt,
+        };
+        await options.store.checkpointNodeFailure({ run, queueEntry: failed });
+        return { run, executed };
+      }
+      const approvalRequired = node.approval === "required" || effectPolicy?.approvalRequired;
+      const approved = matchingRecords.some(
+        (record) => record.status === "approved" || record.status === "committed"
+      );
+      const preview = effectPreview(resolvedEffectNode);
+      if (approvalRequired && !approved) {
+        const updatedAt = now();
+        if (!matchingRecords.some((record) => record.status === "previewed")) {
+          await options.store.addEffectExecutionRecord(
+            effectExecutionRecord({
+              run: claimedRun,
+              queueEntry,
+              node: resolvedEffectNode,
+              status: "previewed",
+              ...(idempotencyKey ? { idempotencyKey } : {}),
+              preview,
+              commitStatus: "not_attempted",
+              createdAt: updatedAt,
+            })
+          );
+        }
+        const blocked = {
+          ...queueEntry,
+          status: "blocked" as const,
+          blockedReason: "effect approval required",
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt,
+        };
+        await options.store.updateQueueEntry(blocked);
+        run = {
+          ...claimedRun,
+          status: "blocked",
+          currentQueueEntryId: blocked.queueEntryId,
+          blockedReason: blocked.blockedReason,
+          updatedAt,
+        };
+        await options.store.updateRun(run);
+        return { run, executed };
+      }
+      if (!options.effectAdapter) {
+        const updatedAt = now();
+        const blocked = {
+          ...queueEntry,
+          status: "blocked" as const,
+          blockedReason: "effect execution requires an effect adapter",
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt,
+        };
+        await options.store.updateQueueEntry(blocked);
+        run = {
+          ...claimedRun,
+          status: "blocked",
+          currentQueueEntryId: blocked.queueEntryId,
+          blockedReason: blocked.blockedReason,
+          updatedAt,
+        };
+        await options.store.updateRun(run);
+        return { run, executed };
+      }
+    }
     let output: unknown;
     let branchUpdates: PlaybookGraphBranchItem[] = [];
     let extraQueueEntries: PlaybookGraphQueueEntry[] = [];
@@ -2033,6 +2420,28 @@ export async function drainPlaybookGraphRun(
               ...(branchItem ? { branchItem } : {}),
             });
           }
+          if (node.kind === "effect") {
+            if (!options.effectAdapter) {
+              throw new Error("Effect adapter is required for graph effect nodes");
+            }
+            const effectNode = resolvedNode as Extract<PlaybookGraphNode, { kind: "effect" }>;
+            const adapterIdempotencyKey = effectIdempotencyKey({
+              node: effectNode,
+              queueEntry,
+              run: claimedRun,
+            });
+            return options.effectAdapter({
+              run: adapterRun,
+              node: effectNode,
+              queueEntry,
+              input: branchInput(claimedRun.input, branchItem),
+              artifacts,
+              preview: effectPreview(effectNode),
+              ...(adapterIdempotencyKey ? { idempotencyKey: adapterIdempotencyKey } : {}),
+              ...(platformContext ? { platformContext } : {}),
+              ...(branchItem ? { branchItem } : {}),
+            });
+          }
           if (node.kind === "parallelMap") {
             const work = createParallelMapBranchWork({
               compiled,
@@ -2073,6 +2482,25 @@ export async function drainPlaybookGraphRun(
       );
     } catch (error) {
       const updatedAt = now();
+      if (node.kind === "effect") {
+        const effectNode = resolvedNode as Extract<PlaybookGraphNode, { kind: "effect" }>;
+        await options.store.addEffectExecutionRecord(
+          effectExecutionRecord({
+            run,
+            queueEntry,
+            node: effectNode,
+            status: "failed",
+            ...(() => {
+              const idempotencyKey = effectIdempotencyKey({ node: effectNode, queueEntry, run });
+              return idempotencyKey ? { idempotencyKey } : {};
+            })(),
+            preview: effectPreview(effectNode),
+            commitStatus: "failed",
+            error: error instanceof Error ? error.message : String(error),
+            createdAt: updatedAt,
+          })
+        );
+      }
       const failed = {
         ...queueEntry,
         status: "failed" as const,
@@ -2151,6 +2579,8 @@ export async function drainPlaybookGraphRun(
       branchUpdates = [...branchUpdates, completeBranchItem(branchItem, "completed", completedAt)];
     }
     const activeRunId = run.runId;
+    const outputForArtifacts =
+      node.kind === "effect" && isRecord(output) && "output" in output ? output.output : output;
     let newArtifactVersions: PlaybookGraphArtifactVersion[];
     try {
       newArtifactVersions = (node.kind === "parallelMap" ? [] : outputArtifacts(node)).map(
@@ -2160,7 +2590,7 @@ export async function drainPlaybookGraphRun(
             run,
             node,
             artifactId,
-            output,
+            output: outputForArtifacts,
           });
           return {
             schemaVersion: 1 as const,
@@ -2193,6 +2623,31 @@ export async function drainPlaybookGraphRun(
       };
       await options.store.checkpointNodeFailure({ run, queueEntry: failed });
       return { run, executed };
+    }
+    if (node.kind === "effect") {
+      const effectNode = resolvedNode as Extract<PlaybookGraphNode, { kind: "effect" }>;
+      const outputReference =
+        isRecord(output) && typeof output.outputReference === "string"
+          ? output.outputReference
+          : undefined;
+      await options.store.addEffectExecutionRecord(
+        effectExecutionRecord({
+          run,
+          queueEntry,
+          node: effectNode,
+          status: "committed",
+          ...(() => {
+            const idempotencyKey = effectIdempotencyKey({ node: effectNode, queueEntry, run });
+            return idempotencyKey ? { idempotencyKey } : {};
+          })(),
+          preview: effectPreview(effectNode),
+          ...(effectNode.approval === "required" ? { reviewerDecision: "approved" as const } : {}),
+          commitStatus: "committed",
+          ...(effectNode.outputArtifact ? { outputArtifactId: effectNode.outputArtifact } : {}),
+          ...(outputReference ? { outputReference } : {}),
+          createdAt: completedAt,
+        })
+      );
     }
     const artifactRefsForMemo = newArtifactVersions.map((version) => ({
       artifactId: version.artifactId,

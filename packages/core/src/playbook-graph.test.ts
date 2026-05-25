@@ -233,6 +233,39 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Undeclared capability/);
   });
 
+  test("rejects effect nodes that use undeclared capabilities", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["web.search"],
+        start: "write",
+        nodes: [
+          {
+            id: "write",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:test",
+            input: {
+              value: { artifact: "scorecard" },
+              path: "scorecard.md",
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write scorecard",
+              summary: "Write the scorecard to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/Undeclared capability/);
+  });
+
   test("rejects agent tool use that is missing from graph capabilities", () => {
     expect(() =>
       validatePlaybookGraph({

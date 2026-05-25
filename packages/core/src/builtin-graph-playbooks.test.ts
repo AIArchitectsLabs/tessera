@@ -56,13 +56,15 @@ describe("built-in graph playbooks", () => {
       if (!entry) throw new Error(`Missing built-in graph: ${id}`);
       const agent = entry.compiled.graph.nodes.find((node) => node.kind === "agent");
       const review = entry.compiled.graph.nodes.find((node) => node.kind === "humanReview");
-      const write = entry.compiled.graph.nodes.find((node) => node.kind === "artifactWrite");
+      const write = entry.compiled.graph.nodes.find((node) => node.kind === "effect");
 
       expect(agent?.onSuccess).toBe(review?.id);
       expect(review?.onApprove).toBe(write?.id);
       expect(review?.onRequestChanges).toBe(agent?.id);
       expect(write?.onSuccess).toBe("completed");
-      expect(write?.path).toContain("{{inputs.");
+      expect(write?.effectId).toBe("workspace.write");
+      expect(write?.capability).toBe("tool.workspace.write");
+      expect(write?.input.path).toContain("{{inputs.");
     }
   });
 

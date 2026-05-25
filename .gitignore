@@ -33,3 +33,7 @@ apps/desktop/src-tauri/binaries/
 
 # Git worktrees
 .worktrees/
+
+#graphify
+.graphify_python
+**/graphify-out
