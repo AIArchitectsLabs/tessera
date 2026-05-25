@@ -1224,6 +1224,83 @@ describe("drainPlaybookGraphRun", () => {
     expect(result.run.status).toBe("failed");
     expect(result.run.error).toContain("does not match schemas/review.schema.json");
     expect(await store.listArtifactVersions(run.runId)).toHaveLength(0);
+
+    const resumed = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-json-contract-failure-resume",
+      store,
+    });
+
+    expect(resumed.run.status).toBe("failed");
+    expect(resumed.run.error).toContain("does not match schemas/review.schema.json");
+  });
+
+  test("rejects command-shaped agent text before it can become a document artifact", async () => {
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/brief.md": "Return only the brief as Markdown.",
+      "schemas/brief.schema.json": JSON.stringify({
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+        },
+      }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.brief-internal-output",
+        version: "0.1.0",
+        name: "Brief Internal Output",
+        artifacts: {
+          brief: { schema: "schemas/brief.schema.json" },
+        },
+        start: "brief",
+        nodes: [
+          {
+            id: "brief",
+            kind: "agent",
+            prompt: "prompts/brief.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "brief", schema: "schemas/brief.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "test-compiler",
+      scriptSdkVersion: "test-sdk",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      sourceFiles,
+      store,
+      runId: "run-agent-internal-output",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-internal-output",
+      store,
+      agentAdapter() {
+        return {
+          status: "completed",
+          text: JSON.stringify({
+            cmd: "python3 - <<'PY'\nprint('research command')\nPY",
+            usage: { totalTokens: 100 },
+          }),
+        };
+      },
+    });
+
+    expect(result.run.status).toBe("failed");
+    expect(result.run.error).toContain("produced internal tool or command output");
+    expect(await store.listArtifactVersions(run.runId)).toHaveLength(0);
   });
 
   test("does not treat an omitted execution context as drift", async () => {
@@ -1781,6 +1858,138 @@ describe("drainPlaybookGraphRun", () => {
     });
   });
 
+  test("effect approval can be satisfied by a prior human review of the consumed artifact", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "writePlan",
+          },
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:human-approved-plan",
+            input: {
+              value: { artifact: "plan" },
+              path: "out/plan.md",
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write plan",
+              summary: "Write the approved plan to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-human-approved",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    let commits = 0;
+    const runtimeBase = {
+      runId: run.runId,
+      store,
+      scriptAdapter() {
+        return { title: "Plan" };
+      },
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: true,
+          sideEffect: "write" as const,
+          previewRequired: true,
+          approvalRequired: true,
+        },
+      },
+      effectAdapter({ node }: PlaybookGraphEffectAdapterInput) {
+        commits += 1;
+        return {
+          outputReference: String(node.input.path),
+          output: {
+            kind: "workspace",
+            path: String(node.input.path),
+            format: "markdown",
+            bytes: 16,
+          },
+        };
+      },
+    };
+
+    const blocked = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-human-preview",
+    });
+
+    expect(blocked.run.status).toBe("blocked");
+    const writeEntry = (await store.getQueue(run.runId)).find(
+      (entry) => entry.nodeId === "writePlan"
+    );
+    const planVersion = (await store.listArtifactVersions(run.runId)).find(
+      (artifact) => artifact.artifactId === "plan"
+    );
+    if (!writeEntry || !planVersion) throw new Error("Missing effect test state");
+
+    await store.addReviewEvent({
+      schemaVersion: 1,
+      reviewEventId: "review-plan-approved",
+      runId: run.runId,
+      queueEntryId: "queue-review-plan",
+      nodePath: "reviewPlan",
+      artifactId: "plan",
+      artifactVersionId: planVersion.versionId,
+      decision: "approved",
+      payload: {},
+      createdAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateQueueEntry({
+      ...writeEntry,
+      status: "queued",
+      blockedReason: undefined,
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateRun({
+      ...blocked.run,
+      status: "running",
+      blockedReason: undefined,
+      completedAt: undefined,
+    });
+
+    const committed = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-human-commit",
+    });
+
+    expect(committed.run.status).toBe("completed");
+    expect(commits).toBe(1);
+    expect(store.effects.map((record) => record.status)).toEqual([
+      "previewed",
+      "approved",
+      "commit_requested",
+      "committed",
+    ]);
+    expect(store.effects[1]).toMatchObject({
+      status: "approved",
+      reviewerDecision: "approved",
+      commitStatus: "not_attempted",
+    });
+  });
+
   test("effect records prevent duplicate commits after stale checkpoint resume", async () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
@@ -2334,6 +2543,56 @@ describe("drainPlaybookGraphRun", () => {
     ]);
     const lookup = (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "lookup");
     expect(lookup?.consumesArtifacts).toEqual([expect.objectContaining({ artifactId: "items" })]);
+  });
+
+  test("resolves script input references before adapter execution", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          normalized: { schema: "schemas/normalized.schema.json" },
+        },
+        start: "normalize",
+        nodes: [
+          {
+            id: "normalize",
+            kind: "script",
+            run: "scripts/normalize.ts",
+            inputs: {
+              batchId: { input: "batchId" },
+              supplierPayload: { input: "supplier.payload" },
+            },
+            outputArtifact: "normalized",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-script-input-ref",
+      now: "2026-05-15T00:00:00.000Z",
+      input: {
+        batchId: "RFQ-2026-05-25",
+        supplier: { payload: '[{"name":"Apex Components"}]' },
+      },
+    });
+    let scriptNodeInputs: unknown;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-script-input-ref",
+      store,
+      scriptAdapter({ node }) {
+        scriptNodeInputs = node.inputs;
+        return node.inputs;
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(scriptNodeInputs).toEqual({
+      batchId: "RFQ-2026-05-25",
+      supplierPayload: '[{"name":"Apex Components"}]',
+    });
+    expect((await store.listArtifactVersions(run.runId))[0]?.value).toEqual(scriptNodeInputs);
   });
 
   test("blocks tool nodes without an explicit execution policy", async () => {

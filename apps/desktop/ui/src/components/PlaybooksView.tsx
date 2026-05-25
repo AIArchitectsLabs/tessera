@@ -476,7 +476,11 @@ function reviewEvidenceFromSurface(
   const reviewEntry =
     surface.detail.queue.find(
       (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
-    ) ?? null;
+    ) ??
+    surface.detail.queue.find(
+      (entry) => entry.status === "blocked" && entry.nodeKind === "effect"
+    ) ??
+    null;
   if (!reviewEntry) return null;
 
   const consumedKeys = new Set(
@@ -843,6 +847,18 @@ function workflowStatusFromGraph(
   return "running";
 }
 
+function graphRunWorkflowStatus(detail: PlaybookGraphRunDetail): PlaybookRunDetail["status"] {
+  if (detail.queue.some((entry) => entry.status === "failed")) return "failed";
+  return graphRunRecordWorkflowStatus(detail.run);
+}
+
+function graphRunRecordWorkflowStatus(run: PlaybookGraphRunRecord): PlaybookRunDetail["status"] {
+  if (run.status === "completed" && (run.error || run.repairReason || run.blockedReason)) {
+    return "failed";
+  }
+  return workflowStatusFromGraph(run.status);
+}
+
 function runNeedsLiveRefresh(
   run: PlaybookRunDetail | null,
   graphRun: PlaybookGraphRunDetail | null
@@ -1073,28 +1089,78 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
   }
 
   const nodes = graph.nodes;
-  if (!Array.isArray(nodes)) return paths;
+  if (Array.isArray(nodes)) {
+    const completedNodeIds = new Set(
+      detail.queue
+        .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
+        .map((entry) => entry.nodeId)
+    );
+    for (const node of nodes) {
+      if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+      const candidate = node as Record<string, unknown>;
+      if (
+        candidate.kind !== "artifactWrite" ||
+        typeof candidate.id !== "string" ||
+        typeof candidate.artifact !== "string" ||
+        typeof candidate.path !== "string" ||
+        !completedNodeIds.has(candidate.id)
+      ) {
+        continue;
+      }
+      paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
+    }
+  }
 
-  const completedNodeIds = new Set(
-    detail.queue
-      .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
-      .map((entry) => entry.nodeId)
-  );
-  for (const node of nodes) {
-    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
-    const candidate = node as Record<string, unknown>;
+  const effectNodeById = new Map<string, Record<string, unknown>>();
+  for (const node of graphNodeRecords(graph)) {
+    if (typeof node.id === "string" && node.kind === "effect") {
+      effectNodeById.set(node.id, node);
+    }
+  }
+
+  for (const effect of detail.effects) {
     if (
-      candidate.kind !== "artifactWrite" ||
-      typeof candidate.id !== "string" ||
-      typeof candidate.artifact !== "string" ||
-      typeof candidate.path !== "string" ||
-      !completedNodeIds.has(candidate.id)
+      effect.status !== "committed" &&
+      effect.status !== "replayed" &&
+      effect.commitStatus !== "committed" &&
+      effect.commitStatus !== "replayed"
     ) {
       continue;
     }
-    paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
+    const artifactId =
+      effect.outputArtifactId ??
+      effectArtifactIdFromNode(effectNodeById.get(effect.nodeId)) ??
+      effectArtifactIdFromNode(effectNodeById.get(lastNodePathSegment(effect.nodePath)));
+    const outputPath =
+      effect.output?.kind === "workspace" ? effect.output.path : effect.outputReference;
+    if (!artifactId || !outputPath) continue;
+    paths.set(artifactId, renderGraphArtifactWritePath(outputPath, detail.run.input));
   }
   return paths;
+}
+
+function lastNodePathSegment(nodePath: string): string {
+  const segments = nodePath.split("/");
+  return segments[segments.length - 1] ?? nodePath;
+}
+
+function effectArtifactIdFromNode(node: Record<string, unknown> | undefined): string | null {
+  if (!node) return null;
+  if (typeof node.outputArtifact === "string" && node.outputArtifact.trim()) {
+    return node.outputArtifact;
+  }
+  const input = node.input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const inputRecord = input as Record<string, unknown>;
+  if (typeof inputRecord.sourceArtifact === "string" && inputRecord.sourceArtifact.trim()) {
+    return inputRecord.sourceArtifact;
+  }
+  const value = inputRecord.value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const valueRecord = value as Record<string, unknown>;
+  return typeof valueRecord.artifact === "string" && valueRecord.artifact.trim()
+    ? valueRecord.artifact
+    : null;
 }
 
 function graphRunWorkspaceRoot(detail: PlaybookGraphRunDetail | null): string | null {
@@ -1295,11 +1361,14 @@ function graphRunApproval(
     };
   }
   const reviewEntry = detail.queue.find(
-    (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
+    (entry) =>
+      entry.status === "blocked" &&
+      (entry.nodeKind === "humanReview" || entry.nodeKind === "effect")
   );
   if (!reviewEntry) return undefined;
+  const isEffectApproval = reviewEntry.nodeKind === "effect";
   return {
-    toolId: "graph.humanReview",
+    toolId: isEffectApproval ? "graph.effectApproval" : "graph.humanReview",
     args: {
       playbookId: detail.run.playbookId,
       runId: detail.run.runId,
@@ -1313,8 +1382,10 @@ function graphRunApproval(
       reversible: true,
       dryRunSupported: false,
     },
-    preview: "Tessera paused at a review checkpoint. Review what it prepared before continuing.",
-    reasonCode: "graph_human_review",
+    preview: isEffectApproval
+      ? "Tessera paused before writing to the workspace. Review what it prepared before continuing."
+      : "Tessera paused at a review checkpoint. Review what it prepared before continuing.",
+    reasonCode: isEffectApproval ? "graph_effect_approval" : "graph_human_review",
   };
 }
 
@@ -1358,7 +1429,7 @@ function graphRunToPlaybookRunDetail(
     runId: detail.run.runId,
     workflowId: detail.run.playbookId,
     packageVersion: detail.run.snapshot.packageVersion,
-    status: workflowStatusFromGraph(detail.run.status),
+    status: graphRunWorkflowStatus(detail),
     currentStepId: detail.run.currentQueueEntryId,
     input: detail.run.input,
     outputs,
@@ -1396,7 +1467,7 @@ function graphRunRecordToPlaybookRunDetail(
     runId: run.runId,
     workflowId: run.playbookId,
     packageVersion: run.snapshot.packageVersion,
-    status: workflowStatusFromGraph(run.status),
+    status: graphRunRecordWorkflowStatus(run),
     currentStepId: run.currentQueueEntryId,
     input: run.input,
     outputs: {},
@@ -1525,6 +1596,10 @@ function buildCapabilityInventory(
       capabilities: [
         "integration.calendar.events.read",
         "integration.mail.read",
+        "integration.mail.drafts.write",
+        "integration.mail.drafts.send",
+        "integration.sheets.workbooks.write",
+        "integration.sheets.rows.write",
         "integration.drive.read",
         "integration.contacts.read",
       ],

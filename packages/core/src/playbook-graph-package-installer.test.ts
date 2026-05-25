@@ -373,6 +373,40 @@ describe("installGraphPlaybookPackage", () => {
     });
   });
 
+  test("treats legacy integer package versions as semver-compatible", async () => {
+    const sourceRoot = await makeRoot("tessera-playbook-source-");
+    const installRoot = await makeRoot("tessera-playbook-install-");
+    const cacheRoot = await makeRoot("tessera-playbook-cache-");
+    await writePackage(sourceRoot, "1");
+
+    await installGraphPlaybookPackage({
+      sourceRoot,
+      installRoot,
+      cacheRoot,
+      compilerVersion,
+      scriptSdkVersion,
+      compiledAt,
+    });
+    await writePackage(sourceRoot, "1.0.3");
+
+    const upgraded = await installGraphPlaybookPackage({
+      sourceRoot,
+      installRoot,
+      cacheRoot,
+      compilerVersion,
+      scriptSdkVersion,
+      compiledAt,
+    });
+    const latestMetadata = JSON.parse(
+      await readFile(join(installRoot, cacheSegment("content.seo-blog"), "latest.json"), "utf8")
+    ) as Record<string, unknown>;
+
+    expect(latestMetadata).toMatchObject({
+      packageVersion: "1.0.3",
+      graphHash: upgraded.compiled.metadata.graphHash,
+    });
+  });
+
   test("preserves latest for installed TypeScript literal playbooks", async () => {
     const sourceRoot = await makeRoot("tessera-playbook-source-");
     const installRoot = await makeRoot("tessera-playbook-install-");

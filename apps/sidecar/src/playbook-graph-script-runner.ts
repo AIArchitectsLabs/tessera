@@ -405,8 +405,9 @@ try {
   const value = await script(payload.context);
   Bun.stdout.write(JSON.stringify({ ok: true, value: value === undefined ? null : value }));
 } catch (error) {
-  Bun.stderr.write(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  Bun.stdout.write(
+    JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })
+  );
 }
 `;
 }
@@ -497,7 +498,14 @@ export async function runPlaybookGraphScript(
     }
 
     const parsed = JSON.parse(stdout) as unknown;
-    if (typeof parsed !== "object" || parsed === null || (parsed as { ok?: unknown }).ok !== true) {
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error("Graph script produced an invalid result envelope");
+    }
+    if ((parsed as { ok?: unknown }).ok === false) {
+      const error = (parsed as { error?: unknown }).error;
+      throw new Error(`Graph script failed: ${typeof error === "string" ? error : "script error"}`);
+    }
+    if ((parsed as { ok?: unknown }).ok !== true) {
       throw new Error("Graph script produced an invalid result envelope");
     }
     return (parsed as { value?: unknown }).value;

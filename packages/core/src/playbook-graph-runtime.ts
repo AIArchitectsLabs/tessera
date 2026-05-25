@@ -618,6 +618,34 @@ function agentOutputText(output: unknown): string | undefined {
   return typeof text === "string" && text.trim() ? text : undefined;
 }
 
+function internalAgentOutputReason(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (/Traceback \(most recent call last\):/.test(trimmed)) return "Python traceback";
+  if (/^\s*at\s+.+\(.+:\d+:\d+\)/m.test(trimmed)) return "JavaScript stack trace";
+  if (/^\s*(Error|TypeError|ReferenceError|SyntaxError):\s+/m.test(trimmed)) {
+    return "runtime error";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!isRecord(parsed)) return undefined;
+    const keys = new Set(Object.keys(parsed));
+    const hasDocumentText = ["text", "markdown", "bodyMarkdown", "content", "body", "summary"].some(
+      (key) => keys.has(key)
+    );
+    if (hasDocumentText) return undefined;
+    if (
+      ["cmd", "command", "stdout", "stderr", "stack", "traceback", "toolResults"].some((key) =>
+        keys.has(key)
+      )
+    ) {
+      return "tool or command output";
+    }
+  } catch {}
+
+  return undefined;
+}
+
 function artifactContractValue(input: {
   compiled: CompiledPlaybookGraph;
   run: PlaybookGraphRunRecord;
@@ -639,6 +667,12 @@ function artifactContractValue(input: {
         }
         return candidate;
       }
+    }
+    const internalReason = text ? internalAgentOutputReason(text) : undefined;
+    if (internalReason) {
+      throw new Error(
+        `Graph node ${input.node.id} produced internal ${internalReason} instead of ${input.artifactId}`
+      );
     }
   }
 
@@ -857,6 +891,24 @@ function effectExecutionRecord(input: {
         ? undefined
         : input.createdAt,
   };
+}
+
+async function humanApprovalForEffectInput(input: {
+  store: GraphRunStore;
+  runId: string;
+  queueEntry: PlaybookGraphQueueEntry;
+}): Promise<PlaybookGraphReviewEvent | undefined> {
+  const consumed = new Set(
+    input.queueEntry.consumesArtifacts.map(
+      (artifact) => `${artifact.artifactId}:${artifact.versionId}`
+    )
+  );
+  if (consumed.size === 0) return undefined;
+
+  return (await input.store.listReviewEvents(input.runId))
+    .filter((event) => event.decision === "approved" && event.artifactVersionId)
+    .reverse()
+    .find((event) => consumed.has(`${event.artifactId}:${event.artifactVersionId}`));
 }
 
 function collectArtifactIds(value: unknown, refs: Set<string>): void {
@@ -1286,6 +1338,9 @@ function resolveGraphValue(input: {
   if (!input.value || typeof input.value !== "object") return input.value;
 
   const record = input.value as Record<string, unknown>;
+  if (typeof record.input === "string") {
+    return valueAtPath(input.runInput, record.input);
+  }
   if (typeof record.artifact === "string") {
     return readJsonPath(input.artifacts[record.artifact], String(record.path ?? "$"));
   }
@@ -1844,6 +1899,7 @@ export async function drainPlaybookGraphRun(
         continue;
       }
       const queue = await options.store.getQueue(run.runId);
+      const failedEntry = queue.find((entry) => entry.status === "failed");
       const hasNeedsAttention = queue.some((entry) => entry.status === "needs_attention");
       const hasBlocked = queue.some((entry) => entry.status === "blocked");
       const hasInterrupted = queue.some((entry) => entry.status === "interrupted");
@@ -1855,7 +1911,19 @@ export async function drainPlaybookGraphRun(
           entry.status === "interrupted" ||
           entry.status === "needs_attention"
       );
-      if (hasNeedsAttention && run.status !== "needs_attention") {
+      if (failedEntry) {
+        if (run.status !== "failed") {
+          run = {
+            ...run,
+            status: "failed",
+            currentQueueEntryId: failedEntry.queueEntryId,
+            error: failedEntry.error ?? run.error,
+            updatedAt: now(),
+            completedAt: failedEntry.completedAt ?? run.completedAt,
+          };
+          await options.store.updateRun(run);
+        }
+      } else if (hasNeedsAttention && run.status !== "needs_attention") {
         run = { ...run, status: "needs_attention", updatedAt: now() };
         await options.store.updateRun(run);
       } else if (hasBlocked && run.status !== "blocked") {
@@ -2278,7 +2346,7 @@ export async function drainPlaybookGraphRun(
         continue;
       }
       const records = await options.store.listEffectExecutionRecords(claimedRun.runId);
-      const matchingRecords = records.filter(
+      let matchingRecords = records.filter(
         (record) =>
           record.queueEntryId === queueEntry.queueEntryId &&
           record.nodePath === queueEntry.nodePath &&
@@ -2357,10 +2425,34 @@ export async function drainPlaybookGraphRun(
         return { run, executed };
       }
       const approvalRequired = node.approval === "required" || effectPolicy?.approvalRequired;
-      const approved = matchingRecords.some(
+      let approved = matchingRecords.some(
         (record) => record.status === "approved" || record.status === "committed"
       );
       const preview = effectPreview(resolvedEffectNode);
+      if (approvalRequired && !approved) {
+        const humanApproval = await humanApprovalForEffectInput({
+          store: options.store,
+          runId: claimedRun.runId,
+          queueEntry,
+        });
+        if (humanApproval) {
+          const updatedAt = now();
+          const approvedRecord = effectExecutionRecord({
+            run: claimedRun,
+            queueEntry,
+            node: resolvedEffectNode,
+            status: "approved",
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+            preview,
+            reviewerDecision: "approved",
+            commitStatus: "not_attempted",
+            createdAt: updatedAt,
+          });
+          await options.store.addEffectExecutionRecord(approvedRecord);
+          matchingRecords = [...matchingRecords, approvedRecord];
+          approved = true;
+        }
+      }
       if (approvalRequired && !approved) {
         const updatedAt = now();
         if (!matchingRecords.some((record) => record.status === "previewed")) {

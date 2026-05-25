@@ -123,19 +123,24 @@ function isRetryableShellFailure(call: ShellToolCall, result: SpawnResult): bool
 }
 
 export function createSpawnShellExecutor(cli: {
-  runWorkspaceCli(args: string[], timeoutMs?: number): Promise<SpawnResult>;
+  runWorkspaceCli(
+    args: string[],
+    timeoutMs?: number,
+    env?: Record<string, string>
+  ): Promise<SpawnResult>;
 }): {
-  executeShell(call: ShellToolCall): Promise<ShellToolResult>;
+  executeShell(call: ShellToolCall, env?: Record<string, string>): Promise<ShellToolResult>;
 } {
   return {
-    async executeShell(call) {
+    async executeShell(call, env) {
       const validated = validateShellCall(call);
       const attempts = maxAttemptsForCall(validated);
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         const spawnResult = SpawnResultSchema.parse(
           await cli.runWorkspaceCli(
             [validated.command, validated.subcommand, ...validated.args],
-            timeoutMsForCall(validated)
+            timeoutMsForCall(validated),
+            env
           )
         );
 

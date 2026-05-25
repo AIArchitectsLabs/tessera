@@ -93,10 +93,17 @@ describe("built-in graph playbooks", () => {
       "Return only the final meeting brief as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-brief.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
+    expect(entry.sourceFiles["prompts/draft-brief.md"]).not.toContain("use the shell tool");
     expect(entry.sourceFiles["prompts/draft-brief.md"]).not.toContain(
       "and include account context"
+    );
+    expect(JSON.parse(entry.sourceFiles["schemas/meetingBrief.schema.json"] ?? "{}")).toMatchObject(
+      {
+        required: ["text"],
+        properties: { text: { type: "string", minLength: 1 } },
+      }
     );
   });
 
@@ -122,9 +129,15 @@ describe("built-in graph playbooks", () => {
       "Return only the final renewal risk brief as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-risk-review.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
     expect(entry.sourceFiles["prompts/draft-risk-review.md"]).not.toContain("and source gaps");
+    expect(
+      JSON.parse(entry.sourceFiles["schemas/businessBrief.schema.json"] ?? "{}")
+    ).toMatchObject({
+      required: ["text"],
+      properties: { text: { type: "string", minLength: 1 } },
+    });
   });
 
   test("weekly status digest exposes only the stakeholder-facing digest artifact", async () => {
@@ -149,9 +162,15 @@ describe("built-in graph playbooks", () => {
       "Return only the final weekly status digest as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-status-digest.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
     expect(entry.sourceFiles["prompts/draft-status-digest.md"]).not.toContain("and source gaps");
+    expect(JSON.parse(entry.sourceFiles["schemas/statusDigest.schema.json"] ?? "{}")).toMatchObject(
+      {
+        required: ["text"],
+        properties: { text: { type: "string", minLength: 1 } },
+      }
+    );
   });
 
   test("activity snapshot preserves the legacy refreshable dashboard contract", async () => {

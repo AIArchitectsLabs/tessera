@@ -10,8 +10,11 @@ import {
 
 const LEGACY_CAPABILITY_ALIASES: Record<string, string[]> = {
   web: ["integration.search.read"],
+  "web.search": ["integration.search.read"],
+  "web.fetch": ["integration.search.read"],
   calendar: ["integration.calendar.events.read"],
   mail: ["integration.mail.read"],
+  "gmail.search": ["integration.mail.read"],
   drive: ["integration.drive.read"],
   contacts: ["integration.contacts.read"],
 };

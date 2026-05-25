@@ -489,6 +489,140 @@ function testEffectCompiledGraph() {
   });
 }
 
+function testGmailDraftEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.gmail-draft-effect",
+      version: "0.1.0",
+      name: "Gmail Draft Effect Graph",
+      capabilities: ["integration.mail.drafts.write"],
+      start: "createDrafts",
+      nodes: [
+        {
+          id: "createDrafts",
+          kind: "effect",
+          effectId: "mail.draft",
+          capability: "integration.mail.drafts.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "mail.draft:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              batchId: "RFQ-1",
+              requests: [
+                {
+                  supplierId: "sup-1",
+                  command: "mail",
+                  subcommand: "draft",
+                  to: "supplier@example.com",
+                  cc: ["buyer@example.com"],
+                  bcc: [],
+                  subject: "RFQ follow-up",
+                  body: "Please confirm the missing quote details.",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:gmail-draft:sup-1",
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "gmail:drafts:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier follow-up Gmail drafts",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Create Gmail drafts",
+            summary: "Create reviewed supplier follow-up drafts in Gmail.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testSheetsLedgerEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.sheets-ledger-effect",
+      version: "0.1.0",
+      name: "Sheets Ledger Effect Graph",
+      capabilities: ["integration.sheets.rows.write"],
+      start: "writeLedger",
+      nodes: [
+        {
+          id: "writeLedger",
+          kind: "effect",
+          effectId: "sheets.ledger.write",
+          capability: "integration.sheets.rows.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "sheets.ledger:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              mode: "command_plan",
+              workbook: { spreadsheetId: "", title: "Supplier Ledger" },
+              operations: [
+                {
+                  id: "create-workbook",
+                  command: "sheets",
+                  subcommand: "workbook.create",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:workbook:create",
+                  args: { title: "Supplier Ledger" },
+                },
+                {
+                  id: "upsert-rfq-row",
+                  command: "sheets",
+                  subcommand: "rows.upsert",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:rfq:upsert",
+                  table: "RFQs",
+                  row: { "batch id": "RFQ-1", "product spec": "Bottle caps" },
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "google-sheets:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier RFQ ledger",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write Sheets ledger",
+            summary: "Create or update the supplier RFQ ledger in Google Sheets.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
 function testArtifactEffectCompiledGraph() {
   return compilePlaybookGraph({
     graph: {
@@ -2277,6 +2411,193 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("approves Gmail draft effect nodes through the graph resume API", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: string[][] = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testGmailDraftEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "createDrafts");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Gmail draft effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args) {
+            calls.push(args);
+            return {
+              stdout: JSON.stringify({
+                draft: { id: "draft-1", messageId: "msg-1", threadId: "thread-1" },
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls).toEqual([
+        [
+          "mail",
+          "draft",
+          "--to",
+          "supplier@example.com",
+          "--subject",
+          "RFQ follow-up",
+          "--body",
+          "Please confirm the missing quote details.",
+          "--cc",
+          "buyer@example.com",
+        ],
+      ]);
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "gmail:drafts:RFQ-1:draft-1",
+        connectorId: "google-workspace",
+        label: "1 Gmail draft created",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves Sheets ledger effect nodes with sidecar write binding", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testSheetsLedgerEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeLedger");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Sheets ledger effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args, _timeoutMs, env) {
+            calls.push(env ? { args, env } : { args });
+            const operation = args[1];
+            if (operation === "workbook.create") {
+              return {
+                stdout: JSON.stringify({
+                  dryRun: false,
+                  operation: "createWorkbook",
+                  spreadsheetId: "sheet-1",
+                  title: "Supplier Ledger",
+                  sheets: [{ table: "RFQs", headers: ["batch id", "product spec"] }],
+                  headers: { RFQs: ["batch id", "product spec"] },
+                  idempotencyKey: "RFQ-1:workbook:create",
+                  approvalId: `${effectEntry.queueEntryId}:create-workbook`,
+                }),
+                stderr: "",
+                exitCode: 0,
+                signal: null,
+                durationMs: 7,
+              };
+            }
+            return {
+              stdout: JSON.stringify({
+                dryRun: false,
+                operation: "upsert",
+                spreadsheetId: "sheet-1",
+                table: "RFQs",
+                updatedRange: "RFQs!A2:E2",
+                idempotencyKey: "RFQ-1:rfq:upsert",
+                approvalId: `${effectEntry.queueEntryId}:upsert-rfq-row`,
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+        ["sheets", "workbook.create"],
+        ["sheets", "rows.upsert"],
+      ]);
+      expect(calls[0]?.env?.TESSERA_GWS_WRITE_EXECUTION_TOKEN).toBeTruthy();
+      expect(calls[1]?.args).toEqual(
+        expect.arrayContaining(["--spreadsheet", "sheet-1", "--key-column", "batch id"])
+      );
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "google-sheets:RFQ-1:sheet-1",
+        connectorId: "google-workspace",
+        label: "2 Google Sheets operations completed",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("materializes approved PDF workspace effect targets with output evidence", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
@@ -3387,6 +3708,71 @@ describe("graph run endpoints", () => {
       await rm(dirname(dbPath), { recursive: true, force: true });
       await rm(workspaceRoot, { recursive: true, force: true });
     }
+  });
+
+  test("injects schema-bound output contracts into graph agent prompts", () => {
+    expect(graphRunAgentPrompt).toBeDefined();
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/draft.md": "Draft the customer follow-up.",
+      "schemas/draft.schema.json": JSON.stringify({
+        type: "object",
+        required: ["schemaVersion", "drafts"],
+        properties: {
+          schemaVersion: { const: 1 },
+          drafts: { type: "array" },
+        },
+      }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.schema-agent",
+        version: "0.1.0",
+        name: "Schema Agent Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft", schema: "schemas/draft.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+
+    const promptText = graphRunAgentPrompt?.({
+      run: {
+        runId: "run-schema-agent",
+        snapshot: {
+          ...compiled.metadata,
+          schemaVersion: 1,
+          snapshotJson: JSON.stringify(compiled),
+          sourceFiles,
+        },
+      },
+      node: compiled.graph.nodes[0],
+      input: {},
+      artifacts: {},
+      prompt: "Draft the customer follow-up.",
+    } as unknown as PlaybookGraphAgentAdapterInput);
+
+    expect(promptText).toContain("Output contract:");
+    expect(promptText).toContain("Return only a JSON value for artifact `draft`");
+    expect(promptText).toContain("schemas/draft.schema.json");
+    expect(promptText).toContain('"schemaVersion"');
+    expect(promptText).toContain('"drafts"');
   });
 
   test("preserves provider token usage in graph agent artifacts", async () => {

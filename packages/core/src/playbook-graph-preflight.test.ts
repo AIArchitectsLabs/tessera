@@ -160,6 +160,39 @@ describe("resolvePlaybookGraphPreflight", () => {
     expect(preview.nodePreviews[0]?.recommendedAgentId).toBe("analyst");
   });
 
+  test("accepts external playbook web and Gmail capability names when matching integrations exist", () => {
+    const preview = resolvePlaybookGraphPreflight({
+      compiledGraph: {
+        ...compiledGraph,
+        graph: {
+          ...compiledGraph.graph,
+          metadata: {
+            requiredCapabilities: ["web.search", "web.fetch", "gmail.search"],
+          },
+          capabilities: ["web.search", "web.fetch", "gmail.search"],
+        },
+      },
+      capabilityInventory: {
+        ...inventory,
+        integrations: [
+          ...inventory.integrations,
+          {
+            id: "integration.google-workspace",
+            label: "Google Workspace",
+            fingerprint: "google-1",
+            configured: true,
+            capabilities: ["integration.mail.read"],
+            dataPolicies: ["cloud-ok"],
+          },
+        ],
+      },
+    });
+
+    expect(preview.confirmationRequired).toBe(false);
+    expect(preview.blockers).toEqual([]);
+    expect(preview.sourceGaps).toEqual([]);
+  });
+
   test("blocks required capabilities and reports optional source gaps", () => {
     const preview = resolvePlaybookGraphPreflight({
       compiledGraph,

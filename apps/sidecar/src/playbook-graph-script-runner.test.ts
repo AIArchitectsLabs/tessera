@@ -166,11 +166,17 @@ export default () => ({
   });
 
   test("reports script errors without runner-exit noise", async () => {
-    await expect(
-      runPlaybookGraphScript({
+    let error: unknown;
+    try {
+      await runPlaybookGraphScript({
         input: scriptInput("export default () => { throw new Error('Missing bodyMarkdown'); };\n"),
-      })
-    ).rejects.toThrow("Graph script failed: Missing bodyMarkdown");
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("Graph script failed: Missing bodyMarkdown");
+    expect(String(error)).not.toContain("process.exit");
   });
 
   test("times out scripts that do not finish", async () => {

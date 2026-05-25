@@ -1110,7 +1110,11 @@ async function handleSpawn(req: Request): Promise<Response> {
   }
 }
 
-async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<SpawnResult> {
+async function runWorkspaceCli(
+  args: string[],
+  timeoutMs = 10_000,
+  envOverrides: Record<string, string> = {}
+): Promise<SpawnResult> {
   // binary enum is validated by Zod; resolve to the path injected by Rust at launch
   const cliPath = process.env.TESSERA_CLI_PATH;
   if (!cliPath) {
@@ -1120,7 +1124,7 @@ async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<Spaw
   const startMs = Date.now();
   const managedEnv = await resolveGoogleWorkspaceCliEnv(args);
   const proc = Bun.spawn([cliPath, ...args], {
-    env: { ...process.env, ...managedEnv },
+    env: { ...process.env, ...managedEnv, ...envOverrides },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -1607,7 +1611,11 @@ export interface GraphRunHandlerOptions {
   credential?: ModelRuntimeCredential;
   scriptTimeoutMs?: number;
   scriptBunExecutable?: string;
-  workspaceCli?: (args: string[], timeoutMs?: number) => Promise<SpawnResult>;
+  workspaceCli?: (
+    args: string[],
+    timeoutMs?: number,
+    env?: Record<string, string>
+  ) => Promise<SpawnResult>;
   scriptAdapter?: (input: PlaybookGraphScriptAdapterInput) => Promise<unknown> | unknown;
   agentAdapter?: (input: PlaybookGraphAgentAdapterInput) => Promise<unknown> | unknown;
   toolAdapter?: (input: PlaybookGraphToolAdapterInput) => Promise<unknown> | unknown;
@@ -1964,6 +1972,236 @@ function workspaceEffectTarget(input: Record<string, unknown>): {
   return { path, format };
 }
 
+function gmailDraftEffectRequests(input: Record<string, unknown>): Array<{
+  supplierId?: string;
+  to: string;
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+}> {
+  const value = isPlainRecord(input.value) ? input.value : input;
+  const requests = Array.isArray(value.requests) ? value.requests : [];
+  return requests.map((item, index) => {
+    if (!isPlainRecord(item)) {
+      throw new Error(`mail.draft effect request ${index + 1} must be an object`);
+    }
+    if (item.command !== "mail" || item.subcommand !== "draft") {
+      throw new Error(`mail.draft effect request ${index + 1} must use mail draft`);
+    }
+    const to = typeof item.to === "string" ? item.to.trim() : "";
+    const subject = typeof item.subject === "string" ? item.subject : "";
+    const body = typeof item.body === "string" ? item.body : "";
+    if (!to || !subject || !body) {
+      throw new Error(`mail.draft effect request ${index + 1} requires to, subject, and body`);
+    }
+    return {
+      ...(typeof item.supplierId === "string" ? { supplierId: item.supplierId } : {}),
+      to,
+      cc: stringArray(item.cc),
+      bcc: stringArray(item.bcc),
+      subject,
+      body,
+    };
+  });
+}
+
+function mailDraftShellArgs(
+  request: ReturnType<typeof gmailDraftEffectRequests>[number]
+): string[] {
+  const args = ["--to", request.to, "--subject", request.subject, "--body", request.body];
+  if (request.cc.length > 0) args.push("--cc", request.cc.join(", "));
+  if (request.bcc.length > 0) args.push("--bcc", request.bcc.join(", "));
+  return args;
+}
+
+function gmailDraftIdFromParsed(value: unknown): string {
+  const draft = isPlainRecord(value) && isPlainRecord(value.draft) ? value.draft : undefined;
+  const id = typeof draft?.id === "string" ? draft.id : undefined;
+  if (!id) throw new Error("mail.draft effect did not return a Gmail draft id");
+  return id;
+}
+
+function gmailDraftReference(input: Record<string, unknown>, draftIds: string[]): string {
+  const target = isPlainRecord(input.target) ? input.target : undefined;
+  if (target?.kind === "external" && typeof target.reference === "string") {
+    return draftIds.length > 0 ? `${target.reference}:${draftIds.join(",")}` : target.reference;
+  }
+  return draftIds.length > 0 ? `gmail:drafts:${draftIds.join(",")}` : "gmail:drafts:none";
+}
+
+type SheetsEffectOperation = {
+  id: string;
+  subcommand: "workbook.create" | "rows.upsert" | "rows.append" | "rows.updateStatus";
+  idempotencyKey: string;
+  table?: string;
+  row?: Record<string, unknown>;
+  args?: Record<string, unknown>;
+};
+
+function sheetsEffectPlan(input: Record<string, unknown>): {
+  workbook: { spreadsheetId: string; title: string };
+  operations: SheetsEffectOperation[];
+} {
+  const value = isPlainRecord(input.value) ? input.value : input;
+  const workbookValue = isPlainRecord(value.workbook) ? value.workbook : {};
+  const workbook = {
+    spreadsheetId:
+      typeof workbookValue.spreadsheetId === "string" ? workbookValue.spreadsheetId : "",
+    title: typeof workbookValue.title === "string" ? workbookValue.title : "Supplier RFQ Ledger",
+  };
+  const operations = Array.isArray(value.operations) ? value.operations : [];
+  return {
+    workbook,
+    operations: operations.map((item, index) => {
+      if (!isPlainRecord(item)) {
+        throw new Error(`sheets effect operation ${index + 1} must be an object`);
+      }
+      if (item.command !== "sheets") {
+        throw new Error(`sheets effect operation ${index + 1} must use sheets`);
+      }
+      if (
+        item.subcommand !== "workbook.create" &&
+        item.subcommand !== "rows.upsert" &&
+        item.subcommand !== "rows.append" &&
+        item.subcommand !== "rows.updateStatus"
+      ) {
+        throw new Error(`Unsupported sheets effect operation: ${String(item.subcommand)}`);
+      }
+      const id = typeof item.id === "string" ? item.id : `operation-${index + 1}`;
+      const idempotencyKey =
+        typeof item.idempotencyKey === "string" ? item.idempotencyKey : undefined;
+      if (!idempotencyKey) {
+        throw new Error(`sheets effect operation ${id} requires idempotencyKey`);
+      }
+      return {
+        id,
+        subcommand: item.subcommand,
+        idempotencyKey,
+        ...(typeof item.table === "string" ? { table: item.table } : {}),
+        ...(isPlainRecord(item.row) ? { row: item.row } : {}),
+        ...(isPlainRecord(item.args) ? { args: item.args } : {}),
+      };
+    }),
+  };
+}
+
+function sheetRowKey(operation: SheetsEffectOperation): { column: string; value: string } {
+  const keyColumn = typeof operation.args?.keyColumn === "string" ? operation.args.keyColumn : "";
+  const keyValue = typeof operation.args?.keyValue === "string" ? operation.args.keyValue : "";
+  if (keyColumn && keyValue) return { column: keyColumn, value: keyValue };
+  const table = operation.table;
+  const row = operation.row ?? {};
+  if (table === "RFQs" && typeof row["batch id"] === "string") {
+    return { column: "batch id", value: row["batch id"] };
+  }
+  if (typeof row["supplier id"] === "string") {
+    return { column: "supplier id", value: row["supplier id"] };
+  }
+  throw new Error(`sheets ${operation.subcommand} operation ${operation.id} needs a row key`);
+}
+
+function sheetsWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      approvalId,
+      idempotencyKey,
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    }),
+    "utf8"
+  ).toString("base64url");
+}
+
+function sheetsOperationArgs(
+  operation: SheetsEffectOperation,
+  spreadsheetId: string,
+  approvalId: string
+): string[] {
+  const base = [
+    "--execute",
+    "--approval",
+    approvalId,
+    "--idempotency-key",
+    operation.idempotencyKey,
+  ];
+  if (operation.subcommand === "workbook.create") {
+    const title =
+      typeof operation.args?.title === "string" ? operation.args.title : "Supplier RFQ Ledger";
+    return ["--title", title, ...base];
+  }
+  if (!spreadsheetId) {
+    throw new Error(`sheets ${operation.subcommand} operation ${operation.id} needs spreadsheetId`);
+  }
+  const table = operation.table;
+  if (!table)
+    throw new Error(`sheets ${operation.subcommand} operation ${operation.id} needs table`);
+  if (operation.subcommand === "rows.upsert") {
+    const row = operation.row;
+    if (!row) throw new Error(`sheets rows.upsert operation ${operation.id} needs row`);
+    const key = sheetRowKey(operation);
+    return [
+      "--spreadsheet",
+      spreadsheetId,
+      "--table",
+      table,
+      "--key-column",
+      key.column,
+      "--key-value",
+      key.value,
+      "--row-json",
+      JSON.stringify(row),
+      ...base,
+    ];
+  }
+  if (operation.subcommand === "rows.append") {
+    const row = operation.row;
+    if (!row) throw new Error(`sheets rows.append operation ${operation.id} needs row`);
+    const clientRowId =
+      typeof operation.args?.clientRowId === "string" ? operation.args.clientRowId : operation.id;
+    return [
+      "--spreadsheet",
+      spreadsheetId,
+      "--table",
+      table,
+      "--row-json",
+      JSON.stringify(row),
+      "--client-row-id",
+      clientRowId,
+      ...base,
+    ];
+  }
+  const key = sheetRowKey(operation);
+  const status = typeof operation.args?.status === "string" ? operation.args.status : "";
+  if (!status) throw new Error(`sheets rows.updateStatus operation ${operation.id} needs status`);
+  return [
+    "--spreadsheet",
+    spreadsheetId,
+    "--table",
+    table,
+    "--key-column",
+    key.column,
+    "--key-value",
+    key.value,
+    "--status",
+    status,
+    ...base,
+  ];
+}
+
+function spreadsheetIdFromParsed(value: unknown): string | undefined {
+  return isPlainRecord(value) && typeof value.spreadsheetId === "string"
+    ? value.spreadsheetId
+    : undefined;
+}
+
+function sheetsReference(input: Record<string, unknown>, spreadsheetId: string): string {
+  const target = isPlainRecord(input.target) ? input.target : undefined;
+  if (target?.kind === "external" && typeof target.reference === "string") {
+    return spreadsheetId ? `${target.reference}:${spreadsheetId}` : target.reference;
+  }
+  return spreadsheetId ? `google-sheets:${spreadsheetId}` : "google-sheets:unknown";
+}
+
 function pdfBlocksFromValue(value: unknown): Parameters<typeof createPdfDocument>[0]["blocks"] {
   const text = textValueFromArtifact(value);
   if (text !== undefined) return [{ type: "text", text }];
@@ -2049,6 +2287,98 @@ async function createWorkspaceEffectAdapter(
   };
 }
 
+function createGoogleWorkspaceEffectAdapter(
+  options: GraphRunHandlerOptions
+): NonNullable<GraphRunHandlerOptions["effectAdapter"]> {
+  const shell = createSpawnShellExecutor({
+    runWorkspaceCli: graphRunWorkspaceCli(options),
+  });
+  return async ({ node, queueEntry }) => {
+    if (node.adapterId !== "google-workspace") {
+      throw new Error(`Unsupported Google Workspace effect: ${node.adapterId}:${node.effectId}`);
+    }
+    if (node.effectId === "mail.draft") {
+      const requests = gmailDraftEffectRequests(node.input);
+      const draftIds: string[] = [];
+      for (const request of requests) {
+        const result = await shell.executeShell(
+          ShellToolCallSchema.parse({
+            command: "mail",
+            subcommand: "draft",
+            args: mailDraftShellArgs(request),
+          })
+        );
+        draftIds.push(gmailDraftIdFromParsed(result.parsed));
+      }
+      const reference = gmailDraftReference(node.input, draftIds);
+      return {
+        outputReference: reference,
+        output: {
+          kind: "external",
+          reference,
+          connectorId: "google-workspace",
+          label:
+            draftIds.length === 1
+              ? "1 Gmail draft created"
+              : `${draftIds.length} Gmail drafts created`,
+        },
+      };
+    }
+    if (node.effectId === "sheets.ledger.write") {
+      const plan = sheetsEffectPlan(node.input);
+      let spreadsheetId = plan.workbook.spreadsheetId;
+      let operationCount = 0;
+      for (const operation of plan.operations) {
+        const approvalId = `${queueEntry.queueEntryId}:${operation.id}`;
+        const result = await shell.executeShell(
+          ShellToolCallSchema.parse({
+            command: "sheets",
+            subcommand: operation.subcommand,
+            args: sheetsOperationArgs(operation, spreadsheetId, approvalId),
+          }),
+          {
+            TESSERA_GWS_WRITE_EXECUTION_TOKEN: sheetsWriteExecutionToken(
+              approvalId,
+              operation.idempotencyKey
+            ),
+          }
+        );
+        spreadsheetId = spreadsheetIdFromParsed(result.parsed) ?? spreadsheetId;
+        operationCount += 1;
+      }
+      const reference = sheetsReference(node.input, spreadsheetId);
+      return {
+        outputReference: reference,
+        output: {
+          kind: "external",
+          reference,
+          connectorId: "google-workspace",
+          label: `${operationCount} Google Sheets operations completed`,
+        },
+      };
+    }
+    throw new Error(`Unsupported Google Workspace effect: ${node.adapterId}:${node.effectId}`);
+  };
+}
+
+function createCompositeEffectAdapter(
+  workspaceAdapter: NonNullable<GraphRunHandlerOptions["effectAdapter"]> | undefined,
+  googleWorkspaceAdapter: NonNullable<GraphRunHandlerOptions["effectAdapter"]>
+): NonNullable<GraphRunHandlerOptions["effectAdapter"]> {
+  return async (input) => {
+    if (input.node.adapterId === "workspace") {
+      if (!workspaceAdapter) {
+        throw new Error("workspace.write effect requires a workspace root");
+      }
+      return workspaceAdapter(input);
+    }
+    if (input.node.adapterId === "google-workspace") {
+      return googleWorkspaceAdapter(input);
+    }
+    throw new Error(`Unsupported effect adapter: ${input.node.adapterId}:${input.node.effectId}`);
+  };
+}
+
 async function graphRunArtifactWriteAdapter(
   runId: string,
   store: GraphRunStore,
@@ -2075,8 +2405,13 @@ async function graphRunEffectAdapter(
     persistedRun?.materialization?.kind === "workspace"
       ? persistedRun.materialization.workspaceRoot
       : options.workspaceRoot;
-  if (!workspaceRoot) return undefined;
-  return createWorkspaceEffectAdapter(workspaceRoot);
+  const workspaceAdapter = workspaceRoot
+    ? await createWorkspaceEffectAdapter(workspaceRoot)
+    : undefined;
+  return createCompositeEffectAdapter(
+    workspaceAdapter,
+    createGoogleWorkspaceEffectAdapter(options)
+  );
 }
 
 async function graphRunScriptAdapter(
@@ -2469,6 +2804,7 @@ export function graphRunAgentPrompt(
   });
   const runtime = agent ? compileAgentRuntimeContext(agent) : undefined;
   const styleSection = graphRunStylePromptSection(input);
+  const outputContractSection = graphRunAgentOutputContractSection(input);
   return [
     ...(agent
       ? [
@@ -2481,11 +2817,33 @@ export function graphRunAgentPrompt(
         ].filter(Boolean)
       : []),
     input.prompt ?? `Execute graph agent node ${input.node.id}.`,
+    ...(outputContractSection ? ["", outputContractSection] : []),
     ...(styleSection ? ["", styleSection] : []),
     ...(workspaceContext ? ["", "Workspace context:", workspaceContext] : []),
     "",
     "Pinned graph runtime context:",
     context,
+  ].join("\n");
+}
+
+function normalizeGraphSourceRef(ref: string): string {
+  return ref.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+
+function graphRunAgentOutputContractSection(
+  input: PlaybookGraphAgentAdapterInput
+): string | undefined {
+  const output = input.node.output;
+  if (!output?.schema) return undefined;
+
+  const source = input.run.snapshot.sourceFiles?.[normalizeGraphSourceRef(output.schema)];
+  if (!source?.trim()) return undefined;
+
+  return [
+    "Output contract:",
+    `Return only a JSON value for artifact \`${output.artifact}\`. Do not include Markdown, prose, code fences, shell commands, or tool-call instructions.`,
+    `The JSON must validate against ${output.schema}:`,
+    source.trim(),
   ].join("\n");
 }
 
@@ -2592,6 +2950,24 @@ const GRAPH_RUN_DEFAULT_EFFECT_POLICIES: Record<string, PlaybookGraphEffectExecu
     adapterId: "workspace",
     idempotent: true,
     sideEffect: "write",
+    previewRequired: true,
+    approvalRequired: true,
+  },
+  "google-workspace:mail.draft": {
+    effectId: "mail.draft",
+    capability: "integration.mail.drafts.write",
+    adapterId: "google-workspace",
+    idempotent: true,
+    sideEffect: "external",
+    previewRequired: true,
+    approvalRequired: true,
+  },
+  "google-workspace:sheets.ledger.write": {
+    effectId: "sheets.ledger.write",
+    capability: "integration.sheets.rows.write",
+    adapterId: "google-workspace",
+    idempotent: true,
+    sideEffect: "external",
     previewRequired: true,
     approvalRequired: true,
   },
@@ -3259,7 +3635,7 @@ function graphEffectActionSpec(input: {
     schemaVersion: 1,
     actionId: `${input.entry.queueEntryId}:effect:${input.decision}`,
     decision: input.decision,
-    label: input.decision === "approve" ? "Approve effect" : "Deny effect",
+    label: input.decision === "approve" ? "Approve" : "Stop run",
     ...(input.preview?.preview?.summary ? { description: input.preview.preview.summary } : {}),
     tone: input.decision === "deny" ? "danger" : "primary",
     queueEntryId: input.entry.queueEntryId,
