@@ -29,6 +29,8 @@ import {
   MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
   NotifyRequestSchema,
+  PlaybookAssignmentPreviewRequestSchema,
+  PlaybookAssignmentPreviewResultSchema,
   PlaybookDetailSchema,
   type PlaybookGraphArtifactVersion,
   type PlaybookGraphBranchItem,
@@ -125,6 +127,7 @@ import {
   playbookGraphExecutionContextDriftReason,
   readPlaybookGraphPackage,
   readWorkspaceConfig,
+  resolvePlaybookGraphPreflight,
   resolveSlashSkillInvocation,
   saveWorkspaceConfig,
   softTimeoutMs,
@@ -5573,6 +5576,8 @@ interface PlaybookRunPreferenceHandlerOptions {
   store?: PlaybookRunPreferenceStore;
 }
 
+type PlaybookPreflightHandlerOptions = PlaybookCatalogHandlerOptions;
+
 function shouldRefreshGraphPlaybookCatalog(
   options: PlaybookCatalogHandlerOptions,
   catalogState: GraphPlaybookRegistryState
@@ -5648,6 +5653,60 @@ export async function handlePlaybookGet(
   const projection = entry ?? imported;
   if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
   return Response.json(graphPlaybookDetail(projection));
+}
+
+export async function handlePlaybookPreflight(
+  req: Request,
+  playbookId: string,
+  options: PlaybookPreflightHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = PlaybookAssignmentPreviewRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const entry = await builtInGraphPlaybook(playbookId);
+  if (
+    entry === undefined &&
+    shouldRefreshGraphPlaybookCatalog(options, graphPlaybooks.catalogState)
+  ) {
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
+    });
+  }
+  const imported =
+    entry === undefined
+      ? await importedGraphPlaybookById(playbookId, graphPlaybooks.catalogState, {
+          includeSourceFiles: true,
+        })
+      : undefined;
+  const projection = entry ?? imported;
+  if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+
+  const preview = resolvePlaybookGraphPreflight({
+    compiledGraph: projection.compiled,
+    ...(parsed.data.capabilityInventory
+      ? { capabilityInventory: parsed.data.capabilityInventory }
+      : {}),
+    ...(parsed.data.previousPlan ? { previousPlan: parsed.data.previousPlan } : {}),
+  });
+
+  return Response.json(PlaybookAssignmentPreviewResultSchema.parse(preview));
 }
 
 export async function handlePlaybookRunPreferenceRead(
@@ -6805,6 +6864,12 @@ const server = Bun.serve({
 
     if (pathname === "/playbooks") {
       return handlePlaybookList(req);
+    }
+
+    const playbookPreflightMatch = pathname.match(/^\/playbooks\/([^/]+)\/preflight$/);
+    const playbookPreflightId = playbookPreflightMatch?.[1];
+    if (playbookPreflightId) {
+      return handlePlaybookPreflight(req, decodeURIComponent(playbookPreflightId));
     }
 
     const playbookRunPreferenceMatch = pathname.match(/^\/playbooks\/([^/]+)\/run-preference$/);

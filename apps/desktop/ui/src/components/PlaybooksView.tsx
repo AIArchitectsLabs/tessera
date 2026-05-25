@@ -1623,70 +1623,6 @@ function buildCapabilityInventory(
   };
 }
 
-function assignmentForInventoryAgent(
-  stepId: string,
-  agent: WorkflowCapabilityInventory["agents"][number]
-): WorkflowNodeAssignment {
-  return {
-    stepId,
-    agentId: agent.id,
-    agentLabel: agent.label,
-    agentFingerprint: agent.fingerprint,
-    skillCapabilities: agent.skillCapabilities,
-    toolCapabilities: agent.toolCapabilities,
-    integrationCapabilities: [],
-  };
-}
-
-function buildGraphAssignmentPreview(
-  detail: PlaybookSummary | PlaybookDetail | null,
-  capabilityInventory: WorkflowCapabilityInventory | null
-): PlaybookAssignmentPreviewResult | null {
-  if (!detail || !("steps" in detail) || !capabilityInventory) return null;
-
-  const agentSteps = detail.steps.filter((step) => step.kind === "agent");
-  const assignments: WorkflowRunAssignmentPlan["assignments"] = {};
-  const defaultAgent = capabilityInventory.agents[0];
-
-  const nodePreviews = agentSteps.map((step) => {
-    const candidates = capabilityInventory.agents.map((agent, index) => ({
-      agentId: agent.id,
-      agentLabel: agent.label,
-      assignment: assignmentForInventoryAgent(step.id, agent),
-      recommended: index === 0,
-      disabled: false,
-    }));
-    const recommended = candidates[0];
-    if (recommended) {
-      assignments[step.id] = recommended.assignment;
-    }
-    return {
-      stepId: step.id,
-      stepLabel: step.label ?? titleFromId(step.id),
-      kind: "agent" as const,
-      ...(recommended
-        ? {
-            recommendedAgentId: recommended.agentId,
-            recommendedAgentLabel: recommended.agentLabel,
-          }
-        : {}),
-      candidates,
-    };
-  });
-
-  return {
-    assignmentPlan: {
-      resolverVersion: 1,
-      createdAt: new Date().toISOString(),
-      assignments: defaultAgent === undefined && agentSteps.length > 0 ? {} : assignments,
-    },
-    confirmationRequired: false,
-    blockers: [],
-    sourceGaps: [],
-    nodePreviews,
-  };
-}
-
 function assignmentPlanWithCurrentCandidates(
   savedPlan: WorkflowRunAssignmentPlan,
   preview: PlaybookAssignmentPreviewResult
@@ -4432,49 +4368,56 @@ export function PlaybooksView({
     }
 
     if (selectedGraphHash) {
-      const preview = buildGraphAssignmentPreview(selectedPlaybookForUi, capabilityInventory);
       setSetupError(null);
-      setAssignmentPreview(preview);
-      setDraftAssignmentPlan(preview?.assignmentPlan ?? null);
-      setAgentsConfirmed(true);
-      if (preview) {
-        void (async () => {
-          try {
-            const result = await invoke<PlaybookRunPreferenceReadResult>(
-              "playbook_run_preference_get",
-              {
-                playbookId: selectedPlaybookId,
-                workspaceRoot,
-                userKey,
-              }
-            );
-            if (assignmentPreferenceRequestRef.current !== requestId) return;
-            if (result.preference) {
-              setDraftAssignmentPlan(
-                assignmentPlanWithCurrentCandidates(result.preference.assignmentPlan, preview)
-              );
-              setAgentsConfirmed(true);
+      setAssignmentPreview(null);
+      setDraftAssignmentPlan(null);
+      setAgentsConfirmed(false);
+      void (async () => {
+        try {
+          const preference = await invoke<PlaybookRunPreferenceReadResult>(
+            "playbook_run_preference_get",
+            {
+              playbookId: selectedPlaybookId,
+              workspaceRoot,
+              userKey,
             }
-          } catch (loadError) {
-            if (assignmentPreferenceRequestRef.current !== requestId) return;
-            setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
-          }
-        })();
-      }
+          );
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+
+          const previousPlan = preference.preference?.assignmentPlan;
+          const preview = await invoke<PlaybookAssignmentPreviewResult>("playbook_preflight", {
+            playbookId: selectedPlaybookId,
+            request: {
+              workspaceRoot,
+              capabilityInventory,
+              ...(previousPlan ? { previousPlan } : {}),
+            },
+            userKey,
+          });
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+
+          setAssignmentPreview(preview);
+          setDraftAssignmentPlan(
+            previousPlan
+              ? assignmentPlanWithCurrentCandidates(previousPlan, preview)
+              : (preview.assignmentPlan ?? null)
+          );
+          setAgentsConfirmed((preview.blockers ?? []).length === 0);
+        } catch (loadError) {
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+          setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
+          setAssignmentPreview(null);
+          setDraftAssignmentPlan(null);
+          setAgentsConfirmed(false);
+        }
+      })();
       return;
     }
 
     setAssignmentPreview(null);
     setDraftAssignmentPlan(null);
     setAgentsConfirmed(false);
-  }, [
-    capabilityInventory,
-    selectedGraphHash,
-    selectedPlaybookForUi,
-    selectedPlaybookId,
-    userKey,
-    workspaceRoot,
-  ]);
+  }, [capabilityInventory, selectedGraphHash, selectedPlaybookId, userKey, workspaceRoot]);
 
   const loadPlaybooks = useCallback(async () => {
     setLoadingPlaybooks(true);

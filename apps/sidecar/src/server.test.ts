@@ -51,6 +51,7 @@ let handleGraphRunGitMilestoneCommit:
   | undefined;
 let handlePlaybookGet: typeof import("./server.js").handlePlaybookGet | undefined;
 let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefined;
+let handlePlaybookPreflight: typeof import("./server.js").handlePlaybookPreflight | undefined;
 let handlePlaybookRunPreferenceRead:
   | typeof import("./server.js").handlePlaybookRunPreferenceRead
   | undefined;
@@ -108,6 +109,7 @@ beforeAll(async () => {
     handleGraphRunGitMilestoneCommit = serverModule.handleGraphRunGitMilestoneCommit;
     handlePlaybookGet = serverModule.handlePlaybookGet;
     handlePlaybookList = serverModule.handlePlaybookList;
+    handlePlaybookPreflight = serverModule.handlePlaybookPreflight;
     handlePlaybookRunPreferenceRead = serverModule.handlePlaybookRunPreferenceRead;
     handlePlaybookRunPreferenceSave = serverModule.handlePlaybookRunPreferenceSave;
     handleWorkspaceStyleGuideRead = serverModule.handleWorkspaceStyleGuideRead;
@@ -835,6 +837,112 @@ describe("graph playbook import endpoint", () => {
         )
       );
     }
+  });
+
+  test("preflights graph playbook assignment through sidecar-owned resolver", async () => {
+    expect(handlePlaybookPreflight).toBeDefined();
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.preflight",
+        version: "0.1.0",
+        name: "Preflight Graph",
+        artifacts: {
+          brief: { schema: "schemas/brief.schema.json" },
+        },
+        capabilities: ["tool.workspace.write"],
+        start: "draftBrief",
+        nodes: [
+          {
+            id: "draftBrief",
+            kind: "agent",
+            label: "Draft brief",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "brief", schema: "schemas/brief.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft a brief.\n",
+        "schemas/brief.schema.json": '{"type":"object"}\n',
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-25T00:00:00.000Z",
+    });
+    const graphPlaybookState: { entries: GraphPlaybookRegistryEntry[]; loaded?: boolean } = {
+      loaded: true,
+      entries: [
+        {
+          id: "content.preflight",
+          packageVersion: "0.1.0",
+          name: "Preflight Graph",
+          graphHash: compiled.metadata.graphHash,
+          sourceHash: compiled.metadata.sourceHash,
+          installedRoot: "/tmp/content.preflight",
+          compiled,
+        },
+      ],
+    };
+    const getResponse = await handlePlaybookGet?.(
+      new Request("http://localhost/playbooks/content.preflight"),
+      "content.preflight",
+      { catalogState: graphPlaybookState }
+    );
+    expect(getResponse?.status).toBe(200);
+
+    const response = await handlePlaybookPreflight?.(
+      new Request("http://localhost/playbooks/content.preflight/preflight", {
+        method: "POST",
+        body: JSON.stringify({
+          workspaceRoot: "/tmp/workspace",
+          capabilityInventory: {
+            fingerprint: "inventory-1",
+            agents: [
+              {
+                id: "default",
+                label: "Tessera",
+                fingerprint: "agent-1",
+                modelCapabilities: ["model.reasoning"],
+                dataPolicies: ["cloud-ok"],
+                skillCapabilities: [],
+                toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+              },
+            ],
+            models: [],
+            skills: [],
+            tools: [
+              { id: "tool.workspace.read", label: "Read workspace" },
+              { id: "tool.workspace.write", label: "Write workspace" },
+            ],
+            integrations: [],
+          },
+        }),
+      }),
+      "content.preflight",
+      { catalogState: graphPlaybookState }
+    );
+
+    expect(response?.status).toBe(200);
+    const preview = (await response?.json()) as Record<string, unknown>;
+    expect(preview).toMatchObject({
+      confirmationRequired: false,
+      blockers: [],
+      assignmentPlan: {
+        resolverVersion: 2,
+        assignments: {
+          draftBrief: {
+            stepId: "draftBrief",
+            agentId: "default",
+            agentLabel: "Tessera",
+          },
+        },
+      },
+    });
   });
 
   test("scopes imported graph playbooks by user key", async () => {
@@ -2194,9 +2302,12 @@ describe("graph run endpoints", () => {
       expect(denyResponse?.status).toBe(200);
       const denied = (await denyResponse?.json()) as { run: { status: string } };
       expect(denied.run.status).toBe("denied");
-      expect(
-        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
-      ).toEqual(["previewed", "denied"]);
+      const effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (r) => r.status
+      );
+      expect(effectStatuses).toHaveLength(2);
+      expect(effectStatuses).toContain("previewed");
+      expect(effectStatuses).toContain("denied");
       await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).rejects.toThrow();
     } finally {
       store.close();

@@ -153,6 +153,10 @@ export {
   type CompilePlaybookGraphOptions,
 } from "./playbook-graph-compiler.js";
 export {
+  resolvePlaybookGraphPreflight,
+  type ResolvePlaybookGraphPreflightOptions,
+} from "./playbook-graph-preflight.js";
+export {
   createPlaybookGraphCache,
   type PlaybookGraphCache,
 } from "./playbook-graph-cache.js";

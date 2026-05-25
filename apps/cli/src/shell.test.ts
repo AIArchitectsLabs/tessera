@@ -31,6 +31,7 @@ async function makeValidPlaybookPackage(
     nodeTools?: string[];
     includeOutputSchema?: boolean;
     includeArtifactWrite?: boolean;
+    includeEffectWrite?: boolean;
   } = {}
 ): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "tessera-cli-playbook-"));
@@ -38,6 +39,12 @@ async function makeValidPlaybookPackage(
   const nodeTools = options.nodeTools ?? ["web.search"];
   const includeOutputSchema = options.includeOutputSchema ?? true;
   const includeArtifactWrite = options.includeArtifactWrite ?? true;
+  const includeEffectWrite = options.includeEffectWrite ?? false;
+  const finalWriteNodeId = includeEffectWrite
+    ? "commitBrief"
+    : includeArtifactWrite
+      ? "writeBrief"
+      : "completed";
   const graph = {
     schemaVersion: 1,
     id: "operations.playbook-validation-fixture",
@@ -61,8 +68,35 @@ async function makeValidPlaybookPackage(
           artifact: "brief",
           ...(includeOutputSchema ? { schema: "schemas/brief.schema.json" } : {}),
         },
-        onSuccess: includeArtifactWrite ? "writeBrief" : "completed",
+        onSuccess: finalWriteNodeId,
       },
+      ...(includeEffectWrite
+        ? [
+            {
+              id: "commitBrief",
+              kind: "effect",
+              effectId: "workspace.write",
+              capability: "tool.workspace.write",
+              adapterId: "workspace",
+              sideEffect: "write",
+              approval: "required",
+              idempotency: "required",
+              idempotencyKey: "workspace.write:operations.playbook-validation-fixture:brief",
+              input: {
+                sourceArtifact: "brief",
+                value: { artifact: "brief" },
+                path: "Brief.md",
+                format: "markdown",
+              },
+              preview: {
+                schemaVersion: 1,
+                title: "Write brief",
+                summary: "Write the approved brief to the selected workspace.",
+              },
+              onSuccess: "completed",
+            },
+          ]
+        : []),
       ...(includeArtifactWrite
         ? [
             {
@@ -101,6 +135,21 @@ async function makeValidPlaybookPackage(
 describe("workspace cli shell commands", () => {
   test("validates a playbook package in text mode", async () => {
     const root = await makeValidPlaybookPackage();
+
+    const result = await executeCliCommand(["playbook", "validate", root]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Playbook validation passed");
+    expect(result.stdout).toContain("Summary: 0 error(s), 0 warning(s), 0 info");
+  });
+
+  test("accepts workspace write effects as final playbook writes", async () => {
+    const root = await makeValidPlaybookPackage({
+      capabilities: ["web.search", "tool.workspace.write"],
+      includeArtifactWrite: false,
+      includeEffectWrite: true,
+    });
 
     const result = await executeCliCommand(["playbook", "validate", root]);
 

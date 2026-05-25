@@ -5,6 +5,7 @@ import type {
   AgentProfileListResult,
   IntegrationSettingsRead,
   ModelSettingsRead,
+  PlaybookAssignmentPreviewResult,
   PlaybookDetail,
   PlaybookGraphRunDetail,
   PlaybookGraphRunListResult,
@@ -1231,6 +1232,71 @@ let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 let seoGraphRunSurfaceQueue: PlaybookGraphRunReviewSurface[] = [];
 let savedPlaybookAssignmentPlan: WorkflowRunAssignmentPlan | null = null;
 
+function assignmentPreviewForPlaybook(
+  detail: PlaybookDetail,
+  previousPlan?: WorkflowRunAssignmentPlan
+): PlaybookAssignmentPreviewResult {
+  const agentSteps = detail.steps.filter((step) => step.kind === "agent");
+  const assignments: WorkflowRunAssignmentPlan["assignments"] = {};
+  const nodePreviews = agentSteps.map((step) => {
+    const candidates = [
+      {
+        agentId: "default",
+        agentLabel: "Tessera",
+        assignment: {
+          stepId: step.id,
+          agentId: "default",
+          agentLabel: "Tessera",
+          agentFingerprint: "default-agent",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          integrationCapabilities: [],
+        },
+        recommended: previousPlan?.assignments[step.id]?.agentId !== "analyst",
+        disabled: false,
+      },
+      {
+        agentId: "analyst",
+        agentLabel: "Analyst",
+        assignment: {
+          stepId: step.id,
+          agentId: "analyst",
+          agentLabel: "Analyst",
+          agentFingerprint: "analyst-agent",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          integrationCapabilities: [],
+        },
+        recommended: previousPlan?.assignments[step.id]?.agentId === "analyst",
+        disabled: false,
+      },
+    ];
+    const recommended = candidates.find((candidate) => candidate.recommended) ?? candidates[0];
+    if (!recommended) throw new Error("Expected an assignment candidate");
+    assignments[step.id] = recommended.assignment;
+    return {
+      stepId: step.id,
+      stepLabel: step.label ?? step.id,
+      kind: "agent" as const,
+      recommendedAgentId: recommended.agentId,
+      recommendedAgentLabel: recommended.agentLabel,
+      candidates,
+    };
+  });
+
+  return {
+    assignmentPlan: {
+      resolverVersion: 2,
+      createdAt: "2026-05-25T00:00:00.000Z",
+      assignments,
+    },
+    confirmationRequired: false,
+    blockers: [],
+    sourceGaps: [],
+    nodePreviews,
+  };
+}
+
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   const currentImportedPlaybook = useDeclaredImportedOutputs
     ? importedPlaybookWithDeclaredOutputs
@@ -1286,6 +1352,16 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         assignmentPlan: savedPlaybookAssignmentPlan,
         updatedAt: "2026-05-20T00:00:00.000Z",
       };
+    }
+    case "playbook_preflight": {
+      const detail =
+        args?.playbookId === dashboardPlaybook.id
+          ? dashboardPlaybook
+          : args?.playbookId === importedPlaybook.id
+            ? currentImportedPlaybook
+            : playbook;
+      const request = args?.request as { previousPlan?: WorkflowRunAssignmentPlan } | undefined;
+      return assignmentPreviewForPlaybook(detail, request?.previousPlan);
     }
     case "graph_run_list":
       return {
@@ -1611,6 +1687,7 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
     });
+    expect(invoke.mock.calls.some(([command]) => command === "playbook_preflight")).toBe(true);
 
     fireEvent.click(view.getByRole("button", { name: "Change setup" }));
     let agentSelect: HTMLSelectElement | null = null;

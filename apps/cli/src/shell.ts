@@ -352,10 +352,11 @@ function collectAuthoringDiagnostics(
     diagnostics.push({
       code: "missing_final_materialization",
       severity: "warning",
-      message: "Graph has no artifactWrite node and no artifact materialize target.",
+      message:
+        "Graph has no artifactWrite node, workspace.write effect, or artifact materialize target.",
       path: loaded.manifest.entrypoint,
       repairHint:
-        "Add an artifactWrite node or a materialize path for at least one final artifact.",
+        "Add a workspace.write effect, artifactWrite node, or materialize path for at least one final artifact.",
     });
   }
 
@@ -429,13 +430,20 @@ function graphHasFinalMaterialization(graph: LoadedPlaybookGraph): boolean {
     return true;
   }
 
-  return branchHasArtifactWrite({ start: graph.start, nodes: graph.nodes });
+  return branchHasFinalWrite({ start: graph.start, nodes: graph.nodes });
 }
 
-function branchHasArtifactWrite(branch: LoadedPlaybookGraphBranch): boolean {
+function branchHasFinalWrite(branch: LoadedPlaybookGraphBranch): boolean {
   for (const node of branch.nodes) {
     if (node.kind === "artifactWrite") return true;
-    if (node.kind === "parallelMap" && branchHasArtifactWrite(node.branch)) return true;
+    if (
+      node.kind === "effect" &&
+      node.adapterId === "workspace" &&
+      node.effectId === "workspace.write"
+    ) {
+      return true;
+    }
+    if (node.kind === "parallelMap" && branchHasFinalWrite(node.branch)) return true;
   }
   return false;
 }
