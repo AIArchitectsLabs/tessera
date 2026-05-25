@@ -623,6 +623,73 @@ function testSheetsLedgerEffectCompiledGraph() {
   });
 }
 
+function testDocsDocumentEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.docs-document-effect",
+      version: "0.1.0",
+      name: "Docs Document Effect Graph",
+      capabilities: ["integration.docs.documents.write"],
+      start: "writeDoc",
+      nodes: [
+        {
+          id: "writeDoc",
+          kind: "effect",
+          effectId: "docs.document.write",
+          capability: "integration.docs.documents.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "docs.document:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              operations: [
+                {
+                  id: "create-doc",
+                  command: "docs",
+                  subcommand: "documents.create",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:doc:create",
+                  args: { title: "Supplier RFQ Packet", text: "Initial packet" },
+                },
+                {
+                  id: "append-summary",
+                  command: "docs",
+                  subcommand: "documents.appendText",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:doc:append",
+                  args: { text: "\nFinal summary" },
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "google-docs:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier RFQ packet",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write Google Doc",
+            summary: "Create or update the supplier RFQ packet in Google Docs.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
 function testArtifactEffectCompiledGraph() {
   return compilePlaybookGraph({
     graph: {
@@ -2591,6 +2658,107 @@ describe("graph run endpoints", () => {
         reference: "google-sheets:RFQ-1:sheet-1",
         connectorId: "google-workspace",
         label: "2 Google Sheets operations completed",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves Docs document effect nodes with sidecar write binding", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testDocsDocumentEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeDoc");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Docs document effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args, _timeoutMs, env) {
+            calls.push(env ? { args, env } : { args });
+            const operation = args[1];
+            if (operation === "documents.create") {
+              return {
+                stdout: JSON.stringify({
+                  dryRun: false,
+                  operation: "createDocument",
+                  title: "Supplier RFQ Packet",
+                  documentId: "doc-1",
+                  documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+                  idempotencyKey: "RFQ-1:doc:create",
+                  approvalId: `${effectEntry.queueEntryId}:create-doc`,
+                }),
+                stderr: "",
+                exitCode: 0,
+                signal: null,
+                durationMs: 7,
+              };
+            }
+            return {
+              stdout: JSON.stringify({
+                dryRun: false,
+                operation: "appendText",
+                documentId: "doc-1",
+                documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+                idempotencyKey: "RFQ-1:doc:append",
+                approvalId: `${effectEntry.queueEntryId}:append-summary`,
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+        ["docs", "documents.create"],
+        ["docs", "documents.appendText"],
+      ]);
+      expect(calls[0]?.env?.TESSERA_GWS_WRITE_EXECUTION_TOKEN).toBeTruthy();
+      expect(calls[1]?.args).toEqual(
+        expect.arrayContaining(["--document", "doc-1", "--text", "\nFinal summary"])
+      );
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "google-docs:RFQ-1:doc-1",
+        connectorId: "google-workspace",
+        label: "2 Google Docs operations completed",
       });
     } finally {
       store.close();

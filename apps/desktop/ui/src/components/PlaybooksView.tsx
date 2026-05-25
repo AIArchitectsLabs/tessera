@@ -1600,6 +1600,7 @@ function buildCapabilityInventory(
         "integration.mail.drafts.send",
         "integration.sheets.workbooks.write",
         "integration.sheets.rows.write",
+        "integration.docs.documents.write",
         "integration.drive.read",
         "integration.contacts.read",
       ],

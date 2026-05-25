@@ -2101,7 +2101,7 @@ function sheetRowKey(operation: SheetsEffectOperation): { column: string; value:
   throw new Error(`sheets ${operation.subcommand} operation ${operation.id} needs a row key`);
 }
 
-function sheetsWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
+function googleWorkspaceWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
   return Buffer.from(
     JSON.stringify({
       approvalId,
@@ -2200,6 +2200,132 @@ function sheetsReference(input: Record<string, unknown>, spreadsheetId: string):
     return spreadsheetId ? `${target.reference}:${spreadsheetId}` : target.reference;
   }
   return spreadsheetId ? `google-sheets:${spreadsheetId}` : "google-sheets:unknown";
+}
+
+type DocsEffectOperation = {
+  id: string;
+  subcommand: "documents.create" | "documents.appendText" | "documents.replacePlaceholders";
+  idempotencyKey: string;
+  documentId?: string;
+  title?: string;
+  text?: string;
+  replacements?: Record<string, string>;
+};
+
+function docsEffectPlan(input: Record<string, unknown>): { operations: DocsEffectOperation[] } {
+  const value = isPlainRecord(input.value) ? input.value : input;
+  const operationsValue = Array.isArray(value.operations) ? value.operations : [value];
+  return {
+    operations: operationsValue.map((item, index) => {
+      if (!isPlainRecord(item)) {
+        throw new Error(`docs effect operation ${index + 1} must be an object`);
+      }
+      if (item.command !== undefined && item.command !== "docs") {
+        throw new Error(`docs effect operation ${index + 1} must use docs`);
+      }
+      if (
+        item.subcommand !== "documents.create" &&
+        item.subcommand !== "documents.appendText" &&
+        item.subcommand !== "documents.replacePlaceholders"
+      ) {
+        throw new Error(`Unsupported docs effect operation: ${String(item.subcommand)}`);
+      }
+      const args = isPlainRecord(item.args) ? item.args : {};
+      const id = typeof item.id === "string" ? item.id : `operation-${index + 1}`;
+      const idempotencyKey =
+        typeof item.idempotencyKey === "string" ? item.idempotencyKey : undefined;
+      if (!idempotencyKey) {
+        throw new Error(`docs effect operation ${id} requires idempotencyKey`);
+      }
+      const replacementsValue = item.replacements ?? args.replacements;
+      const replacements = isPlainRecord(replacementsValue)
+        ? Object.fromEntries(
+            Object.entries(replacementsValue).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[0] === "string" && typeof entry[1] === "string"
+            )
+          )
+        : undefined;
+      return {
+        id,
+        subcommand: item.subcommand,
+        idempotencyKey,
+        ...(typeof item.documentId === "string"
+          ? { documentId: item.documentId }
+          : typeof args.documentId === "string"
+            ? { documentId: args.documentId }
+            : {}),
+        ...(typeof item.title === "string"
+          ? { title: item.title }
+          : typeof args.title === "string"
+            ? { title: args.title }
+            : {}),
+        ...(typeof item.text === "string"
+          ? { text: item.text }
+          : typeof args.text === "string"
+            ? { text: args.text }
+            : {}),
+        ...(replacements && Object.keys(replacements).length > 0 ? { replacements } : {}),
+      };
+    }),
+  };
+}
+
+function docsOperationArgs(
+  operation: DocsEffectOperation,
+  documentId: string,
+  approvalId: string
+): string[] {
+  const base = [
+    "--execute",
+    "--approval",
+    approvalId,
+    "--idempotency-key",
+    operation.idempotencyKey,
+  ];
+  if (operation.subcommand === "documents.create") {
+    const title = operation.title;
+    if (!title) throw new Error(`docs documents.create operation ${operation.id} needs title`);
+    const args = ["--title", title];
+    if (operation.text) args.push("--text", operation.text);
+    return [...args, ...base];
+  }
+  const resolvedDocumentId = operation.documentId ?? documentId;
+  if (!resolvedDocumentId) {
+    throw new Error(`docs ${operation.subcommand} operation ${operation.id} needs documentId`);
+  }
+  if (operation.subcommand === "documents.appendText") {
+    const text = operation.text;
+    if (!text) throw new Error(`docs documents.appendText operation ${operation.id} needs text`);
+    return ["--document", resolvedDocumentId, "--text", text, ...base];
+  }
+  const replacements = operation.replacements;
+  if (!replacements || Object.keys(replacements).length === 0) {
+    throw new Error(
+      `docs documents.replacePlaceholders operation ${operation.id} needs replacements`
+    );
+  }
+  return [
+    "--document",
+    resolvedDocumentId,
+    "--replacements-json",
+    JSON.stringify(replacements),
+    ...base,
+  ];
+}
+
+function documentIdFromParsed(value: unknown): string | undefined {
+  return isPlainRecord(value) && typeof value.documentId === "string"
+    ? value.documentId
+    : undefined;
+}
+
+function docsReference(input: Record<string, unknown>, documentId: string): string {
+  const target = isPlainRecord(input.target) ? input.target : undefined;
+  if (target?.kind === "external" && typeof target.reference === "string") {
+    return documentId ? `${target.reference}:${documentId}` : target.reference;
+  }
+  return documentId ? `google-docs:${documentId}` : "google-docs:unknown";
 }
 
 function pdfBlocksFromValue(value: unknown): Parameters<typeof createPdfDocument>[0]["blocks"] {
@@ -2337,7 +2463,7 @@ function createGoogleWorkspaceEffectAdapter(
             args: sheetsOperationArgs(operation, spreadsheetId, approvalId),
           }),
           {
-            TESSERA_GWS_WRITE_EXECUTION_TOKEN: sheetsWriteExecutionToken(
+            TESSERA_GWS_WRITE_EXECUTION_TOKEN: googleWorkspaceWriteExecutionToken(
               approvalId,
               operation.idempotencyKey
             ),
@@ -2354,6 +2480,42 @@ function createGoogleWorkspaceEffectAdapter(
           reference,
           connectorId: "google-workspace",
           label: `${operationCount} Google Sheets operations completed`,
+        },
+      };
+    }
+    if (node.effectId === "docs.document.write") {
+      const plan = docsEffectPlan(node.input);
+      let documentId = "";
+      let operationCount = 0;
+      for (const operation of plan.operations) {
+        const approvalId = `${queueEntry.queueEntryId}:${operation.id}`;
+        const result = await shell.executeShell(
+          ShellToolCallSchema.parse({
+            command: "docs",
+            subcommand: operation.subcommand,
+            args: docsOperationArgs(operation, documentId, approvalId),
+          }),
+          {
+            TESSERA_GWS_WRITE_EXECUTION_TOKEN: googleWorkspaceWriteExecutionToken(
+              approvalId,
+              operation.idempotencyKey
+            ),
+          }
+        );
+        documentId = documentIdFromParsed(result.parsed) ?? documentId;
+        operationCount += 1;
+      }
+      const reference = docsReference(node.input, documentId);
+      return {
+        outputReference: reference,
+        output: {
+          kind: "external",
+          reference,
+          connectorId: "google-workspace",
+          label:
+            operationCount === 1
+              ? "1 Google Docs operation completed"
+              : `${operationCount} Google Docs operations completed`,
         },
       };
     }
@@ -2597,7 +2759,7 @@ function graphRunStylePromptSection(input: PlaybookGraphAgentAdapterInput): stri
 
 function graphRunWorkspaceCli(
   options: GraphRunHandlerOptions
-): (args: string[], timeoutMs?: number) => Promise<SpawnResult> {
+): (args: string[], timeoutMs?: number, env?: Record<string, string>) => Promise<SpawnResult> {
   return options.workspaceCli ?? runWorkspaceCli;
 }
 
@@ -2965,6 +3127,15 @@ const GRAPH_RUN_DEFAULT_EFFECT_POLICIES: Record<string, PlaybookGraphEffectExecu
   "google-workspace:sheets.ledger.write": {
     effectId: "sheets.ledger.write",
     capability: "integration.sheets.rows.write",
+    adapterId: "google-workspace",
+    idempotent: true,
+    sideEffect: "external",
+    previewRequired: true,
+    approvalRequired: true,
+  },
+  "google-workspace:docs.document.write": {
+    effectId: "docs.document.write",
+    capability: "integration.docs.documents.write",
     adapterId: "google-workspace",
     idempotent: true,
     sideEffect: "external",
