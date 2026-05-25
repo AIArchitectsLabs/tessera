@@ -463,7 +463,14 @@ function testEffectCompiledGraph() {
           approval: "required",
           idempotency: "required",
           idempotencyKey: "workspace.write:test-effect",
-          input: { path: "out/brief.md", value: "Brief" },
+          input: {
+            value: "Brief",
+            target: {
+              kind: "workspace",
+              path: "out/brief.md",
+              format: "markdown",
+            },
+          },
           preview: {
             schemaVersion: 1,
             title: "Write brief",
@@ -2214,9 +2221,19 @@ describe("graph run endpoints", () => {
       expect(approveResponse?.status).toBe(200);
       const approved = (await approveResponse?.json()) as { run: { status: string } };
       expect(approved.run.status).toBe("completed");
-      expect(
-        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
-      ).toEqual(["previewed", "approved", "committed"]);
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.map((r) => r.status)).toEqual([
+        "previewed",
+        "approved",
+        "commit_requested",
+        "committed",
+      ]);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "workspace",
+        path: "out/brief.md",
+        format: "markdown",
+        bytes: 6,
+      });
       await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe("Brief\n");
 
       const queuedEffect = (await store.getQueue(created.run.runId)).find(
@@ -2250,7 +2267,279 @@ describe("graph run endpoints", () => {
       expect(replayResponse?.status).toBe(200);
       expect(
         (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
-      ).toEqual(["previewed", "approved", "committed", "replayed"]);
+      ).toEqual(["previewed", "approved", "commit_requested", "committed", "replayed"]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("materializes approved PDF workspace effect targets with output evidence", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.pdf-effect-surface",
+        version: "0.1.0",
+        name: "PDF Effect Surface Graph",
+        capabilities: ["tool.workspace.write"],
+        start: "writeBrief",
+        nodes: [
+          {
+            id: "writeBrief",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:pdf-effect",
+            input: {
+              value: "# Brief\n\nPDF packet.",
+              target: {
+                kind: "workspace",
+                path: "out/brief.pdf",
+                format: "pdf",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write PDF brief",
+              summary: "Write the brief PDF to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing PDF effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      const pdf = await readFile(join(workspaceRoot, "out/brief.pdf"));
+      expect(pdf.subarray(0, 4).toString("utf8")).toBe("%PDF");
+      const committed = (await store.listEffectExecutionRecords(created.run.runId)).at(-1);
+      expect(committed?.status).toBe("committed");
+      expect(committed?.output).toMatchObject({
+        kind: "workspace",
+        path: "out/brief.pdf",
+        format: "pdf",
+      });
+      expect(committed?.outputReference).toBe("out/brief.pdf");
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("materializes approved JSON and CSV workspace effect targets with output evidence", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.structured-effect-surface",
+        version: "0.1.0",
+        name: "Structured Effect Surface Graph",
+        capabilities: ["tool.workspace.write"],
+        start: "writeJson",
+        nodes: [
+          {
+            id: "writeJson",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:json-effect",
+            input: {
+              value: { title: "Brief", ready: true },
+              target: {
+                kind: "workspace",
+                path: "out/brief.json",
+                format: "json",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write JSON brief",
+              summary: "Write the brief JSON to the workspace.",
+            },
+            onSuccess: "writeCsv",
+          },
+          {
+            id: "writeCsv",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:csv-effect",
+            input: {
+              value: [
+                { name: "Ada", note: 'comma, quote "ok"' },
+                { name: "Lin", note: "line\nbreak" },
+              ],
+              target: {
+                kind: "workspace",
+                path: "out/brief.csv",
+                format: "csv",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write CSV brief",
+              summary: "Write the brief CSV to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const jsonEntry = created.queue.find((entry) => entry.nodeId === "writeJson");
+      expect(created.run.status).toBe("blocked");
+      if (!jsonEntry) throw new Error("missing JSON effect queue entry");
+
+      const jsonApproveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: jsonEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(jsonApproveResponse?.status).toBe(200);
+      const afterJson = (await jsonApproveResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      expect(afterJson.run.status).toBe("blocked");
+      const csvEntry = afterJson.queue.find((entry) => entry.nodeId === "writeCsv");
+      if (!csvEntry) throw new Error("missing CSV effect queue entry");
+
+      const csvApproveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: csvEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(csvApproveResponse?.status).toBe(200);
+      const afterCsv = (await csvApproveResponse?.json()) as { run: { status: string } };
+      expect(afterCsv.run.status).toBe("completed");
+
+      await expect(readFile(join(workspaceRoot, "out/brief.json"), "utf8")).resolves.toBe(
+        '{\n  "ready": true,\n  "title": "Brief"\n}\n'
+      );
+      await expect(readFile(join(workspaceRoot, "out/brief.csv"), "utf8")).resolves.toBe(
+        'name,note\nAda,"comma, quote ""ok"""\nLin,"line\nbreak"\n'
+      );
+      const committed = (await store.listEffectExecutionRecords(created.run.runId)).filter(
+        (record) => record.status === "committed"
+      );
+      expect(committed.map((record) => record.output)).toEqual([
+        {
+          kind: "workspace",
+          path: "out/brief.json",
+          format: "json",
+          bytes: 40,
+        },
+        {
+          kind: "workspace",
+          path: "out/brief.csv",
+          format: "csv",
+          bytes: 53,
+        },
+      ]);
     } finally {
       store.close();
       await Promise.all([

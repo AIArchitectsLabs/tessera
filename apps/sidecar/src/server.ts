@@ -36,6 +36,7 @@ import {
   type PlaybookGraphBranchItem,
   PlaybookGraphGitMilestoneCommitRequestSchema,
   PlaybookGraphGitMilestonePreviewRequestSchema,
+  type PlaybookGraphMaterializationFormat,
   type PlaybookGraphNode,
   type PlaybookGraphOperationKind,
   type PlaybookGraphOperationRecord,
@@ -108,6 +109,7 @@ import {
   childPlaybookGraphNodePath,
   createGraphGitMilestoneService,
   createOptionalCapabilityManager,
+  createPdfDocument,
   createPlaybookGraphCache,
   createPlaybookGraphExecutionContextPin,
   createPlaybookGraphQueueEntry,
@@ -1819,6 +1821,10 @@ function renderGraphArtifactWritePath(path: string, input: Record<string, unknow
   });
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function textValueFromArtifact(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -1859,15 +1865,121 @@ function textValueFromArtifact(value: unknown): string | undefined {
   return sections.length > 0 ? sections.join("\n\n") : undefined;
 }
 
-function formatGraphArtifactWriteContent(value: unknown, path: string): string {
+function csvCell(value: unknown): string {
+  const raw =
+    isPlainRecord(value) || Array.isArray(value) ? JSON.stringify(value) : String(value ?? "");
+  return /[",\r\n]/.test(raw) ? `"${raw.replaceAll('"', '""')}"` : raw;
+}
+
+function csvRowsFromValue(value: unknown): { headers?: string[]; rows: unknown[][] } {
+  const rowsValue =
+    isPlainRecord(value) && Array.isArray(value.rows) ? (value.rows as unknown[]) : value;
+  if (Array.isArray(rowsValue) && rowsValue.every((row) => isPlainRecord(row))) {
+    const headers: string[] = [];
+    for (const row of rowsValue) {
+      for (const key of Object.keys(row)) {
+        if (!headers.includes(key)) headers.push(key);
+      }
+    }
+    return {
+      headers,
+      rows: rowsValue.map((row) => headers.map((header) => row[header])),
+    };
+  }
+  if (Array.isArray(rowsValue) && rowsValue.every((row) => Array.isArray(row))) {
+    const headers =
+      isPlainRecord(value) && Array.isArray(value.headers)
+        ? value.headers.filter((header): header is string => typeof header === "string")
+        : undefined;
+    return { ...(headers && headers.length > 0 ? { headers } : {}), rows: rowsValue };
+  }
+  if (Array.isArray(rowsValue)) {
+    return { headers: ["value"], rows: rowsValue.map((item) => [item]) };
+  }
+  return { headers: ["value"], rows: [[rowsValue]] };
+}
+
+function formatCsvContent(value: unknown): string {
+  const { headers, rows } = csvRowsFromValue(value);
+  const lines = [
+    ...(headers ? [headers.map(csvCell).join(",")] : []),
+    ...rows.map((row) => row.map(csvCell).join(",")),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function materializationFormatFromPath(path: string): PlaybookGraphMaterializationFormat {
   const extension = extname(path).toLowerCase();
-  if (extension === ".md" || extension === ".markdown" || extension === ".txt") {
+  if (extension === ".json") return "json";
+  if (extension === ".csv") return "csv";
+  if (extension === ".pdf") return "pdf";
+  return "markdown";
+}
+
+function formatGraphMaterializationContent(
+  value: unknown,
+  format: PlaybookGraphMaterializationFormat
+): string {
+  if (format === "markdown") {
     const text = textValueFromArtifact(value);
     if (text !== undefined) return text.endsWith("\n") ? text : `${text}\n`;
+    if (typeof value === "string") return value.endsWith("\n") ? value : `${value}\n`;
   }
-  if (typeof value === "string") return value;
+  if (format === "json") {
+    return `${JSON.stringify(value, null, 2) ?? String(value)}\n`;
+  }
+  if (format === "csv") {
+    return formatCsvContent(value);
+  }
+  if (typeof value === "string") return value.endsWith("\n") ? value : `${value}\n`;
   const json = JSON.stringify(value, null, 2);
   return `${json ?? String(value)}\n`;
+}
+
+function formatGraphArtifactWriteContent(value: unknown, path: string): string {
+  return formatGraphMaterializationContent(value, materializationFormatFromPath(path));
+}
+
+function workspaceEffectTarget(input: Record<string, unknown>): {
+  path: string;
+  format: PlaybookGraphMaterializationFormat;
+} {
+  const target = isPlainRecord(input.target) ? input.target : undefined;
+  const targetPath =
+    target?.kind === "workspace" && typeof target.path === "string" ? target.path : undefined;
+  const legacyPath = typeof input.path === "string" ? input.path : undefined;
+  const path = targetPath ?? legacyPath;
+  if (!path) throw new Error("workspace.write effect requires input.target.path or input.path");
+
+  const targetFormat =
+    target?.kind === "workspace" && typeof target.format === "string" ? target.format : undefined;
+  const legacyFormat = typeof input.format === "string" ? input.format : undefined;
+  const format = (targetFormat ?? legacyFormat ?? materializationFormatFromPath(path)) as
+    | PlaybookGraphMaterializationFormat
+    | undefined;
+  if (!format || !["markdown", "json", "csv", "pdf"].includes(format)) {
+    throw new Error("workspace.write effect requires a supported materialization format");
+  }
+
+  return { path, format };
+}
+
+function pdfBlocksFromValue(value: unknown): Parameters<typeof createPdfDocument>[0]["blocks"] {
+  const text = textValueFromArtifact(value);
+  if (text !== undefined) return [{ type: "text", text }];
+
+  const rows = csvRowsFromValue(value);
+  if (rows.rows.length > 0 && rows.rows.every((row) => row.length > 1)) {
+    return [
+      {
+        type: "table",
+        ...(rows.headers ? { headers: rows.headers } : {}),
+        rows: rows.rows.map((row) => row.map((cell) => String(cell ?? ""))),
+      },
+    ];
+  }
+
+  return [{ type: "text", text: JSON.stringify(value, null, 2) ?? String(value) }];
 }
 
 async function createWorkspaceArtifactWriteAdapter(
@@ -1899,19 +2011,38 @@ async function createWorkspaceEffectAdapter(
     if (node.adapterId !== "workspace" || node.effectId !== "workspace.write") {
       throw new Error(`Unsupported workspace effect: ${node.adapterId}:${node.effectId}`);
     }
-    const path = typeof node.input.path === "string" ? node.input.path : undefined;
-    if (!path) throw new Error("workspace.write effect requires input.path");
+    const { path, format } = workspaceEffectTarget(node.input);
     const value = "value" in node.input ? node.input.value : undefined;
     const parentAbsolute = await guard.resolveInsideWorkspaceForCreate(dirname(path));
     await mkdir(parentAbsolute, { recursive: true });
     const absolute = await guard.resolveInsideWorkspaceForCreate(path);
-    const content = formatGraphArtifactWriteContent(value, path);
-    await writeFile(absolute, content, "utf8");
     const relativePath = relative(guard.root, absolute);
+    if (format === "pdf") {
+      await createPdfDocument({
+        outputPath: absolute,
+        displayOutputPath: relativePath,
+        blocks: pdfBlocksFromValue(value),
+      });
+      const file = await stat(absolute);
+      return {
+        outputReference: relativePath,
+        output: {
+          kind: "workspace",
+          path: relativePath,
+          format,
+          bytes: file.size,
+        },
+      };
+    }
+
+    const content = formatGraphMaterializationContent(value, format);
+    await writeFile(absolute, content, "utf8");
     return {
       outputReference: relativePath,
       output: {
+        kind: "workspace",
         path: relativePath,
+        format,
         bytes: Buffer.byteLength(content),
       },
     };

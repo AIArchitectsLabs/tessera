@@ -20,9 +20,15 @@ Use first-class `effect` nodes for mutating work such as workspace writes or con
 - `sideEffect` as `write` or `external`
 - `approval` and `preview`
 - `idempotency` and `idempotencyKey`
-- `input` bindings for artifacts, paths, and adapter payload
+- `input` bindings for artifacts, paths, formats, and adapter payload
 
 The runtime records preview, approval or denial, commit status, idempotency key, output reference, and replay evidence before advancing the graph.
+
+Workspace materialization effects should declare `input.target` with `kind: "workspace"`, a package-relative `path`, and `format: "markdown" | "json" | "csv" | "pdf"`. Legacy top-level `input.path` and `input.format` are still accepted for compatibility.
+
+Connector-backed materialization uses `input.target.kind: "external"` and stores a connector output reference in effect evidence. Packages may declare the target, but Tessera adapters own commit, output reference, replay, and provenance.
+
+CSV materialization is UTF-8 text with comma-separated rows. Fields containing commas, quotes, or newlines are quoted, and embedded quotes are doubled. PDF output uses the same preview, approval, commit, output reference, and replay semantics as other materialized files; rendering is owned by Tessera tooling or adapters, not by a package-local runner.
 
 ## Author Guidance
 

@@ -1681,7 +1681,15 @@ describe("drainPlaybookGraphRun", () => {
       },
       effectAdapter({ node }: PlaybookGraphEffectAdapterInput) {
         commits += 1;
-        return { outputReference: String(node.input.path), output: { path: node.input.path } };
+        return {
+          outputReference: String(node.input.path),
+          output: {
+            kind: "workspace",
+            path: String(node.input.path),
+            format: "markdown",
+            bytes: 16,
+          },
+        };
       },
     };
 
@@ -1733,8 +1741,15 @@ describe("drainPlaybookGraphRun", () => {
     expect(store.effects.map((record) => record.status)).toEqual([
       "previewed",
       "approved",
+      "commit_requested",
       "committed",
     ]);
+    expect(store.effects.at(-1)?.output).toEqual({
+      kind: "workspace",
+      path: "out/plan.md",
+      format: "markdown",
+      bytes: 16,
+    });
 
     const completedRun = await store.getRun(run.runId);
     const completedWrite = (await store.getQueue(run.runId)).find(
@@ -1758,6 +1773,12 @@ describe("drainPlaybookGraphRun", () => {
     });
     expect(commits).toBe(1);
     expect(store.effects.at(-1)?.status).toBe("replayed");
+    expect(store.effects.at(-1)?.output).toEqual({
+      kind: "workspace",
+      path: "out/plan.md",
+      format: "markdown",
+      bytes: 16,
+    });
   });
 
   test("effect records prevent duplicate commits after stale checkpoint resume", async () => {
@@ -1822,7 +1843,7 @@ describe("drainPlaybookGraphRun", () => {
     });
 
     expect(commits).toBe(1);
-    expect(store.effects.map((record) => record.status)).toEqual(["committed"]);
+    expect(store.effects.map((record) => record.status)).toEqual(["commit_requested", "committed"]);
     const runningEntry = (await store.getQueue(run.runId)).find(
       (entry) => entry.nodeId === "writePlan"
     );
@@ -1845,7 +1866,87 @@ describe("drainPlaybookGraphRun", () => {
 
     expect(resumed.run.status).toBe("completed");
     expect(commits).toBe(1);
-    expect(store.effects.map((record) => record.status)).toEqual(["committed", "replayed"]);
+    expect(store.effects.map((record) => record.status)).toEqual([
+      "commit_requested",
+      "committed",
+      "replayed",
+    ]);
+  });
+
+  test("unknown effect commit intent blocks retry before duplicate adapter call", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        start: "writePlan",
+        nodes: [
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "none",
+            idempotency: "none",
+            input: { path: "out/plan.md", value: "Plan" },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-unknown-intent",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const [entry] = await store.getQueue(run.runId);
+    if (!entry) throw new Error("Missing effect queue entry");
+    await store.addEffectExecutionRecord({
+      schemaVersion: 1,
+      effectExecutionRecordId: `${entry.queueEntryId}:effect:commit-requested`,
+      runId: run.runId,
+      queueEntryId: entry.queueEntryId,
+      nodeId: "writePlan",
+      nodePath: entry.nodePath,
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "commit_requested",
+      preview: {
+        schemaVersion: 1,
+        title: "Write plan",
+        summary: "workspace.write is ready to commit.",
+      },
+      commitStatus: "not_attempted",
+      createdAt: "2026-05-15T00:00:01.000Z",
+    });
+    let commits = 0;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-effect-unknown-intent",
+      store,
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: false,
+          sideEffect: "write",
+          previewRequired: false,
+          approvalRequired: false,
+        },
+      },
+      effectAdapter() {
+        commits += 1;
+        return { outputReference: "out/plan.md" };
+      },
+    });
+
+    expect(result.run.status).toBe("blocked");
+    expect(result.run.blockedReason).toContain("Effect commit status is unknown");
+    expect(commits).toBe(0);
+    expect(store.effects.map((record) => record.status)).toEqual(["commit_requested", "skipped"]);
   });
 
   test("effect policies enforce approval, explicit preview, and idempotency requirements", async () => {

@@ -5,6 +5,7 @@ import type {
   PlaybookGraphArtifactVersion,
   PlaybookGraphArtifactVersionRef,
   PlaybookGraphBranchItem,
+  PlaybookGraphEffectOutput,
   PlaybookGraphEffectPreview,
   PlaybookGraphExecutionContext,
   PlaybookGraphMaterializationTarget,
@@ -827,6 +828,7 @@ function effectExecutionRecord(input: {
   commitStatus?: EffectExecutionRecord["commitStatus"];
   outputArtifactId?: string;
   outputReference?: string;
+  output?: PlaybookGraphEffectOutput;
   error?: string;
 }): EffectExecutionRecord {
   return {
@@ -847,9 +849,13 @@ function effectExecutionRecord(input: {
     ...(input.commitStatus ? { commitStatus: input.commitStatus } : {}),
     ...(input.outputArtifactId ? { outputArtifactId: input.outputArtifactId } : {}),
     ...(input.outputReference ? { outputReference: input.outputReference } : {}),
+    ...(input.output ? { output: input.output } : {}),
     ...(input.error ? { error: input.error } : {}),
     createdAt: input.createdAt,
-    completedAt: input.status === "previewed" ? undefined : input.createdAt,
+    completedAt:
+      input.status === "previewed" || input.status === "commit_requested"
+        ? undefined
+        : input.createdAt,
   };
 }
 
@@ -2236,6 +2242,7 @@ export async function drainPlaybookGraphRun(
             commitStatus: "replayed",
             ...(committed.outputReference ? { outputReference: committed.outputReference } : {}),
             ...(committed.outputArtifactId ? { outputArtifactId: committed.outputArtifactId } : {}),
+            ...(committed.output ? { output: committed.output } : {}),
             createdAt: completedAt,
           })
         );
@@ -2276,6 +2283,7 @@ export async function drainPlaybookGraphRun(
           record.queueEntryId === queueEntry.queueEntryId &&
           record.nodePath === queueEntry.nodePath &&
           record.effectId === node.effectId &&
+          record.capability === node.capability &&
           record.adapterId === node.adapterId &&
           (idempotencyKey === undefined
             ? record.idempotencyKey === undefined
@@ -2299,6 +2307,53 @@ export async function drainPlaybookGraphRun(
           completedAt: updatedAt,
         };
         await options.store.checkpointNodeFailure({ run, queueEntry: failed });
+        return { run, executed };
+      }
+      if (
+        matchingRecords.some((record) => record.status === "commit_requested") &&
+        !matchingRecords.some(
+          (record) => record.status === "committed" || record.status === "replayed"
+        )
+      ) {
+        const updatedAt = now();
+        const reason =
+          "Effect commit status is unknown after interruption; manual recovery is required before retrying this mutating effect.";
+        if (
+          !matchingRecords.some((record) => record.status === "skipped" && record.error === reason)
+        ) {
+          await options.store.addEffectExecutionRecord(
+            effectExecutionRecord({
+              run: claimedRun,
+              queueEntry,
+              node: resolvedEffectNode,
+              status: "skipped",
+              ...(idempotencyKey ? { idempotencyKey } : {}),
+              preview: effectPreview(resolvedEffectNode),
+              commitStatus: "not_attempted",
+              error: reason,
+              createdAt: updatedAt,
+            })
+          );
+        }
+        const blocked = {
+          ...queueEntry,
+          status: "blocked" as const,
+          blockedReason: reason,
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt,
+        };
+        await options.store.updateQueueEntry(blocked);
+        run = {
+          ...claimedRun,
+          status: "blocked",
+          currentQueueEntryId: blocked.queueEntryId,
+          blockedReason: reason,
+          updatedAt,
+        };
+        await options.store.updateRun(run);
         return { run, executed };
       }
       const approvalRequired = node.approval === "required" || effectPolicy?.approvalRequired;
@@ -2366,6 +2421,18 @@ export async function drainPlaybookGraphRun(
         await options.store.updateRun(run);
         return { run, executed };
       }
+      await options.store.addEffectExecutionRecord(
+        effectExecutionRecord({
+          run: claimedRun,
+          queueEntry,
+          node: resolvedEffectNode,
+          status: "commit_requested",
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+          preview,
+          commitStatus: "not_attempted",
+          createdAt: now(),
+        })
+      );
     }
     let output: unknown;
     let branchUpdates: PlaybookGraphBranchItem[] = [];
@@ -2630,6 +2697,10 @@ export async function drainPlaybookGraphRun(
         isRecord(output) && typeof output.outputReference === "string"
           ? output.outputReference
           : undefined;
+      const outputEvidence =
+        isRecord(output) && isRecord(output.output) && "kind" in output.output
+          ? (output.output as PlaybookGraphEffectOutput)
+          : undefined;
       await options.store.addEffectExecutionRecord(
         effectExecutionRecord({
           run,
@@ -2645,6 +2716,7 @@ export async function drainPlaybookGraphRun(
           commitStatus: "committed",
           ...(effectNode.outputArtifact ? { outputArtifactId: effectNode.outputArtifact } : {}),
           ...(outputReference ? { outputReference } : {}),
+          ...(outputEvidence ? { output: outputEvidence } : {}),
           createdAt: completedAt,
         })
       );

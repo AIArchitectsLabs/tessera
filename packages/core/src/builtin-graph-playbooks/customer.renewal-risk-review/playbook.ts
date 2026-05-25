@@ -175,8 +175,11 @@ export default {
       input: {
         sourceArtifact: "businessBrief",
         value: { artifact: "businessBrief" },
-        path: "Renewal Risk Review - {{inputs.account}}.md",
-        format: "markdown",
+        target: {
+          kind: "workspace",
+          path: "Renewal Risk Review - {{inputs.account}}.md",
+          format: "markdown",
+        },
       },
       preview: {
         schemaVersion: 1,

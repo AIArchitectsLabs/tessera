@@ -109,6 +109,26 @@ function validateAgentOutputContract(options: {
   );
 }
 
+function validateEffectTargetContract(options: { node: PlaybookGraphNode; path: string }): void {
+  const { node } = options;
+  if (node.kind !== "effect") return;
+
+  const target = node.input.target;
+  if (!isRecord(target)) return;
+
+  if (target.kind === "workspace" && node.sideEffect !== "write") {
+    throw new Error(
+      `Workspace materialization target at ${options.path}.${node.id} requires a write effect`
+    );
+  }
+
+  if (target.kind === "external" && node.sideEffect !== "external") {
+    throw new Error(
+      `External materialization target at ${options.path}.${node.id} requires an external effect`
+    );
+  }
+}
+
 function collectArtifactRefs(value: unknown, refs: string[]): void {
   if (!isRecord(value)) {
     if (Array.isArray(value)) {
@@ -185,6 +205,7 @@ function validateGraphNodes(options: {
     }
 
     validateAgentOutputContract({ artifacts: options.artifacts, node, path: options.path });
+    validateEffectTargetContract({ node, path: options.path });
 
     if (node.kind === "tool" && !options.declaredCapabilities.has(node.capability)) {
       throw new Error(

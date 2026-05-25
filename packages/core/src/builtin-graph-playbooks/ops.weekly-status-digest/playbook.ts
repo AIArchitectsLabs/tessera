@@ -175,8 +175,11 @@ export default {
       input: {
         sourceArtifact: "statusDigest",
         value: { artifact: "statusDigest" },
-        path: "Weekly Status Digest - {{inputs.team}} - {{inputs.weekEnding}}.md",
-        format: "markdown",
+        target: {
+          kind: "workspace",
+          path: "Weekly Status Digest - {{inputs.team}} - {{inputs.weekEnding}}.md",
+          format: "markdown",
+        },
       },
       preview: {
         schemaVersion: 1,

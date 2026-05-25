@@ -179,8 +179,11 @@ export default {
       input: {
         sourceArtifact: "meetingBrief",
         value: { artifact: "meetingBrief" },
-        path: "Sales Meeting Brief - {{inputs.company}}.md",
-        format: "markdown",
+        target: {
+          kind: "workspace",
+          path: "Sales Meeting Brief - {{inputs.company}}.md",
+          format: "markdown",
+        },
       },
       preview: {
         schemaVersion: 1,

@@ -2029,6 +2029,102 @@ export type PlaybookGraphEffectApprovalMode = z.infer<typeof PlaybookGraphEffect
 export const PlaybookGraphEffectIdempotencySchema = z.enum(["required", "none"]);
 export type PlaybookGraphEffectIdempotency = z.infer<typeof PlaybookGraphEffectIdempotencySchema>;
 
+export const PlaybookGraphMaterializationFormatSchema = z.enum(["markdown", "json", "csv", "pdf"]);
+export type PlaybookGraphMaterializationFormat = z.infer<
+  typeof PlaybookGraphMaterializationFormatSchema
+>;
+
+export const PlaybookGraphWorkspaceEffectTargetSchema = z
+  .object({
+    kind: z.literal("workspace"),
+    path: PlaybookGraphOutputPathSchema,
+    format: PlaybookGraphMaterializationFormatSchema,
+  })
+  .strict();
+export type PlaybookGraphWorkspaceEffectTarget = z.infer<
+  typeof PlaybookGraphWorkspaceEffectTargetSchema
+>;
+
+export const PlaybookGraphExternalEffectTargetSchema = z
+  .object({
+    kind: z.literal("external"),
+    reference: z.string().min(1),
+    connectorId: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphExternalEffectTarget = z.infer<
+  typeof PlaybookGraphExternalEffectTargetSchema
+>;
+
+export const PlaybookGraphEffectTargetSchema = z.discriminatedUnion("kind", [
+  PlaybookGraphWorkspaceEffectTargetSchema,
+  PlaybookGraphExternalEffectTargetSchema,
+]);
+export type PlaybookGraphEffectTarget = z.infer<typeof PlaybookGraphEffectTargetSchema>;
+
+export const PlaybookGraphWorkspaceEffectOutputSchema = z
+  .object({
+    kind: z.literal("workspace"),
+    path: PlaybookGraphOutputPathSchema,
+    format: PlaybookGraphMaterializationFormatSchema,
+    bytes: z.number().int().nonnegative().optional(),
+    contentHash: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphWorkspaceEffectOutput = z.infer<
+  typeof PlaybookGraphWorkspaceEffectOutputSchema
+>;
+
+export const PlaybookGraphExternalEffectOutputSchema = z
+  .object({
+    kind: z.literal("external"),
+    reference: z.string().min(1),
+    connectorId: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphExternalEffectOutput = z.infer<
+  typeof PlaybookGraphExternalEffectOutputSchema
+>;
+
+export const PlaybookGraphEffectOutputSchema = z.discriminatedUnion("kind", [
+  PlaybookGraphWorkspaceEffectOutputSchema,
+  PlaybookGraphExternalEffectOutputSchema,
+]);
+export type PlaybookGraphEffectOutput = z.infer<typeof PlaybookGraphEffectOutputSchema>;
+
+export const PlaybookGraphEffectInputSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  const format = value.format;
+  if (format !== undefined && !PlaybookGraphMaterializationFormatSchema.safeParse(format).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["format"],
+      message: "Effect materialization format must be markdown, json, csv, or pdf",
+    });
+  }
+
+  const path = value.path;
+  if (path !== undefined && !PlaybookGraphOutputPathSchema.safeParse(path).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["path"],
+      message: "Effect materialization path must be package-relative",
+    });
+  }
+
+  const target = value.target;
+  if (target !== undefined && !PlaybookGraphEffectTargetSchema.safeParse(target).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["target"],
+      message:
+        "Effect materialization target must be a workspace target or external output reference",
+    });
+  }
+});
+export type PlaybookGraphEffectInput = z.infer<typeof PlaybookGraphEffectInputSchema>;
+
 export type PlaybookGraphEffectPreview = {
   schemaVersion: 1;
   title: string;
@@ -2045,7 +2141,7 @@ export type PlaybookGraphEffectNode = PlaybookGraphNodeBase & {
   approval: PlaybookGraphEffectApprovalMode;
   idempotency: PlaybookGraphEffectIdempotency;
   idempotencyKey?: string;
-  input: Record<string, unknown>;
+  input: PlaybookGraphEffectInput;
   preview?: PlaybookGraphEffectPreview;
   outputArtifact?: string;
 };
@@ -2187,7 +2283,7 @@ const PlaybookGraphEffectNodeSchema = PlaybookGraphNodeBaseSchema.extend({
   approval: PlaybookGraphEffectApprovalModeSchema.default("required"),
   idempotency: PlaybookGraphEffectIdempotencySchema.default("required"),
   idempotencyKey: z.string().min(1).optional(),
-  input: z.record(z.unknown()).default({}),
+  input: PlaybookGraphEffectInputSchema.default({}),
   preview: PlaybookGraphEffectPreviewSchema.optional(),
   outputArtifact: z.string().min(1).optional(),
 }).strict();
@@ -2697,6 +2793,7 @@ export const EffectExecutionStatusSchema = z.enum([
   "previewed",
   "approved",
   "denied",
+  "commit_requested",
   "committed",
   "replayed",
   "failed",
@@ -2723,6 +2820,7 @@ export const EffectExecutionRecordSchema = z
     commitStatus: z.enum(["not_attempted", "committed", "replayed", "failed"]).optional(),
     outputArtifactId: z.string().min(1).optional(),
     outputReference: z.string().min(1).optional(),
+    output: PlaybookGraphEffectOutputSchema.optional(),
     error: z.string().min(1).optional(),
     createdAt: z.string().datetime(),
     completedAt: z.string().datetime().optional(),

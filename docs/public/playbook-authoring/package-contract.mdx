@@ -16,7 +16,7 @@ A package must expose:
 - Declared artifacts.
 - Declared capabilities.
 - Fixture and golden inputs for deterministic package-local tests.
-- Final materialization targets for Markdown, CSV, or JSON outputs.
+- Final materialization targets for Markdown, CSV, JSON, or PDF outputs.
 
 ## File Reference Rules
 
@@ -28,9 +28,12 @@ Every agent output must declare a schema. Prompts should tell agents to produce 
 
 ## Artifact Rules
 
-Every final artifact must be materializable. V1 materialization targets are Markdown, CSV, and JSON. Final artifacts should name their audience and acceptance check.
+Every final artifact must be materializable. V1 materialization targets are Markdown, CSV, JSON, and PDF. Final artifacts should name their audience and acceptance check.
+
+Use first-class `effect` nodes for materialization. Workspace outputs declare `input.target.kind: "workspace"`, a package-relative `path`, and a `format` of `markdown`, `json`, `csv`, or `pdf`. Connector-backed outputs declare `input.target.kind: "external"` and rely on Tessera effect evidence for the final output reference.
+
+CSV outputs are UTF-8 comma-separated rows. Fields with commas, quotes, or newlines are quoted, and embedded quotes are doubled.
 
 ## Capability Rules
 
 Every tool or connector use must be declared. Prefer generic capabilities such as Gmail, web search, web fetch, or package-local deterministic scripts. Domain-specific connector semantics should stay inside the external package until promoted as a generic Tessera primitive.
-

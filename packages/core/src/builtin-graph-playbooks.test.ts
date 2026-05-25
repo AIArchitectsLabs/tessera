@@ -64,7 +64,12 @@ describe("built-in graph playbooks", () => {
       expect(write?.onSuccess).toBe("completed");
       expect(write?.effectId).toBe("workspace.write");
       expect(write?.capability).toBe("tool.workspace.write");
-      expect(write?.input.path).toContain("{{inputs.");
+      expect(write?.input.target).toMatchObject({ kind: "workspace", format: "markdown" });
+      const target = write?.input.target;
+      if (!target || typeof target !== "object" || Array.isArray(target)) {
+        throw new Error("Expected workspace write target");
+      }
+      expect(String((target as Record<string, unknown>).path)).toContain("{{inputs.");
     }
   });
 

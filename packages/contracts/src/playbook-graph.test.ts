@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  EffectExecutionRecordSchema,
   PlaybookGraphArtifactPathRefSchema,
   PlaybookGraphCompileMetadataSchema,
+  PlaybookGraphEffectInputSchema,
+  PlaybookGraphEffectOutputSchema,
+  PlaybookGraphEffectTargetSchema,
+  PlaybookGraphMaterializationFormatSchema,
   PlaybookGraphNodeIdSchema,
   PlaybookGraphSchema,
   PlaybookGraphSourceRefSchema,
@@ -211,7 +216,11 @@ describe("PlaybookGraphSchema", () => {
           input: {
             sourceArtifact: "brief",
             value: { artifact: "brief" },
-            path: "brief.md",
+            target: {
+              kind: "workspace",
+              path: "brief.pdf",
+              format: "pdf",
+            },
           },
           preview: {
             schemaVersion: 1,
@@ -226,6 +235,94 @@ describe("PlaybookGraphSchema", () => {
     expect(conditionGraph.nodes[0]?.kind).toBe("condition");
     expect(effectGraph.nodes[0]?.kind).toBe("effect");
     expect(artifactWriteGraph.nodes[0]?.kind).toBe("artifactWrite");
+    if (effectGraph.nodes[0]?.kind !== "effect") throw new Error("Expected effect node");
+    expect(effectGraph.nodes[0].input.target).toEqual({
+      kind: "workspace",
+      path: "brief.pdf",
+      format: "pdf",
+    });
+  });
+
+  test("accepts supported effect materialization targets and outputs including pdf", () => {
+    expect(PlaybookGraphMaterializationFormatSchema.options).toEqual([
+      "markdown",
+      "json",
+      "csv",
+      "pdf",
+    ]);
+
+    for (const format of PlaybookGraphMaterializationFormatSchema.options) {
+      expect(PlaybookGraphEffectInputSchema.parse({ format })).toEqual({ format });
+      expect(
+        PlaybookGraphEffectTargetSchema.parse({
+          kind: "workspace",
+          path: `out/report.${format === "markdown" ? "md" : format}`,
+          format,
+        })
+      ).toMatchObject({ kind: "workspace", format });
+      expect(
+        PlaybookGraphEffectOutputSchema.parse({
+          kind: "workspace",
+          path: `out/report.${format === "markdown" ? "md" : format}`,
+          format,
+          bytes: 42,
+        })
+      ).toMatchObject({ kind: "workspace", format, bytes: 42 });
+    }
+
+    expect(
+      PlaybookGraphEffectTargetSchema.parse({
+        kind: "external",
+        reference: "gdrive://docs/report",
+        connectorId: "google-drive",
+        label: "Report",
+      })
+    ).toMatchObject({ kind: "external", reference: "gdrive://docs/report" });
+    expect(
+      PlaybookGraphEffectOutputSchema.parse({
+        kind: "external",
+        reference: "gdrive://docs/report",
+      })
+    ).toMatchObject({ kind: "external", reference: "gdrive://docs/report" });
+  });
+
+  test("rejects unsupported effect materialization formats", () => {
+    expect(() => PlaybookGraphEffectInputSchema.parse({ format: "xlsx" })).toThrow(
+      /markdown, json, csv, or pdf/
+    );
+    expect(() =>
+      PlaybookGraphEffectInputSchema.parse({
+        target: { kind: "workspace", path: "../brief.md", format: "markdown" },
+      })
+    ).toThrow(/workspace target or external output reference/);
+
+    expect(() =>
+      PlaybookGraphSchema.parse({
+        schemaVersion: 1,
+        id: "demo.invalid-format-graph",
+        version: "0.1.0",
+        name: "Invalid Format Graph",
+        capabilities: ["tool.workspace.write"],
+        start: "write",
+        nodes: [
+          {
+            id: "write",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            input: {
+              target: {
+                kind: "workspace",
+                path: "brief.xlsx",
+                format: "xlsx",
+              },
+            },
+          },
+        ],
+      })
+    ).toThrow(/workspace target or external output reference/);
   });
 
   test("defaults optional graph collections", () => {
@@ -318,6 +415,41 @@ describe("PlaybookGraphSchema", () => {
   test("rejects source refs that escape the package", () => {
     expect(() => PlaybookGraphSourceRefSchema.parse("../outside.ts")).toThrow();
     expect(() => PlaybookGraphSourceRefSchema.parse("/tmp/outside.ts")).toThrow();
+  });
+});
+
+describe("EffectExecutionRecordSchema", () => {
+  test("accepts a durable commit intent before adapter execution", () => {
+    const record = EffectExecutionRecordSchema.parse({
+      schemaVersion: 1,
+      effectExecutionRecordId: "queue-1:effect:commit-requested",
+      runId: "run-1",
+      queueEntryId: "queue-1",
+      nodeId: "write",
+      nodePath: "write",
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "commit_requested",
+      idempotencyKey: "workspace.write:demo:input:hash",
+      preview: {
+        schemaVersion: 1,
+        title: "Write brief",
+        summary: "Write the brief to the workspace.",
+      },
+      commitStatus: "not_attempted",
+      output: {
+        kind: "workspace",
+        path: "out/brief.pdf",
+        format: "pdf",
+        bytes: 1024,
+      },
+      createdAt: "2026-05-25T00:00:00.000Z",
+    });
+
+    expect(record.completedAt).toBeUndefined();
+    expect(record.output).toMatchObject({ kind: "workspace", format: "pdf" });
   });
 });
 
