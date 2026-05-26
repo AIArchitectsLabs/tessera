@@ -122,15 +122,17 @@ function isRetryableShellFailure(call: ShellToolCall, result: SpawnResult): bool
   return RETRYABLE_WEB_FETCH_ERROR.test(result.stderr);
 }
 
+export interface SpawnShellExecutor {
+  executeShell(call: ShellToolCall, env?: Record<string, string>): Promise<ShellToolResult>;
+}
+
 export function createSpawnShellExecutor(cli: {
   runWorkspaceCli(
     args: string[],
     timeoutMs?: number,
     env?: Record<string, string>
   ): Promise<SpawnResult>;
-}): {
-  executeShell(call: ShellToolCall, env?: Record<string, string>): Promise<ShellToolResult>;
-} {
+}): SpawnShellExecutor {
   return {
     async executeShell(call, env) {
       const validated = validateShellCall(call);
