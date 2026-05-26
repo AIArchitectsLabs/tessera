@@ -441,3 +441,37 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Unknown artifact/);
   });
 });
+
+describe("artifactWrite capability rule", () => {
+  const artifactWriteGraph = (capabilities: string[]) => ({
+    schemaVersion: 1,
+    id: "ops.write-check",
+    version: "1",
+    name: "Write check",
+    artifacts: { doc: { schema: "./schemas/doc.schema.json" } },
+    capabilities,
+    limits: {},
+    start: "persist",
+    nodes: [
+      {
+        id: "persist",
+        kind: "artifactWrite",
+        artifact: "doc",
+        path: "out/doc.md",
+        onSuccess: "completed",
+      },
+    ],
+  });
+
+  test("rejects artifactWrite without tool.workspace.write", () => {
+    expect(() => validatePlaybookGraph(artifactWriteGraph([]))).toThrow(
+      /requires the tool\.workspace\.write capability/
+    );
+  });
+
+  test("accepts artifactWrite when tool.workspace.write is declared", () => {
+    expect(() =>
+      validatePlaybookGraph(artifactWriteGraph(["tool.workspace.write"]))
+    ).not.toThrow();
+  });
+});

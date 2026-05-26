@@ -1556,6 +1556,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         nodes: [
           {
             id: "plan",
@@ -1626,6 +1627,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         nodes: [
           {
             id: "plan",
@@ -3527,6 +3529,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         start: "writePlan",
         nodes: [
           {

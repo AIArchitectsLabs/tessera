@@ -235,6 +235,15 @@ function validateGraphNodes(options: {
       }
     }
 
+    if (
+      node.kind === "artifactWrite" &&
+      !options.declaredCapabilities.has("tool.workspace.write")
+    ) {
+      throw new Error(
+        `artifactWrite node ${options.path}.${node.id} requires the tool.workspace.write capability`
+      );
+    }
+
     for (const artifact of consumedArtifacts(node)) {
       if (options.artifacts[artifact] === undefined) {
         throw new Error(`Unknown artifact consumed by ${options.path}.${node.id}: ${artifact}`);
