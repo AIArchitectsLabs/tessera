@@ -46,6 +46,7 @@ export function buildConnectorRegistry<Ctx>(
 
   const effects = new Map<string, GraphConnectorEffect<Ctx>>();
   const tools = new Map<string, GraphConnectorTool<Ctx>>();
+  const toolAdapterIds = new Map<string, string>();
   const effectPolicies: Record<string, PlaybookGraphEffectExecutionPolicy> = {};
   const toolPolicies: Record<string, PlaybookGraphToolExecutionPolicy> = {};
   const shellAllowlist: Record<string, GraphConnectorShellCommand[]> = {};
@@ -79,10 +80,19 @@ export function buildConnectorRegistry<Ctx>(
 
     for (const tool of connector.tools) {
       if (tools.has(tool.capability)) {
-        throw new Error(`Duplicate connector tool capability: ${tool.capability}`);
+        const firstAdapterId = toolAdapterIds.get(tool.capability);
+        throw new Error(
+          `Duplicate connector tool capability: ${tool.capability} (first registered by ${firstAdapterId}, conflict in ${connector.adapterId})`
+        );
+      }
+      if (!tool.handler && !(tool.shellAllowlist && tool.shellAllowlist.length > 0)) {
+        throw new Error(
+          `Connector tool ${tool.capability} has no handler and no shellAllowlist`
+        );
       }
       assertCanonical(tool.capability, `tool ${tool.capability}`);
       tools.set(tool.capability, tool);
+      toolAdapterIds.set(tool.capability, connector.adapterId);
       toolPolicies[tool.capability] = {
         capability: tool.capability,
         idempotent: tool.idempotent,

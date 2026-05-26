@@ -163,4 +163,25 @@ describe("buildConnectorRegistry", () => {
       buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
     ).toThrow(/requires approval but not preview/);
   });
+
+  test("rejects duplicate tool capability across connectors", () => {
+    const dup = webConnector();
+    dup.adapterId = "web2";
+    expect(() =>
+      buildConnectorRegistry({
+        connectors: [webConnector(), dup],
+        ctx,
+        shellToolAdapter: async () => ({}),
+      })
+    ).toThrow("Duplicate connector tool capability: integration.web.search");
+  });
+
+  test("rejects a tool with neither handler nor shellAllowlist", () => {
+    const bad = webConnector();
+    // biome-ignore lint/performance/noDelete: need to truly remove the optional property under exactOptionalPropertyTypes
+    delete bad.tools[0]!.shellAllowlist;
+    expect(() =>
+      buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
+    ).toThrow("has no handler and no shellAllowlist");
+  });
 });
