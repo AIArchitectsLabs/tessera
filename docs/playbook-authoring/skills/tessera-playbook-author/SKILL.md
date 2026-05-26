@@ -15,6 +15,10 @@ Prefer the repo-owned contract when the Tessera repo is available:
 - `docs/playbook-authoring/package-contract.md`
 - `docs/playbook-authoring/validation-loop.md`
 - `docs/playbook-authoring/sdk-helper-candidate-log.md`
+- `docs/playbook-authoring-recipe.md`
+- `docs/playbook-patterns.md`
+- `docs/playbook-validation-guide.md`
+- `docs/playbook-authoring/tessera-playbook-author-portable.md`
 
 This skill is an ergonomic wrapper around those docs, not a separate standard. Harness-specific adapters may copy or symlink this directory into their own skill roots, but this docs copy is the central source.
 
@@ -36,11 +40,13 @@ This skill is an ergonomic wrapper around those docs, not a separate standard. H
 
 4. Package generation or repair:
    - Load `references/package-contract.md`.
+   - Use `docs/playbook-patterns.md` when choosing graph patterns.
    - Keep domain schemas, prompts, scripts, fixtures, scoring, and final templates in the external playbook package.
    - Use package-relative refs and explicit schemas for agent outputs.
 
 5. Validation loop:
    - Load `references/validation-loop.md`.
+   - Use `docs/playbook-validation-guide.md` for diagnostic repair examples when available.
    - Run text and JSON validation.
    - Fix errors first, warnings second, then record evidence.
 

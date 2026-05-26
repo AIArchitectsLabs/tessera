@@ -1,6 +1,6 @@
 # Recipe 001: SEO/GEO Blog Article Playbook
 
-This recipe turns `/Users/utpal/Code/projects/seo-geo-blog-reference-playbook` from an impressive specimen into a reusable authoring pattern. It is a Tessera docs mirror of the reference package, not a new runtime contract.
+This recipe turns `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook` from an impressive specimen into a reusable authoring pattern. It is a Tessera docs mirror of the reference package, not a new runtime contract.
 
 The reference playbook proves this shape:
 
@@ -17,10 +17,10 @@ The reference playbook proves this shape:
 
 | Field | Value |
 | --- | --- |
-| Path | `/Users/utpal/Code/projects/seo-geo-blog-reference-playbook` |
+| Path | `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook` |
 | Manifest id | `reference.seo-geo-blog-article` |
-| Version | `0.1.22` |
-| Capabilities | `web.search`, `web.fetch` |
+| Version | `0.1.26` |
+| Capabilities | `web.search`, `web.fetch`, `tool.workspace.write` |
 | Final artifacts | `contentBrief`, `finalArticle` |
 | Final materialized files | `SEO GEO Blog Article/Briefs/{{inputs.primaryKeyword}} - Content Brief.md`, `SEO GEO Blog Article/Articles/{{inputs.primaryKeyword}} - Final Article.md` |
 
@@ -29,20 +29,20 @@ The reference playbook proves this shape:
 Text mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/projects/seo-geo-blog-reference-playbook
+bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook
 ```
 
 Result:
 
 ```text
-Playbook validation passed: /Users/utpal/Code/projects/seo-geo-blog-reference-playbook
+Playbook validation passed: /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook
 Summary: 0 error(s), 0 warning(s), 0 info
 ```
 
 JSON mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/projects/seo-geo-blog-reference-playbook --json
+bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook --json
 ```
 
 Result:
@@ -133,4 +133,3 @@ Result:
 ## Boundary Rule
 
 Do not move SEO/GEO identifiers, scoring fields, source taxonomies, prompt assumptions, or output formats into Tessera core. Tessera owns package loading, validation, execution, capabilities, review, artifact history, and materialization. The playbook package owns domain schemas, prompts, scripts, scoring, fixtures, and final templates.
-

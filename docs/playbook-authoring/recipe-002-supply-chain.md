@@ -1,6 +1,6 @@
 # Recipe 002: Supply Chain Early Warning and Disruption Response
 
-This recipe turns `/Users/utpal/Code/projects/supply-chain-risk-playbook` into a reusable Tessera playbook pattern. It is a docs mirror of the external package shape, not a new runtime contract.
+This recipe turns `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` into a reusable Tessera playbook pattern. It is a docs mirror of the external package shape, not a new runtime contract.
 
 The external playbook should prove this shape:
 
@@ -17,25 +17,26 @@ The external playbook should prove this shape:
 
 | Field | Value |
 | --- | --- |
-| Path | `/Users/utpal/Code/projects/supply-chain-risk-playbook` |
+| Path | `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` |
 | Manifest id | `supply-chain.early-warning-response` |
-| Version | `0.1.0` |
-| Capabilities | none in the scaffold; live source use is deferred until later V1 work |
-| Final artifacts | `mitigationPlan`, `finalDisruptionPacket` |
-| Final materialized file | `Supply Chain Risk Response/Final Disruption Packet.md` |
+| Version | `0.2.0` |
+| Capabilities | required `tool.workspace.write`; optional `gmail.search`, `web.search`, `web.fetch` |
+| Final artifacts | `riskRegister`, `finalDisruptionPacket` |
+| Final materialized files | Risk register and final disruption packet workspace outputs |
 
-## V1 Free-Source Strategy
+## Fixture-First Source Strategy
 
-The future V1 design keeps the source surface free or public wherever possible:
+The current V1 package keeps the source surface fixture-first while declaring the live source shape for later connector-backed runs:
 
-- Mandatory later V1 sources: Gmail, `web.search`, `web.fetch`, GDELT, CBP feeds, NWS alerts.
-- Optional later V1 sources: FDA recalls and curated trade press.
+- Required runtime capability: `tool.workspace.write`.
+- Optional live source capabilities: `gmail.search`, `web.search`, and `web.fetch`.
+- Fixture evidence covers Gmail, web, CBP/feed, weather, and recall-style provenance without credentials.
 - Public feed content should be fetched and parsed by the playbook package, not by a Tessera-specific supply-chain runtime.
-- Fixture-only validation must work before any live connector access is added.
+- Live connector access remains a Tessera runtime concern.
 
 ## Core `riskSignal[]` Contract
 
-Each later source should normalize into a `riskSignal[]` item with provenance:
+Each source should normalize into a `riskSignal[]` item with provenance:
 
 ```json
 {

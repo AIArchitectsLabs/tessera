@@ -105,7 +105,7 @@ with a clear error.
 
 The first fixture is:
 
-- Source repo: `/Users/utpal/Code/projects/seo-geo-blog-reference-playbook`
+- Source repo: `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook`
 - Manifest id: `reference.seo-geo-blog-article`
 - Manifest version: `0.1.0`
 - Display name: `SEO/GEO Blog Article Reference Playbook`

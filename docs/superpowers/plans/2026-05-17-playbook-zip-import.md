@@ -67,7 +67,7 @@ Optional manual fixture:
 
 ## Task 0: Create The SEO Zip Fixture
 
-- [ ] From `/Users/utpal/Code/projects/seo-geo-blog-reference-playbook`, create a
+- [ ] From `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook`, create a
   zip that includes `manifest.json`, `playbook.ts`, `prompts/`, `scripts/`,
   `schemas/`, `assets/`, `PLAYBOOK.md`, `package.json`, and `tsconfig.json`.
 - [ ] Name it

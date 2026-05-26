@@ -24,7 +24,7 @@ Tessera is the only runtime. External agents may author, validate, repair, packa
 - Use package-relative refs.
 - Declare every capability used by tools or connectors.
 - Declare schemas for every agent output.
-- Materialize final artifacts as markdown, CSV, or JSON.
+- Materialize final artifacts as markdown, CSV, JSON, or PDF.
 - Keep domain schemas, prompts, scoring, fixtures, and taxonomies in the external package.
 - Keep Tessera runtime, connector policy, review pause handling, and artifact history in Tessera.
 

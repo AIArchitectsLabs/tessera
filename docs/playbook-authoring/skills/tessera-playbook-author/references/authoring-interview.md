@@ -33,7 +33,7 @@ Data:
 
 Artifacts:
 
-- What final markdown, CSV, or JSON outputs are required?
+- What final markdown, CSV, JSON, or PDF outputs are required?
 - Who reads each artifact?
 - What schema or template backs each artifact?
 

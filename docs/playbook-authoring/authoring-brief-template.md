@@ -34,7 +34,7 @@ Use this brief before generating or repairing an external Tessera playbook packa
 
 Capability examples:
 
-- `gmail`
+- `gmail.search`
 - `web.search`
 - `web.fetch`
 - public feed fetched through `web.fetch`
@@ -69,7 +69,7 @@ Capability examples:
 Rules:
 
 - Every agent output must declare a schema.
-- Every final artifact must be materializable as markdown, CSV, or JSON.
+- Every final artifact must be materializable as markdown, CSV, JSON, or PDF.
 - Domain-specific schemas stay in the external playbook package.
 
 ## Prompt And Script Plan
@@ -97,7 +97,7 @@ Rules:
 
 | Artifact | Format | Audience | Materialization rule | Acceptance check |
 | --- | --- | --- | --- | --- |
-|  | markdown/csv/json |  |  |  |
+|  | markdown/csv/json/pdf |  |  |  |
 
 ## Validation Plan
 

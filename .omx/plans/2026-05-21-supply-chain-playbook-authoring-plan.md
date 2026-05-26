@@ -11,11 +11,11 @@ Last updated: 2026-05-26
 | 2A. Validation CLI first | Complete | executor + test-engineer | `playbook validate <path>` text/JSON diagnostics, exit-code tests, negative fixtures, repair hints, and SEO/GEO/supply-chain validation evidence |
 | 2A.5. Playbook authoring skill | Complete | writer + architect + test-engineer | Repo-canonical docs, local `tessera-playbook-author` skill wrapper, structural skill validation, and third-domain authoring-brief forward test are complete |
 | 2B. Minimal authoring SDK helpers | Planned | executor | Helpers justified by SEO/GEO, supply-chain, or Phase 2A.5 forward-test friction; placeholder scaffold validation |
-| 3. Supply-chain recipe | Complete | writer + architect | `/Users/utpal/Code/projects/supply-chain-risk-playbook/docs/recipe-002-supply-chain-risk.md` defines inputs, artifacts, graph phases, review gates, V1 free-source strategy, final outputs, and `riskSignal[]` provenance contract |
-| 4. External supply-chain scaffold | Complete | executor | `/Users/utpal/Code/projects/supply-chain-risk-playbook` validates through Tessera CLI and package tests without live connector access |
-| 5. V1 supply-chain flow | Planned | executor + test-engineer | Fixture-only final packet before live Gmail/web/feed paths |
+| 3. Supply-chain recipe | Complete | writer + architect | `/Users/utpal/Code/playbooks/supply-chain-risk-playbook/docs/recipe-002-supply-chain-risk.md` defines inputs, artifacts, graph phases, review gates, V1 free-source strategy, final outputs, and `riskSignal[]` provenance contract |
+| 4. External supply-chain scaffold | Complete | executor | `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` validates through Tessera CLI and package tests without live connector access |
+| 5. V1 supply-chain flow | Complete | executor + test-engineer | Fixture-only risk register and final disruption packet verified before live Gmail/web/feed paths |
 | 6. Tessera import/runtime polish | Complete | executor | Folder/archive import, capability preview, provenance trace, review surfaces, and final output materialization verified |
-| 7. Cookbook portability polish | Planned | writer | Portable agent instructions and third-playbook proof refined after Phase 2A.5 and Phase 2B |
+| 7. Cookbook portability polish | Complete | writer | Portable cookbook, repair guide, agent instructions, and third-playbook validation/import proof verified |
 
 Status semantics: `Planned` means scoped in this plan but not yet proven by command output; upgrade to `In progress` or `Complete` only when the phase has fresh verification evidence.
 
@@ -33,10 +33,10 @@ Status semantics: `Planned` means scoped in this plan but not yet proven by comm
 | Third-domain forward test | 2A.5 | Tessera docs / local skill evidence | Complete | `docs/playbook-authoring/forward-test-001-customer-support-escalation.md` proves the skill produces a third-domain authoring brief and stops before generation when requirements are unclear |
 | Minimal SDK helpers | 2B | Tessera repo | Not started | Helpers are used by at least SEO/GEO or supply-chain and stay domain-neutral |
 | Supply-chain recipe document | 3 | External supply-chain repo | Complete | `docs/recipe-002-supply-chain-risk.md` documents inputs, graph phases, artifacts, review gates, final outputs, V1 free-source strategy, and `riskSignal[]` provenance |
-| External supply-chain scaffold | 4 | `/Users/utpal/Code/projects/supply-chain-risk-playbook` | Complete | Package loads through Tessera loader and validates without live connectors |
-| Fixture-only V1 flow | 5 | External supply-chain repo | Not started | Fixtures produce risk registers and final disruption packet |
-| Import/runtime polish | 6 | Tessera repo | Not started | Tessera imports package, previews capabilities, shows provenance, and writes final files |
-| Cookbook portability polish | 7 | Tessera docs and portable skill package | Not started | Third-playbook proof and portable external-agent instructions are refined after skill V0 and SDK helper evidence |
+| External supply-chain scaffold | 4 | `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` | Complete | Package loads through Tessera loader and validates without live connectors |
+| Fixture-only V1 flow | 5 | External supply-chain repo | Complete | Fixtures produce risk registers and final disruption packet |
+| Import/runtime polish | 6 | Tessera repo | Complete | Tessera imports package, previews capabilities, shows provenance, and writes final files |
+| Cookbook portability polish | 7 | Tessera docs and portable skill package | Complete | `docs/playbook-authoring-recipe.md`, `docs/playbook-patterns.md`, `docs/playbook-validation-guide.md`, portable skill instructions, and procurement proof are complete |
 
 ## Requirements Summary
 
@@ -83,7 +83,7 @@ External SEO/GEO repo:
 
 External supply-chain repo:
 
-- Proposed path: `/Users/utpal/Code/projects/supply-chain-risk-playbook`
+- Proposed path: `/Users/utpal/Code/playbooks/supply-chain-risk-playbook`
 - Owns supply-chain prompts, schemas, scripts, tests, and fixtures.
 - Imports only Tessera playbook SDK/contract packages.
 - Never imports Tessera app internals or vendors Tessera source.
@@ -135,7 +135,7 @@ Completion evidence:
 
 - Boundary note added at `docs/playbook-authoring/tessera-external-boundary.md`.
 - Tessera work remains domain-neutral: no supply-chain-specific contract, sidecar, desktop UI, or runtime type was added for Phases 3/4.
-- Supply-chain schemas, prompts, scripts, scoring, fixtures, and `riskSignal[]` provenance contract live in `/Users/utpal/Code/projects/supply-chain-risk-playbook`.
+- Supply-chain schemas, prompts, scripts, scoring, fixtures, and `riskSignal[]` provenance contract live in `/Users/utpal/Code/playbooks/supply-chain-risk-playbook`.
 - Both external reference packages validate through the Tessera CLI with 0 diagnostics.
 
 ## Phase 1: Recipe From Existing SEO/GEO Playbook
@@ -346,7 +346,7 @@ SDK candidates:
 
 - `definePlaybook`
 - artifact definition helpers
-- node helpers for `script`, `tool`, `agent`, `parallelMap`, `condition`, `humanReview`, `artifactWrite`
+- node helpers for `script`, `tool`, `agent`, `parallelMap`, `condition`, `humanReview`, and materialization `effect`
 - review/rework loop helper, only if it removes proven duplication
 - test helpers for graph loading and script fixtures
 
@@ -599,13 +599,13 @@ Next planning/review step:
 Recorded: 2026-05-26.
 
 Status: Phase 5 is implemented and verified in the external package at
-`/Users/utpal/Code/projects/supply-chain-risk-playbook`.
+`/Users/utpal/Code/playbooks/supply-chain-risk-playbook`.
 
 Evidence:
 
 - Package version bumped to `0.2.0`.
 - Updated import archive created at
-  `/Users/utpal/Code/projects/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`.
+  `/Users/utpal/Code/playbooks/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`.
 - Default graph path is fixture-first and does not execute live Gmail/web/feed tool nodes.
 - Graph-level `fixtureRiskSignals` artifact is produced by `loadFixtureRiskSignals` and consumed by `buildRiskSignalFanIn`.
 - Fixture evidence distinguishes Gmail, web, CBP/feed, weather, and recall provenance.
@@ -622,7 +622,7 @@ Next planning/review step:
 
 Outcome:
 
-- Polish the Phase 2A.5 authoring contract and skill into broader portable instructions for Claude Code, Codex, Claude Cowork, Pi Agent, and Tessera itself after SDK helper evidence exists.
+- Polish the Phase 2A.5 authoring contract and skill into broader portable instructions for Claude Code, Codex, Claude Cowork, Pi Agent, and Tessera itself while leaving SDK helper promotion deferred to Phase 2B.
 
 Deliverables:
 
@@ -640,10 +640,41 @@ Deliverables:
 
 Acceptance criteria:
 
-- An external agent can scaffold a third playbook using the recipe after Phase 2A.5 and Phase 2B.
+- An external agent can scaffold a third playbook using the recipe and the Phase 2A.5 contract without waiting on SDK helper promotion.
 - The third playbook can scaffold, validate, package, and import without needing supply-chain or SEO-specific knowledge.
 - The cookbook clearly separates SDK helpers, domain scripts, and runtime responsibilities.
 - Agent prompts explicitly forbid external playbook execution and reinforce Tessera-only runtime.
+
+### Phase 7 Execution Review Note
+
+Recorded: 2026-05-26.
+
+Status: Phase 7 is implemented and verified in Tessera docs.
+
+Evidence:
+
+- `docs/playbook-authoring-recipe.md` provides the portable end-to-end authoring flow.
+- `docs/playbook-patterns.md` separates reusable graph patterns from domain logic.
+- `docs/playbook-validation-guide.md` turns validator output into a prescriptive repair loop with worked failure classes.
+- `docs/playbook-authoring/tessera-playbook-author-portable.md` provides agent-neutral instructions for Claude Code, Codex, Claude Cowork, Pi Agent, Tessera agents, and other coding agents.
+- `docs/playbook-authoring/forward-test-001-customer-support-escalation.md` and `docs/playbook-authoring/portability-proof-001-customer-support-escalation.md` record prompt-level forward tests and include the required `tool.workspace.write` capability for final outputs.
+- `docs/playbook-authoring/portability-proof-002-procurement-rfq-followup.md` records the actual third-playbook validation/import proof.
+- Canonical reference paths now point to `/Users/utpal/Code/playbooks/...`.
+
+Verification:
+
+- SEO/GEO reference validation text mode: 0 errors, 0 warnings, 0 info.
+- SEO/GEO reference validation JSON mode: `ok: true`, 0 diagnostics.
+- Supply-chain reference validation text mode: 0 errors, 0 warnings, 0 info.
+- Supply-chain reference validation JSON mode: `ok: true`, 0 diagnostics.
+- Procurement third-playbook validation text mode: 0 errors, 0 warnings, 0 info.
+- Procurement third-playbook validation JSON mode: `ok: true`, 0 diagnostics.
+- Procurement folder/archive import smoke: version `1.0.6`, matching graph/source hashes, no warnings.
+- Docs audit/style/validate passed.
+
+Next planning/review step:
+
+- Phase 7 closes this authoring-plan arc without claiming Phase 2B completion. Future work should start a new scoped plan for SDK helper promotion or live connector cookbook updates.
 
 ## Risks And Mitigations
 
@@ -694,15 +725,15 @@ For SEO/GEO reference:
 
 ```bash
 bun test
-tessera playbook validate /Users/utpal/Code/projects/seo-geo-blog-reference-playbook
+tessera playbook validate /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook
 ```
 
 For external supply-chain package:
 
 ```bash
 bun test
-tessera playbook validate /Users/utpal/Code/projects/supply-chain-risk-playbook
-tessera playbook compile /Users/utpal/Code/projects/supply-chain-risk-playbook
+tessera playbook validate /Users/utpal/Code/playbooks/supply-chain-risk-playbook
+tessera playbook compile /Users/utpal/Code/playbooks/supply-chain-risk-playbook
 ```
 
 ## Available Agent Types Roster
@@ -795,7 +826,7 @@ Follow-ups:
 
 | Decision | Default recommendation | Owner lane | Needed before | Resolution evidence |
 | --- | --- | --- | --- | --- |
-| Exact external repo path/name | Use `/Users/utpal/Code/projects/supply-chain-risk-playbook` unless an existing repo already owns this domain | leader + executor | Phase 4 scaffold | Repo exists with README, manifest, package metadata, and no Tessera source vendoring |
+| Exact external repo path/name | Use `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` unless an existing repo already owns this domain | leader + executor | Phase 4 scaffold | Repo exists with README, manifest, package metadata, and no Tessera source vendoring |
 | `tessera playbook init` timing | Defer until after the first supply-chain scaffold exposes repeated scaffold errors | executor + test-engineer | Phase 2B completion review | Validator/scaffold error log showing whether init would remove real repetition |
 | Mandatory vs optional free feeds | Keep Gmail, web search/fetch, GDELT, CBP CSMS/RSS, and NWS mandatory; keep FDA recalls and trade press optional for V1 | architect + writer | Phase 3 recipe finalization | Recipe maps every mandatory source into `riskSignal[]` with fixture coverage |
 
@@ -813,6 +844,6 @@ Conservative review:
 - Phase 5 execution evidence has been recorded in this plan.
 - The next valid planning or execution step is Phase 6: Tessera Import And Runtime Polish.
 - Phase 6 should begin only after importing
-  `/Users/utpal/Code/projects/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`
+  `/Users/utpal/Code/playbooks/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`
   and verifying runtime product behavior: capability preview, provenance trace, review/request-changes behavior, and final workspace writes.
 - No unresolved ralplan review ambiguity remains before stopping.

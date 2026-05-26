@@ -7,7 +7,7 @@ This evidence closes the Phase 2A.5 forward-test gate for `tessera-playbook-auth
 ```text
 Use $tessera-playbook-author to author a Customer Support Escalation Triage playbook.
 The playbook should help a support manager review urgent customer issues and prepare a daily escalation packet.
-We may use Gmail for support-manager email threads and web.fetch for public status-page evidence.
+We may use Gmail for support-manager email threads, web.fetch for public status-page evidence, and workspace writes for final markdown/CSV outputs.
 ```
 
 ## Skill Behavior Expected
@@ -45,8 +45,9 @@ Source inventory:
 
 | Source | Capability | Access mode | Fixture/golden coverage | Notes |
 | --- | --- | --- | --- | --- |
-| Support-manager email threads | `gmail` | live connector later, fixture first | missing | Needs privacy/redaction policy |
+| Support-manager email threads | `gmail.search` | live connector later, fixture first | missing | Needs privacy/redaction policy |
 | Public status pages | `web.fetch` | fetched public URLs | missing | Exact status-page URLs unknown |
+| Workspace final outputs | `tool.workspace.write` | Tessera effect after approval | missing | Required for final markdown/CSV materialization |
 
 Data requirements:
 
@@ -61,10 +62,10 @@ Graph sketch:
 | --- | --- | --- | --- | --- | --- |
 | Intake | tool | Gmail query and status URLs | raw source evidence | yes | no |
 | Normalize | script/agent | raw source evidence | `escalationSignal[]` | yes | no |
-| Analyze | agent/script | `escalationSignal[]` | prioritized escalation register | yes | maybe |
+| Analyze | agent/script | `escalationSignal[]` | prioritized escalation register | yes | conditional |
 | Draft | agent | escalation register | daily packet draft | yes | yes |
 | Review | humanReview | daily packet draft | approved or changes requested | yes | yes |
-| Materialize | artifactWrite | approved packet | markdown/CSV/JSON outputs | yes | no |
+| Materialize | effect | approved packet | markdown/CSV/PDF outputs | yes | no |
 
 Schema plan:
 
