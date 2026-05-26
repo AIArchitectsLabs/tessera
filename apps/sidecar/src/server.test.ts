@@ -7470,6 +7470,16 @@ describe("sidecar utility handlers", () => {
     await expect(resolveGoogleWorkspaceCliEnv?.(["gcal", "list"], manager, {})).resolves.toEqual({
       TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
     });
+    await expect(
+      resolveGoogleWorkspaceCliEnv?.(["sheets", "rows.upsert"], manager, {})
+    ).resolves.toEqual({
+      TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+    });
+    await expect(
+      resolveGoogleWorkspaceCliEnv?.(["docs", "documents.create"], manager, {})
+    ).resolves.toEqual({
+      TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+    });
   });
 
   test("installs the archive-based gws builtin through the sidecar install endpoint", async () => {

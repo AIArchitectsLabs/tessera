@@ -2539,6 +2539,71 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("shows the run failure before the latest resume event", async () => {
+    const failedRun = {
+      ...graphRunDetail.run,
+      status: "failed" as const,
+      error:
+        "Using keyring backend: keyring\nerror[api]: Request had insufficient authentication scopes.",
+      blockedReason: undefined,
+      currentQueueEntryId: "queue-sheets-failed",
+      updatedAt: "2026-05-15T00:02:00.000Z",
+    };
+    graphRunListOverride = [failedRun];
+    graphRunSurfaceOverride = {
+      ...graphRunSurface,
+      detail: {
+        ...graphRunDetail,
+        run: failedRun,
+        queue: [
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-sheets-failed",
+            nodeId: "commitSheetsLedger",
+            nodePath: "commitSheetsLedger",
+            nodeKind: "effect",
+            status: "failed",
+            error: failedRun.error,
+            blockedReason: undefined,
+            completedAt: "2026-05-15T00:02:00.000Z",
+            updatedAt: "2026-05-15T00:02:00.000Z",
+          },
+        ],
+        operations: [
+          {
+            schemaVersion: 1,
+            operationRecordId: "resume-operation",
+            operationAttemptId: "resume-attempt",
+            runId: failedRun.runId,
+            actionSpecId: "queue-review:approve",
+            kind: "resume",
+            status: "succeeded",
+            operatorIntent: "Approve outreach plan",
+            affectedArtifactIds: [],
+            affectedReviewEventIds: [],
+            affectedQueueEntryIds: ["queue-review"],
+            createdAt: "2026-05-15T00:01:30.000Z",
+            completedAt: "2026-05-15T00:01:31.000Z",
+          },
+        ],
+      },
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText(/insufficient authentication scopes/)).toBeTruthy();
+      expect(view.queryByText("Resume succeeded")).toBeNull();
+    });
+  });
+
   test("shows a soft-timeout badge for long-running graph work with fresh heartbeat", async () => {
     const nowMs = Date.now();
     const claimedAt = new Date(nowMs - 6 * 60_000).toISOString();

@@ -3926,6 +3926,8 @@ function GuidedResult({
       ? "Here's what changed, what's at risk, and what needs follow-up."
       : (resultSub[resultRun.status] ?? "");
   const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs, inferredOutputKinds);
+  const failureMessage =
+    resultRun.status === "failed" ? (resultRun.error ?? latestEvent?.message) : null;
 
   async function openArtifact(path: string) {
     if (!openWorkspaceRoot) return;
@@ -3963,9 +3965,9 @@ function GuidedResult({
             <UsageSummary usage={resultRun.usage} />
           </div>
         ) : null}
-        {resultRun.status === "failed" && latestEvent ? (
+        {failureMessage ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {latestEvent.message}
+            {failureMessage}
           </p>
         ) : null}
         {blockedWithoutApproval ? (

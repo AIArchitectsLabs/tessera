@@ -201,11 +201,13 @@ const GOOGLE_WORKSPACE_BINARY_NAME = "gws";
 const GOOGLE_WORKSPACE_CLI_COMMANDS = new Set([
   "calendar",
   "contacts",
+  "docs",
   "drive",
   "gcal",
   "gmail",
   "mail",
   "people",
+  "sheets",
 ]);
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),

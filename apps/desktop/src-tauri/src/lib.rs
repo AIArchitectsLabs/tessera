@@ -25,6 +25,16 @@ const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_O
 const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
 const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
 const GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID: &str = "tessera";
+const GOOGLE_WORKSPACE_AUTH_SCOPES: &str = concat!(
+    "https://www.googleapis.com/auth/calendar.readonly,",
+    "https://www.googleapis.com/auth/gmail.readonly,",
+    "https://www.googleapis.com/auth/gmail.compose,",
+    "https://www.googleapis.com/auth/drive.readonly,",
+    "https://www.googleapis.com/auth/contacts.readonly,",
+    "https://www.googleapis.com/auth/documents.readonly,",
+    "https://www.googleapis.com/auth/documents,",
+    "https://www.googleapis.com/auth/spreadsheets"
+);
 const GWS_CLI_URL_ENV: &str = "TESSERA_GWS_CLI_URL";
 const GWS_CLI_SHA256_ENV: &str = "TESSERA_GWS_CLI_SHA256";
 const GWS_CLI_VERSION_ENV: &str = "TESSERA_GWS_CLI_VERSION";
@@ -584,11 +594,13 @@ fn workspace_cli_uses_google_workspace(args: &[&str]) -> bool {
         args.first().copied(),
         Some("calendar")
             | Some("contacts")
+            | Some("docs")
             | Some("drive")
             | Some("gcal")
             | Some("gmail")
             | Some("mail")
             | Some("people")
+            | Some("sheets")
     )
 }
 
@@ -1558,14 +1570,8 @@ async fn google_workspace_auth_status(
     run_google_workspace_cli_command(app, state, &["auth", "status"]).await
 }
 
-fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
-    vec![
-        "auth",
-        "login",
-        "--readonly",
-        "--services",
-        "calendar,gmail,drive,people,docs,sheets",
-    ]
+fn google_workspace_auth_args() -> Vec<&'static str> {
+    vec!["auth", "login", "--scopes", GOOGLE_WORKSPACE_AUTH_SCOPES]
 }
 
 fn google_identity_auth_args() -> Vec<&'static str> {
@@ -2696,12 +2702,9 @@ async fn google_workspace_connect(
         });
     }
 
-    let login = start_google_workspace_login_command(
-        &app,
-        state.inner(),
-        &google_workspace_readonly_auth_args(),
-    )
-    .await?;
+    let login =
+        start_google_workspace_login_command(&app, state.inner(), &google_workspace_auth_args())
+            .await?;
     if login.exit_code == 124 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
@@ -3268,12 +3271,13 @@ pub fn run() {
 mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_identity_auth_args,
-        google_workspace_config_dir, google_workspace_gws_client_secret_path,
-        google_workspace_oauth_client_json, google_workspace_oauth_missing_message,
-        google_workspace_readonly_auth_args, normalize_google_workspace_oauth_client_file,
+        google_workspace_auth_args, google_workspace_config_dir,
+        google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
+        google_workspace_oauth_missing_message, normalize_google_workspace_oauth_client_file,
         resolve_google_workspace_cli_path, search_connection_command, tool_policy_runtime_json,
         workspace_cli_uses_google_workspace, CapabilityBinaryResult, SpawnResult,
-        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
     use std::path::PathBuf;
@@ -3369,6 +3373,16 @@ mod tests {
             "calendar",
             "calendarList",
             "list"
+        ]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "sheets",
+            "rows.upsert",
+            "--dry-run"
+        ]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "docs",
+            "documents.create",
+            "--dry-run"
         ]));
         assert!(!workspace_cli_uses_google_workspace(&[
             "web-search",
@@ -3560,17 +3574,20 @@ mod tests {
     }
 
     #[test]
-    fn google_workspace_auth_uses_readonly_multi_service_profile() {
+    fn google_workspace_auth_requests_workspace_read_write_scopes() {
+        let args = google_workspace_auth_args();
         assert_eq!(
-            google_workspace_readonly_auth_args(),
-            vec![
-                "auth",
-                "login",
-                "--readonly",
-                "--services",
-                "calendar,gmail,drive,people,docs,sheets"
-            ]
+            args,
+            vec!["auth", "login", "--scopes", GOOGLE_WORKSPACE_AUTH_SCOPES]
         );
+        assert!(!args.contains(&"--readonly"));
+        assert!(!args.contains(&"--full"));
+
+        let scopes: Vec<&str> = GOOGLE_WORKSPACE_AUTH_SCOPES.split(',').collect();
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.compose"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/spreadsheets"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/documents"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly"));
     }
 
     #[test]
