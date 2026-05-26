@@ -208,3 +208,15 @@ export {
   type PlaybookGraphToolAdapterInput,
   type PlaybookGraphToolExecutionPolicy,
 } from "./playbook-graph-runtime.js";
+export type {
+  GraphConnector,
+  GraphConnectorArtifactWrite,
+  GraphConnectorEffect,
+  GraphConnectorShellCommand,
+  GraphConnectorTool,
+} from "./graph-connector.js";
+export {
+  buildConnectorRegistry,
+  type BuildConnectorRegistryOptions,
+  type GraphConnectorRegistry,
+} from "./graph-connector-registry.js";
