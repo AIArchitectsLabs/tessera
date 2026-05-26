@@ -3630,6 +3630,7 @@ describe("graph run endpoints", () => {
         id: "content.materialize",
         version: "0.1.0",
         name: "Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
@@ -4521,6 +4522,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-materialize",
         version: "0.1.0",
         name: "Workspace Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
@@ -4658,6 +4660,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-markdown-materialize",
         version: "0.1.0",
         name: "Workspace Markdown Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { brief: { schema: "schemas/brief.schema.json" } },
         start: "draft",
         nodes: [
@@ -4733,6 +4736,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-resume",
         version: "0.1.0",
         name: "Workspace Resume Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
