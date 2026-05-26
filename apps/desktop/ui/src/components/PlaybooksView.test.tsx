@@ -57,8 +57,8 @@ const playbook = {
   sourceHash: "sha256:source",
   category: "Sales",
   businessUseCase: "Prepare for a customer or prospect meeting",
-  requiredCapabilities: [],
-  optionalCapabilities: [],
+  requiredCapabilities: ["tool.workspace.write"],
+  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
   inputs: {},
   outputs: [{ kind: "meetingBrief", label: "Meeting brief" }],
   steps: [
@@ -127,8 +127,8 @@ const importedPlaybook = {
   description: "Imported archive playbook",
   graphHash: "sha256:imported-graph",
   sourceHash: "sha256:imported-source",
-  requiredCapabilities: [],
-  optionalCapabilities: [],
+  requiredCapabilities: ["tool.workspace.write"],
+  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
   inputs: {},
   outputs: [],
   steps: [],
@@ -951,6 +951,12 @@ const completedGraphRunDetail = {
       value: {
         text: "## Meeting brief\n\nCreated the brief and saved it in the workspace.",
         boundaryViolations: 0,
+        provenance: {
+          sourceKinds: ["gmail", "web", "cbp"],
+          sourceCount: 5,
+          fixtureOnly: true,
+          notes: "fixture evidence",
+        },
         usage: {
           inputTokens: 1200,
           outputTokens: 340,
@@ -1834,7 +1840,9 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke,
 }));
 
-const openMock = mock<() => Promise<string | null>>(async () => "/tmp/reference.playbook.zip");
+const openMock = mock<(_options?: unknown) => Promise<string | null>>(
+  async () => "/tmp/reference.playbook.zip"
+);
 
 mock.module("@tauri-apps/plugin-dialog", () => ({
   open: openMock,
@@ -2098,6 +2106,8 @@ describe("PlaybooksView", () => {
     fireEvent.click(view.getByRole("button", { name: "View run details" }));
     await waitFor(() => {
       expect(view.getByText("Assigned to Analyst • Tools: Workspace Read")).toBeTruthy();
+      expect(view.getByText("Source provenance")).toBeTruthy();
+      expect(view.getByText("Gmail, Web, CBP feed · 5 sources · fixture run")).toBeTruthy();
     });
 
     const artifactCard = view.getByTitle("Open artifact");
@@ -3091,9 +3101,9 @@ describe("PlaybooksView", () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByTitle("Import playbook")).toBeTruthy();
+      expect(view.getByTitle("Import playbook archive")).toBeTruthy();
     });
-    fireEvent.click(view.getByTitle("Import playbook"));
+    fireEvent.click(view.getByTitle("Import playbook archive"));
 
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledWith({
@@ -3122,14 +3132,52 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("imports a playbook folder and selects the imported playbook", async () => {
+    graphRunListOverride = [];
+    openMock.mockImplementation(async () => "/tmp/supply-chain-risk-playbook");
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByTitle("Import playbook folder")).toBeTruthy();
+    });
+    fireEvent.click(view.getByTitle("Import playbook folder"));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith({ multiple: false, directory: true });
+      expect(
+        invoke.mock.calls.some(
+          ([command, args]) =>
+            command === "playbook_import" &&
+            (args as Record<string, unknown>).sourcePath === "/tmp/supply-chain-risk-playbook" &&
+            (args as Record<string, unknown>).userKey === "user.test"
+        )
+      ).toBe(true);
+      expect(view.getByText("Folder selected")).toBeTruthy();
+      expect(view.getAllByText("Package 0.1.3").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Tessera needs these capabilities to run")).toBeTruthy();
+      expect(view.getByText("Workspace Write")).toBeTruthy();
+      expect(view.getByText("Tessera uses these sources when available")).toBeTruthy();
+      expect(view.getByText("Gmail Search")).toBeTruthy();
+      expect(view.getByText("Web Search")).toBeTruthy();
+      expect(view.getByText("Web Fetch")).toBeTruthy();
+    });
+  });
+
   test("canceling playbook import leaves state unchanged", async () => {
     openMock.mockImplementation(async () => null);
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByTitle("Import playbook")).toBeTruthy();
+      expect(view.getByTitle("Import playbook archive")).toBeTruthy();
     });
-    fireEvent.click(view.getByTitle("Import playbook"));
+    fireEvent.click(view.getByTitle("Import playbook archive"));
 
     await waitFor(() => {
       expect(openMock).toHaveBeenCalled();

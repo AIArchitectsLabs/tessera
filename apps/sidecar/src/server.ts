@@ -141,7 +141,10 @@ import {
   resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
-import { importGraphPlaybookArchive } from "./graph-playbook-importer.js";
+import {
+  importGraphPlaybookArchive,
+  importGraphPlaybookFolder,
+} from "./graph-playbook-importer.js";
 import {
   type GraphPlaybookRegistryEntry,
   loadInstalledGraphPlaybookCatalog,
@@ -1552,22 +1555,42 @@ export async function handleGraphPlaybookImport(
 
   const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const zipPath = typeof input.zipPath === "string" ? input.zipPath.trim() : "";
-  if (!zipPath) {
-    return Response.json({ error: "zipPath is required" }, { status: 400 });
+  const sourceRoot =
+    typeof input.sourceRoot === "string"
+      ? input.sourceRoot.trim()
+      : typeof input.sourcePath === "string"
+        ? input.sourcePath.trim()
+        : "";
+  if (!zipPath && !sourceRoot) {
+    return Response.json({ error: "zipPath or sourceRoot is required" }, { status: 400 });
+  }
+  if (zipPath && sourceRoot) {
+    return Response.json(
+      { error: "Provide either zipPath or sourceRoot, not both" },
+      { status: 400 }
+    );
   }
 
   const graphPlaybooks = graphPlaybookRequestScope(req, options);
 
   try {
     const builtIns = await builtInGraphPlaybooks();
-    const imported = await importGraphPlaybookArchive({
-      zipPath,
+    const importOptions = {
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,
       builtInIds: builtIns.map((entry) => entry.id),
       compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
       scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
-    });
+    };
+    const imported = zipPath
+      ? await importGraphPlaybookArchive({
+          ...importOptions,
+          zipPath,
+        })
+      : await importGraphPlaybookFolder({
+          ...importOptions,
+          sourceRoot,
+        });
     await refreshInstalledGraphPlaybookRegistry({
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,

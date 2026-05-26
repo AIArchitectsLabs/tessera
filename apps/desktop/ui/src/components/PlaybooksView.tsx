@@ -41,6 +41,7 @@ import {
   CheckCircle2,
   Clock3,
   FileText,
+  FolderPlus,
   Loader2,
   RefreshCw,
   Upload,
@@ -226,6 +227,15 @@ interface ReviewEvidence {
   approveLabel: string;
 }
 
+interface SourceProvenanceSummary {
+  artifactId: string;
+  label: string;
+  sourceKinds: string[];
+  sourceCount: number | null;
+  fixtureOnly: boolean | null;
+  notes: string | null;
+}
+
 function stepIcon(status: WorkflowRunStepRecord["status"]) {
   if (status === "succeeded") return <CheckCircle2 size={16} className="text-emerald-600" />;
   if (status === "running") return <Loader2 size={16} className="animate-spin text-blue-600" />;
@@ -300,6 +310,17 @@ function mergeRunById<T extends { runId: string }>(runs: T[], nextRun: T): T[] {
 
 function formatCapabilityLabel(value: string): string {
   return titleFromId(value.replace(/^(?:skill|tool|integration)\./, ""));
+}
+
+function formatSourceKindLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "gmail" || normalized === "mail") return "Gmail";
+  if (normalized === "web" || normalized === "web.search" || normalized === "web.fetch") {
+    return "Web";
+  }
+  if (normalized === "feed" || normalized === "public-feed") return "Public feed";
+  if (normalized === "cbp") return "CBP feed";
+  return titleFromId(value);
 }
 
 function joinLabels(values: string[]): string {
@@ -909,6 +930,96 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
     outputs[artifactId] = { ...value, path };
   }
   return outputs;
+}
+
+function recordFromValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function sourceKindsFromValue(value: unknown): string[] {
+  const record = recordFromValue(value);
+  if (!record) return [];
+  const provenance = recordFromValue(record.provenance);
+  const sourceKinds = provenance?.sourceKinds ?? record.sourceKinds;
+  if (Array.isArray(sourceKinds)) {
+    return sourceKinds.filter((item): item is string => typeof item === "string" && !!item.trim());
+  }
+  const counts = recordFromValue(provenance?.sourceCounts) ?? recordFromValue(record.sourceCounts);
+  if (counts) return Object.keys(counts).filter((key) => key.trim());
+  const rows = Array.isArray(record.signals)
+    ? record.signals
+    : Array.isArray(record.items)
+      ? record.items
+      : Array.isArray(record.rows)
+        ? record.rows
+        : [];
+  return [
+    ...new Set(
+      rows
+        .map((row) => recordFromValue(row)?.sourceType)
+        .filter((item): item is string => typeof item === "string" && !!item.trim())
+    ),
+  ].sort();
+}
+
+function sourceCountFromValue(value: unknown): number | null {
+  const record = recordFromValue(value);
+  if (!record) return null;
+  const provenance = recordFromValue(record.provenance);
+  const summary = recordFromValue(record.summary);
+  const direct = provenance?.sourceCount ?? summary?.sourceCount ?? record.sourceCount;
+  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+  const sourceCounts =
+    recordFromValue(provenance?.sourceCounts) ?? recordFromValue(record.sourceCounts);
+  if (sourceCounts) {
+    const total = Object.values(sourceCounts).reduce<number>(
+      (sum, value) => (typeof value === "number" && Number.isFinite(value) ? sum + value : sum),
+      0
+    );
+    if (total > 0) return total;
+  }
+  const rows = Array.isArray(record.signals)
+    ? record.signals
+    : Array.isArray(record.items)
+      ? record.items
+      : Array.isArray(record.rows)
+        ? record.rows
+        : [];
+  return rows.length > 0 ? rows.length : null;
+}
+
+function sourceProvenanceSummaries(
+  detail: PlaybookGraphRunDetail | null
+): SourceProvenanceSummary[] {
+  if (!detail) return [];
+  const latestByArtifact = new Map<string, PlaybookGraphRunDetail["artifacts"][number]>();
+  for (const artifact of detail.artifacts) latestByArtifact.set(artifact.artifactId, artifact);
+
+  return [...latestByArtifact.values()].flatMap((artifact) => {
+    const record = recordFromValue(artifact.value);
+    const provenance = recordFromValue(record?.provenance);
+    const sourceKinds = sourceKindsFromValue(artifact.value);
+    const sourceCount = sourceCountFromValue(artifact.value);
+    if (sourceKinds.length === 0 && sourceCount === null) return [];
+    const fixtureOnly =
+      typeof provenance?.fixtureOnly === "boolean"
+        ? provenance.fixtureOnly
+        : typeof record?.fixtureOnly === "boolean"
+          ? record.fixtureOnly
+          : null;
+    return [
+      {
+        artifactId: artifact.artifactId,
+        label: artifactLabel(artifact.artifactId),
+        sourceKinds,
+        sourceCount,
+        fixtureOnly,
+        notes: typeof provenance?.notes === "string" ? provenance.notes : null,
+      },
+    ];
+  });
 }
 
 function graphNodeRecords(value: unknown): Record<string, unknown>[] {
@@ -3066,7 +3177,25 @@ function GuidedStart({
         ) : null}
       </div>
 
-      {capabilityInventory && playbook.optionalCapabilities.length > 0 ? (
+      {playbook.requiredCapabilities.length > 0 ? (
+        <div className="mb-5">
+          <div className="mb-2 text-xs text-muted-foreground">
+            Tessera needs these capabilities to run
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {playbook.requiredCapabilities.map((cap) => (
+              <span
+                key={cap}
+                className="rounded-full border border-border bg-secondary px-3 py-1 text-xs text-foreground"
+              >
+                {formatCapabilityLabel(cap)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {playbook.optionalCapabilities.length > 0 ? (
         <div className="mb-8">
           <div className="mb-2 text-xs text-muted-foreground">
             Tessera uses these sources when available
@@ -4008,6 +4137,10 @@ function DetailsPanel({
     () => reviewEvidenceFromSurface(selectedGraphRunSurface),
     [selectedGraphRunSurface]
   );
+  const sourceProvenance = useMemo(
+    () => sourceProvenanceSummaries(selectedGraphRun),
+    [selectedGraphRun]
+  );
   const reviewEvents =
     selectedGraphRun?.reviews.filter((review) => review.decision !== "requested") ?? [];
 
@@ -4139,6 +4272,30 @@ function DetailsPanel({
                       className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
                     >
                       {gap.reason ?? formatCapabilityLabel(gap.capability)}
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            ) : null}
+
+            {sourceProvenance.length > 0 ? (
+              <Section title="Source provenance" subtitle="Evidence used by this run">
+                <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                  {sourceProvenance.map((source) => (
+                    <div key={source.artifactId} className="px-3 py-2 text-xs">
+                      <div className="font-medium text-foreground">{source.label}</div>
+                      <div className="mt-0.5 text-muted-foreground">
+                        {source.sourceKinds.length > 0
+                          ? source.sourceKinds.map(formatSourceKindLabel).join(", ")
+                          : "Source count recorded"}
+                        {source.sourceCount !== null
+                          ? ` · ${source.sourceCount} source${source.sourceCount === 1 ? "" : "s"}`
+                          : ""}
+                        {source.fixtureOnly ? " · fixture run" : ""}
+                      </div>
+                      {source.notes ? (
+                        <div className="mt-0.5 text-muted-foreground">{source.notes}</div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -4912,56 +5069,69 @@ export function PlaybooksView({
     selectedRunId,
   ]);
 
-  const importPlaybook = useCallback(async () => {
-    setError(null);
-    setRefreshNotice(null);
-    setImportEvents([]);
-    let selectedPath: string | string[] | null;
-    try {
-      selectedPath = await open({
-        multiple: false,
-        filters: [{ name: "Playbook archive", extensions: ["playbook", "zip"] }],
-      });
-    } catch (dialogError) {
-      setError(dialogError instanceof Error ? dialogError.message : String(dialogError));
-      return;
-    }
-    if (!selectedPath || typeof selectedPath !== "string") {
-      return;
-    }
+  const importPlaybook = useCallback(
+    async (kind: "archive" | "folder") => {
+      setError(null);
+      setRefreshNotice(null);
+      setImportEvents([]);
+      let selectedPath: string | string[] | null;
+      try {
+        selectedPath =
+          kind === "folder"
+            ? await open({ multiple: false, directory: true })
+            : await open({
+                multiple: false,
+                filters: [{ name: "Playbook archive", extensions: ["playbook", "zip"] }],
+              });
+      } catch (dialogError) {
+        setError(dialogError instanceof Error ? dialogError.message : String(dialogError));
+        return;
+      }
+      if (!selectedPath || typeof selectedPath !== "string") {
+        return;
+      }
 
-    setImportingPlaybook(true);
-    setImportEvents(["Archive selected", "Installing playbook package"]);
-    try {
-      const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
-        zipPath: selectedPath,
-        userKey,
-      });
-      setImportEvents((current) => [
-        ...current,
-        `${imported.name} ${imported.version} ${imported.status}`,
-        "Refreshing playbooks and run history",
+      setImportingPlaybook(true);
+      setImportEvents([
+        kind === "folder" ? "Folder selected" : "Archive selected",
+        "Installing playbook package",
       ]);
-      const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
-      setPlaybooks(result.playbooks);
-      setSelectedPlaybookId(imported.id);
-      setSelectedRunId(null);
-      setSelectedRunDetail(null);
-      setSelectedGraphRunId(null);
-      setSelectedGraphRunDetail(null);
-      await Promise.all([loadPlaybookDetail(imported.id), loadRuns(imported.id), loadRunHistory()]);
-      setImportEvents((current) => [...current, "Ready to run"]);
-      const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
-      setRefreshNotice(
-        `${imported.name} ${imported.version} ${imported.status}.${warningCopy}`.trim()
-      );
-    } catch (importError) {
-      setImportEvents((current) => [...current, "Import failed"]);
-      setError(importError instanceof Error ? importError.message : String(importError));
-    } finally {
-      setImportingPlaybook(false);
-    }
-  }, [loadPlaybookDetail, loadRunHistory, loadRuns, userKey]);
+      try {
+        const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
+          ...(kind === "folder" ? { sourcePath: selectedPath } : { zipPath: selectedPath }),
+          userKey,
+        });
+        setImportEvents((current) => [
+          ...current,
+          `${imported.name} ${imported.version} ${imported.status}`,
+          "Refreshing playbooks and run history",
+        ]);
+        const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
+        setPlaybooks(result.playbooks);
+        setSelectedPlaybookId(imported.id);
+        setSelectedRunId(null);
+        setSelectedRunDetail(null);
+        setSelectedGraphRunId(null);
+        setSelectedGraphRunDetail(null);
+        await Promise.all([
+          loadPlaybookDetail(imported.id),
+          loadRuns(imported.id),
+          loadRunHistory(),
+        ]);
+        setImportEvents((current) => [...current, "Ready to run"]);
+        const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
+        setRefreshNotice(
+          `${imported.name} ${imported.version} ${imported.status}.${warningCopy}`.trim()
+        );
+      } catch (importError) {
+        setImportEvents((current) => [...current, "Import failed"]);
+        setError(importError instanceof Error ? importError.message : String(importError));
+      } finally {
+        setImportingPlaybook(false);
+      }
+    },
+    [loadPlaybookDetail, loadRunHistory, loadRuns, userKey]
+  );
 
   async function startRun(
     inputOverride?: Record<string, unknown>,
@@ -5235,15 +5405,26 @@ export function PlaybooksView({
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 rounded-full"
-                onClick={() => void importPlaybook()}
+                onClick={() => void importPlaybook("archive")}
                 disabled={loadingPlaybooks || running || importingPlaybook}
-                title="Import playbook"
+                title="Import playbook archive"
               >
                 {importingPlaybook ? (
                   <Loader2 size={14} className="animate-spin" />
                 ) : (
                   <Upload size={14} />
                 )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+                onClick={() => void importPlaybook("folder")}
+                disabled={loadingPlaybooks || running || importingPlaybook}
+                title="Import playbook folder"
+              >
+                <FolderPlus size={14} />
               </Button>
               <Button
                 type="button"

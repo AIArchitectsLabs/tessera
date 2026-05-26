@@ -1047,6 +1047,53 @@ describe("graph playbook import endpoint", () => {
     }
   });
 
+  test("imports a package folder through the import endpoint", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    const sourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    const catalogState: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      await writeGraphPackage(sourceRoot, "0.2.0");
+
+      const response = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const imported = (await response?.json()) as Record<string, unknown>;
+      expect(imported).toMatchObject({
+        schemaVersion: 1,
+        status: "installed",
+        id: "content.seo-blog",
+        version: "0.2.0",
+        name: "SEO Blog Article",
+        warnings: [],
+      });
+      expect(catalogState.entries.find((entry) => entry.id === "content.seo-blog")).toMatchObject({
+        packageVersion: "0.2.0",
+      });
+    } finally {
+      await Promise.all(
+        [sourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
   test("preflights graph playbook assignment through sidecar-owned resolver", async () => {
     expect(handlePlaybookPreflight).toBeDefined();
     const compiled = compilePlaybookGraph({
@@ -1312,7 +1359,7 @@ describe("graph playbook import endpoint", () => {
         list.playbooks.find((item) => item.id === "reference.seo-geo-blog-article")
       ).toMatchObject({
         name: "SEO/GEO Blog Article Reference Playbook",
-        requiredCapabilities: ["web"],
+        requiredCapabilities: ["web.search", "web.fetch"],
         phases: ["Intake", "Research", "Brief"],
       });
     } finally {

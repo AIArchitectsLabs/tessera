@@ -999,7 +999,17 @@ export const AuditRecordSchema = z.object({
 });
 export type AuditRecord = z.infer<typeof AuditRecordSchema>;
 
-export const WorkflowCapabilitySchema = z.enum(["web", "calendar", "mail", "drive", "contacts"]);
+export const WorkflowCapabilitySchema = z.enum([
+  "web",
+  "web.search",
+  "web.fetch",
+  "gmail.search",
+  "calendar",
+  "mail",
+  "drive",
+  "contacts",
+  "tool.workspace.write",
+]);
 export type WorkflowCapability = z.infer<typeof WorkflowCapabilitySchema>;
 
 export const CapabilityKindSchema = z.enum(["model", "skill", "tool", "integration"]);

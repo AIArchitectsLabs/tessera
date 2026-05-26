@@ -1806,20 +1806,34 @@ async fn playbook_preflight(
 #[tauri::command]
 async fn playbook_import(
     state: State<'_, SidecarHandle>,
-    zip_path: String,
+    zip_path: Option<String>,
+    source_path: Option<String>,
     user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let zip_path = zip_path.unwrap_or_default();
     let zip_path = zip_path.trim();
-    if zip_path.is_empty() {
-        return Err("zip_path is required".to_string());
+    let source_path = source_path.unwrap_or_default();
+    let source_path = source_path.trim();
+    if zip_path.is_empty() && source_path.is_empty() {
+        return Err("zip_path or source_path is required".to_string());
     }
-    if !std::path::Path::new(zip_path).is_absolute() {
+    if !zip_path.is_empty() && !source_path.is_empty() {
+        return Err("Provide either zip_path or source_path, not both".to_string());
+    }
+    if !zip_path.is_empty() && !std::path::Path::new(zip_path).is_absolute() {
         return Err("zip_path must be an absolute path".to_string());
+    }
+    if !source_path.is_empty() && !std::path::Path::new(source_path).is_absolute() {
+        return Err("source_path must be an absolute path".to_string());
     }
     let mut params = Vec::new();
     push_user_key_param(&mut params, user_key.as_deref())?;
     let path = path_with_params("/graph-playbooks/import".to_string(), params);
-    let body = serde_json::json!({ "zipPath": zip_path });
+    let body = if zip_path.is_empty() {
+        serde_json::json!({ "sourceRoot": source_path })
+    } else {
+        serde_json::json!({ "zipPath": zip_path })
+    };
     let json = state
         .post(&path, &body.to_string())
         .await

@@ -2,7 +2,7 @@
 
 ## Execution Status
 
-Last updated: 2026-05-22
+Last updated: 2026-05-26
 
 | Phase | Status | Owner lane | Next evidence required |
 | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ Last updated: 2026-05-22
 | 3. Supply-chain recipe | Complete | writer + architect | `/Users/utpal/Code/projects/supply-chain-risk-playbook/docs/recipe-002-supply-chain-risk.md` defines inputs, artifacts, graph phases, review gates, V1 free-source strategy, final outputs, and `riskSignal[]` provenance contract |
 | 4. External supply-chain scaffold | Complete | executor | `/Users/utpal/Code/projects/supply-chain-risk-playbook` validates through Tessera CLI and package tests without live connector access |
 | 5. V1 supply-chain flow | Planned | executor + test-engineer | Fixture-only final packet before live Gmail/web/feed paths |
-| 6. Tessera import/runtime polish | Planned | executor | Import, capability preview, provenance trace, review surfaces, final output materialization |
+| 6. Tessera import/runtime polish | Complete | executor | Folder/archive import, capability preview, provenance trace, review surfaces, and final output materialization verified |
 | 7. Cookbook portability polish | Planned | writer | Portable agent instructions and third-playbook proof refined after Phase 2A.5 and Phase 2B |
 
 Status semantics: `Planned` means scoped in this plan but not yet proven by command output; upgrade to `In progress` or `Complete` only when the phase has fresh verification evidence.
@@ -559,6 +559,65 @@ Acceptance criteria:
 - Capability preview shows Gmail, web search/fetch, and any public feed URL access before live runs.
 - Provenance is visible in the review surface or run trace for Gmail and web/fetched feed evidence.
 
+### Phase 6 Execution Review Note
+
+Recorded: 2026-05-26.
+
+Status: Phase 6 is implemented and verified in Tessera.
+
+Evidence:
+
+- Tessera imports graph playbook packages from either an archive or a package folder.
+- The desktop import action now supports both archive selection and folder selection.
+- Graph playbook metadata preserves first-class capabilities such as `gmail.search`,
+  `web.search`, `web.fetch`, and `tool.workspace.write`.
+- The playbook start surface shows required capabilities and optional source
+  capabilities before the run.
+- The run details panel shows source provenance summaries for Gmail, web, and
+  public/feed evidence.
+- Completed graph runs still expose materialized final artifacts through the
+  existing artifact-open action.
+- Folder and archive smoke import passed for the supply-chain package at
+  `/Users/utpal/Code/playbooks/supply-chain-risk-playbook`, version `0.2.0`,
+  with matching graph/source hashes and no warnings.
+
+Verification:
+
+- `bun test apps/desktop/ui/src/components/PlaybooksView.test.tsx`
+- `bun test apps/sidecar/src/server.test.ts --test-name-pattern "graph playbook import endpoint"`
+- `bunx biome check apps/sidecar/src/graph-playbook-importer.ts apps/sidecar/src/server.ts apps/sidecar/src/server.test.ts apps/desktop/ui/src/components/PlaybooksView.tsx apps/desktop/ui/src/components/PlaybooksView.test.tsx packages/contracts/src/index.ts`
+- `bun run --filter './apps/desktop/ui' typecheck`
+- `bun run --filter './apps/sidecar' typecheck`
+- `cargo check` from `apps/desktop/src-tauri`
+
+Next planning/review step:
+
+- Proceed to Phase 7: Cookbook Portability Polish.
+
+### Phase 5 Execution Review Note
+
+Recorded: 2026-05-26.
+
+Status: Phase 5 is implemented and verified in the external package at
+`/Users/utpal/Code/projects/supply-chain-risk-playbook`.
+
+Evidence:
+
+- Package version bumped to `0.2.0`.
+- Updated import archive created at
+  `/Users/utpal/Code/projects/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`.
+- Default graph path is fixture-first and does not execute live Gmail/web/feed tool nodes.
+- Graph-level `fixtureRiskSignals` artifact is produced by `loadFixtureRiskSignals` and consumed by `buildRiskSignalFanIn`.
+- Fixture evidence distinguishes Gmail, web, CBP/feed, weather, and recall provenance.
+- Duplicate evidence is deduplicated; irrelevant Gmail/noisy feed fixtures are filtered; missing supplier mappings are surfaced as fixture-contract gaps.
+- Risk register and final disruption packet are prepared before approval-gated workspace write effects.
+- Human `request_changes` routes to `reworkMitigationPlan`.
+- Verification passed: package tests, typecheck, Tessera validator, extracted zip validation, and graph-equivalent fixture audit.
+
+Next planning/review step:
+
+- Proceed to Phase 6 only after importing the `0.2.0` archive in Tessera and checking the product runtime surfaces: capability preview, provenance trace, review/request-changes behavior, and final workspace writes.
+
 ## Phase 7: Cookbook Portability Polish
 
 Outcome:
@@ -741,3 +800,19 @@ Follow-ups:
 | Mandatory vs optional free feeds | Keep Gmail, web search/fetch, GDELT, CBP CSMS/RSS, and NWS mandatory; keep FDA recalls and trade press optional for V1 | architect + writer | Phase 3 recipe finalization | Recipe maps every mandatory source into `riskSignal[]` with fixture coverage |
 
 Open follow-ups should remain decisions, not implementation blockers, until their `Needed before` phase starts.
+
+## Stop-Hook Terminal Continuation Note
+
+Continuation status: terminal complete.
+
+Recorded at: 2026-05-26.
+
+Conservative review:
+
+- The latest `ralplan` state is inactive/cleared; no active planning loop remains.
+- Phase 5 execution evidence has been recorded in this plan.
+- The next valid planning or execution step is Phase 6: Tessera Import And Runtime Polish.
+- Phase 6 should begin only after importing
+  `/Users/utpal/Code/projects/supply-chain-risk-playbook/supply-chain-risk-playbook-0.2.0.zip`
+  and verifying runtime product behavior: capability preview, provenance trace, review/request-changes behavior, and final workspace writes.
+- No unresolved ralplan review ambiguity remains before stopping.

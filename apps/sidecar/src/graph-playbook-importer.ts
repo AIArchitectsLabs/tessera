@@ -14,11 +14,34 @@ import {
 } from "./graph-playbook-registry.js";
 import { extractZipArchive } from "./zip-archive.js";
 
+interface ImportResultContext {
+  installedPlaybookId: string;
+  installedPackageVersion: string;
+  installedGraphHash: string;
+  installedSourceHash: string;
+  beforeFull: GraphPlaybookRegistryEntry[];
+  beforeCatalog: GraphPlaybookRegistryEntry[];
+  afterFull: GraphPlaybookRegistryEntry[];
+  afterCatalog: GraphPlaybookRegistryEntry[];
+  warnings?: string[];
+  sourceDescription: string;
+}
+
 export interface ImportGraphPlaybookArchiveOptions {
   zipPath: string;
   installRoot: string;
   cacheRoot: string;
   stagingRoot?: string;
+  builtInIds?: Iterable<string>;
+  compilerVersion: string;
+  scriptSdkVersion: string;
+  compiledAt?: string;
+}
+
+export interface ImportGraphPlaybookFolderOptions {
+  sourceRoot: string;
+  installRoot: string;
+  cacheRoot: string;
   builtInIds?: Iterable<string>;
   compilerVersion: string;
   scriptSdkVersion: string;
@@ -93,6 +116,37 @@ function importStatus(input: {
   return "archived";
 }
 
+function graphPlaybookImportResult(input: ImportResultContext): GraphPlaybookImportResult {
+  const installedEntry = input.afterFull.find(
+    (entry) =>
+      entry.id === input.installedPlaybookId &&
+      entry.packageVersion === input.installedPackageVersion &&
+      entry.graphHash === input.installedGraphHash &&
+      entry.sourceHash === input.installedSourceHash
+  );
+  if (!installedEntry) {
+    throw new Error(
+      `Graph playbook ${input.sourceDescription} import did not produce a valid installed entry`
+    );
+  }
+
+  return GraphPlaybookImportResultSchema.parse({
+    schemaVersion: 1,
+    status: importStatus({
+      installed: installedEntry,
+      beforeFull: input.beforeFull,
+      beforeCatalog: input.beforeCatalog,
+      afterCatalog: input.afterCatalog,
+    }),
+    id: installedEntry.id,
+    version: installedEntry.packageVersion,
+    name: installedEntry.name,
+    graphHash: installedEntry.graphHash,
+    sourceHash: installedEntry.sourceHash,
+    warnings: input.warnings ?? [],
+  });
+}
+
 export async function importGraphPlaybookArchive(
   options: ImportGraphPlaybookArchiveOptions
 ): Promise<GraphPlaybookImportResult> {
@@ -133,28 +187,65 @@ export async function importGraphPlaybookArchive(
       installRoot: options.installRoot,
       cacheRoot: options.cacheRoot,
     });
-    const installedEntry = afterFull.find(
-      (entry) =>
-        entry.id === installed.compiled.metadata.playbookId &&
-        entry.packageVersion === installed.compiled.metadata.packageVersion &&
-        entry.graphHash === installed.compiled.metadata.graphHash &&
-        entry.sourceHash === installed.compiled.metadata.sourceHash
-    );
-    if (!installedEntry) {
-      throw new Error("Graph playbook archive import did not produce a valid installed entry");
-    }
-
-    return GraphPlaybookImportResultSchema.parse({
-      schemaVersion: 1,
-      status: importStatus({ installed: installedEntry, beforeFull, beforeCatalog, afterCatalog }),
-      id: installedEntry.id,
-      version: installedEntry.packageVersion,
-      name: installedEntry.name,
-      graphHash: installedEntry.graphHash,
-      sourceHash: installedEntry.sourceHash,
+    return graphPlaybookImportResult({
+      installedPlaybookId: installed.compiled.metadata.playbookId,
+      installedPackageVersion: installed.compiled.metadata.packageVersion,
+      installedGraphHash: installed.compiled.metadata.graphHash,
+      installedSourceHash: installed.compiled.metadata.sourceHash,
+      beforeFull,
+      beforeCatalog,
+      afterFull,
+      afterCatalog,
       warnings: installed.warnings ?? [],
+      sourceDescription: "archive",
     });
   } finally {
     await rm(stagingRoot, { recursive: true, force: true });
   }
+}
+
+export async function importGraphPlaybookFolder(
+  options: ImportGraphPlaybookFolderOptions
+): Promise<GraphPlaybookImportResult> {
+  const beforeFull = await loadInstalledGraphPlaybookRegistry({
+    installRoot: options.installRoot,
+    cacheRoot: options.cacheRoot,
+  });
+  const beforeCatalog = await loadInstalledGraphPlaybookCatalog({
+    installRoot: options.installRoot,
+    cacheRoot: options.cacheRoot,
+  });
+  const manifestId = await readManifestId(options.sourceRoot);
+  if (new Set(options.builtInIds ?? []).has(manifestId)) {
+    throw new Error(`Graph playbook package conflict for ${manifestId}: built-in id collision.`);
+  }
+
+  const installed = await installGraphPlaybookPackage({
+    sourceRoot: options.sourceRoot,
+    installRoot: options.installRoot,
+    cacheRoot: options.cacheRoot,
+    compilerVersion: options.compilerVersion,
+    scriptSdkVersion: options.scriptSdkVersion,
+    ...(options.compiledAt === undefined ? {} : { compiledAt: options.compiledAt }),
+  });
+  const afterFull = await loadInstalledGraphPlaybookRegistry({
+    installRoot: options.installRoot,
+    cacheRoot: options.cacheRoot,
+  });
+  const afterCatalog = await loadInstalledGraphPlaybookCatalog({
+    installRoot: options.installRoot,
+    cacheRoot: options.cacheRoot,
+  });
+  return graphPlaybookImportResult({
+    installedPlaybookId: installed.compiled.metadata.playbookId,
+    installedPackageVersion: installed.compiled.metadata.packageVersion,
+    installedGraphHash: installed.compiled.metadata.graphHash,
+    installedSourceHash: installed.compiled.metadata.sourceHash,
+    beforeFull,
+    beforeCatalog,
+    afterFull,
+    afterCatalog,
+    warnings: installed.warnings ?? [],
+    sourceDescription: "folder",
+  });
 }
