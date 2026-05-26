@@ -2124,7 +2124,7 @@ function sheetRowKey(operation: SheetsEffectOperation): { column: string; value:
   throw new Error(`sheets ${operation.subcommand} operation ${operation.id} needs a row key`);
 }
 
-function googleWorkspaceWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
+export function googleWorkspaceWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
   return Buffer.from(
     JSON.stringify({
       approvalId,
