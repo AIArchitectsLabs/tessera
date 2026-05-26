@@ -312,6 +312,16 @@ function formatCapabilityLabel(value: string): string {
   return titleFromId(value.replace(/^(?:skill|tool|integration)\./, ""));
 }
 
+function formatCapabilityBlockerMessage(blocker: {
+  capability: string;
+  reason?: string | null | undefined;
+}): string {
+  const label = formatCapabilityLabel(blocker.capability);
+  if (!blocker.reason) return `Tessera could not use ${label}.`;
+  if (blocker.reason.toLowerCase().includes(label.toLowerCase())) return blocker.reason;
+  return `${label}: ${blocker.reason}`;
+}
+
 function formatSourceKindLabel(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (normalized === "gmail" || normalized === "mail") return "Gmail";
@@ -3052,8 +3062,7 @@ function GuidedStart({
               key={`${blocker.stepId}:${blocker.capability}`}
               className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
             >
-              {blocker.reason ??
-                `Tessera could not use ${formatCapabilityLabel(blocker.capability)}.`}
+              {formatCapabilityBlockerMessage(blocker)}
             </div>
           ))}
         </div>
@@ -4550,6 +4559,23 @@ export function PlaybooksView({
     return "result";
   }, [showStartForm, running, selectedRun]);
   const contentScrollResetKey = `${guidedState}:${selectedPlaybookId ?? ""}:${selectedRunId ?? ""}`;
+
+  useEffect(() => {
+    if (!selectedPlaybookForUi || selectedRunId || !isDashboardPlaybook(selectedPlaybookForUi)) {
+      return;
+    }
+    const latestDashboardRun = completedRunForPlaybook(selectedPlaybookForUi.id);
+    if (!latestDashboardRun) return;
+
+    selectedRunIdRef.current = latestDashboardRun.runId;
+    selectedGraphRunIdRef.current = null;
+    setSelectedRunId(latestDashboardRun.runId);
+    setSelectedRunDetail(latestDashboardRun);
+    setSelectedGraphRunId(null);
+    setSelectedGraphRunDetail(null);
+    setSelectedGraphRunSurface(null);
+    setShowStartForm(false);
+  }, [completedRunForPlaybook, selectedPlaybookForUi, selectedRunId]);
 
   useEffect(() => {
     const contentPane = contentScrollRef.current;

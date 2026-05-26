@@ -1530,6 +1530,7 @@ let graphRunListOverride: PlaybookGraphRunDetail["run"][] | null = null;
 let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 let seoGraphRunSurfaceQueue: PlaybookGraphRunReviewSurface[] = [];
 let savedPlaybookAssignmentPlan: WorkflowRunAssignmentPlan | null = null;
+let playbookAssignmentPreviewOverride: PlaybookAssignmentPreviewResult | null = null;
 
 function assignmentPreviewForPlaybook(
   detail: PlaybookDetail,
@@ -1653,6 +1654,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
       };
     }
     case "playbook_preflight": {
+      if (playbookAssignmentPreviewOverride) return playbookAssignmentPreviewOverride;
       const detail =
         args?.playbookId === dashboardPlaybook.id
           ? dashboardPlaybook
@@ -1873,6 +1875,7 @@ beforeEach(() => {
   graphRunSurfaceOverride = null;
   seoGraphRunSurfaceQueue = [];
   savedPlaybookAssignmentPlan = null;
+  playbookAssignmentPreviewOverride = null;
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -3090,6 +3093,22 @@ describe("PlaybooksView", () => {
     expect(view.queryByRole("button", { name: "Create snapshot" })).toBeNull();
   });
 
+  test("opens an initially selected dashboard after its completed runs load", async () => {
+    playbookListOverride = Promise.resolve({ playbooks: [dashboardPlaybook, playbook] });
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Activity Snapshot").length).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      expect(view.getByText(/May 10/)).toBeTruthy();
+      expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
+      expect(view.getByText("7")).toBeTruthy();
+    });
+    expect(view.queryByRole("button", { name: "Create snapshot" })).toBeNull();
+  });
+
   test("imports a playbook archive and selects the imported playbook", async () => {
     const view = renderPlaybooksView();
 
@@ -3160,6 +3179,47 @@ describe("PlaybooksView", () => {
       expect(view.getByText("Gmail Search")).toBeTruthy();
       expect(view.getByText("Web Search")).toBeTruthy();
       expect(view.getByText("Web Fetch")).toBeTruthy();
+    });
+  });
+
+  test("names blocked setup capabilities", async () => {
+    includeImportedPlaybook = true;
+    graphRunListOverride = [];
+    playbookAssignmentPreviewOverride = {
+      assignmentPlan: {
+        resolverVersion: 2,
+        createdAt: "2026-05-25T00:00:00.000Z",
+        assignments: {},
+      },
+      confirmationRequired: true,
+      blockers: [
+        {
+          stepId: "commitSheetsLedger",
+          kind: "integration",
+          capability: "integration.sheets.rows.write",
+          optional: false,
+          reason: "This required capability is not configured in the current workspace.",
+        },
+      ],
+      sourceGaps: [],
+      nodePreviews: [],
+    };
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    await waitFor(() => {
+      expect(
+        view.getByText(
+          "Sheets Rows Write: This required capability is not configured in the current workspace."
+        )
+      ).toBeTruthy();
     });
   });
 

@@ -695,9 +695,36 @@ fn redact_with_settings_for_user(
     })
 }
 
+fn settings_with_legacy_google_workspace_connection(
+    mut settings: SettingsFile,
+    legacy_settings: Option<&SettingsFile>,
+    user_key: Option<&str>,
+) -> SettingsFile {
+    if user_key.is_some()
+        && !settings.providers.google_workspace.connected
+        && legacy_settings
+            .map(|settings| settings.providers.google_workspace.connected)
+            .unwrap_or(false)
+    {
+        settings.providers.google_workspace.connected = true;
+    }
+    settings
+}
+
 pub fn read_for_user(app: &AppHandle, user_key: Option<&str>) -> Result<IntegrationSettingsRead> {
     let path = settings_path_for_user(app, user_key)?;
     let settings = load_settings_file(&path)?;
+    let legacy_settings = if user_key.is_some() {
+        let legacy_path = settings_path_for_user(app, None)?;
+        load_settings_file(&legacy_path).ok()
+    } else {
+        None
+    };
+    let settings = settings_with_legacy_google_workspace_connection(
+        settings,
+        legacy_settings.as_ref(),
+        user_key,
+    );
     redact_with_settings_for_user(settings, user_key)
 }
 
@@ -788,10 +815,15 @@ fn set_google_workspace_connected_at_path_for_user(
     connected: bool,
     user_key: Option<&str>,
 ) -> Result<IntegrationSettingsRead> {
+    let settings = save_google_workspace_connected_at_path(path, connected)?;
+    redact_with_settings_for_user(settings, user_key)
+}
+
+fn save_google_workspace_connected_at_path(path: &Path, connected: bool) -> Result<SettingsFile> {
     let mut settings = load_settings_file(path)?;
     settings.providers.google_workspace.connected = connected;
     save_settings_file(path, &settings)?;
-    redact_with_settings_for_user(settings, user_key)
+    Ok(settings)
 }
 
 pub fn set_google_workspace_connected_for_user(
@@ -800,7 +832,12 @@ pub fn set_google_workspace_connected_for_user(
     connected: bool,
 ) -> Result<IntegrationSettingsRead> {
     let path = settings_path_for_user(app, user_key)?;
-    set_google_workspace_connected_at_path_for_user(&path, connected, user_key)
+    let result = set_google_workspace_connected_at_path_for_user(&path, connected, user_key)?;
+    if user_key.is_some() {
+        let legacy_path = settings_path_for_user(app, None)?;
+        save_google_workspace_connected_at_path(&legacy_path, connected)?;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -884,6 +921,36 @@ mod tests {
             redact_with_settings_for_user(load_settings_file(&path).expect("load"), None)
                 .expect("redact");
         assert!(!redacted.providers.google_workspace.has_credential);
+    }
+
+    #[test]
+    fn user_settings_inherit_legacy_google_workspace_connection() {
+        let user_settings = default_settings_file();
+        let mut legacy_settings = default_settings_file();
+        legacy_settings.providers.google_workspace.connected = true;
+
+        let migrated = settings_with_legacy_google_workspace_connection(
+            user_settings,
+            Some(&legacy_settings),
+            Some("user.test"),
+        );
+
+        assert!(migrated.providers.google_workspace.connected);
+    }
+
+    #[test]
+    fn global_settings_do_not_inherit_legacy_google_workspace_connection() {
+        let user_settings = default_settings_file();
+        let mut legacy_settings = default_settings_file();
+        legacy_settings.providers.google_workspace.connected = true;
+
+        let migrated = settings_with_legacy_google_workspace_connection(
+            user_settings,
+            Some(&legacy_settings),
+            None,
+        );
+
+        assert!(!migrated.providers.google_workspace.connected);
     }
 
     #[test]
