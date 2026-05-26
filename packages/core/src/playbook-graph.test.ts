@@ -470,8 +470,6 @@ describe("artifactWrite capability rule", () => {
   });
 
   test("accepts artifactWrite when tool.workspace.write is declared", () => {
-    expect(() =>
-      validatePlaybookGraph(artifactWriteGraph(["tool.workspace.write"]))
-    ).not.toThrow();
+    expect(() => validatePlaybookGraph(artifactWriteGraph(["tool.workspace.write"]))).not.toThrow();
   });
 });

@@ -86,9 +86,7 @@ export function buildConnectorRegistry<Ctx>(
         );
       }
       if (!tool.handler && !(tool.shellAllowlist && tool.shellAllowlist.length > 0)) {
-        throw new Error(
-          `Connector tool ${tool.capability} has no handler and no shellAllowlist`
-        );
+        throw new Error(`Connector tool ${tool.capability} has no handler and no shellAllowlist`);
       }
       assertCanonical(tool.capability, `tool ${tool.capability}`);
       tools.set(tool.capability, tool);
@@ -110,10 +108,7 @@ export function buildConnectorRegistry<Ctx>(
           `Multiple connectors declare artifactWrite: ${artifactWrite.adapterId}, ${connector.adapterId}`
         );
       }
-      assertCanonical(
-        connector.artifactWrite.capability,
-        `artifactWrite (${connector.adapterId})`
-      );
+      assertCanonical(connector.artifactWrite.capability, `artifactWrite (${connector.adapterId})`);
       artifactWrite = { adapterId: connector.adapterId, descriptor: connector.artifactWrite };
       capabilities.add(connector.artifactWrite.capability);
     }

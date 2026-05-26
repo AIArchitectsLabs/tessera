@@ -150,7 +150,9 @@ describe("buildConnectorRegistry", () => {
 
   test("rejects non-canonical capabilities", () => {
     const bad = webConnector();
-    bad.tools[0]!.capability = "integration.not.real";
+    const tool = bad.tools[0];
+    if (!tool) throw new Error("expected test connector tool");
+    tool.capability = "integration.not.real";
     expect(() =>
       buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
     ).toThrow("references unknown capability: integration.not.real");
@@ -158,7 +160,9 @@ describe("buildConnectorRegistry", () => {
 
   test("rejects approval-required effect without preview", () => {
     const bad = workspaceConnector();
-    bad.effects[0]!.previewRequired = false;
+    const effect = bad.effects[0];
+    if (!effect) throw new Error("expected test connector effect");
+    effect.previewRequired = false;
     expect(() =>
       buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
     ).toThrow(/requires approval but not preview/);
@@ -178,8 +182,10 @@ describe("buildConnectorRegistry", () => {
 
   test("rejects a tool with neither handler nor shellAllowlist", () => {
     const bad = webConnector();
+    const tool = bad.tools[0];
+    if (!tool) throw new Error("expected test connector tool");
     // biome-ignore lint/performance/noDelete: need to truly remove the optional property under exactOptionalPropertyTypes
-    delete bad.tools[0]!.shellAllowlist;
+    delete tool.shellAllowlist;
     expect(() =>
       buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
     ).toThrow("has no handler and no shellAllowlist");

@@ -1,10 +1,10 @@
+import type { SpawnResult } from "@tessera/contracts";
 import {
-  createSpawnShellExecutor,
-  createWorkspaceGuard,
   type SpawnShellExecutor,
   type WorkspaceGuard,
+  createSpawnShellExecutor,
+  createWorkspaceGuard,
 } from "@tessera/core";
-import type { SpawnResult } from "@tessera/contracts";
 
 export interface ConnectorContext {
   /** Shell executor backed by the sidecar's workspace CLI. */
@@ -15,7 +15,7 @@ export interface ConnectorContext {
 }
 
 export interface ConnectorContextInput {
-  workspaceRoot: string;
+  workspaceRoot?: string;
   runWorkspaceCli: (
     args: string[],
     timeoutMs?: number,
@@ -24,10 +24,25 @@ export interface ConnectorContextInput {
   mintWriteToken: (approvalId: string, idempotencyKey: string) => string;
 }
 
+const missingWorkspaceGuard: WorkspaceGuard = {
+  root: "",
+  async isInsideWorkspace(): Promise<boolean> {
+    return false;
+  },
+  async resolveInsideWorkspace(): Promise<string> {
+    throw new Error("workspace.write effect requires a workspace root");
+  },
+  async resolveInsideWorkspaceForCreate(): Promise<string> {
+    throw new Error("workspace.write effect requires a workspace root");
+  },
+};
+
 export async function buildConnectorContext(
   input: ConnectorContextInput
 ): Promise<ConnectorContext> {
-  const workspaceGuard = await createWorkspaceGuard(input.workspaceRoot);
+  const workspaceGuard = input.workspaceRoot
+    ? await createWorkspaceGuard(input.workspaceRoot)
+    : missingWorkspaceGuard;
   const shell = createSpawnShellExecutor({ runWorkspaceCli: input.runWorkspaceCli });
   return {
     shell,

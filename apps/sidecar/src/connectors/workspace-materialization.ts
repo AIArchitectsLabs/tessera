@@ -1,6 +1,6 @@
 import { extname } from "node:path";
 import type { PlaybookGraphMaterializationFormat } from "@tessera/contracts";
-import { createPdfDocument } from "@tessera/core";
+import type { createPdfDocument } from "@tessera/core";
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,9 +89,7 @@ export function formatCsvContent(value: unknown): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function materializationFormatFromPath(
-  path: string
-): PlaybookGraphMaterializationFormat {
+export function materializationFormatFromPath(path: string): PlaybookGraphMaterializationFormat {
   const extension = extname(path).toLowerCase();
   if (extension === ".json") return "json";
   if (extension === ".csv") return "csv";
@@ -131,10 +129,7 @@ export function graphArtifactPathValue(value: unknown): string {
     .slice(0, 80);
 }
 
-export function renderGraphArtifactWritePath(
-  path: string,
-  input: Record<string, unknown>
-): string {
+export function renderGraphArtifactWritePath(path: string, input: Record<string, unknown>): string {
   return path.replace(/\{\{\s*inputs\.([A-Za-z0-9_.:-]+)\s*\}\}/g, (_match, key: string) => {
     const value = key.split(".").reduce<unknown>((cursor, segment) => {
       if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;

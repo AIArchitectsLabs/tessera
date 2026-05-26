@@ -35,10 +35,7 @@ export interface GraphConnectorTool<Ctx> {
 
 export interface GraphConnectorArtifactWrite<Ctx> {
   capability: string;
-  handler: (
-    input: PlaybookGraphArtifactWriteAdapterInput,
-    ctx: Ctx
-  ) => Promise<unknown> | unknown;
+  handler: (input: PlaybookGraphArtifactWriteAdapterInput, ctx: Ctx) => Promise<unknown> | unknown;
 }
 
 export interface GraphConnector<Ctx> {

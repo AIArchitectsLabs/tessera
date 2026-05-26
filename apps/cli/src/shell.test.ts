@@ -35,11 +35,14 @@ async function makeValidPlaybookPackage(
   } = {}
 ): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "tessera-cli-playbook-"));
-  const capabilities = options.capabilities ?? ["web.search"];
-  const nodeTools = options.nodeTools ?? ["web.search"];
   const includeOutputSchema = options.includeOutputSchema ?? true;
   const includeArtifactWrite = options.includeArtifactWrite ?? true;
   const includeEffectWrite = options.includeEffectWrite ?? false;
+  const capabilities = options.capabilities ?? [
+    "web.search",
+    ...(includeArtifactWrite || includeEffectWrite ? ["tool.workspace.write"] : []),
+  ];
+  const nodeTools = options.nodeTools ?? ["web.search"];
   const finalWriteNodeId = includeEffectWrite
     ? "commitBrief"
     : includeArtifactWrite
@@ -223,7 +226,7 @@ describe("workspace cli shell commands", () => {
   version: "0.1.0",
   name: "Playbook Validation Fixture",
   artifacts: { brief: { schema: "schemas/missing.schema.json" } },
-  capabilities: [],
+  capabilities: ["tool.workspace.write"],
   start: "writeBrief",
   nodes: [{ id: "writeBrief", kind: "artifactWrite", artifact: "brief", path: "Brief.md", onSuccess: "completed" }]
 };\n`
