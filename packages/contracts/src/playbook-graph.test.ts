@@ -10,6 +10,7 @@ import {
   PlaybookGraphNodeIdSchema,
   PlaybookGraphSchema,
   PlaybookGraphSourceRefSchema,
+  canonicalCapability,
 } from "./index.js";
 
 const validGraph = {
@@ -500,5 +501,21 @@ describe("PlaybookGraphCompileMetadataSchema", () => {
         compiledAt: "2026-05-15T00:00:00.000Z",
       })
     ).toThrow();
+  });
+});
+
+describe("canonical integration capabilities", () => {
+  test.each([
+    ["integration.web.search", "web.search"],
+    ["integration.web.fetch", "web.fetch"],
+    ["integration.mail.messages.read", "mail.messages.read"],
+    ["integration.mail.drafts.write", "mail.drafts.write"],
+    ["integration.drive.files.read", "drive.files.read"],
+    ["integration.contacts.read", "contacts.read"],
+    ["integration.sheets.rows.write", "sheets.rows.write"],
+    ["integration.docs.documents.write", "docs.documents.write"],
+  ])("registers %s (alias %s)", (id, alias) => {
+    expect(canonicalCapability(id)?.id).toBe(id);
+    expect(canonicalCapability(alias)?.id).toBe(id);
   });
 });
