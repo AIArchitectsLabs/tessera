@@ -3066,7 +3066,7 @@ describe("PlaybooksView", () => {
     });
   });
 
-  test("renders pinned dashboard runs with dashboard layout and refresh button", async () => {
+  test("opens pinned dashboards on the latest completed run by default", async () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
@@ -3078,14 +3078,6 @@ describe("PlaybooksView", () => {
     if (!dashboardButton) throw new Error("Expected dashboard playbook button");
     fireEvent.click(dashboardButton);
 
-    let runButton: HTMLElement | null = null;
-    await waitFor(() => {
-      runButton = view.getByText(/May 10/).closest("button");
-      expect(runButton).toBeTruthy();
-    });
-    if (!runButton) throw new Error("Expected dashboard run button");
-    fireEvent.click(runButton);
-
     await waitFor(() => {
       expect(view.getAllByText("Latest workspace update").length).toBeGreaterThan(0);
       expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
@@ -3095,6 +3087,7 @@ describe("PlaybooksView", () => {
       expect(view.getByText("7")).toBeTruthy();
       expect(view.getByRole("button", { name: /Refresh snapshot/i })).toBeTruthy();
     });
+    expect(view.queryByRole("button", { name: "Create snapshot" })).toBeNull();
   });
 
   test("imports a playbook archive and selects the imported playbook", async () => {

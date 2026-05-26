@@ -888,6 +888,26 @@ function runNeedsLiveRefresh(
   return graphRun?.run.status === "queued" || graphRun?.run.status === "running";
 }
 
+function latestCompletedRunForPlaybook(
+  runs: PlaybookRunDetail[],
+  playbookId: string
+): PlaybookRunDetail | null {
+  let latestRun: PlaybookRunDetail | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  for (const run of runs) {
+    if (run.workflowId !== playbookId || run.status !== "completed") continue;
+    const timestamp = Date.parse(run.updatedAt ?? "");
+    const comparableTime = Number.isFinite(timestamp) ? timestamp : 0;
+    if (!latestRun || comparableTime >= latestTime) {
+      latestRun = run;
+      latestTime = comparableTime;
+    }
+  }
+
+  return latestRun;
+}
+
 function workflowStepStatusFromGraph(
   status: PlaybookGraphRunDetail["queue"][number]["status"]
 ): WorkflowRunStepRecord["status"] {
@@ -4444,10 +4464,13 @@ export function PlaybooksView({
     () => playbooks.filter((p) => !!p.businessUseCase || !!p.graphHash),
     [playbooks]
   );
+  const completedRunForPlaybook = useCallback(
+    (playbookId: string) => latestCompletedRunForPlaybook([...runs, ...runHistory], playbookId),
+    [runHistory, runs]
+  );
   const hasCompletedRun = useCallback(
-    (playbookId: string) =>
-      runHistory.some((run) => run.workflowId === playbookId && run.status === "completed"),
-    [runHistory]
+    (playbookId: string) => completedRunForPlaybook(playbookId) !== null,
+    [completedRunForPlaybook]
   );
   const pinnedDashboards = useMemo(
     () =>
@@ -5358,10 +5381,15 @@ export function PlaybooksView({
       )}
       onClick={() => {
         const isSamePlaybook = selectedPlaybookId === playbook.id;
+        const latestDashboardRun = isDashboardPlaybook(playbook)
+          ? completedRunForPlaybook(playbook.id)
+          : null;
         setSelectedPlaybookId(playbook.id);
-        setShowStartForm(true);
-        setSelectedRunId(null);
-        setSelectedRunDetail(null);
+        setShowStartForm(latestDashboardRun === null);
+        selectedRunIdRef.current = latestDashboardRun?.runId ?? null;
+        selectedGraphRunIdRef.current = null;
+        setSelectedRunId(latestDashboardRun?.runId ?? null);
+        setSelectedRunDetail(latestDashboardRun);
         setSelectedGraphRunId(null);
         setSelectedGraphRunDetail(null);
         setSelectedGraphRunSurface(null);
