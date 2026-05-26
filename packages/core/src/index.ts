@@ -37,6 +37,7 @@ export {
   createSpawnShellExecutor,
   ShellExecutionError,
   ShellValidationError,
+  type SpawnShellExecutor,
   validateShellCall,
 } from "./shell-runtime.js";
 export {
