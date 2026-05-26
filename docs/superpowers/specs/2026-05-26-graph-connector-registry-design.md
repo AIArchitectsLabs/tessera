@@ -39,6 +39,8 @@ Additionally, workspace-write paths bypass the allowlist surface entirely: the `
 
 - **Registration model:** in-tree now, plugin-ready later. Build the registry with a clean generic interface; no dynamic loading or sandboxing yet.
 - **Invocation path:** mixed, decided per operation by the connector. The CLI-shell pattern (today's default, with shell allowlist + credential-token security) remains the default; the descriptor does not assume *how* a connector reaches its service.
+- **Write capability:** a single shared `tool.workspace.write` capability governs both the approval-gated `workspace.write` effect and the automatic `artifactWrite` path. A playbook declaring the capability authorizes both. (Considered and rejected: a distinct `artifactWrite` capability to mirror the approval asymmetry — rejected in favor of a single, intuitive "writes to the workspace" permission.)
+- **Enforcement:** the `artifactWrite`-requires-`tool.workspace.write` rule is a hard failure in `validateGraphNodes`, consistent with the existing undeclared-capability checks (`playbook-graph.ts:210,216`). Not a soft preflight warning — a warning would leave the write side channel technically open.
 
 ## Architecture
 
