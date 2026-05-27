@@ -215,6 +215,7 @@ const optionalCapabilityManager = createOptionalCapabilityManager({
   rootDir: join(TESSERA_DATA_DIR, "capabilities"),
   definitions: optionalCapabilityDefinitionsFromEnv(process.env),
 });
+let googleWorkspaceCliPathCache: string | undefined;
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
@@ -1098,15 +1099,19 @@ export async function resolveGoogleWorkspaceCliEnv(
 ): Promise<Record<string, string>> {
   if (!usesGoogleWorkspaceCli(args)) return {};
   if (env.TESSERA_GWS_CLI_PATH?.trim()) return {};
+  if (capabilityManager === optionalCapabilityManager && googleWorkspaceCliPathCache) {
+    return { TESSERA_GWS_CLI_PATH: googleWorkspaceCliPathCache };
+  }
 
   try {
-    const result = await resolveCapabilityBinary({
-      capabilityManager,
-      capabilityId: GOOGLE_WORKSPACE_CAPABILITY_ID,
-      binaryName: GOOGLE_WORKSPACE_BINARY_NAME,
-      install: false,
-    });
-    return result.path ? { TESSERA_GWS_CLI_PATH: result.path } : {};
+    const path = await capabilityManager.resolveBinary(
+      GOOGLE_WORKSPACE_CAPABILITY_ID,
+      GOOGLE_WORKSPACE_BINARY_NAME
+    );
+    if (path && capabilityManager === optionalCapabilityManager) {
+      googleWorkspaceCliPathCache = path;
+    }
+    return path ? { TESSERA_GWS_CLI_PATH: path } : {};
   } catch {
     return {};
   }

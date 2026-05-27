@@ -79,7 +79,6 @@ function writeGoogleWorkspaceOAuthClient(): void {
   const client = {
     installed: {
       client_id: clientId,
-      project_id: "tessera",
       client_secret: clientSecret,
       auth_uri: "https://accounts.google.com/o/oauth2/auth",
       token_uri: "https://oauth2.googleapis.com/token",

@@ -24,7 +24,6 @@ const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV: &str = "TESSERA_GOOGLE_WORKSPACE
 const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE";
 const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
 const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
-const GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID: &str = "tessera";
 const GOOGLE_WORKSPACE_AUTH_SCOPES: &str = concat!(
     "https://www.googleapis.com/auth/calendar.readonly,",
     "https://www.googleapis.com/auth/gmail.readonly,",
@@ -64,6 +63,8 @@ const BROWSER_RUNTIME_SIZE_BYTES_ENV: &str = "TESSERA_BROWSER_RUNTIME_SIZE_BYTES
 const BROWSER_RUNTIME_ARCHIVE_KIND_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND";
 const BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY";
 const BROWSER_RUNTIME_ARCHIVE_ROOT_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT";
+
+static GOOGLE_WORKSPACE_CLI_PATH_CACHE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -170,7 +171,9 @@ impl SidecarHandle {
                     .context("Could not connect to sidecar Unix socket")?;
                 stream.write_all(header.as_bytes()).await?;
                 stream.write_all(body.as_bytes()).await?;
-                stream.read_to_end(&mut buf).await?;
+                stream.flush().await?;
+                let mut reader = BufReader::new(stream);
+                read_sidecar_http_response(&mut reader, &mut buf).await?;
             }
             SidecarTransport::Tcp(port) => {
                 let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", *port))
@@ -178,7 +181,9 @@ impl SidecarHandle {
                     .context("Could not connect to sidecar TCP socket")?;
                 stream.write_all(header.as_bytes()).await?;
                 stream.write_all(body.as_bytes()).await?;
-                stream.read_to_end(&mut buf).await?;
+                stream.flush().await?;
+                let mut reader = BufReader::new(stream);
+                read_sidecar_http_response(&mut reader, &mut buf).await?;
             }
         }
 
@@ -247,6 +252,118 @@ impl SidecarHandle {
         let mut sse = SseStream { reader };
         sse.skip_headers().await?;
         Ok(sse)
+    }
+}
+
+async fn read_sidecar_http_response<R>(reader: &mut R, buf: &mut Vec<u8>) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut headers = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).await?;
+        if read == 0 {
+            bail!("Sidecar closed the connection before sending response headers");
+        }
+        headers.extend_from_slice(&line);
+        if headers.ends_with(b"\r\n\r\n") || headers.ends_with(b"\n\n") {
+            break;
+        }
+        if headers.len() > 64 * 1024 {
+            bail!("Sidecar response headers are too large");
+        }
+    }
+
+    let header_text =
+        std::str::from_utf8(&headers).context("Sidecar response headers are not valid UTF-8")?;
+    buf.extend_from_slice(&headers);
+
+    if sidecar_response_is_chunked(header_text) {
+        read_chunked_sidecar_body(reader, buf).await?;
+        return Ok(());
+    }
+
+    let content_length = sidecar_response_content_length(header_text)?
+        .ok_or_else(|| anyhow!("Sidecar response missing Content-Length header"))?;
+    let mut body = vec![0; content_length];
+    reader.read_exact(&mut body).await?;
+    buf.extend_from_slice(&body);
+    Ok(())
+}
+
+fn sidecar_response_content_length(headers: &str) -> anyhow::Result<Option<usize>> {
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let trimmed = value.trim();
+            return trimmed
+                .parse::<usize>()
+                .map(Some)
+                .with_context(|| format!("Invalid Sidecar Content-Length header: {trimmed}"));
+        }
+    }
+    Ok(None)
+}
+
+fn sidecar_response_is_chunked(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.trim().eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+    })
+}
+
+async fn read_chunked_sidecar_body<R>(reader: &mut R, buf: &mut Vec<u8>) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).await?;
+        if read == 0 {
+            bail!("Sidecar closed the connection during chunked response");
+        }
+
+        let chunk_header = std::str::from_utf8(&line)
+            .context("Sidecar chunk header is not valid UTF-8")?
+            .trim();
+        let size_text = chunk_header
+            .split(';')
+            .next()
+            .unwrap_or(chunk_header)
+            .trim();
+        let chunk_size = usize::from_str_radix(size_text, 16)
+            .with_context(|| format!("Invalid Sidecar chunk size: {size_text}"))?;
+        if chunk_size == 0 {
+            loop {
+                line.clear();
+                let read = reader.read_until(b'\n', &mut line).await?;
+                if read == 0 {
+                    bail!("Sidecar closed the connection before chunked trailers ended");
+                }
+                if line == b"\r\n" || line == b"\n" {
+                    return Ok(());
+                }
+            }
+        }
+
+        let mut chunk = vec![0; chunk_size];
+        reader.read_exact(&mut chunk).await?;
+        buf.extend_from_slice(&chunk);
+        let mut chunk_ending = [0; 2];
+        reader.read_exact(&mut chunk_ending).await?;
+        if chunk_ending != *b"\r\n" {
+            bail!("Invalid Sidecar chunk ending");
+        }
     }
 }
 
@@ -357,13 +474,28 @@ async fn google_workspace_cli_path(
     app: &AppHandle,
     state: &SidecarHandle,
 ) -> Result<PathBuf, String> {
+    if let Some(path) = GOOGLE_WORKSPACE_CLI_PATH_CACHE
+        .lock()
+        .ok()
+        .and_then(|cached| cached.clone())
+        .filter(|path| path.exists())
+    {
+        return Ok(path);
+    }
+
     let bundled = bundled_gws_path(app).map_err(|error| error.to_string())?;
-    resolve_google_workspace_cli_path(
+    let path = resolve_google_workspace_cli_path(
         Some(&bundled),
         || async { managed_capability_binary_path(state, "google-workspace-cli", "gws").await },
         || async { managed_capability_binary_install(state, "google-workspace-cli", "gws").await },
     )
-    .await
+    .await?;
+    if path.is_absolute() {
+        if let Ok(mut cached) = GOOGLE_WORKSPACE_CLI_PATH_CACHE.lock() {
+            *cached = Some(path.clone());
+        }
+    }
+    Ok(path)
 }
 
 async fn resolve_google_workspace_cli_path<S, I, SFut, IFut>(
@@ -377,14 +509,14 @@ where
     I: FnOnce() -> IFut,
     IFut: Future<Output = anyhow::Result<CapabilityBinaryResult>>,
 {
-    if let Ok(Some(path)) = sidecar_get().await {
-        return Ok(path);
-    }
-
     if let Some(bundled) = bundled {
         if bundled.exists() {
             return Ok(bundled.to_path_buf());
         }
+    }
+
+    if let Ok(Some(path)) = sidecar_get().await {
+        return Ok(path);
     }
 
     if let Some(path) = sidecar_install()
@@ -502,15 +634,17 @@ fn normalize_google_workspace_oauth_client_file(path: &Path) -> anyhow::Result<(
     else {
         return Ok(());
     };
-    if installed.contains_key("project_id") && !had_bom {
+    // Tessera never sets a project id. A `project_id` here is routed by gws as the
+    // `x-goog-user-project` quota project, which gates every call behind `serviceUsageConsumer` on
+    // that project; without it, calls attribute to the OAuth client's own project, which is what we
+    // want. Strip any value (including the legacy "tessera" placeholder) so existing installs heal.
+    let removed_project_id = installed.remove("project_id").is_some();
+
+    // The file is already clean (no project id, no BOM): nothing to rewrite.
+    if !removed_project_id && !had_bom {
         return Ok(());
     }
 
-    installed
-        .entry("project_id".to_string())
-        .or_insert_with(|| {
-            serde_json::Value::String(GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID.to_string())
-        });
     let mut bytes = serde_json::to_vec_pretty(&value)?;
     bytes.push(b'\n');
     fs::write(path, bytes).with_context(|| format!("Could not update {}", path.display()))?;
@@ -1680,7 +1814,6 @@ fn google_workspace_oauth_client_json(client_id: &str, client_secret: &str) -> s
     serde_json::json!({
         "installed": {
             "client_id": client_id,
-            "project_id": GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID,
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
@@ -3523,13 +3656,14 @@ mod tests {
         google_workspace_auth_args, google_workspace_config_dir,
         google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
         google_workspace_oauth_missing_message, normalize_google_workspace_oauth_client_file,
-        resolve_google_workspace_cli_path, search_connection_command, tool_policy_runtime_json,
-        workspace_cli_uses_google_workspace, CapabilityBinaryResult, SpawnResult,
-        GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        read_sidecar_http_response, resolve_google_workspace_cli_path, search_connection_command,
+        tool_policy_runtime_json, workspace_cli_uses_google_workspace, CapabilityBinaryResult,
+        SpawnResult, GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
         GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
     use std::path::PathBuf;
+    use tokio::io::BufReader;
 
     fn capability_binary_result(path: Option<&str>) -> CapabilityBinaryResult {
         CapabilityBinaryResult {
@@ -3543,6 +3677,38 @@ mod tests {
             message: None,
             progress: None,
         }
+    }
+
+    #[tokio::test]
+    async fn sidecar_response_reader_stops_after_content_length() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}HTTP/1.1 200 OK\r\n";
+        let mut reader = BufReader::new(&response[..]);
+        let mut buf = Vec::new();
+
+        read_sidecar_http_response(&mut reader, &mut buf)
+            .await
+            .expect("read response");
+
+        assert_eq!(
+            std::str::from_utf8(&buf).expect("utf8"),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sidecar_response_reader_decodes_chunked_body() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";
+        let mut reader = BufReader::new(&response[..]);
+        let mut buf = Vec::new();
+
+        read_sidecar_http_response(&mut reader, &mut buf)
+            .await
+            .expect("read chunked response");
+
+        assert_eq!(
+            std::str::from_utf8(&buf).expect("utf8"),
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}"
+        );
     }
 
     #[test]
@@ -3774,6 +3940,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn google_workspace_cli_path_prefers_existing_bundled_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundled_path = dir.path().join("gws");
+        std::fs::write(&bundled_path, b"#!/bin/sh\n").expect("write bundled gws");
+
+        let result = resolve_google_workspace_cli_path(
+            Some(&bundled_path),
+            || async { panic!("sidecar path lookup should not run when bundled gws exists") },
+            || async { panic!("sidecar install should not run when bundled gws exists") },
+        )
+        .await
+        .expect("resolve bundled gws path");
+
+        assert_eq!(result, bundled_path);
+    }
+
+    #[tokio::test]
     async fn google_workspace_cli_path_installs_when_managed_and_bundled_missing() {
         let installed_path = PathBuf::from("/managed/google-workspace-cli/gws");
         let result = resolve_google_workspace_cli_path(
@@ -3842,7 +4025,6 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
-                    "project_id": "tessera",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3854,7 +4036,7 @@ mod tests {
     }
 
     #[test]
-    fn google_workspace_oauth_client_normalization_adds_project_id() {
+    fn google_workspace_oauth_client_normalization_strips_project_id() {
         let path =
             std::env::temp_dir().join(format!("tessera-client-secret-{}.json", std::process::id()));
         std::fs::write(
@@ -3862,6 +4044,7 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
+                    "project_id": "tessera",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3877,10 +4060,8 @@ mod tests {
         let normalized: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read temp"))
                 .expect("parse normalized");
-        assert_eq!(
-            normalized["installed"]["project_id"],
-            serde_json::Value::String("tessera".to_string())
-        );
+        assert!(normalized["installed"].get("project_id").is_none());
+        assert_eq!(normalized["installed"]["client_id"], "client-id");
         let _ = std::fs::remove_file(path);
     }
 
@@ -3895,7 +4076,7 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
-                    "project_id": "tessera",
+                    "project_id": "admin-project-9182",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3913,10 +4094,7 @@ mod tests {
         assert!(!normalized.starts_with(&[0xEF, 0xBB, 0xBF]));
         let normalized: serde_json::Value =
             serde_json::from_slice(&normalized).expect("parse normalized");
-        assert_eq!(
-            normalized["installed"]["project_id"],
-            serde_json::Value::String("tessera".to_string())
-        );
+        assert!(normalized["installed"].get("project_id").is_none());
         let _ = std::fs::remove_file(path);
     }
 
