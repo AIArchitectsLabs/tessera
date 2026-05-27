@@ -1,6 +1,6 @@
 # Recipe 002: Supply Chain Early Warning and Disruption Response
 
-This recipe turns `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` into a reusable Tessera playbook pattern. It is a docs mirror of the external package shape, not a new runtime contract.
+This recipe documents an external supply-chain risk playbook package as a reusable Tessera playbook pattern. It is a docs mirror of the external package shape, not a new runtime contract.
 
 The external playbook should prove this shape:
 
@@ -17,7 +17,7 @@ The external playbook should prove this shape:
 
 | Field | Value |
 | --- | --- |
-| Path | `/Users/utpal/Code/playbooks/supply-chain-risk-playbook` |
+| Path | External supply-chain risk package |
 | Manifest id | `supply-chain.early-warning-response` |
 | Version | `0.2.0` |
 | Capabilities | required `tool.workspace.write`; optional `gmail.search`, `web.search`, `web.fetch` |

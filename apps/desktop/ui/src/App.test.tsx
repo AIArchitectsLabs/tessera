@@ -60,15 +60,12 @@ const invokeMock = mock(async (command: string): Promise<unknown> => {
   if (command === "inbox_list") return { messages: [] };
   if (command === "agent_profile_list") return { profiles: [] };
   if (command === "skill_list") return { skills: [] };
+  if (command === "workspace_dir_list") return [];
   return {};
 });
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
-}));
-
-mock.module("@tauri-apps/plugin-fs", () => ({
-  readDir: mock(async () => []),
 }));
 
 import App from "./App";

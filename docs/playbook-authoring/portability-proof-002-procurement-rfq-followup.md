@@ -6,11 +6,11 @@ This proof records actual third-playbook evidence for Phase 7. The package is ne
 
 | Field | Evidence |
 | --- | --- |
-| Path | `/Users/utpal/Code/playbooks/procurement.supplier-rfq-followup` |
+| Path | External procurement RFQ follow-up package |
 | Manifest id | `procurement.supplier-rfq-followup` |
 | Version | `1.0.6` |
 | Name | Procurement Supplier RFQ Follow-Up Desk |
-| Existing archive | `/Users/utpal/Code/playbooks/procurement.supplier-rfq-followup/procurement.supplier-rfq-followup-1.0.6.zip` |
+| Existing archive | `<external-procurement-playbook-path>/procurement.supplier-rfq-followup-1.0.6.zip` |
 
 ## Why This Proves Portability
 
@@ -44,20 +44,20 @@ Tessera-owned behavior remains generic:
 Text mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/procurement.supplier-rfq-followup
+bun run --cwd apps/cli src/index.ts playbook validate <external-procurement-playbook-path>
 ```
 
 Result:
 
 ```text
-Playbook validation passed: /Users/utpal/Code/playbooks/procurement.supplier-rfq-followup
+Playbook validation passed: <external-procurement-playbook-path>
 Summary: 0 error(s), 0 warning(s), 0 info
 ```
 
 JSON mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/procurement.supplier-rfq-followup --json
+bun run --cwd apps/cli src/index.ts playbook validate <external-procurement-playbook-path> --json
 ```
 
 Result:

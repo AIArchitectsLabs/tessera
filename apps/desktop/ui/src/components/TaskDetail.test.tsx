@@ -6,7 +6,7 @@ import type {
   SkillListResult,
   TaskDetail as TaskDetailType,
 } from "@tessera/contracts";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { JSDOM } from "jsdom";
 import React from "react";
 
@@ -54,6 +54,31 @@ type InvokeCall = {
 const invokeCalls: InvokeCall[] = [];
 let skillListMode: "normal" | "empty" | "error" | "pending" = "normal";
 let fileTreeMode: "normal" | "empty" | "error" = "normal";
+
+function workspaceDirEntries(relativePath?: unknown) {
+  if (fileTreeMode === "error") {
+    throw new Error("File load failed");
+  }
+  if (fileTreeMode === "empty") {
+    return [];
+  }
+  if (!relativePath) {
+    return [
+      { name: "src", relativePath: "src", isDirectory: true },
+      { name: "README.md", relativePath: "README.md", isDirectory: false },
+    ];
+  }
+  if (relativePath === "src") {
+    return [
+      { name: "nested", relativePath: "src/nested", isDirectory: true },
+      { name: "app.ts", relativePath: "src/app.ts", isDirectory: false },
+    ];
+  }
+  if (relativePath === "src/nested") {
+    return [{ name: "plan.md", relativePath: "src/nested/plan.md", isDirectory: false }];
+  }
+  return [];
+}
 
 const invoke = async (command: string, args?: Record<string, unknown>) => {
   invokeCalls.push({ command, args: args ? JSON.parse(JSON.stringify(args)) : undefined });
@@ -157,6 +182,8 @@ const invoke = async (command: string, args?: Record<string, unknown>) => {
           },
         ],
       } satisfies SkillListResult;
+    case "workspace_dir_list":
+      return workspaceDirEntries(args?.relativePath);
     case "workspace_file_open":
       return null;
     default:
@@ -166,36 +193,6 @@ const invoke = async (command: string, args?: Record<string, unknown>) => {
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke,
-}));
-
-const readDir = mock(async (path: string) => {
-  if (fileTreeMode === "error") {
-    throw new Error("File load failed");
-  }
-  if (fileTreeMode === "empty") {
-    return [];
-  }
-  if (path === "/tmp/workspace") {
-    return [
-      { name: "README.md", isDirectory: false },
-      { name: "src", isDirectory: true },
-      { name: ".git", isDirectory: true },
-    ];
-  }
-  if (path === "/tmp/workspace/src") {
-    return [
-      { name: "app.ts", isDirectory: false },
-      { name: "nested", isDirectory: true },
-    ];
-  }
-  if (path === "/tmp/workspace/src/nested") {
-    return [{ name: "plan.md", isDirectory: false }];
-  }
-  return [];
-});
-
-mock.module("@tauri-apps/plugin-fs", () => ({
-  readDir,
 }));
 
 const { TaskDetail } = await import("./TaskDetail");
@@ -221,12 +218,19 @@ function taskDetail(): TaskDetailType {
 beforeEach(() => {
   document.body.innerHTML = "";
   invokeCalls.length = 0;
-  readDir.mockClear();
   skillListMode = "normal";
   fileTreeMode = "normal";
 });
 
-afterEach(() => {
+async function flushComposerEffects() {
+  await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+afterEach(async () => {
+  await flushComposerEffects();
   cleanup();
 });
 
@@ -254,9 +258,11 @@ function renderTaskDetail(overrides: Partial<React.ComponentProps<typeof TaskDet
 }
 
 function typeComposerValue(textarea: HTMLTextAreaElement, value: string) {
-  fireEvent.input(textarea, { target: { value } });
-  textarea.setSelectionRange(value.length, value.length);
-  fireEvent.select(textarea);
+  act(() => {
+    fireEvent.input(textarea, { target: { value } });
+    textarea.setSelectionRange(value.length, value.length);
+    fireEvent.select(textarea);
+  });
 }
 
 describe("TaskDetail composer", () => {

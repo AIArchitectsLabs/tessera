@@ -198,6 +198,8 @@ const CODEX_OAUTH_TOKEN_URL = `${CODEX_OAUTH_ISSUER}/oauth/token`;
 const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const GOOGLE_WORKSPACE_CAPABILITY_ID = "google-workspace-cli";
 const GOOGLE_WORKSPACE_BINARY_NAME = "gws";
+const BROWSER_RUNTIME_CAPABILITY_ID = "browser-runtime";
+const BROWSER_RUNTIME_BINARY_NAME = "chromium";
 const GOOGLE_WORKSPACE_CLI_COMMANDS = new Set([
   "calendar",
   "contacts",
@@ -209,15 +211,21 @@ const GOOGLE_WORKSPACE_CLI_COMMANDS = new Set([
   "people",
   "sheets",
 ]);
+const optionalCapabilityManager = createOptionalCapabilityManager({
+  rootDir: join(TESSERA_DATA_DIR, "capabilities"),
+  definitions: optionalCapabilityDefinitionsFromEnv(process.env),
+});
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
   recipeDir: join(TESSERA_DATA_DIR, "browser-recipes"),
   ...resolveBrowserRuntimeConfigFromEnv(),
-});
-const optionalCapabilityManager = createOptionalCapabilityManager({
-  rootDir: join(TESSERA_DATA_DIR, "capabilities"),
-  definitions: optionalCapabilityDefinitionsFromEnv(process.env),
+  async resolveLaunchOptions() {
+    return {
+      ...(await resolveManagedBrowserRuntimeConfig()),
+      ...resolveBrowserRuntimeConfigFromEnv(),
+    };
+  },
 });
 type CapabilityInstallProgress = {
   phase: OptionalCapabilityInstallProgress["phase"] | "available" | "failed";
@@ -1059,6 +1067,22 @@ export async function handleCapabilityBinaryInstall(
       { error: message },
       { status: message.startsWith("Unknown optional capability") ? 404 : 500 }
     );
+  }
+}
+
+async function resolveManagedBrowserRuntimeConfig(
+  capabilityManager: OptionalCapabilityManager = optionalCapabilityManager
+): Promise<ReturnType<typeof resolveBrowserRuntimeConfigFromEnv>> {
+  try {
+    const executablePath = await capabilityManager.resolveBinary(
+      BROWSER_RUNTIME_CAPABILITY_ID,
+      BROWSER_RUNTIME_BINARY_NAME
+    );
+    return executablePath ? { executablePath } : {};
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("Unknown optional capability")) return {};
+    throw error;
   }
 }
 

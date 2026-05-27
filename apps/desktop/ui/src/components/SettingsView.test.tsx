@@ -178,7 +178,7 @@ let googleWorkspaceOAuthClientStatus = {
   hasClient: false,
   source: "missing",
 };
-type GoogleWorkspaceCapabilityStatus = {
+type ManagedCapabilityStatus = {
   capabilityId: string;
   binaryName: string;
   path?: string;
@@ -192,7 +192,7 @@ type GoogleWorkspaceCapabilityStatus = {
     totalBytes?: number;
   };
 };
-let googleWorkspaceCapabilityStatus: GoogleWorkspaceCapabilityStatus = {
+let googleWorkspaceCapabilityStatus: ManagedCapabilityStatus = {
   capabilityId: "google-workspace-cli",
   binaryName: "gws",
   path: "/tmp/tessera-gws",
@@ -204,6 +204,16 @@ let googleWorkspaceCapabilityStatus: GoogleWorkspaceCapabilityStatus = {
     phase: "installed",
     downloadedBytes: 15_371_280,
     totalBytes: 15_371_280,
+  },
+};
+let browserRuntimeCapabilityStatus: ManagedCapabilityStatus = {
+  capabilityId: "browser-runtime",
+  binaryName: "chromium",
+  installed: false,
+  installAvailable: false,
+  version: "managed",
+  progress: {
+    phase: "available",
   },
 };
 let googleWorkspaceConnectResult: IntegrationConnectionTestResult = {
@@ -374,6 +384,24 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         },
       };
       return googleWorkspaceCapabilityStatus;
+    case "browser_runtime_capability_status":
+      return browserRuntimeCapabilityStatus;
+    case "browser_runtime_capability_install":
+      browserRuntimeCapabilityStatus = {
+        ...browserRuntimeCapabilityStatus,
+        path: "/tmp/tessera-chromium",
+        installed: true,
+        progress: {
+          phase: "installed",
+          ...(browserRuntimeCapabilityStatus.sizeBytes !== undefined
+            ? {
+                downloadedBytes: browserRuntimeCapabilityStatus.sizeBytes,
+                totalBytes: browserRuntimeCapabilityStatus.sizeBytes,
+              }
+            : {}),
+        },
+      };
+      return browserRuntimeCapabilityStatus;
     case "integration_settings_save": {
       const request = args?.request;
       const searchProvider = request?.searchProvider as SearchProvider | undefined;
@@ -568,6 +596,16 @@ beforeEach(() => {
       phase: "installed",
       downloadedBytes: 15_371_280,
       totalBytes: 15_371_280,
+    },
+  };
+  browserRuntimeCapabilityStatus = {
+    capabilityId: "browser-runtime",
+    binaryName: "chromium",
+    installed: false,
+    installAvailable: false,
+    version: "managed",
+    progress: {
+      phase: "available",
     },
   };
   googleWorkspaceConnectResult = {
@@ -1108,6 +1146,43 @@ describe("SettingsView workspace integration flow", () => {
         .getByRole("button", { name: "Connect Google Workspace" })
         .hasAttribute("disabled")
     ).toBe(false);
+  });
+
+  test("browser automation runtime installs on demand", async () => {
+    browserRuntimeCapabilityStatus = {
+      capabilityId: "browser-runtime",
+      binaryName: "chromium",
+      installed: false,
+      installAvailable: true,
+      version: "126.0.0",
+      sizeBytes: 160_000_000,
+      progress: {
+        phase: "available",
+        totalBytes: 160_000_000,
+      },
+    };
+
+    const view = await renderIntegrationsView();
+
+    expect(view.getByText("Browser automation runtime")).toBeTruthy();
+    expect(view.getByText("Download required")).toBeTruthy();
+
+    fireEvent.click(view.getByRole("button", { name: "Download runtime" }));
+    expect(invokeCalls.some((call) => call.command === "browser_runtime_capability_install")).toBe(
+      false
+    );
+    expect(view.getByRole("button", { name: "Install runtime" })).toBeTruthy();
+
+    fireEvent.click(view.getByRole("button", { name: "Install runtime" }));
+
+    await waitFor(() => {
+      expect(
+        invokeCalls.some((call) => call.command === "browser_runtime_capability_install")
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(view.getByText("Runtime ready")).toBeTruthy();
+    });
   });
 
   test("testing Google Workspace sends no credential payload", async () => {

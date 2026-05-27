@@ -71,7 +71,7 @@ function writeGoogleWorkspaceOAuthClient(): void {
   const clientSecret = process.env.TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim();
   if (!clientId || !clientSecret) {
     console.log(
-      "[build-sidecar] Google Workspace OAuth client not bundled; set TESSERA_GOOGLE_WORKSPACE_CLIENT_ID and TESSERA_GOOGLE_WORKSPACE_CLIENT_SECRET for packaged sign-in"
+      "[build-sidecar] Google Workspace OAuth client not bundled; beta builds can save it from Settings on first use."
     );
     return;
   }
@@ -120,7 +120,7 @@ function resolvePlaywrightBrowserSourceDir(): string {
 function maybeCopyPlaywrightBrowsers(): void {
   if (process.env.TESSERA_BUNDLE_PLAYWRIGHT !== "1") {
     console.log(
-      "[build-sidecar] Playwright browsers not bundled; set TESSERA_BUNDLE_PLAYWRIGHT=1 to package local Chromium"
+      "[build-sidecar] Playwright browsers not bundled; beta builds install the browser runtime on demand when release metadata is provided."
     );
     return;
   }

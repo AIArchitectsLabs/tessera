@@ -1,6 +1,6 @@
 # Recipe 001: SEO/GEO Blog Article Playbook
 
-This recipe turns `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook` from an impressive specimen into a reusable authoring pattern. It is a Tessera docs mirror of the reference package, not a new runtime contract.
+This recipe documents an external SEO/GEO reference playbook package as a reusable authoring pattern. It is a Tessera docs mirror of the reference package, not a new runtime contract.
 
 The reference playbook proves this shape:
 
@@ -17,7 +17,7 @@ The reference playbook proves this shape:
 
 | Field | Value |
 | --- | --- |
-| Path | `/Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook` |
+| Path | External SEO/GEO reference package |
 | Manifest id | `reference.seo-geo-blog-article` |
 | Version | `0.1.26` |
 | Capabilities | `web.search`, `web.fetch`, `tool.workspace.write` |
@@ -29,20 +29,20 @@ The reference playbook proves this shape:
 Text mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook
+bun run --cwd apps/cli src/index.ts playbook validate <external-seo-geo-playbook-path>
 ```
 
 Result:
 
 ```text
-Playbook validation passed: /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook
+Playbook validation passed: <external-seo-geo-playbook-path>
 Summary: 0 error(s), 0 warning(s), 0 info
 ```
 
 JSON mode:
 
 ```bash
-bun run --cwd apps/cli src/index.ts playbook validate /Users/utpal/Code/playbooks/seo-geo-blog-reference-playbook --json
+bun run --cwd apps/cli src/index.ts playbook validate <external-seo-geo-playbook-path> --json
 ```
 
 Result:

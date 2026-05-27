@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -57,6 +57,13 @@ const PYTHON_RUNNER_VERSION_ENV: &str = "TESSERA_PYTHON_RUNNER_VERSION";
 const PYTHON_RUNNER_SIZE_BYTES_ENV: &str = "TESSERA_PYTHON_RUNNER_SIZE_BYTES";
 const PYTHON_RUNNER_ARCHIVE_KIND_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_KIND";
 const PYTHON_RUNNER_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY";
+const BROWSER_RUNTIME_URL_ENV: &str = "TESSERA_BROWSER_RUNTIME_URL";
+const BROWSER_RUNTIME_SHA256_ENV: &str = "TESSERA_BROWSER_RUNTIME_SHA256";
+const BROWSER_RUNTIME_VERSION_ENV: &str = "TESSERA_BROWSER_RUNTIME_VERSION";
+const BROWSER_RUNTIME_SIZE_BYTES_ENV: &str = "TESSERA_BROWSER_RUNTIME_SIZE_BYTES";
+const BROWSER_RUNTIME_ARCHIVE_KIND_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND";
+const BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY";
+const BROWSER_RUNTIME_ARCHIVE_ROOT_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT";
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -725,7 +732,7 @@ fn extract_google_oauth_url(output: &str) -> Option<String> {
     })
 }
 
-fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 22] {
+fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 29] {
     [
         (GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")),
         (GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256")),
@@ -802,6 +809,34 @@ fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 2
         (
             PYTHON_RUNNER_ARCHIVE_ENTRY_ENV,
             option_env!("TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY"),
+        ),
+        (
+            BROWSER_RUNTIME_URL_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_URL"),
+        ),
+        (
+            BROWSER_RUNTIME_SHA256_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_SHA256"),
+        ),
+        (
+            BROWSER_RUNTIME_VERSION_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_VERSION"),
+        ),
+        (
+            BROWSER_RUNTIME_SIZE_BYTES_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_SIZE_BYTES"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_KIND_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_ROOT_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT"),
         ),
     ]
 }
@@ -1345,6 +1380,14 @@ struct GoogleWorkspaceOAuthClientSaveRequest {
     client_secret: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceDirEntry {
+    name: String,
+    relative_path: String,
+    is_directory: bool,
+}
+
 #[tauri::command]
 async fn sidecar_ping(state: State<'_, SidecarHandle>) -> Result<SpawnResult, String> {
     let body = r#"{"binary":"workspace-cli","args":["ping"]}"#;
@@ -1674,6 +1717,24 @@ async fn google_workspace_capability_install(
     state: tauri::State<'_, SidecarHandle>,
 ) -> Result<CapabilityBinaryResult, String> {
     managed_capability_binary_install(state.inner(), "google-workspace-cli", "gws")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn browser_runtime_capability_status(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_status(state.inner(), "browser-runtime", "chromium")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn browser_runtime_capability_install(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_install(state.inner(), "browser-runtime", "chromium")
         .await
         .map_err(|error| error.to_string())
 }
@@ -3040,28 +3101,151 @@ async fn task_unsubscribe(
     Ok(())
 }
 
+fn canonical_workspace_root(workspace_root: &str) -> anyhow::Result<PathBuf> {
+    let workspace_root = workspace_root.trim();
+    if workspace_root.is_empty() {
+        bail!("workspaceRoot is required");
+    }
+    let workspace_root = Path::new(workspace_root);
+    if !workspace_root.is_absolute() {
+        bail!("workspaceRoot must be an absolute path");
+    }
+    let workspace = fs::canonicalize(workspace_root)
+        .with_context(|| format!("Could not access workspace: {}", workspace_root.display()))?;
+    if !workspace.is_dir() {
+        bail!("Workspace is not a directory: {}", workspace.display());
+    }
+    Ok(workspace)
+}
+
+fn clean_relative_workspace_path(path: &str) -> anyhow::Result<PathBuf> {
+    let mut clean_path = PathBuf::new();
+    for component in Path::new(path.trim()).components() {
+        match component {
+            Component::Normal(part) => clean_path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("Workspace path must stay inside the selected workspace");
+            }
+        }
+    }
+    Ok(clean_path)
+}
+
+fn path_has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn path_has_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(part) => part.to_string_lossy().starts_with('.'),
+        _ => false,
+    })
+}
+
+fn resolve_workspace_path(
+    workspace_root: &str,
+    path: &str,
+    allow_absolute_path: bool,
+) -> anyhow::Result<PathBuf> {
+    let workspace = canonical_workspace_root(workspace_root)?;
+    let path = path.trim();
+    let target = if path.is_empty() {
+        workspace.clone()
+    } else {
+        let requested = Path::new(path);
+        if requested.is_absolute() {
+            if !allow_absolute_path {
+                bail!("Workspace path must be relative");
+            }
+            if path_has_parent_component(requested) {
+                bail!("Workspace path must stay inside the selected workspace");
+            }
+            requested.to_path_buf()
+        } else {
+            workspace.join(clean_relative_workspace_path(path)?)
+        }
+    };
+    let target = fs::canonicalize(&target)
+        .with_context(|| format!("Could not access path: {}", target.display()))?;
+    if !target.starts_with(&workspace) {
+        bail!("Workspace path must stay inside the selected workspace");
+    }
+    Ok(target)
+}
+
+fn workspace_relative_child_path(relative_path: &Path, child_name: &str) -> String {
+    if relative_path.as_os_str().is_empty() {
+        return child_name.to_string();
+    }
+    format!(
+        "{}/{}",
+        relative_path.to_string_lossy().replace('\\', "/"),
+        child_name
+    )
+}
+
+fn workspace_dir_list_impl(
+    workspace_root: &str,
+    relative_path: Option<&str>,
+) -> anyhow::Result<Vec<WorkspaceDirEntry>> {
+    let relative_path = clean_relative_workspace_path(relative_path.unwrap_or_default())?;
+    if path_has_hidden_component(&relative_path) {
+        bail!("Hidden workspace paths cannot be listed");
+    }
+    let target = resolve_workspace_path(
+        workspace_root,
+        relative_path.to_string_lossy().as_ref(),
+        false,
+    )?;
+    if !target.is_dir() {
+        bail!("Workspace path is not a directory: {}", target.display());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&target)
+        .with_context(|| format!("Could not read directory: {}", target.display()))?
+    {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        entries.push(WorkspaceDirEntry {
+            relative_path: workspace_relative_child_path(&relative_path, &file_name),
+            name: file_name,
+            is_directory: file_type.is_dir(),
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        b.is_directory
+            .cmp(&a.is_directory)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn workspace_dir_list(
+    workspace_root: String,
+    relative_path: Option<String>,
+) -> Result<Vec<WorkspaceDirEntry>, String> {
+    workspace_dir_list_impl(&workspace_root, relative_path.as_deref())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn workspace_file_open(
     app: AppHandle,
     workspace_root: String,
     path: String,
 ) -> Result<(), String> {
-    let workspace = fs::canonicalize(&workspace_root)
-        .with_context(|| format!("Could not access workspace: {workspace_root}"))
-        .map_err(|error| error.to_string())?;
-    let requested = PathBuf::from(path.trim());
-    let target = if requested.is_absolute() {
-        requested
-    } else {
-        workspace.join(requested)
-    };
-    let target = fs::canonicalize(&target)
-        .with_context(|| format!("Could not access file: {}", target.display()))
-        .map_err(|error| error.to_string())?;
-
-    if !target.starts_with(&workspace) {
-        return Err("Cannot open files outside the selected workspace".to_string());
-    }
+    let target =
+        resolve_workspace_path(&workspace_root, &path, true).map_err(|error| error.to_string())?;
     if !target.is_file() {
         return Err(format!("Not a file: {}", target.display()));
     }
@@ -3168,7 +3352,6 @@ async fn agent_profile_reset(
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| setup(app))
@@ -3193,6 +3376,8 @@ pub fn run() {
             inbox_list,
             inbox_resolve,
             inbox_snooze,
+            browser_runtime_capability_install,
+            browser_runtime_capability_status,
             google_identity_connect,
             google_identity_connection_status,
             google_workspace_capability_install,
@@ -3242,6 +3427,7 @@ pub fn run() {
             task_todo_apply,
             task_unsubscribe,
             task_update,
+            workspace_dir_list,
             workspace_file_open,
             workspace_style_guide_get,
             workspace_style_guide_save
@@ -3294,6 +3480,134 @@ mod tests {
             message: None,
             progress: None,
         }
+    }
+
+    #[test]
+    fn workspace_dir_list_returns_visible_relative_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).expect("create src");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create hidden dir");
+        std::fs::write(workspace.join("README.md"), "hello").expect("write file");
+
+        let entries = super::workspace_dir_list_impl(workspace.to_str().unwrap(), None)
+            .expect("list workspace");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "src");
+        assert_eq!(entries[0].relative_path, "src");
+        assert!(entries[0].is_directory);
+        assert_eq!(entries[1].name, "README.md");
+        assert_eq!(entries[1].relative_path, "README.md");
+        assert!(!entries[1].is_directory);
+    }
+
+    #[test]
+    fn workspace_dir_list_reads_nested_relative_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src/nested")).expect("create nested");
+        std::fs::write(workspace.join("src/app.ts"), "export {};").expect("write file");
+
+        let entries = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("src"))
+            .expect("list nested workspace path");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/nested", "src/app.ts"]
+        );
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_missing_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing");
+
+        let error = super::workspace_dir_list_impl(missing.to_str().unwrap(), None)
+            .expect_err("missing workspace should fail");
+
+        assert!(error.to_string().contains("Could not access workspace"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_file_as_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace_file = dir.path().join("workspace.txt");
+        std::fs::write(&workspace_file, "not a directory").expect("write file");
+
+        let error = super::workspace_dir_list_impl(workspace_file.to_str().unwrap(), None)
+            .expect_err("file workspace root should fail");
+
+        assert!(error.to_string().contains("Workspace is not a directory"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_file_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("README.md"), "hello").expect("write file");
+
+        let error = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("README.md"))
+            .expect_err("file target should fail");
+
+        assert!(error.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_absolute_relative_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&outside).expect("create outside");
+
+        let error = super::workspace_dir_list_impl(
+            workspace.to_str().unwrap(),
+            Some(outside.to_str().unwrap()),
+        )
+        .expect_err("absolute listing target should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_parent_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let error = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("../outside"))
+            .expect_err("parent traversal should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_dir_list_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        std::os::unix::fs::symlink(&outside, workspace.join("outside-link"))
+            .expect("create symlink");
+
+        let error =
+            super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("outside-link"))
+                .expect_err("symlink escape should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
     }
 
     #[test]
