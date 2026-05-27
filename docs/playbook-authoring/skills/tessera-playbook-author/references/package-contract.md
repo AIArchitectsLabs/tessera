@@ -9,6 +9,7 @@ Tessera is the only runtime. External agents may author, validate, repair, packa
 - Repair diagnostics.
 - Run deterministic script tests over fixtures.
 - Run golden tests for domain normalization or scoring scripts.
+- Run dev-only build tooling that packages a folder or zip for Tessera import.
 
 ## Not Allowed Outside Tessera
 
@@ -27,6 +28,8 @@ Tessera is the only runtime. External agents may author, validate, repair, packa
 - Materialize final artifacts as markdown, CSV, JSON, or PDF.
 - Keep domain schemas, prompts, scoring, fixtures, and taxonomies in the external package.
 - Keep Tessera runtime, connector policy, review pause handling, and artifact history in Tessera.
+- Dev build scripts may exist, but they must not be graph runtime files and should be excluded from import payloads when the package format expects runtime-only contents.
+- `package.json`, when present, may define package-local tests only; it must not define `bin`, dependency fields, or runtime scripts such as `start`, `dev`, `serve`, `run`, `execute`, or `playbook`.
 
 ## Common Validator Failures
 

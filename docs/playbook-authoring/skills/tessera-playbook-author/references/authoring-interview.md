@@ -1,6 +1,6 @@
 # Authoring Interview
 
-Use this reference to produce the playbook authoring brief before generating files.
+Use this reference to run the interview or brainstorming session before generating files. The goal is to understand the end-to-end workflow well enough to choose graph shape, tools, effects, schemas, fixtures, and validation.
 
 ## Required Discovery
 
@@ -24,6 +24,14 @@ Sources:
 - What fixtures or golden examples can prove behavior without live connector access?
 - What fields require provenance?
 
+Tools and effects:
+
+- Which connector/tool calls are needed during Tessera execution?
+- Which package-local scripts should normalize, score, parse, aggregate, or format data?
+- Which durable effects should happen at the end, such as workspace writes?
+- Which effects require approval, preview, idempotency, or audit notes?
+- What should never be executed outside Tessera?
+
 Data:
 
 - What are the domain entities?
@@ -36,6 +44,14 @@ Artifacts:
 - What final markdown, CSV, JSON, or PDF outputs are required?
 - Who reads each artifact?
 - What schema or template backs each artifact?
+
+Packaging:
+
+- What external package path should be created or repaired?
+- Should the package include a `package.json` for tests, or use manifest/playbook only?
+- What build command should validate, package, and release the folder?
+- What fixture coverage is required before import?
+- What import surface is expected: folder, zip, or both?
 
 ## Question Discipline
 
@@ -62,6 +78,7 @@ Do not generate package files until the brief names:
 - business outcome
 - primary user
 - source inventory
+- tools/effects inventory
 - graph sketch
 - schema plan
 - review gates

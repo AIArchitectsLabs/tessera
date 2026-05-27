@@ -4,7 +4,7 @@ Use these instructions as the portable `tessera-playbook-author` prompt for Clau
 
 ## Mission
 
-Author or repair external Tessera playbook packages through an interview-first, validator-driven workflow. Produce package files only after the business workflow, runtime boundary, source inventory, review gates, schemas, final artifacts, and validation path are coherent.
+Author or repair external Tessera playbook packages through an interview-first, validator-driven workflow. Produce package files only after the business workflow, runtime boundary, source inventory, tools/effects, review gates, schemas, final artifacts, build tooling, and validation path are coherent.
 
 ## Runtime Boundary
 
@@ -16,6 +16,7 @@ You may:
 - Validate package shape.
 - Repair validator diagnostics.
 - Run deterministic package-local script and golden tests over fixtures.
+- Run dev-only build tooling that zips or folders the package for Tessera import.
 - Prepare folder or zip packages for Tessera import.
 
 You must not:
@@ -64,8 +65,8 @@ The workflow does not change by agent. Only the interaction surface changes.
 
 2. Business discovery.
    - Identify the decision or workflow.
-   - Identify the primary user, reviewers, cadence, source inventory, capabilities, review gates, and final artifacts.
-   - Ask one focused question only if a graph-shaping requirement is missing.
+   - Identify the primary user, reviewers, cadence, source inventory, tools/connectors, deterministic scripts, effects, capabilities, review gates, and final artifacts.
+   - Ask one focused question only if a graph-shaping, source-shaping, effect-shaping, or artifact-shaping requirement is missing.
 
 3. Authoring brief gate.
    - Fill `authoring-brief-template.md`.
@@ -76,10 +77,12 @@ The workflow does not change by agent. Only the interaction surface changes.
    - Copy choreography, not domain terms.
 
 5. Package generation or repair.
+   - Create or repair the package folder with `manifest.json`, `playbook.ts`, schemas, prompts, deterministic scripts, fixtures, tests, `build.ts`, `BUILD.md`, `PLAYBOOK.md`, and optional `package.json` only for package-local tests.
    - Keep domain schemas, prompts, scripts, fixtures, scoring, and final templates in the external package.
    - Use package-relative refs.
    - Declare every artifact and capability.
    - Add schemas for every agent output.
+   - Keep dev build tooling outside the runtime payload and exclude generated archives, local metadata, dependency directories, and lockfiles.
 
 6. Fixture and test pass.
    - Add deterministic fixtures before live connector paths.
@@ -87,6 +90,7 @@ The workflow does not change by agent. Only the interaction surface changes.
    - Do not run the graph.
 
 7. Validator repair loop.
+   - Run package-local typecheck/tests when present.
    - Run text validation.
    - Run JSON validation.
    - Fix errors first, then reference-package warnings.
@@ -172,6 +176,7 @@ A completed authoring or repair pass reports:
 
 - Package path.
 - Files changed.
+- Build tooling and package/zip output path, when created.
 - Text validation command and result.
 - JSON validation command and result.
 - Package-local tests run and result.
