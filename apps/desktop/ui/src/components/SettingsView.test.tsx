@@ -1076,7 +1076,7 @@ describe("SettingsView workspace integration flow", () => {
     expect(within(section).getByText("Uses Google Workspace CLI")).toBeTruthy();
     expect(
       within(section).getByText(
-        "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."
+        "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates."
       )
     ).toBeTruthy();
     for (const service of ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"]) {

@@ -2189,8 +2189,8 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
                   {hasIntegrationCredential
-                    ? "Connected with read-only access."
-                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."}
+                    ? "Connected. Tessera can use approved Google Workspace actions for this account."
+                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates."}
                 </div>
 
                 {integrationAllowsCredentials && (

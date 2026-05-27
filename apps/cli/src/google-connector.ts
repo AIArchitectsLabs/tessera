@@ -290,6 +290,8 @@ export async function runGwsCli(
   const env = {
     ...process.env,
     ...(configDir ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir } : {}),
+    GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND:
+      process.env.GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND?.trim() || "file",
   };
   const proc = Bun.spawn([binary, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([

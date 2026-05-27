@@ -583,6 +583,7 @@ fn apply_google_workspace_env(
         "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
         config_dir.to_string_lossy().as_ref(),
     );
+    command.env("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file");
     if let Some(client_id) = google_workspace_oauth_client_id() {
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
         if let Some(client_secret) = google_workspace_oauth_client_secret() {
@@ -679,12 +680,65 @@ fn google_authenticated_user_from_outputs(
 fn google_workspace_auth_status_connected(result: &SpawnResult) -> bool {
     json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
         .and_then(|value| {
-            value
+            let auth_method_connected = value
                 .get("auth_method")
                 .and_then(|auth_method| auth_method.as_str())
                 .map(|auth_method| auth_method != "none")
+                .unwrap_or(false);
+            if !auth_method_connected {
+                return Some(false);
+            }
+            if value
+                .get("credentials_readable")
+                .and_then(|readable| readable.as_bool())
+                == Some(false)
+            {
+                return Some(false);
+            }
+            if value
+                .get("encryption_valid")
+                .and_then(|valid| valid.as_bool())
+                == Some(false)
+            {
+                return Some(false);
+            }
+            if value.get("encryption_error").is_some() {
+                return Some(false);
+            }
+            Some(true)
         })
         .unwrap_or(false)
+}
+
+fn google_workspace_auth_status_message(result: &SpawnResult) -> String {
+    if let Some(value) =
+        json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
+    {
+        if value.get("encryption_error").is_some()
+            || value
+                .get("credentials_readable")
+                .and_then(|readable| readable.as_bool())
+                == Some(false)
+            || value
+                .get("encryption_valid")
+                .and_then(|valid| valid.as_bool())
+                == Some(false)
+        {
+            return "Google Workspace credentials could not be read. Disconnect and reconnect Google Workspace.".to_string();
+        }
+        if value
+            .get("auth_method")
+            .and_then(|auth_method| auth_method.as_str())
+            .is_some_and(|auth_method| auth_method == "none")
+        {
+            return "Waiting for Google sign-in to finish.".to_string();
+        }
+        if value.get("token_error").is_some() {
+            return "Google Workspace token could not be refreshed. Disconnect and reconnect Google Workspace.".to_string();
+        }
+    }
+
+    google_workspace_process_message(result)
 }
 
 fn google_workspace_process_message(result: &SpawnResult) -> String {
@@ -1263,6 +1317,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "TESSERA_GWS_CONFIG_DIR",
             google_workspace_config_dir.to_string_lossy().as_ref(),
         )
+        .env("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file")
         .env(
             "TESSERA_CURATED_SKILLS_DIR",
             curated_skills_dir.to_string_lossy().as_ref(),
@@ -2622,7 +2677,7 @@ async fn integration_connection_test(
                         .map_err(|error| error.to_string())?;
                         return Ok(integration_settings::IntegrationConnectionTestResult {
                             ok: false,
-                            message: first_useful_process_line(&status),
+                            message: google_workspace_auth_status_message(&status),
                             provider: Some(provider),
                             search_provider: None,
                             user: None,
@@ -2689,6 +2744,8 @@ async fn integration_connection_test(
     let ok = result.exit_code == 0;
     let message = if ok {
         "Connection test succeeded".to_string()
+    } else if provider == Some(integration_settings::IntegrationProvider::GoogleWorkspace) {
+        google_workspace_process_message(&result)
     } else {
         result
             .stderr
@@ -2723,6 +2780,9 @@ async fn google_workspace_connection_status(
     if ok {
         integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
+    } else {
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, false)
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2730,7 +2790,7 @@ async fn google_workspace_connection_status(
         message: if ok {
             "Google Workspace connected.".to_string()
         } else {
-            "Waiting for Google sign-in to finish.".to_string()
+            google_workspace_auth_status_message(&status)
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
@@ -2790,6 +2850,9 @@ async fn google_workspace_connect(
     if ok {
         integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
+    } else {
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, false)
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2797,7 +2860,7 @@ async fn google_workspace_connect(
         message: if ok {
             "Google Workspace connected.".to_string()
         } else {
-            first_useful_process_line(&status)
+            google_workspace_auth_status_message(&status)
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
@@ -2826,7 +2889,7 @@ async fn google_identity_connection_status(
         message: if ok {
             "Google sign-in complete.".to_string()
         } else {
-            "Waiting for Google sign-in to finish.".to_string()
+            google_workspace_auth_status_message(&status)
         },
         provider: None,
         search_provider: None,
@@ -2892,7 +2955,7 @@ async fn google_identity_connect(
         message: if ok {
             "Google sign-in complete.".to_string()
         } else {
-            first_useful_process_line(&status)
+            google_workspace_auth_status_message(&status)
         },
         provider: None,
         search_provider: None,
@@ -3885,6 +3948,64 @@ mod tests {
             super::google_workspace_process_message(&result),
             "Google API could not be reached. Check your internet connection."
         );
+    }
+
+    #[test]
+    fn google_workspace_status_rejects_unreadable_encrypted_credentials() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "auth_method": "oauth2",
+                "encrypted_credentials_exists": true,
+                "encryption_valid": false,
+                "encryption_error": "Could not decrypt. May have been created on a different machine.",
+                "credentials_readable": false,
+            })
+            .to_string(),
+            stderr: "Using keyring backend: keyring\n".to_string(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(!super::google_workspace_auth_status_connected(&result));
+        assert_eq!(
+            super::google_workspace_auth_status_message(&result),
+            "Google Workspace credentials could not be read. Disconnect and reconnect Google Workspace."
+        );
+    }
+
+    #[test]
+    fn google_workspace_status_accepts_readable_oauth_credentials() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "auth_method": "oauth2",
+                "encrypted_credentials_exists": true,
+                "encryption_valid": true,
+                "credentials_readable": true,
+            })
+            .to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(super::google_workspace_auth_status_connected(&result));
+    }
+
+    #[test]
+    fn google_workspace_env_uses_file_keyring_backend() {
+        let mut command = std::process::Command::new("/tmp/gws");
+        super::apply_google_workspace_env(
+            &mut command,
+            &PathBuf::from("/tmp/gws"),
+            &PathBuf::from("/tmp/gws-config"),
+        );
+
+        assert!(command.get_envs().any(|(key, value)| {
+            key == std::ffi::OsStr::new("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND")
+                && value == Some(std::ffi::OsStr::new("file"))
+        }));
     }
 
     #[test]
