@@ -16,12 +16,14 @@ export const SidecarReadySchema = z.discriminatedUnion("transport", [
     transport: z.literal("unix"),
     path: z.string(),
     token: z.string(),
+    graphRunWorker: z.boolean().default(false),
   }),
   z.object({
     type: z.literal("ready"),
     transport: z.literal("tcp"),
     port: z.number(),
     token: z.string(),
+    graphRunWorker: z.boolean().default(false),
   }),
 ]);
 
@@ -3493,6 +3495,31 @@ export const PlaybookRunDetailSchema = WorkflowRunResultSchema.extend({
 });
 
 export type PlaybookRunDetail = z.infer<typeof PlaybookRunDetailSchema>;
+
+export function workflowStatusFromGraphRunStatus(
+  status: PlaybookGraphRunStatus
+): WorkflowRunStatus {
+  if (status === "completed") return "completed";
+  if (status === "blocked" || status === "interrupted") return "blocked";
+  if (status === "needs_attention") return "needs_attention";
+  if (status === "denied") return "denied";
+  if (status === "failed" || status === "needs_repair") return "failed";
+  return "running";
+}
+
+export function workflowStatusFromGraphRunRecord(run: PlaybookGraphRunRecord): WorkflowRunStatus {
+  if (run.status === "completed" && (run.error || run.repairReason || run.blockedReason)) {
+    return "failed";
+  }
+  return workflowStatusFromGraphRunStatus(run.status);
+}
+
+export function workflowStatusFromGraphRunDetail(
+  detail: PlaybookGraphRunDetail
+): WorkflowRunStatus {
+  if (detail.queue.some((entry) => entry.status === "failed")) return "failed";
+  return workflowStatusFromGraphRunRecord(detail.run);
+}
 
 export const WorkflowRunListResultSchema = z.object({
   runs: z.array(WorkflowRunResultSchema),

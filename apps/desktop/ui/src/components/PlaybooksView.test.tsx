@@ -2969,6 +2969,97 @@ describe("PlaybooksView", () => {
     }
   });
 
+  test("shows needs-repair graph runs as repair work", async () => {
+    const repairDetail = {
+      ...graphRunDetail,
+      run: {
+        ...graphRunDetail.run,
+        runId: "graph-run-repair",
+        status: "needs_repair",
+        currentQueueEntryId: undefined,
+        blockedReason: undefined,
+        repairReason: "Pinned graph snapshot hash mismatch",
+        updatedAt: "2026-05-15T00:02:00.000Z",
+      },
+      queue: [],
+    } satisfies PlaybookGraphRunDetail;
+    graphRunListOverride = [repairDetail.run];
+    graphRunSurfaceOverride = {
+      schemaVersion: 1,
+      detail: repairDetail,
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      branches: [],
+      productView: {
+        schemaVersion: 1,
+        state: "restart_required",
+        title: "Run needs repair",
+        message: "Pinned graph snapshot hash mismatch",
+        primaryAction: {
+          actionId: "graph-run-repair:approve_repair",
+          label: "Repair run",
+          tone: "primary",
+          decision: "approve_repair",
+        },
+        secondaryActions: [],
+        technicalSummary: {
+          internalStatus: "needs_repair",
+        },
+      },
+      actions: [
+        {
+          schemaVersion: 1,
+          actionId: "graph-run-repair:approve_repair",
+          decision: "approve_repair",
+          label: "Repair run",
+          description: "Pinned graph snapshot hash mismatch",
+          allowedRunStatuses: ["needs_repair"],
+          allowedQueueStatuses: [],
+          requiredPayloadFields: [],
+          sideEffect: "resume",
+          destructive: false,
+          invalidatesDownstream: false,
+          requiresExecutionContext: false,
+          requiresProvider: false,
+          requiresCredential: false,
+          requiresWorkspace: false,
+        },
+      ],
+    } satisfies PlaybookGraphRunReviewSurface;
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected needs-repair run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Run needs repair")).toBeTruthy();
+      expect(view.getAllByText("Pinned graph snapshot hash mismatch").length).toBeGreaterThan(0);
+      expect(view.queryByText("Working")).toBeNull();
+      expect(view.getByRole("button", { name: "Repair run" })).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Repair run" }));
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string } | undefined)?.runId === "graph-run-repair"
+      );
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        request: {
+          decision: "approve_repair",
+        },
+      });
+    });
+  });
+
   test("shows prepared artifact evidence before approving human review runs", async () => {
     const view = renderPlaybooksView();
 

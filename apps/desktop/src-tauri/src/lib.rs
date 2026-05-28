@@ -64,8 +64,13 @@ const BROWSER_RUNTIME_SIZE_BYTES_ENV: &str = "TESSERA_BROWSER_RUNTIME_SIZE_BYTES
 const BROWSER_RUNTIME_ARCHIVE_KIND_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND";
 const BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY";
 const BROWSER_RUNTIME_ARCHIVE_ROOT_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT";
+const TESSERA_GRAPH_RUN_WORKER_ENV: &str = "TESSERA_GRAPH_RUN_WORKER";
 
 static GOOGLE_WORKSPACE_CLI_PATH_CACHE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn path_env_value(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -1408,6 +1413,36 @@ async fn attach_default_workflow_execution(
     Ok(request)
 }
 
+fn sidecar_base_env(
+    cli_path: &Path,
+    workflow_db_path: &Path,
+    task_db_path: &Path,
+    app_config_dir: &Path,
+    google_workspace_config_dir: &Path,
+    curated_skills_dir: &Path,
+    bin_dir: &Path,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("TESSERA_CLI_PATH", path_env_value(cli_path)),
+        ("TESSERA_WORKFLOW_DB_PATH", path_env_value(workflow_db_path)),
+        ("TESSERA_TASK_DB_PATH", path_env_value(task_db_path)),
+        ("TESSERA_APP_CONFIG_DIR", path_env_value(app_config_dir)),
+        (
+            "TESSERA_GWS_CONFIG_DIR",
+            path_env_value(google_workspace_config_dir),
+        ),
+        ("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file".to_string()),
+        (
+            "TESSERA_CURATED_SKILLS_DIR",
+            path_env_value(curated_skills_dir),
+        ),
+        (TESSERA_GRAPH_RUN_WORKER_ENV, "1".to_string()),
+        // pi-coding-agent resolves package assets at module init. Point it at the
+        // Tauri binaries/resource dir where packaging keeps package.json.
+        ("PI_PACKAGE_DIR", path_env_value(bin_dir)),
+    ]
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1434,33 +1469,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut sidecar_command = app
         .shell()
         .sidecar("tessera-sidecar")
-        .context("Could not create sidecar command")?
-        .env("TESSERA_CLI_PATH", cli_path.to_string_lossy().as_ref())
-        .env(
-            "TESSERA_WORKFLOW_DB_PATH",
-            workflow_db_path.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_TASK_DB_PATH",
-            task_db_path.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_APP_CONFIG_DIR",
-            app_config_dir.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_GWS_CONFIG_DIR",
-            google_workspace_config_dir.to_string_lossy().as_ref(),
-        )
-        .env("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file")
-        .env(
-            "TESSERA_CURATED_SKILLS_DIR",
-            curated_skills_dir.to_string_lossy().as_ref(),
-        )
-        .env("TESSERA_GRAPH_RUN_WORKER", "1")
-        // pi-coding-agent resolves package assets at module init. Point it at the
-        // Tauri binaries/resource dir where packaging keeps package.json.
-        .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
+        .context("Could not create sidecar command")?;
+
+    for (name, value) in sidecar_base_env(
+        &cli_path,
+        &workflow_db_path,
+        &task_db_path,
+        &app_config_dir,
+        &google_workspace_config_dir,
+        &curated_skills_dir,
+        &bin_dir,
+    ) {
+        sidecar_command = sidecar_command.env(name, value);
+    }
 
     for (name, build_value) in optional_capability_env_sources() {
         if let Some(value) = runtime_or_build_env(name, build_value) {
@@ -3704,6 +3725,31 @@ mod tests {
             message: None,
             progress: None,
         }
+    }
+
+    #[test]
+    fn sidecar_base_env_enables_graph_worker_for_desktop_launches() {
+        let env = super::sidecar_base_env(
+            &PathBuf::from("/tmp/tessera-cli"),
+            &PathBuf::from("/tmp/workflow-runs.sqlite"),
+            &PathBuf::from("/tmp/tasks.sqlite"),
+            &PathBuf::from("/tmp/config"),
+            &PathBuf::from("/tmp/config/google-workspace"),
+            &PathBuf::from("/tmp/bin/skills"),
+            &PathBuf::from("/tmp/bin"),
+        )
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            env.get(super::TESSERA_GRAPH_RUN_WORKER_ENV)
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("PI_PACKAGE_DIR").map(String::as_str),
+            Some("/tmp/bin")
+        );
     }
 
     #[tokio::test]

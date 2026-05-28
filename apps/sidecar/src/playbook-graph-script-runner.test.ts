@@ -6,8 +6,12 @@ import {
   compilePlaybookGraph,
   createPlaybookGraphQueueEntry,
   createPlaybookGraphSnapshot,
+  hardTimeoutMs,
 } from "@tessera/core";
-import { runPlaybookGraphScript } from "./playbook-graph-script-runner.js";
+import {
+  SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS,
+  runPlaybookGraphScript,
+} from "./playbook-graph-script-runner.js";
 
 const now = "2026-05-15T00:00:00.000Z";
 
@@ -71,6 +75,12 @@ function scriptInput(
 }
 
 describe("runPlaybookGraphScript", () => {
+  test("uses the runtime script hard timeout by default", () => {
+    const scriptHardTimeoutMs = hardTimeoutMs("script");
+    if (scriptHardTimeoutMs === undefined) throw new Error("Expected script hard timeout");
+    expect(SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS).toBe(scriptHardTimeoutMs);
+  });
+
   test("executes a pinned TypeScript script with relative imports", async () => {
     const output = await runPlaybookGraphScript({
       input: scriptInput(

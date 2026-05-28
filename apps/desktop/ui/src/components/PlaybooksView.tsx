@@ -37,6 +37,10 @@ import type {
   WorkspaceStyleGuideReadResult,
 } from "@tessera/contracts";
 import {
+  workflowStatusFromGraphRunDetail,
+  workflowStatusFromGraphRunRecord,
+} from "@tessera/contracts";
+import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
@@ -892,32 +896,6 @@ function orderedPhases(
   return [...new Set([...phaseOrder, ...runPhases])];
 }
 
-function workflowStatusFromGraph(
-  status: PlaybookGraphRunRecord["status"]
-): PlaybookRunDetail["status"] {
-  if (status === "completed") return "completed";
-  if (status === "blocked") return "blocked";
-  if (status === "interrupted") return "blocked";
-  if (status === "needs_attention") return "needs_attention";
-  if (status === "denied") return "denied";
-  if (status === "failed" || status === "needs_repair") {
-    return "failed";
-  }
-  return "running";
-}
-
-function graphRunWorkflowStatus(detail: PlaybookGraphRunDetail): PlaybookRunDetail["status"] {
-  if (detail.queue.some((entry) => entry.status === "failed")) return "failed";
-  return graphRunRecordWorkflowStatus(detail.run);
-}
-
-function graphRunRecordWorkflowStatus(run: PlaybookGraphRunRecord): PlaybookRunDetail["status"] {
-  if (run.status === "completed" && (run.error || run.repairReason || run.blockedReason)) {
-    return "failed";
-  }
-  return workflowStatusFromGraph(run.status);
-}
-
 function runNeedsLiveRefresh(
   run: PlaybookRunDetail | null,
   graphRun: PlaybookGraphRunDetail | null
@@ -1417,11 +1395,38 @@ function graphRunApproval(
     !detail ||
     (detail.run.status !== "blocked" &&
       detail.run.status !== "interrupted" &&
-      detail.run.status !== "needs_attention")
+      detail.run.status !== "needs_attention" &&
+      detail.run.status !== "needs_repair")
   ) {
     return undefined;
   }
   const productAction = productView?.primaryAction;
+  if (
+    detail.run.status === "needs_repair" &&
+    productAction &&
+    (productAction.decision === "approve_repair" || productAction.decision === "retry_repair")
+  ) {
+    return {
+      toolId: "graph.approveRepair",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview:
+        productView?.message ??
+        detail.run.repairReason ??
+        "Tessera needs to repair this run before continuing.",
+      reasonCode: "graph_repair",
+    };
+  }
   if (
     productView?.state === "retry_available" &&
     productAction &&
@@ -1602,7 +1607,7 @@ function graphRunToPlaybookRunDetail(
     runId: detail.run.runId,
     workflowId: detail.run.playbookId,
     packageVersion: detail.run.snapshot.packageVersion,
-    status: graphRunWorkflowStatus(detail),
+    status: workflowStatusFromGraphRunDetail(detail),
     currentStepId: detail.run.currentQueueEntryId,
     input: detail.run.input,
     outputs,
@@ -1610,7 +1615,9 @@ function graphRunToPlaybookRunDetail(
     ...(usage ? { usage } : {}),
     dashboardLayout: dashboardLayoutFromPlaybook(playbookForRun) ?? undefined,
     approval: graphRunApproval(detail, playbookForRun, productView),
-    error: playbookRunErrorCopy(detail.run.error ?? detail.run.repairReason),
+    error: playbookRunErrorCopy(
+      detail.run.error ?? detail.run.repairReason ?? detail.run.blockedReason
+    ),
     startedAt: detail.run.startedAt,
     updatedAt: detail.run.updatedAt,
     completedAt: detail.run.completedAt,
@@ -1640,12 +1647,12 @@ function graphRunRecordToPlaybookRunDetail(
     runId: run.runId,
     workflowId: run.playbookId,
     packageVersion: run.snapshot.packageVersion,
-    status: graphRunRecordWorkflowStatus(run),
+    status: workflowStatusFromGraphRunRecord(run),
     currentStepId: run.currentQueueEntryId,
     input: run.input,
     outputs: {},
     assignmentPlan: run.assignmentPlan,
-    error: playbookRunErrorCopy(run.error ?? run.repairReason),
+    error: playbookRunErrorCopy(run.error ?? run.repairReason ?? run.blockedReason),
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     completedAt: run.completedAt,
@@ -2295,6 +2302,9 @@ function parseGraphActionPayload(
 function reviewActionHelp(action: PlaybookGraphResumeActionSpec, approveCopy: string): string {
   if (action.description) return action.description;
   if (action.decision === "approve") return approveCopy;
+  if (action.decision === "approve_repair" || action.decision === "retry_repair") {
+    return "Repair the saved run state and continue from the pinned playbook snapshot.";
+  }
   if (action.decision === "request_changes") {
     return "Tell Tessera what to revise before anything else happens.";
   }
@@ -3701,9 +3711,12 @@ function GuidedReview({
   const recoveryNextCopy =
     productState === "retry_available"
       ? "Tessera will retry this step and continue the run."
-      : productState === "restart_required"
-        ? "Restart Tessera, then start the playbook again."
-        : approveCopy;
+      : productView?.primaryAction?.decision === "approve_repair" ||
+          productView?.primaryAction?.decision === "retry_repair"
+        ? "Tessera will repair the saved run state and continue from the pinned playbook snapshot."
+        : productState === "restart_required"
+          ? "Restart Tessera, then start the playbook again."
+          : approveCopy;
   const recoveryNextLabel =
     productState === "retry_available" ? "What happens if you retry" : "What happens next";
   const [openingArtifact, setOpeningArtifact] = useState(false);
@@ -3892,7 +3905,7 @@ function GuidedReview({
                     type="button"
                     size="sm"
                     variant={
-                      action.decision === "approve"
+                      action.actionId === primaryAction?.actionId || action.decision === "approve"
                         ? "default"
                         : action.decision === "deny"
                           ? "outline"
@@ -3902,7 +3915,9 @@ function GuidedReview({
                     onClick={() => handleReviewAction(action)}
                     disabled={running}
                   >
-                    {running && action.decision === "approve" ? (
+                    {running &&
+                    (action.actionId === primaryAction?.actionId ||
+                      action.decision === "approve") ? (
                       <Loader2 size={14} className="animate-spin" />
                     ) : null}
                     {reviewActionLabel(action)}
@@ -5479,7 +5494,9 @@ export function PlaybooksView({
             ? "retry_interrupted"
             : selectedRun.approval?.reasonCode === "graph_needs_attention_retry"
               ? "retry_needs_attention"
-              : "approve";
+              : selectedRun.approval?.reasonCode === "graph_repair"
+                ? "approve_repair"
+                : "approve";
       const actionDecision =
         action?.decision ?? (decision === "approve" ? approvalDecision : "deny");
       const productActionId =

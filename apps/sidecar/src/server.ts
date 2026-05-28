@@ -3205,23 +3205,26 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
     );
   }
   if (detail.run.status === "needs_repair") {
+    const repairSnapshotValid = graphRunHasValidSnapshot(detail.run);
     actions.push(
       actionSpec({
         schemaVersion: 1,
         actionId: `${detail.run.runId}:approve_repair`,
         decision: "approve_repair",
-        label: "Approve repair",
+        label: "Repair run",
+        description: detail.run.repairReason ?? "Repair the saved run state before continuing.",
         allowedRunStatuses: ["needs_repair"],
         allowedQueueStatuses: [],
-        requiredPayloadFields: [
-          {
-            path: "compiledGraph",
-            label: "Compiled graph",
-            kind: "compiledGraph",
-            required: false,
-          },
-          { path: "sourceFiles", label: "Source files", kind: "sourceFiles", required: false },
-        ],
+        requiredPayloadFields: repairSnapshotValid
+          ? []
+          : [
+              {
+                path: "compiledGraph",
+                label: "Compiled graph",
+                kind: "compiledGraph",
+              },
+              { path: "sourceFiles", label: "Source files", kind: "sourceFiles", required: false },
+            ],
         sideEffect: "resume",
       })
     );
@@ -3284,6 +3287,20 @@ function graphRunProductView(
       state: "failed",
       title: "Run failed",
       message: detail.run.error ?? "Tessera could not finish this run.",
+      secondaryActions: [],
+      technicalSummary: { internalStatus: detail.run.status },
+    };
+  }
+  if (detail.run.status === "needs_repair") {
+    const repairAction = actions.find(
+      (action) => action.decision === "approve_repair" || action.decision === "retry_repair"
+    );
+    return {
+      schemaVersion: 1,
+      state: "restart_required",
+      title: "Run needs repair",
+      message: detail.run.repairReason ?? "Tessera needs to repair this run before continuing.",
+      ...(repairAction ? { primaryAction: productActionFromSpec(repairAction) } : {}),
       secondaryActions: [],
       technicalSummary: { internalStatus: detail.run.status },
     };
@@ -6916,8 +6933,20 @@ const server = Bun.serve({
 // Validate and report connection info to the Tauri shell via stdout.
 const info = SidecarReadySchema.parse(
   socketPath
-    ? { type: "ready", transport: "unix", path: socketPath, token: TOKEN }
-    : { type: "ready", transport: "tcp", port: server.port, token: TOKEN }
+    ? {
+        type: "ready",
+        transport: "unix",
+        path: socketPath,
+        token: TOKEN,
+        graphRunWorker: graphRunBackgroundWorkerRef.current !== undefined,
+      }
+    : {
+        type: "ready",
+        transport: "tcp",
+        port: server.port,
+        token: TOKEN,
+        graphRunWorker: graphRunBackgroundWorkerRef.current !== undefined,
+      }
 );
 
 process.stdout.write(`${JSON.stringify(info)}\n`);

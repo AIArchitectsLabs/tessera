@@ -1,5 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { type TaskEvent, TaskEventSchema } from "./index.js";
+import { SidecarReadySchema, type TaskEvent, TaskEventSchema } from "./index.js";
+
+describe("SidecarReady schema", () => {
+  test("reports graph run worker readiness and defaults old sidecars to disabled", () => {
+    expect(
+      SidecarReadySchema.parse({
+        type: "ready",
+        transport: "unix",
+        path: "/tmp/tessera.sock",
+        token: "token",
+        graphRunWorker: true,
+      })
+    ).toEqual({
+      type: "ready",
+      transport: "unix",
+      path: "/tmp/tessera.sock",
+      token: "token",
+      graphRunWorker: true,
+    });
+    expect(
+      SidecarReadySchema.parse({
+        type: "ready",
+        transport: "tcp",
+        port: 1234,
+        token: "token",
+      }).graphRunWorker
+    ).toBe(false);
+  });
+});
 
 describe("TaskEvent schemas", () => {
   test("parses task.updated event", () => {

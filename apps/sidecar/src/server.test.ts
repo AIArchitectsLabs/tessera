@@ -6050,6 +6050,71 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("surfaces needs-repair graph runs as repair work", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "needs_repair",
+        repairReason: "Pinned graph snapshot hash mismatch",
+        updatedAt: "2026-05-15T00:00:01.000Z",
+      });
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store }
+      );
+
+      expect(surfaceResponse?.status).toBe(200);
+      const surface = (await surfaceResponse?.json()) as {
+        actions: Array<{ decision: string; label: string; requiredPayloadFields: unknown[] }>;
+        productView?: {
+          state: string;
+          title: string;
+          message: string;
+          primaryAction?: { decision: string; label: string };
+          technicalSummary?: { internalStatus: string };
+        };
+      };
+      expect(surface.actions.find((action) => action.decision === "approve_repair")).toMatchObject({
+        label: "Repair run",
+        requiredPayloadFields: [],
+      });
+      expect(surface.productView).toMatchObject({
+        state: "restart_required",
+        title: "Run needs repair",
+        message: "Pinned graph snapshot hash mismatch",
+        primaryAction: {
+          decision: "approve_repair",
+          label: "Repair run",
+        },
+        technicalSummary: {
+          internalStatus: "needs_repair",
+        },
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("repair approval must replace corrupted pinned snapshots before resume", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
