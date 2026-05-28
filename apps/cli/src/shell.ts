@@ -22,6 +22,7 @@ import {
   type GoogleWorkspaceConnector,
   GoogleWorkspaceConnectorError,
   createGwsGoogleWorkspaceConnector,
+  normalizeGwsError,
   runGwsCli,
   runGwsWriteCli,
 } from "./google-connector.js";
@@ -34,6 +35,8 @@ const MAX_FETCH_BYTES = 1_000_000;
 const BROWSER_HEADERS = {
   "user-agent": "Tessera/0.1.0 (+https://tessera.app)",
 };
+const GOOGLE_DOCS_MIME_TYPE = "application/vnd.google-apps.document";
+const GOOGLE_SHEETS_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
 
 export interface CliCommandResult {
   exitCode: number;
@@ -1071,7 +1074,8 @@ async function runGoogleWriteJson(
   const result = await runner(body ? [...command, "--json", JSON.stringify(body)] : command);
   if (result.exitCode !== 0) {
     throw new GoogleWorkspaceConnectorError(
-      result.stderr.trim() || `Google Workspace CLI exited with status ${result.exitCode}`,
+      normalizeGwsError(result.stderr) ||
+        `Google Workspace CLI exited with status ${result.exitCode}`,
       result.exitCode
     );
   }
@@ -1111,6 +1115,22 @@ type SheetCellValue = string | number | boolean | null;
 interface SheetTableData {
   headers: string[];
   rows: SheetCellValue[][];
+}
+
+interface SheetProperties {
+  sheetId: number;
+  title: string;
+}
+
+interface CreatedWorkbookFile {
+  spreadsheetId: string;
+  spreadsheetUrl?: string;
+  sheetSetup?: Record<string, unknown>;
+}
+
+interface CreatedDocumentFile {
+  documentId: string;
+  documentUrl: string;
 }
 
 function quoteSheetsRangeTitle(title: string): string {
@@ -1211,6 +1231,75 @@ function sheetsCommitBase(
     idempotencyKey: mode.idempotencyKey,
     approvalId: mode.approvalId,
   };
+}
+
+function sheetPropertiesFromSpreadsheet(payload: Record<string, unknown>): SheetProperties[] {
+  const sheets = Array.isArray(payload.sheets) ? payload.sheets : [];
+  return sheets.flatMap((sheet): SheetProperties[] => {
+    const properties =
+      sheet && typeof sheet === "object" && "properties" in sheet
+        ? (sheet.properties as unknown)
+        : undefined;
+    if (!properties || typeof properties !== "object") return [];
+    const record = properties as Record<string, unknown>;
+    return typeof record.sheetId === "number" && typeof record.title === "string"
+      ? [{ sheetId: record.sheetId, title: record.title }]
+      : [];
+  });
+}
+
+async function ensureWorkbookSheets(
+  options: ExecuteCliCommandOptions,
+  spreadsheetId: string,
+  titles: string[]
+): Promise<Record<string, unknown> | undefined> {
+  const spreadsheet = await runGoogleWriteJson(options, [
+    "sheets",
+    "spreadsheets",
+    "get",
+    "--params",
+    JSON.stringify({ spreadsheetId, fields: "sheets(properties(sheetId,title))" }),
+  ]);
+  const existing = sheetPropertiesFromSpreadsheet(spreadsheet);
+  const requests: Record<string, unknown>[] = [];
+  const claimedTitles = new Set(existing.map((sheet) => sheet.title));
+  const firstTitle = titles[0];
+
+  if (
+    firstTitle &&
+    existing[0] &&
+    existing[0].title !== firstTitle &&
+    !claimedTitles.has(firstTitle)
+  ) {
+    requests.push({
+      updateSheetProperties: {
+        properties: { sheetId: existing[0].sheetId, title: firstTitle },
+        fields: "title",
+      },
+    });
+    claimedTitles.delete(existing[0].title);
+    claimedTitles.add(firstTitle);
+  }
+
+  for (const title of titles) {
+    if (claimedTitles.has(title)) continue;
+    requests.push({ addSheet: { properties: { title } } });
+    claimedTitles.add(title);
+  }
+
+  if (requests.length === 0) return undefined;
+  return runGoogleWriteJson(
+    options,
+    ["sheets", "spreadsheets", "batchUpdate", "--params", JSON.stringify({ spreadsheetId })],
+    { requests }
+  );
+}
+
+function canFallbackFromGoogleNativeFileCreate(error: unknown): boolean {
+  return (
+    error instanceof GoogleWorkspaceConnectorError &&
+    /Google Workspace (needs additional access|denied this request)/i.test(error.message)
+  );
 }
 
 async function runSheetsRowsUpsert(args: string[], options: ExecuteCliCommandOptions) {
@@ -1459,6 +1548,84 @@ async function runSheetsRowsUpdateStatus(args: string[], options: ExecuteCliComm
   };
 }
 
+async function createWorkbookThroughSheets(
+  options: ExecuteCliCommandOptions,
+  title: string,
+  sheets: { table: string; headers: string[] }[]
+): Promise<CreatedWorkbookFile> {
+  const created = await runGoogleWriteJson(
+    options,
+    [
+      "sheets",
+      "spreadsheets",
+      "create",
+      "--params",
+      JSON.stringify({ fields: "spreadsheetId,spreadsheetUrl,sheets(properties(title))" }),
+    ],
+    {
+      properties: { title },
+      sheets: sheets.map((sheet) => ({ properties: { title: sheet.table } })),
+    }
+  );
+  const spreadsheetId = typeof created.spreadsheetId === "string" ? created.spreadsheetId : "";
+  if (!spreadsheetId) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Sheets create response did not include a spreadsheetId."
+    );
+  }
+  return {
+    spreadsheetId,
+    ...(typeof created.spreadsheetUrl === "string"
+      ? { spreadsheetUrl: created.spreadsheetUrl }
+      : {}),
+  };
+}
+
+async function createWorkbookThroughDrive(
+  options: ExecuteCliCommandOptions,
+  title: string,
+  sheets: { table: string; headers: string[] }[]
+): Promise<CreatedWorkbookFile> {
+  let created: Record<string, unknown>;
+  try {
+    created = await runGoogleWriteJson(
+      options,
+      [
+        "drive",
+        "files",
+        "create",
+        "--params",
+        JSON.stringify({ fields: "id,name,webViewLink,mimeType" }),
+      ],
+      {
+        name: title,
+        mimeType: GOOGLE_SHEETS_MIME_TYPE,
+      }
+    );
+  } catch (error) {
+    if (canFallbackFromGoogleNativeFileCreate(error)) {
+      return createWorkbookThroughSheets(options, title, sheets);
+    }
+    throw error;
+  }
+  const spreadsheetId = typeof created.id === "string" ? created.id : "";
+  if (!spreadsheetId) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Drive create response did not include a spreadsheet id."
+    );
+  }
+  const sheetSetup = await ensureWorkbookSheets(
+    options,
+    spreadsheetId,
+    sheets.map((sheet) => sheet.table)
+  );
+  return {
+    spreadsheetId,
+    ...(typeof created.webViewLink === "string" ? { spreadsheetUrl: created.webViewLink } : {}),
+    ...(sheetSetup ? { sheetSetup } : {}),
+  };
+}
+
 async function runSheetsWorkbookCreate(args: string[], options: ExecuteCliCommandOptions) {
   const usage =
     "Usage: sheets workbook.create --title <title> [--dry-run|--execute --approval <id>] --idempotency-key <key>";
@@ -1469,26 +1636,11 @@ async function runSheetsWorkbookCreate(args: string[], options: ExecuteCliComman
     headers: [...headers],
   }));
   if (mode.mode === "execute") {
-    const created = await runGoogleWriteJson(
+    const { spreadsheetId, spreadsheetUrl, sheetSetup } = await createWorkbookThroughDrive(
       options,
-      [
-        "sheets",
-        "spreadsheets",
-        "create",
-        "--params",
-        JSON.stringify({ fields: "spreadsheetId,spreadsheetUrl,sheets(properties(title))" }),
-      ],
-      {
-        properties: { title },
-        sheets: sheets.map((sheet) => ({ properties: { title: sheet.table } })),
-      }
+      title,
+      sheets
     );
-    const spreadsheetId = typeof created.spreadsheetId === "string" ? created.spreadsheetId : "";
-    if (!spreadsheetId) {
-      throw new GoogleWorkspaceConnectorError(
-        "Google Sheets create response did not include a spreadsheetId."
-      );
-    }
     const data = sheets.map((sheet) => ({
       range: `${quoteSheetsRangeTitle(sheet.table)}!A1:${columnName(sheet.headers.length - 1)}1`,
       values: [sheet.headers],
@@ -1509,11 +1661,11 @@ async function runSheetsWorkbookCreate(args: string[], options: ExecuteCliComman
       dryRun: false,
       operation: "createWorkbook",
       spreadsheetId,
-      spreadsheetUrl:
-        typeof created.spreadsheetUrl === "string" ? created.spreadsheetUrl : undefined,
+      spreadsheetUrl,
       title,
       sheets,
       headers: Object.fromEntries(sheets.map((sheet) => [sheet.table, sheet.headers])),
+      ...(sheetSetup ? { sheetSetup } : {}),
       updates,
       idempotencyKey: mode.idempotencyKey,
       approvalId: mode.approvalId,
@@ -1531,6 +1683,59 @@ async function runSheetsWorkbookCreate(args: string[], options: ExecuteCliComman
 
 function documentUrl(documentId: string): string {
   return `https://docs.google.com/document/d/${documentId}/edit`;
+}
+
+async function createDocumentThroughDocs(
+  options: ExecuteCliCommandOptions,
+  title: string
+): Promise<CreatedDocumentFile> {
+  const created = await runGoogleWriteJson(options, ["docs", "documents", "create"], { title });
+  const documentId = typeof created.documentId === "string" ? created.documentId : "";
+  if (!documentId) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Docs create response did not include a documentId."
+    );
+  }
+  return {
+    documentId,
+    documentUrl: documentUrl(documentId),
+  };
+}
+
+async function createDocumentThroughDrive(
+  options: ExecuteCliCommandOptions,
+  title: string
+): Promise<CreatedDocumentFile> {
+  let created: Record<string, unknown>;
+  try {
+    created = await runGoogleWriteJson(
+      options,
+      [
+        "drive",
+        "files",
+        "create",
+        "--params",
+        JSON.stringify({ fields: "id,name,webViewLink,mimeType" }),
+      ],
+      { name: title, mimeType: GOOGLE_DOCS_MIME_TYPE }
+    );
+  } catch (error) {
+    if (canFallbackFromGoogleNativeFileCreate(error)) {
+      return createDocumentThroughDocs(options, title);
+    }
+    throw error;
+  }
+  const documentId = typeof created.id === "string" ? created.id : "";
+  if (!documentId) {
+    throw new GoogleWorkspaceConnectorError(
+      "Google Drive create response did not include a document id."
+    );
+  }
+  return {
+    documentId,
+    documentUrl:
+      typeof created.webViewLink === "string" ? created.webViewLink : documentUrl(documentId),
+  };
 }
 
 function documentEndIndex(payload: Record<string, unknown>): number {
@@ -1555,13 +1760,10 @@ async function runDocsDocumentsCreate(args: string[], options: ExecuteCliCommand
   const title = requiredFlag(flags, "--title", usage);
   const text = await readInlineOrFileText(flags, usage);
   if (mode.mode === "execute") {
-    const created = await runGoogleWriteJson(options, ["docs", "documents", "create"], { title });
-    const documentId = typeof created.documentId === "string" ? created.documentId : "";
-    if (!documentId) {
-      throw new GoogleWorkspaceConnectorError(
-        "Google Docs create response did not include a documentId."
-      );
-    }
+    const { documentId, documentUrl: createdDocumentUrl } = await createDocumentThroughDrive(
+      options,
+      title
+    );
     if (text) {
       await runGoogleWriteJson(
         options,
@@ -1574,7 +1776,7 @@ async function runDocsDocumentsCreate(args: string[], options: ExecuteCliCommand
       operation: "createDocument",
       title,
       documentId,
-      documentUrl: documentUrl(documentId),
+      documentUrl: createdDocumentUrl,
       textPreview: text || undefined,
       idempotencyKey: mode.idempotencyKey,
       approvalId: mode.approvalId,

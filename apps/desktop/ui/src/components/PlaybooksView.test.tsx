@@ -973,6 +973,53 @@ const completedGraphRunDetail = {
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
+const scriptOnlyCompletedGraphRunDetail = {
+  ...completedGraphRunDetail,
+  run: {
+    ...completedGraphRunDetail.run,
+    runId: "graph-run-script-completed",
+    updatedAt: "2026-05-10T07:17:00.000Z",
+    completedAt: "2026-05-10T07:17:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-script",
+      runId: "graph-run-script-completed",
+      nodeId: "buildSummary",
+      nodePath: "buildSummary",
+      nodeKind: "script",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: ["meetingBrief"],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-10T07:15:00.000Z",
+      updatedAt: "2026-05-10T07:17:00.000Z",
+      completedAt: "2026-05-10T07:17:00.000Z",
+    },
+  ],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-script-completed",
+      artifactId: "meetingBrief",
+      versionId: "brief-script-v1",
+      producerQueueEntryId: "queue-script",
+      nodePath: "buildSummary",
+      contentHash: "sha256:script-meeting-brief",
+      value: {
+        text: "## Meeting brief\n\nCreated by deterministic workflow steps.",
+        boundaryViolations: 0,
+      },
+      createdAt: "2026-05-10T07:17:00.000Z",
+    },
+  ],
+} satisfies PlaybookGraphRunDetail;
+
 const seoCompletedGraphRunDetail = {
   run: {
     ...completedGraphRunDetail.run,
@@ -2124,6 +2171,33 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("explains completed script-only graph runs without provider usage", async () => {
+    graphRunListOverride = [scriptOnlyCompletedGraphRunDetail.run];
+    graphRunSurfaceOverride = {
+      schemaVersion: 1,
+      detail: scriptOnlyCompletedGraphRunDetail,
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      branches: [],
+      actions: [],
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 10/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected script-only run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("No model token usage recorded for this run.")).toBeTruthy();
+      expect(view.queryByText("Not reported by provider.")).toBeNull();
+    });
+  });
+
   test("does not list workspace-scoped runs when no workspace is selected", async () => {
     const view = renderPlaybooksView(null);
 
@@ -2599,7 +2673,8 @@ describe("PlaybooksView", () => {
     fireEvent.click(runButton);
 
     await waitFor(() => {
-      expect(view.getByText(/insufficient authentication scopes/)).toBeTruthy();
+      expect(view.getByText(/Google Workspace needs additional access/)).toBeTruthy();
+      expect(view.queryByText(/Using keyring backend/)).toBeNull();
       expect(view.queryByText("Resume succeeded")).toBeNull();
     });
   });
@@ -2983,17 +3058,23 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getByRole("button", { name: "Request changes" })).toBeTruthy();
-      expect(view.getByPlaceholderText("Notes")).toBeTruthy();
+      expect(view.queryByLabelText("Notes")).toBeNull();
     });
 
-    const notesTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
+    fireEvent.click(view.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => {
+      expect(view.getByText("Tell Tessera what to change")).toBeTruthy();
+      expect(view.getByLabelText("Notes")).toBeTruthy();
+    });
+
+    const notesTextarea = view.getByLabelText("Notes") as HTMLTextAreaElement;
     fireEvent.change(notesTextarea, {
       target: { value: "Add examples from finance teams." },
     });
     await waitFor(() => {
       expect(notesTextarea.value).toBe("Add examples from finance teams.");
     });
-    const guidedRequestChangesButton = view.getAllByRole("button", { name: "Request changes" })[0];
+    const guidedRequestChangesButton = view.getByRole("button", { name: "Send change request" });
     if (!guidedRequestChangesButton) throw new Error("Expected guided request changes button");
     fireEvent.click(guidedRequestChangesButton);
 

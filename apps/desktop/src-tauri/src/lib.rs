@@ -29,6 +29,7 @@ const GOOGLE_WORKSPACE_AUTH_SCOPES: &str = concat!(
     "https://www.googleapis.com/auth/gmail.readonly,",
     "https://www.googleapis.com/auth/gmail.compose,",
     "https://www.googleapis.com/auth/drive.readonly,",
+    "https://www.googleapis.com/auth/drive.file,",
     "https://www.googleapis.com/auth/contacts.readonly,",
     "https://www.googleapis.com/auth/documents.readonly,",
     "https://www.googleapis.com/auth/documents,",
@@ -3116,7 +3117,25 @@ async fn google_workspace_health(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
 ) -> Result<Vec<GoogleWorkspaceServiceHealth>, String> {
-    let checks: [(&str, Vec<&str>); 4] = [
+    let checks = google_workspace_health_checks();
+    let mut results = Vec::with_capacity(checks.len());
+
+    for (service, args, not_found_is_ok) in checks {
+        let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
+        let ok = google_workspace_health_ok(&result, not_found_is_ok);
+        let message = google_workspace_health_message(&result, not_found_is_ok);
+        results.push(GoogleWorkspaceServiceHealth {
+            service: service.to_string(),
+            ok,
+            message,
+        });
+    }
+
+    Ok(results)
+}
+
+fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool); 6] {
+    [
         (
             "Calendar",
             vec![
@@ -3126,6 +3145,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"maxResults\":1}",
             ],
+            false,
         ),
         (
             "Gmail",
@@ -3137,6 +3157,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"userId\":\"me\",\"maxResults\":1}",
             ],
+            false,
         ),
         (
             "Drive",
@@ -3147,6 +3168,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"pageSize\":1,\"fields\":\"files(id,name,mimeType)\"}",
             ],
+            false,
         ),
         (
             "Contacts",
@@ -3156,48 +3178,51 @@ async fn google_workspace_health(
                 "connections",
                 "list",
                 "--params",
-                "{\"resourceName\":\"people/me\",\"pageSize\":1}",
+                "{\"resourceName\":\"people/me\",\"pageSize\":1,\"personFields\":\"names,emailAddresses\"}",
             ],
+            false,
         ),
-    ];
-    let mut results = Vec::with_capacity(6);
-    let mut drive_ok = false;
+        (
+            "Docs",
+            vec![
+                "docs",
+                "documents",
+                "get",
+                "--params",
+                "{\"documentId\":\"tessera-health-check-nonexistent\"}",
+            ],
+            true,
+        ),
+        (
+            "Sheets",
+            vec![
+                "sheets",
+                "spreadsheets",
+                "get",
+                "--params",
+                "{\"spreadsheetId\":\"tessera-health-check-nonexistent\"}",
+            ],
+            true,
+        ),
+    ]
+}
 
-    for (service, args) in checks {
-        let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
-        let ok = result.exit_code == 0;
-        let message = if ok {
-            "Ready".to_string()
-        } else {
-            google_workspace_process_message(&result)
-        };
-        if service == "Drive" {
-            drive_ok = ok;
-        }
-        results.push(GoogleWorkspaceServiceHealth {
-            service: service.to_string(),
-            ok,
-            message,
-        });
+fn google_workspace_health_ok(result: &SpawnResult, not_found_is_ok: bool) -> bool {
+    result.exit_code == 0
+        || (not_found_is_ok
+            && google_workspace_process_message(result).contains("Requested entity was not found"))
+}
+
+fn google_workspace_health_message(result: &SpawnResult, not_found_is_ok: bool) -> String {
+    if result.exit_code == 0 {
+        return "Ready".to_string();
     }
 
-    let drive_message = if drive_ok {
-        "Ready through Drive file access.".to_string()
-    } else {
-        "Docs and Sheets use Drive file access. Fix Drive first, then test again.".to_string()
-    };
-    results.push(GoogleWorkspaceServiceHealth {
-        service: "Docs".to_string(),
-        ok: drive_ok,
-        message: drive_message.clone(),
-    });
-    results.push(GoogleWorkspaceServiceHealth {
-        service: "Sheets".to_string(),
-        ok: drive_ok,
-        message: drive_message,
-    });
-
-    Ok(results)
+    let message = google_workspace_process_message(result);
+    if not_found_is_ok && message.contains("Requested entity was not found") {
+        return "Ready".to_string();
+    }
+    message
 }
 
 fn search_connection_command(
@@ -3654,11 +3679,13 @@ mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_identity_auth_args,
         google_workspace_auth_args, google_workspace_config_dir,
-        google_workspace_gws_client_secret_path, google_workspace_oauth_client_json,
-        google_workspace_oauth_missing_message, normalize_google_workspace_oauth_client_file,
-        read_sidecar_http_response, resolve_google_workspace_cli_path, search_connection_command,
-        tool_policy_runtime_json, workspace_cli_uses_google_workspace, CapabilityBinaryResult,
-        SpawnResult, GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        google_workspace_gws_client_secret_path, google_workspace_health_checks,
+        google_workspace_health_message, google_workspace_health_ok,
+        google_workspace_oauth_client_json, google_workspace_oauth_missing_message,
+        normalize_google_workspace_oauth_client_file, read_sidecar_http_response,
+        resolve_google_workspace_cli_path, search_connection_command, tool_policy_runtime_json,
+        workspace_cli_uses_google_workspace, CapabilityBinaryResult, SpawnResult,
+        GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
         GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
@@ -4198,6 +4225,7 @@ mod tests {
 
         let scopes: Vec<&str> = GOOGLE_WORKSPACE_AUTH_SCOPES.split(',').collect();
         assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.compose"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.file"));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/spreadsheets"));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/documents"));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly"));
@@ -4327,5 +4355,48 @@ mod tests {
             first_useful_process_line(&result),
             "Open browser to continue"
         );
+    }
+
+    #[test]
+    fn google_workspace_health_checks_docs_and_sheets_directly() {
+        let checks = google_workspace_health_checks();
+        let docs = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Docs")
+            .expect("docs check");
+        let sheets = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Sheets")
+            .expect("sheets check");
+        let contacts = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Contacts")
+            .expect("contacts check");
+
+        assert_eq!(docs.1[0], "docs");
+        assert!(docs.2);
+        assert_eq!(sheets.1[0], "sheets");
+        assert!(sheets.2);
+        assert!(contacts.1.join(" ").contains("personFields"));
+    }
+
+    #[test]
+    fn google_workspace_health_accepts_not_found_for_api_probe() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "error": {
+                    "message": "Requested entity was not found."
+                }
+            })
+            .to_string(),
+            stderr: "Using keyring backend: file\n".to_string(),
+            exit_code: 1,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(google_workspace_health_ok(&result, true));
+        assert_eq!(google_workspace_health_message(&result, true), "Ready");
+        assert!(!google_workspace_health_ok(&result, false));
     }
 }

@@ -890,7 +890,7 @@ describe("workspace cli shell commands", () => {
     expect(result.stderr).toContain("mail headers cannot contain line breaks");
   });
 
-  test("surfaces compose-scope guidance for mail draft scope failures", async () => {
+  test("surfaces reconnection guidance for Google scope failures", async () => {
     const result = await executeCliCommand(
       [
         "mail",
@@ -912,7 +912,7 @@ describe("workspace cli shell commands", () => {
     );
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Reconnect with Gmail compose access");
+    expect(result.stderr).toContain("Google Workspace needs additional access");
   });
 
   test("returns normalized drive search results", async () => {
@@ -1339,6 +1339,195 @@ describe("workspace cli shell commands", () => {
     ]);
   });
 
+  test("normalizes keyring noise from Google Sheets permission failures", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async () => ({
+            exitCode: 1,
+            stdout: "",
+            stderr: "Using keyring backend: file\nerror[api]: The caller does not have permission",
+          }),
+        }
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Google Workspace denied this request");
+      expect(result.stderr).not.toContain("Using keyring backend");
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("executes approved workbook creation through Drive then Sheets setup", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  id: "sheet-1",
+                  webViewLink: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+                }),
+                stderr: "",
+              };
+            }
+            if (operation === "sheets spreadsheets get") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  sheets: [{ properties: { sheetId: 0, title: "Sheet1" } }],
+                }),
+                stderr: "",
+              };
+            }
+            return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createWorkbook",
+        spreadsheetId: "sheet-1",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+        approvalId: "approval-workbook",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "sheets spreadsheets get",
+        "sheets spreadsheets batchUpdate",
+        "sheets spreadsheets values",
+      ]);
+      const createBody = JSON.parse(
+        capturedArgs[0]?.[(capturedArgs[0]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(createBody.mimeType).toBe("application/vnd.google-apps.spreadsheet");
+      const setupBody = JSON.parse(
+        capturedArgs[2]?.[(capturedArgs[2]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(setupBody.requests[0].updateSheetProperties.properties.title).toBe("Suppliers");
+      expect(setupBody.requests.some((request: { addSheet?: unknown }) => request.addSheet)).toBe(
+        true
+      );
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("falls back to Sheets create when Drive file creation needs another grant", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 1,
+                stdout: "",
+                stderr: "Request had insufficient authentication scopes.",
+              };
+            }
+            if (operation === "sheets spreadsheets create") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  spreadsheetId: "sheet-1",
+                  spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+                }),
+                stderr: "",
+              };
+            }
+            return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createWorkbook",
+        spreadsheetId: "sheet-1",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "sheets spreadsheets create",
+        "sheets spreadsheets values",
+      ]);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
   test("blocks direct sheets execute when only approval id is provided", async () => {
     const result = await executeCliCommand([
       "sheets",
@@ -1524,11 +1713,14 @@ describe("workspace cli shell commands", () => {
         {
           runGwsCli: async (args) => {
             capturedArgs.push(args);
-            if (args.slice(0, 3).join(" ") === "docs documents create") {
+            if (args.slice(0, 3).join(" ") === "drive files create") {
               return {
                 exitCode: 0,
                 stderr: "",
-                stdout: JSON.stringify({ documentId: "doc-1", title: "RFQ Draft" }),
+                stdout: JSON.stringify({
+                  id: "doc-1",
+                  webViewLink: "https://docs.google.com/document/d/doc-1/edit",
+                }),
               };
             }
             return { exitCode: 0, stderr: "", stdout: JSON.stringify({}) };
@@ -1541,8 +1733,10 @@ describe("workspace cli shell commands", () => {
         dryRun: false,
         operation: "createDocument",
         documentId: "doc-1",
+        documentUrl: "https://docs.google.com/document/d/doc-1/edit",
         approvalId: "approval-doc",
       });
+      expect(capturedArgs[0]?.slice(0, 3)).toEqual(["drive", "files", "create"]);
       expect(capturedArgs[1]?.slice(0, 3)).toEqual(["docs", "documents", "batchUpdate"]);
       const createBody = JSON.parse(
         capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--json") ?? -1) + 1] ?? "{}"
@@ -1602,6 +1796,69 @@ describe("workspace cli shell commands", () => {
         appendArgs[1]?.[(appendArgs[1]?.indexOf("--json") ?? -1) + 1] ?? "{}"
       );
       expect(appendBody.requests[0].insertText.location.index).toBe(11);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("falls back to Docs create when Drive document creation needs another grant", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken("approval-doc", "idem-doc");
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "docs",
+          "documents.create",
+          "--title",
+          "RFQ Draft",
+          "--text",
+          "Hello supplier",
+          "--execute",
+          "--approval",
+          "approval-doc",
+          "--idempotency-key",
+          "idem-doc",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 1,
+                stderr: "Request had insufficient authentication scopes.",
+                stdout: "",
+              };
+            }
+            if (operation === "docs documents create") {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ documentId: "doc-1", title: "RFQ Draft" }),
+              };
+            }
+            return { exitCode: 0, stderr: "", stdout: JSON.stringify({}) };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createDocument",
+        documentId: "doc-1",
+        documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "docs documents create",
+        "docs documents batchUpdate",
+      ]);
     } finally {
       if (previousToken === undefined) {
         process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;

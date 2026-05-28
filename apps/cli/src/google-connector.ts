@@ -327,11 +327,18 @@ async function runGwsJson(
   }
 }
 
-function normalizeGwsError(stderr: string): string {
-  const message = stderr.trim();
+export function normalizeGwsError(stderr: string): string {
+  const message = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("Using keyring backend"))
+    .join("\n");
   if (!message) return "";
   if (/scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication/i.test(message)) {
-    return "Google Workspace is connected with read-only access. Reconnect with Gmail compose access in Settings > Integrations to create or send drafts.";
+    return "Google Workspace needs additional access. Reconnect Google Workspace in Settings > Integrations and approve the requested Google access.";
+  }
+  if (/caller does not have permission|PERMISSION_DENIED|forbidden|access denied/i.test(message)) {
+    return "Google Workspace denied this request. Reconnect Google Workspace in Settings > Integrations and make sure this account can use the requested Google service.";
   }
   if (/auth|credential|login|token/i.test(message)) {
     return "Google Workspace is not connected. Connect Google Workspace in Settings > Integrations.";

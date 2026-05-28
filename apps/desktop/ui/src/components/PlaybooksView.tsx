@@ -162,6 +162,23 @@ function normalizedStyleSelection(
   return copyType || override || toneNudges.length > 0 ? next : undefined;
 }
 
+function playbookRunErrorCopy(error: string | undefined): string | undefined {
+  if (!error) return undefined;
+  const message = error
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("Using keyring backend"))
+    .join("\n");
+  if (!message) return error;
+  if (/scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication/i.test(message)) {
+    return "Google Workspace needs additional access. Reconnect Google Workspace in Settings > Integrations and approve the requested Google access.";
+  }
+  if (/caller does not have permission|PERMISSION_DENIED|forbidden|access denied/i.test(message)) {
+    return "Google Workspace denied this request. Reconnect Google Workspace in Settings > Integrations and make sure this account can use the requested Google service.";
+  }
+  return message;
+}
+
 const NODE_KIND_SOFT_MS: Record<GraphQueueEntry["nodeKind"], number | undefined> = {
   script: 30_000,
   condition: 5_000,
@@ -417,6 +434,13 @@ function artifactPreviewText(value: unknown): string | null {
   return null;
 }
 
+function compactReviewPreviewText(value: string): string {
+  return value
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .trim();
+}
+
 function parseJsonObjectFromText(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
   const candidates = [
@@ -572,6 +596,10 @@ function ReviewEvidenceBlock({
       : score?.pass === true
         ? "text-emerald-700"
         : "text-muted-foreground";
+  const previewText =
+    evidence.artifactPreview && compact
+      ? compactReviewPreviewText(evidence.artifactPreview)
+      : evidence.artifactPreview;
 
   return (
     <div className={cn("space-y-3", compact ? "text-amber-900" : "text-foreground")}>
@@ -608,14 +636,14 @@ function ReviewEvidenceBlock({
         </div>
       ) : null}
 
-      {evidence.artifactPreview && !hideArtifactPreview ? (
+      {previewText && !hideArtifactPreview ? (
         <div
           className={cn(
             "whitespace-pre-wrap text-sm leading-6",
             compact ? "line-clamp-6 text-amber-900" : "max-h-80 overflow-y-auto text-foreground"
           )}
         >
-          {evidence.artifactPreview}
+          {previewText}
         </div>
       ) : null}
     </div>
@@ -1370,6 +1398,10 @@ function graphRunUsage(detail: PlaybookGraphRunDetail | null): TokenUsage | unde
   return usage;
 }
 
+function playbookRunHasModelStep(run: PlaybookRunDetail): boolean {
+  return run.steps?.some((step) => step.kind === "agent") ?? false;
+}
+
 function dashboardLayoutFromPlaybook(
   playbook: PlaybookSummary | PlaybookDetail | null
 ): DashboardLayout | null {
@@ -1560,7 +1592,7 @@ function graphRunToPlaybookRunDetail(
     startedAt: entry.claimedAt ?? entry.createdAt,
     nodeKind: entry.nodeKind,
     ...(entry.completedAt ? { completedAt: entry.completedAt } : {}),
-    ...(entry.error ? { error: entry.error } : {}),
+    ...(entry.error ? { error: playbookRunErrorCopy(entry.error) } : {}),
     ...(entry.claimedAt ? { claimedAt: entry.claimedAt } : {}),
     ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
     updatedAt: entry.updatedAt,
@@ -1578,7 +1610,7 @@ function graphRunToPlaybookRunDetail(
     ...(usage ? { usage } : {}),
     dashboardLayout: dashboardLayoutFromPlaybook(playbookForRun) ?? undefined,
     approval: graphRunApproval(detail, playbookForRun, productView),
-    error: detail.run.error ?? detail.run.repairReason,
+    error: playbookRunErrorCopy(detail.run.error ?? detail.run.repairReason),
     startedAt: detail.run.startedAt,
     updatedAt: detail.run.updatedAt,
     completedAt: detail.run.completedAt,
@@ -1613,7 +1645,7 @@ function graphRunRecordToPlaybookRunDetail(
     input: run.input,
     outputs: {},
     assignmentPlan: run.assignmentPlan,
-    error: run.error ?? run.repairReason,
+    error: playbookRunErrorCopy(run.error ?? run.repairReason),
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     completedAt: run.completedAt,
@@ -1915,11 +1947,17 @@ function Section({
   );
 }
 
-function UsageSummary({ usage }: { usage: TokenUsage | undefined }) {
+function UsageSummary({
+  usage,
+  modelStepRan,
+}: {
+  usage: TokenUsage | undefined;
+  modelStepRan: boolean;
+}) {
   if (!usage) {
     return (
       <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-        Not reported by provider.
+        {modelStepRan ? "Not reported by provider." : "No model token usage recorded for this run."}
       </div>
     );
   }
@@ -2254,6 +2292,47 @@ function parseGraphActionPayload(
   return payload;
 }
 
+function reviewActionHelp(action: PlaybookGraphResumeActionSpec, approveCopy: string): string {
+  if (action.description) return action.description;
+  if (action.decision === "approve") return approveCopy;
+  if (action.decision === "request_changes") {
+    return "Tell Tessera what to revise before anything else happens.";
+  }
+  if (action.decision === "deny") {
+    return "Stop this run here without applying workspace changes.";
+  }
+  return "Continue with this review decision.";
+}
+
+function reviewPayloadHeading(action: PlaybookGraphResumeActionSpec): string {
+  if (action.decision === "request_changes") return "Tell Tessera what to change";
+  if (action.decision === "deny") return "Add a reason before stopping";
+  return action.label;
+}
+
+function reviewPayloadSubmitLabel(action: PlaybookGraphResumeActionSpec): string {
+  if (action.decision === "request_changes") return "Send change request";
+  if (action.decision === "deny") return "Stop run";
+  return action.label;
+}
+
+function reviewPayloadPlaceholder(
+  action: PlaybookGraphResumeActionSpec,
+  field: PlaybookGraphResumeActionSpec["requiredPayloadFields"][number]
+): string {
+  const fieldName = field.label.toLowerCase();
+  if (field.kind === "string") {
+    if (action.decision === "request_changes") {
+      return "Describe what should change before Tessera continues.";
+    }
+    if (fieldName.includes("reason")) return "Why should this run stop?";
+    return field.label;
+  }
+  if (fieldName.includes("supplier")) return '["supplier-id"]';
+  if (field.kind === "object") return "{ }";
+  return "JSON value";
+}
+
 function GraphRuntimeSection({
   runs,
   detail,
@@ -2360,7 +2439,9 @@ function GraphRuntimeSection({
           <div className="mt-3 space-y-3">
             {detail.run.blockedReason || detail.run.repairReason || detail.run.error ? (
               <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-                {detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error}
+                {playbookRunErrorCopy(
+                  detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error
+                )}
               </div>
             ) : null}
 
@@ -3629,14 +3710,27 @@ function GuidedReview({
   const [openError, setOpenError] = useState<string | null>(null);
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, string>>>({});
   const [payloadError, setPayloadError] = useState<string | null>(null);
+  const [activePayloadActionId, setActivePayloadActionId] = useState<string | null>(null);
   const reviewRootRef = useRef<HTMLDivElement | null>(null);
   const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
   const canOpenArtifact = !!openWorkspaceRoot && !!reviewEvidence?.artifactPath;
-  const actionsWithPayloadFields = [primaryAction, ...secondaryActions].filter(
-    (action): action is PlaybookGraphResumeActionSpec =>
-      action !== undefined && action.requiredPayloadFields.length > 0
+  const reviewActionOptions = [primaryAction, ...secondaryActions].filter(
+    (action): action is PlaybookGraphResumeActionSpec => action !== undefined
   );
+  const activePayloadAction =
+    reviewActionOptions.find(
+      (action) =>
+        action.actionId === activePayloadActionId && action.requiredPayloadFields.length > 0
+    ) ?? null;
   const hasStopAction = secondaryActions.some((action) => action.decision === "deny");
+
+  function reviewActionLabel(action: PlaybookGraphResumeActionSpec): string {
+    if (action.actionId === primaryAction?.actionId) return primaryActionLabel;
+    return (
+      productView?.secondaryActions.find((candidate) => candidate.actionId === action.actionId)
+        ?.label ?? action.label
+    );
+  }
 
   async function openReviewArtifact() {
     if (!openWorkspaceRoot || !reviewEvidence?.artifactPath) return;
@@ -3683,6 +3777,15 @@ function GuidedReview({
         payloadParseError instanceof Error ? payloadParseError.message : String(payloadParseError)
       );
     }
+  }
+
+  function handleReviewAction(action: PlaybookGraphResumeActionSpec) {
+    if (action.requiredPayloadFields.length > 0) {
+      setPayloadError(null);
+      setActivePayloadActionId(action.actionId);
+      return;
+    }
+    submitReviewAction(action);
   }
 
   return (
@@ -3752,41 +3855,142 @@ function GuidedReview({
               </div>
             </>
           )}
-          <div>
-            <div className="font-medium">What happens if you stop</div>
-            <p className="mt-1">The run stops here and nothing changes in your workspace.</p>
-          </div>
-          {actionsWithPayloadFields.length > 0 ? (
-            <div className="border-t border-amber-200 pt-4">
-              {actionsWithPayloadFields.map((action) => (
-                <div key={action.actionId} className="space-y-2">
-                  {action.requiredPayloadFields.map((field) => {
-                    const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
-                    return (
-                      <label key={field.path} className="block">
-                        <span className="font-medium">{field.label}</span>
-                        <textarea
-                          data-guided-review-action={action.actionId}
-                          data-payload-field={field.path}
-                          className="mt-1 min-h-20 w-full resize-y rounded-md border border-amber-200 bg-white px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
-                          value={value}
-                          placeholder={
-                            field.kind === "string"
-                              ? field.label
-                              : field.kind === "object"
-                                ? "{ }"
-                                : "JSON value"
-                          }
-                          onChange={(event) =>
-                            updatePayloadDraft(action.actionId, field.path, event.target.value)
-                          }
-                        />
-                      </label>
-                    );
-                  })}
+          <div className="border-t border-amber-200 pt-4">
+            <div className="font-medium">Choose next step</div>
+            <p className="mt-1">Nothing else happens until you choose one of these actions.</p>
+            <div className="mt-3 space-y-2">
+              {!primaryAction ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{primaryActionLabel}</div>
+                    <p className="mt-0.5 text-xs text-amber-700">{approveCopy}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-9 rounded-md px-5"
+                    onClick={onApprove}
+                    disabled={running}
+                  >
+                    {running ? <Loader2 size={14} className="animate-spin" /> : null}
+                    {primaryActionLabel}
+                  </Button>
+                </div>
+              ) : null}
+              {reviewActionOptions.map((action) => (
+                <div
+                  key={action.actionId}
+                  className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{reviewActionLabel(action)}</div>
+                    <p className="mt-0.5 text-xs text-amber-700">
+                      {reviewActionHelp(action, approveCopy)}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={
+                      action.decision === "approve"
+                        ? "default"
+                        : action.decision === "deny"
+                          ? "outline"
+                          : "secondary"
+                    }
+                    className="h-9 rounded-md px-5"
+                    onClick={() => handleReviewAction(action)}
+                    disabled={running}
+                  >
+                    {running && action.decision === "approve" ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : null}
+                    {reviewActionLabel(action)}
+                  </Button>
                 </div>
               ))}
-              {payloadError ? <p className="text-xs text-red-700">{payloadError}</p> : null}
+              {!hasStopAction ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">Stop run</div>
+                    <p className="mt-0.5 text-xs text-amber-700">
+                      Stop this run here without applying workspace changes.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9 rounded-md px-5"
+                    onClick={onStop}
+                    disabled={running}
+                  >
+                    Stop run
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {activePayloadAction ? (
+            <div className="border-t border-amber-200 pt-4">
+              <div className="font-medium">{reviewPayloadHeading(activePayloadAction)}</div>
+              <p className="mt-1 text-xs text-amber-700">
+                {reviewActionHelp(activePayloadAction, approveCopy)}
+              </p>
+              <div className="mt-3 space-y-3">
+                {activePayloadAction.requiredPayloadFields.map((field) => {
+                  const value = payloadDrafts[activePayloadAction.actionId]?.[field.path] ?? "";
+                  return (
+                    <label key={field.path} className="block">
+                      <span className="font-medium">{field.label}</span>
+                      <textarea
+                        data-guided-review-action={activePayloadAction.actionId}
+                        data-payload-field={field.path}
+                        className="mt-1 min-h-20 w-full resize-y rounded-md border border-amber-200 bg-white px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+                        value={value}
+                        placeholder={reviewPayloadPlaceholder(activePayloadAction, field)}
+                        onChange={(event) =>
+                          updatePayloadDraft(
+                            activePayloadAction.actionId,
+                            field.path,
+                            event.target.value
+                          )
+                        }
+                      />
+                      {field.kind !== "string" ? (
+                        <span className="mt-1 block text-xs text-amber-700">Enter valid JSON.</span>
+                      ) : null}
+                    </label>
+                  );
+                })}
+              </div>
+              {payloadError ? <p className="mt-2 text-xs text-red-700">{payloadError}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activePayloadAction.decision === "deny" ? "outline" : "default"}
+                  className="h-9 rounded-md px-5"
+                  onClick={() => submitReviewAction(activePayloadAction)}
+                  disabled={running}
+                >
+                  {running ? <Loader2 size={14} className="animate-spin" /> : null}
+                  {reviewPayloadSubmitLabel(activePayloadAction)}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-9 rounded-md px-5"
+                  onClick={() => {
+                    setPayloadError(null);
+                    setActivePayloadActionId(null);
+                  }}
+                  disabled={running}
+                >
+                  Cancel
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -3803,41 +4007,6 @@ function GuidedReview({
             >
               {openingArtifact ? <Loader2 size={14} className="animate-spin" /> : null}
               Open {reviewEvidence.artifactLabel.toLowerCase()}
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            className="h-9 rounded-md px-5"
-            onClick={primaryAction ? () => submitReviewAction(primaryAction) : onApprove}
-            disabled={running}
-          >
-            {running ? <Loader2 size={14} className="animate-spin" /> : null}
-            {primaryActionLabel}
-          </Button>
-          {secondaryActions.map((action) => (
-            <Button
-              key={action.actionId}
-              type="button"
-              size="sm"
-              variant={action.decision === "deny" ? "outline" : "secondary"}
-              className="h-9 rounded-md px-5"
-              onClick={() => submitReviewAction(action)}
-              disabled={running}
-            >
-              {action.label}
-            </Button>
-          ))}
-          {!hasStopAction ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-9 rounded-md px-5"
-              onClick={onStop}
-              disabled={running}
-            >
-              Stop run
             </Button>
           ) : null}
           <Button
@@ -3962,7 +4131,10 @@ function GuidedResult({
         {sub ? <p className="mt-2 text-sm text-muted-foreground">{sub}</p> : null}
         {resultRun.status === "completed" ? (
           <div className="mt-3">
-            <UsageSummary usage={resultRun.usage} />
+            <UsageSummary
+              usage={resultRun.usage}
+              modelStepRan={playbookRunHasModelStep(resultRun)}
+            />
           </div>
         ) : null}
         {failureMessage ? (
