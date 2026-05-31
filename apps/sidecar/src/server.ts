@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, extname, join, relative } from "node:path";
 import {
@@ -14,6 +14,8 @@ import {
   type CompiledPlaybookGraph,
   CompiledPlaybookGraphSchema,
   DashboardLayoutSchema,
+  type EffectExecutionRecord,
+  EffectExecutionRecordSchema,
   GraphPlaybookImportResultSchema,
   InboxCancelRequestSchema,
   InboxCreateRequestSchema,
@@ -27,11 +29,14 @@ import {
   MemoryReviewListResultSchema,
   type ModelRuntimeCredential,
   NotifyRequestSchema,
+  PlaybookAssignmentPreviewRequestSchema,
+  PlaybookAssignmentPreviewResultSchema,
   PlaybookDetailSchema,
   type PlaybookGraphArtifactVersion,
   type PlaybookGraphBranchItem,
   PlaybookGraphGitMilestoneCommitRequestSchema,
   PlaybookGraphGitMilestonePreviewRequestSchema,
+  type PlaybookGraphMaterializationFormat,
   type PlaybookGraphNode,
   type PlaybookGraphOperationKind,
   type PlaybookGraphOperationRecord,
@@ -89,15 +94,20 @@ import {
 import {
   CORE_VERSION,
   DEFAULT_AGENT_PROFILE,
+  type GraphConnectorRegistry,
   type GraphRunStore,
   type OptionalCapabilityInstallProgress,
   type OptionalCapabilityManager,
   type PlaybookGraphAgentAdapterInput,
   type PlaybookGraphArtifactWriteAdapterInput,
+  type PlaybookGraphEffectAdapterInput,
+  type PlaybookGraphEffectAdapterResult,
+  type PlaybookGraphEffectExecutionPolicy,
   type PlaybookGraphScriptAdapterInput,
   type PlaybookGraphToolAdapterInput,
   type PlaybookGraphToolExecutionPolicy,
   WorkspaceConfigConflictError,
+  buildConnectorRegistry,
   childPlaybookGraphNodePath,
   createGraphGitMilestoneService,
   createOptionalCapabilityManager,
@@ -120,6 +130,7 @@ import {
   playbookGraphExecutionContextDriftReason,
   readPlaybookGraphPackage,
   readWorkspaceConfig,
+  resolvePlaybookGraphPreflight,
   resolveSlashSkillInvocation,
   saveWorkspaceConfig,
   softTimeoutMs,
@@ -130,8 +141,15 @@ import {
   createPlaywrightBrowserExecutor,
   resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
+import { buildConnectorContext } from "./connectors/context.js";
+import { googleWorkspaceConnector } from "./connectors/google-workspace.js";
+import { webConnector } from "./connectors/web.js";
+import { workspaceConnector } from "./connectors/workspace.js";
 import { mergeDefaultAgentProfile } from "./default-agent-profile.js";
-import { importGraphPlaybookArchive } from "./graph-playbook-importer.js";
+import {
+  importGraphPlaybookArchive,
+  importGraphPlaybookFolder,
+} from "./graph-playbook-importer.js";
 import {
   type GraphPlaybookRegistryEntry,
   loadInstalledGraphPlaybookCatalog,
@@ -180,24 +198,35 @@ const CODEX_OAUTH_TOKEN_URL = `${CODEX_OAUTH_ISSUER}/oauth/token`;
 const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const GOOGLE_WORKSPACE_CAPABILITY_ID = "google-workspace-cli";
 const GOOGLE_WORKSPACE_BINARY_NAME = "gws";
+const BROWSER_RUNTIME_CAPABILITY_ID = "browser-runtime";
+const BROWSER_RUNTIME_BINARY_NAME = "chromium";
 const GOOGLE_WORKSPACE_CLI_COMMANDS = new Set([
   "calendar",
   "contacts",
+  "docs",
   "drive",
   "gcal",
   "gmail",
   "mail",
   "people",
+  "sheets",
 ]);
+const optionalCapabilityManager = createOptionalCapabilityManager({
+  rootDir: join(TESSERA_DATA_DIR, "capabilities"),
+  definitions: optionalCapabilityDefinitionsFromEnv(process.env),
+});
+let googleWorkspaceCliPathCache: string | undefined;
 const browserExecutor = createPlaywrightBrowserExecutor({
   artifactDir: join(TESSERA_DATA_DIR, "browser-artifacts"),
   profileDir: join(TESSERA_DATA_DIR, "browser-profile"),
   recipeDir: join(TESSERA_DATA_DIR, "browser-recipes"),
   ...resolveBrowserRuntimeConfigFromEnv(),
-});
-const optionalCapabilityManager = createOptionalCapabilityManager({
-  rootDir: join(TESSERA_DATA_DIR, "capabilities"),
-  definitions: optionalCapabilityDefinitionsFromEnv(process.env),
+  async resolveLaunchOptions() {
+    return {
+      ...(await resolveManagedBrowserRuntimeConfig()),
+      ...resolveBrowserRuntimeConfigFromEnv(),
+    };
+  },
 });
 type CapabilityInstallProgress = {
   phase: OptionalCapabilityInstallProgress["phase"] | "available" | "failed";
@@ -1042,6 +1071,22 @@ export async function handleCapabilityBinaryInstall(
   }
 }
 
+async function resolveManagedBrowserRuntimeConfig(
+  capabilityManager: OptionalCapabilityManager = optionalCapabilityManager
+): Promise<ReturnType<typeof resolveBrowserRuntimeConfigFromEnv>> {
+  try {
+    const executablePath = await capabilityManager.resolveBinary(
+      BROWSER_RUNTIME_CAPABILITY_ID,
+      BROWSER_RUNTIME_BINARY_NAME
+    );
+    return executablePath ? { executablePath } : {};
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("Unknown optional capability")) return {};
+    throw error;
+  }
+}
+
 function usesGoogleWorkspaceCli(args: string[]): boolean {
   const command = args[0];
   return command !== undefined && GOOGLE_WORKSPACE_CLI_COMMANDS.has(command);
@@ -1054,15 +1099,19 @@ export async function resolveGoogleWorkspaceCliEnv(
 ): Promise<Record<string, string>> {
   if (!usesGoogleWorkspaceCli(args)) return {};
   if (env.TESSERA_GWS_CLI_PATH?.trim()) return {};
+  if (capabilityManager === optionalCapabilityManager && googleWorkspaceCliPathCache) {
+    return { TESSERA_GWS_CLI_PATH: googleWorkspaceCliPathCache };
+  }
 
   try {
-    const result = await resolveCapabilityBinary({
-      capabilityManager,
-      capabilityId: GOOGLE_WORKSPACE_CAPABILITY_ID,
-      binaryName: GOOGLE_WORKSPACE_BINARY_NAME,
-      install: false,
-    });
-    return result.path ? { TESSERA_GWS_CLI_PATH: result.path } : {};
+    const path = await capabilityManager.resolveBinary(
+      GOOGLE_WORKSPACE_CAPABILITY_ID,
+      GOOGLE_WORKSPACE_BINARY_NAME
+    );
+    if (path && capabilityManager === optionalCapabilityManager) {
+      googleWorkspaceCliPathCache = path;
+    }
+    return path ? { TESSERA_GWS_CLI_PATH: path } : {};
   } catch {
     return {};
   }
@@ -1100,7 +1149,11 @@ async function handleSpawn(req: Request): Promise<Response> {
   }
 }
 
-async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<SpawnResult> {
+async function runWorkspaceCli(
+  args: string[],
+  timeoutMs = 10_000,
+  envOverrides: Record<string, string> = {}
+): Promise<SpawnResult> {
   // binary enum is validated by Zod; resolve to the path injected by Rust at launch
   const cliPath = process.env.TESSERA_CLI_PATH;
   if (!cliPath) {
@@ -1110,7 +1163,7 @@ async function runWorkspaceCli(args: string[], timeoutMs = 10_000): Promise<Spaw
   const startMs = Date.now();
   const managedEnv = await resolveGoogleWorkspaceCliEnv(args);
   const proc = Bun.spawn([cliPath, ...args], {
-    env: { ...process.env, ...managedEnv },
+    env: { ...process.env, ...managedEnv, ...envOverrides },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -1538,22 +1591,42 @@ export async function handleGraphPlaybookImport(
 
   const input = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const zipPath = typeof input.zipPath === "string" ? input.zipPath.trim() : "";
-  if (!zipPath) {
-    return Response.json({ error: "zipPath is required" }, { status: 400 });
+  const sourceRoot =
+    typeof input.sourceRoot === "string"
+      ? input.sourceRoot.trim()
+      : typeof input.sourcePath === "string"
+        ? input.sourcePath.trim()
+        : "";
+  if (!zipPath && !sourceRoot) {
+    return Response.json({ error: "zipPath or sourceRoot is required" }, { status: 400 });
+  }
+  if (zipPath && sourceRoot) {
+    return Response.json(
+      { error: "Provide either zipPath or sourceRoot, not both" },
+      { status: 400 }
+    );
   }
 
   const graphPlaybooks = graphPlaybookRequestScope(req, options);
 
   try {
     const builtIns = await builtInGraphPlaybooks();
-    const imported = await importGraphPlaybookArchive({
-      zipPath,
+    const importOptions = {
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,
       builtInIds: builtIns.map((entry) => entry.id),
       compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
       scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
-    });
+    };
+    const imported = zipPath
+      ? await importGraphPlaybookArchive({
+          ...importOptions,
+          zipPath,
+        })
+      : await importGraphPlaybookFolder({
+          ...importOptions,
+          sourceRoot,
+        });
     await refreshInstalledGraphPlaybookRegistry({
       installRoot: graphPlaybooks.installRoot,
       cacheRoot: graphPlaybooks.cacheRoot,
@@ -1597,7 +1670,11 @@ export interface GraphRunHandlerOptions {
   credential?: ModelRuntimeCredential;
   scriptTimeoutMs?: number;
   scriptBunExecutable?: string;
-  workspaceCli?: (args: string[], timeoutMs?: number) => Promise<SpawnResult>;
+  workspaceCli?: (
+    args: string[],
+    timeoutMs?: number,
+    env?: Record<string, string>
+  ) => Promise<SpawnResult>;
   scriptAdapter?: (input: PlaybookGraphScriptAdapterInput) => Promise<unknown> | unknown;
   agentAdapter?: (input: PlaybookGraphAgentAdapterInput) => Promise<unknown> | unknown;
   toolAdapter?: (input: PlaybookGraphToolAdapterInput) => Promise<unknown> | unknown;
@@ -1607,6 +1684,13 @@ export interface GraphRunHandlerOptions {
   >;
   toolPolicies?: Record<string, PlaybookGraphToolExecutionPolicy>;
   toolCapabilities?: string[];
+  effectAdapter?: (
+    input: PlaybookGraphEffectAdapterInput
+  ) =>
+    | Promise<PlaybookGraphEffectAdapterResult | unknown>
+    | PlaybookGraphEffectAdapterResult
+    | unknown;
+  effectPolicies?: Record<string, PlaybookGraphEffectExecutionPolicy>;
   artifactWriteAdapter?: (
     input: PlaybookGraphArtifactWriteAdapterInput
   ) => Promise<unknown> | unknown;
@@ -1786,109 +1870,15 @@ function graphRunPayloadWorkspaceRoot(payload: Record<string, unknown>): string 
   return typeof workspaceRoot === "string" && workspaceRoot.trim() ? workspaceRoot : undefined;
 }
 
-function graphArtifactPathValue(value: unknown): string {
-  return String(value ?? "")
-    .replace(/[\\/:\0]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
-}
-
-function renderGraphArtifactWritePath(path: string, input: Record<string, unknown>): string {
-  return path.replace(/\{\{\s*inputs\.([A-Za-z0-9_.:-]+)\s*\}\}/g, (_match, key: string) => {
-    const value = key.split(".").reduce<unknown>((cursor, segment) => {
-      if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return undefined;
-      return (cursor as Record<string, unknown>)[segment];
-    }, input);
-    return graphArtifactPathValue(value) || "untitled";
-  });
-}
-
-function textValueFromArtifact(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  for (const key of ["text", "markdown", "bodyMarkdown", "content", "body", "summary"]) {
-    const text = record[key];
-    if (typeof text === "string" && text.trim().length > 0) return text;
-  }
-
-  const title = typeof record.title === "string" ? record.title.trim() : "";
-  const thesis = typeof record.thesis === "string" ? record.thesis.trim() : "";
-  const audiencePromise =
-    typeof record.audiencePromise === "string" ? record.audiencePromise.trim() : "";
-  const outline = Array.isArray(record.outline) ? record.outline : [];
-  const sections = [
-    title ? `# ${title}` : "",
-    thesis ? `## Thesis\n\n${thesis}` : "",
-    audiencePromise ? `## Audience Promise\n\n${audiencePromise}` : "",
-    outline.length > 0
-      ? [
-          "## Outline",
-          ...outline.flatMap((item) => {
-            if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-            const outlineItem = item as Record<string, unknown>;
-            const heading =
-              typeof outlineItem.heading === "string" ? outlineItem.heading.trim() : "";
-            const points = Array.isArray(outlineItem.points)
-              ? outlineItem.points.filter((point): point is string => typeof point === "string")
-              : [];
-            return [
-              heading ? `### ${heading}` : "",
-              points.length > 0 ? points.map((point) => `- ${point}`).join("\n") : "",
-            ].filter(Boolean);
-          }),
-        ].join("\n\n")
-      : "",
-  ].filter(Boolean);
-  return sections.length > 0 ? sections.join("\n\n") : undefined;
-}
-
-function formatGraphArtifactWriteContent(value: unknown, path: string): string {
-  const extension = extname(path).toLowerCase();
-  if (extension === ".md" || extension === ".markdown" || extension === ".txt") {
-    const text = textValueFromArtifact(value);
-    if (text !== undefined) return text.endsWith("\n") ? text : `${text}\n`;
-  }
-  if (typeof value === "string") return value;
-  const json = JSON.stringify(value, null, 2);
-  return `${json ?? String(value)}\n`;
-}
-
-async function createWorkspaceArtifactWriteAdapter(
-  workspaceRoot: string
-): Promise<NonNullable<GraphRunHandlerOptions["artifactWriteAdapter"]>> {
-  const guard = await createWorkspaceGuard(workspaceRoot);
-  return async ({ run, node, artifactVersion, value }) => {
-    const renderedPath = renderGraphArtifactWritePath(node.path, run.input);
-    const parentAbsolute = await guard.resolveInsideWorkspaceForCreate(dirname(renderedPath));
-    await mkdir(parentAbsolute, { recursive: true });
-    const absolute = await guard.resolveInsideWorkspaceForCreate(renderedPath);
-    const content = formatGraphArtifactWriteContent(value, renderedPath);
-    await writeFile(absolute, content, "utf8");
-    return {
-      path: relative(guard.root, absolute),
-      bytes: Buffer.byteLength(content),
-      artifactId: node.artifact,
-      artifactVersionId: artifactVersion.versionId,
-      contentHash: artifactVersion.contentHash,
-    };
-  };
-}
-
-async function graphRunArtifactWriteAdapter(
-  runId: string,
-  store: GraphRunStore,
-  options: GraphRunHandlerOptions
-): Promise<GraphRunHandlerOptions["artifactWriteAdapter"] | undefined> {
-  if (options.artifactWriteAdapter) return options.artifactWriteAdapter;
-  const persistedRun = await store.getRun(runId);
-  const workspaceRoot =
-    persistedRun?.materialization?.kind === "workspace"
-      ? persistedRun.materialization.workspaceRoot
-      : options.workspaceRoot;
-  if (!workspaceRoot) return undefined;
-  return createWorkspaceArtifactWriteAdapter(workspaceRoot);
+function googleWorkspaceWriteExecutionToken(approvalId: string, idempotencyKey: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      approvalId,
+      idempotencyKey,
+      expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+    }),
+    "utf8"
+  ).toString("base64url");
 }
 
 async function graphRunScriptAdapter(
@@ -1907,6 +1897,46 @@ async function graphRunScriptAdapter(
         ? {}
         : { bunExecutable: options.scriptBunExecutable }),
     });
+}
+
+async function graphRunConnectorRegistry(
+  runId: string,
+  store: GraphRunStore,
+  options: GraphRunHandlerOptions
+): Promise<{ registry: GraphConnectorRegistry; workspaceRoot?: string }> {
+  const persistedRun = await store.getRun(runId);
+  const workspaceRoot =
+    persistedRun?.materialization?.kind === "workspace"
+      ? persistedRun.materialization.workspaceRoot
+      : options.workspaceRoot;
+  let shellAllowlist: GraphRunToolShellAllowlist = {};
+  const shellToolAdapter = defaultGraphRunToolAdapter(options, () => shellAllowlist);
+  const ctx = await buildConnectorContext({
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+    runWorkspaceCli: graphRunWorkspaceCli(options),
+    mintWriteToken: googleWorkspaceWriteExecutionToken,
+  });
+  const registry = buildConnectorRegistry({
+    connectors: [workspaceConnector, webConnector, googleWorkspaceConnector],
+    ctx,
+    shellToolAdapter,
+  });
+  shellAllowlist = registry.shellAllowlist;
+  return { registry, ...(workspaceRoot ? { workspaceRoot } : {}) };
+}
+
+function graphRunToolAdapter(
+  options: GraphRunHandlerOptions,
+  registry: GraphConnectorRegistry
+): GraphRunHandlerOptions["toolAdapter"] | undefined {
+  if (options.toolAdapter) return options.toolAdapter;
+  return async (input) => {
+    const adapter = options.toolAdapters?.[input.node.capability];
+    if (adapter) {
+      return adapter(input);
+    }
+    return registry.toolAdapter(input);
+  };
 }
 
 function graphRunHash(value: unknown): string {
@@ -2074,7 +2104,7 @@ function graphRunStylePromptSection(input: PlaybookGraphAgentAdapterInput): stri
 
 function graphRunWorkspaceCli(
   options: GraphRunHandlerOptions
-): (args: string[], timeoutMs?: number) => Promise<SpawnResult> {
+): (args: string[], timeoutMs?: number, env?: Record<string, string>) => Promise<SpawnResult> {
   return options.workspaceCli ?? runWorkspaceCli;
 }
 
@@ -2281,6 +2311,7 @@ export function graphRunAgentPrompt(
   });
   const runtime = agent ? compileAgentRuntimeContext(agent) : undefined;
   const styleSection = graphRunStylePromptSection(input);
+  const outputContractSection = graphRunAgentOutputContractSection(input);
   return [
     ...(agent
       ? [
@@ -2293,11 +2324,33 @@ export function graphRunAgentPrompt(
         ].filter(Boolean)
       : []),
     input.prompt ?? `Execute graph agent node ${input.node.id}.`,
+    ...(outputContractSection ? ["", outputContractSection] : []),
     ...(styleSection ? ["", styleSection] : []),
     ...(workspaceContext ? ["", "Workspace context:", workspaceContext] : []),
     "",
     "Pinned graph runtime context:",
     context,
+  ].join("\n");
+}
+
+function normalizeGraphSourceRef(ref: string): string {
+  return ref.replaceAll("\\", "/").replace(/^\.\/+/, "");
+}
+
+function graphRunAgentOutputContractSection(
+  input: PlaybookGraphAgentAdapterInput
+): string | undefined {
+  const output = input.node.output;
+  if (!output?.schema) return undefined;
+
+  const source = input.run.snapshot.sourceFiles?.[normalizeGraphSourceRef(output.schema)];
+  if (!source?.trim()) return undefined;
+
+  return [
+    "Output contract:",
+    `Return only a JSON value for artifact \`${output.artifact}\`. Do not include Markdown, prose, code fences, shell commands, or tool-call instructions.`,
+    `The JSON must validate against ${output.schema}:`,
+    source.trim(),
   ].join("\n");
 }
 
@@ -2362,77 +2415,7 @@ function graphRunAgentAdapter(
   };
 }
 
-const GRAPH_RUN_DEFAULT_TOOL_POLICIES: Record<string, PlaybookGraphToolExecutionPolicy> = {
-  "web.search": { capability: "web.search", idempotent: true, sideEffect: "read" },
-  "web.fetch": { capability: "web.fetch", idempotent: true, sideEffect: "read" },
-  "integration.web.search": {
-    capability: "integration.web.search",
-    idempotent: true,
-    sideEffect: "read",
-  },
-  "integration.web.fetch": {
-    capability: "integration.web.fetch",
-    idempotent: true,
-    sideEffect: "read",
-  },
-  "integration.calendar.events.read": {
-    capability: "integration.calendar.events.read",
-    idempotent: true,
-    sideEffect: "read",
-  },
-  "integration.mail.messages.read": {
-    capability: "integration.mail.messages.read",
-    idempotent: true,
-    sideEffect: "read",
-  },
-  "integration.drive.files.read": {
-    capability: "integration.drive.files.read",
-    idempotent: true,
-    sideEffect: "read",
-  },
-  "integration.contacts.read": {
-    capability: "integration.contacts.read",
-    idempotent: true,
-    sideEffect: "read",
-  },
-};
-
-const GRAPH_RUN_TOOL_SHELL_ALLOWLIST: Record<
-  string,
-  Array<Pick<ShellToolCall, "command" | "subcommand">>
-> = {
-  "web.search": [{ command: "web-search", subcommand: "search" }],
-  "web.fetch": [{ command: "web-fetch", subcommand: "fetch" }],
-  "integration.web.search": [{ command: "web-search", subcommand: "search" }],
-  "integration.web.fetch": [{ command: "web-fetch", subcommand: "fetch" }],
-  "integration.calendar.events.read": [
-    { command: "gcal", subcommand: "list" },
-    { command: "gcal", subcommand: "read" },
-  ],
-  "integration.mail.messages.read": [
-    { command: "mail", subcommand: "list" },
-    { command: "mail", subcommand: "search" },
-    { command: "mail", subcommand: "read" },
-  ],
-  "integration.drive.files.read": [
-    { command: "drive", subcommand: "search" },
-    { command: "drive", subcommand: "read" },
-  ],
-  "integration.contacts.read": [{ command: "contacts", subcommand: "lookup" }],
-};
-
-function graphRunDefaultToolPolicies(
-  options: GraphRunHandlerOptions
-): Record<string, PlaybookGraphToolExecutionPolicy> {
-  return {
-    ...GRAPH_RUN_DEFAULT_TOOL_POLICIES,
-    ...(options.toolPolicies ?? {}),
-  };
-}
-
-function graphRunDefaultToolCapabilities(options: GraphRunHandlerOptions): string[] {
-  return options.toolCapabilities ?? Object.keys(graphRunDefaultToolPolicies(options));
-}
+type GraphRunToolShellAllowlist = Record<string, Array<{ command: string; subcommand: string }>>;
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -2440,7 +2423,10 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function graphRunShellCallFromTool(input: PlaybookGraphToolAdapterInput): ShellToolCall {
+function graphRunShellCallFromTool(
+  input: PlaybookGraphToolAdapterInput,
+  shellAllowlist: GraphRunToolShellAllowlist
+): ShellToolCall {
   const args = input.node.args;
   const explicitCommand = typeof args.command === "string" ? args.command : undefined;
   const explicitSubcommand = typeof args.subcommand === "string" ? args.subcommand : undefined;
@@ -2465,7 +2451,7 @@ function graphRunShellCallFromTool(input: PlaybookGraphToolAdapterInput): ShellT
 
   const call = ShellToolCallSchema.parse(inferred);
   const policy = findCliCommand(call);
-  const allowlist = GRAPH_RUN_TOOL_SHELL_ALLOWLIST[input.node.capability] ?? [];
+  const allowlist = shellAllowlist[input.node.capability] ?? [];
   const allowedForCapability = allowlist.some(
     (item) => item.command === call.command && item.subcommand === call.subcommand
   );
@@ -2478,29 +2464,13 @@ function graphRunShellCallFromTool(input: PlaybookGraphToolAdapterInput): ShellT
 }
 
 function defaultGraphRunToolAdapter(
-  options: GraphRunHandlerOptions
+  options: GraphRunHandlerOptions,
+  getShellAllowlist: () => GraphRunToolShellAllowlist
 ): NonNullable<GraphRunHandlerOptions["toolAdapter"]> {
   const shell = createSpawnShellExecutor({
     runWorkspaceCli: graphRunWorkspaceCli(options),
   });
-  return async (input) => shell.executeShell(graphRunShellCallFromTool(input));
-}
-
-function graphRunToolAdapter(
-  options: GraphRunHandlerOptions
-): GraphRunHandlerOptions["toolAdapter"] | undefined {
-  if (options.toolAdapter) return options.toolAdapter;
-  const defaultAdapter = defaultGraphRunToolAdapter(options);
-  return async (input) => {
-    const adapter = options.toolAdapters?.[input.node.capability];
-    if (adapter) {
-      return adapter(input);
-    }
-    if (!GRAPH_RUN_DEFAULT_TOOL_POLICIES[input.node.capability]) {
-      throw new Error(`No graph tool adapter registered for capability: ${input.node.capability}`);
-    }
-    return defaultAdapter(input);
-  };
+  return async (input) => shell.executeShell(graphRunShellCallFromTool(input, getShellAllowlist()));
 }
 
 function graphRunOptionsWithAgentRuntime(
@@ -2535,6 +2505,7 @@ async function graphRunDetail(
       graphArtifactSortKey(left).localeCompare(graphArtifactSortKey(right))
     ),
     reviews: await store.listReviewEvents(runId),
+    effects: await store.listEffectExecutionRecords(runId),
     operations: await store.listOperationRecords(runId),
   });
 }
@@ -3026,6 +2997,42 @@ function humanReviewFeedbackValue(input: {
   };
 }
 
+function latestEffectPreview(
+  detail: GraphRunDetail,
+  entry: PlaybookGraphQueueEntry
+): EffectExecutionRecord | undefined {
+  return [...detail.effects]
+    .reverse()
+    .find(
+      (record) =>
+        record.queueEntryId === entry.queueEntryId &&
+        record.nodePath === entry.nodePath &&
+        record.status === "previewed"
+    );
+}
+
+function graphEffectActionSpec(input: {
+  entry: PlaybookGraphQueueEntry;
+  preview?: EffectExecutionRecord;
+  decision: "approve" | "deny";
+}): PlaybookGraphResumeActionSpec {
+  return PlaybookGraphResumeActionSpecSchema.parse({
+    schemaVersion: 1,
+    actionId: `${input.entry.queueEntryId}:effect:${input.decision}`,
+    decision: input.decision,
+    label: input.decision === "approve" ? "Approve" : "Stop run",
+    ...(input.preview?.preview?.summary ? { description: input.preview.preview.summary } : {}),
+    tone: input.decision === "deny" ? "danger" : "primary",
+    queueEntryId: input.entry.queueEntryId,
+    nodePath: input.entry.nodePath,
+    nodeKind: input.entry.nodeKind,
+    allowedRunStatuses: ["blocked"],
+    allowedQueueStatuses: ["blocked"],
+    sideEffect: input.decision === "approve" ? "resume" : "terminal",
+    destructive: input.decision === "deny",
+  });
+}
+
 function graphRunBranchGroups(
   detail: GraphRunDetail,
   activeArtifacts: GraphRunReviewSurface["activeArtifacts"]
@@ -3128,6 +3135,21 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
         })
       );
     }
+    if (entry.nodeKind === "effect") {
+      const preview = latestEffectPreview(detail, entry);
+      actions.push(
+        graphEffectActionSpec({
+          entry,
+          ...(preview ? { preview } : {}),
+          decision: "approve",
+        }),
+        graphEffectActionSpec({
+          entry,
+          ...(preview ? { preview } : {}),
+          decision: "deny",
+        })
+      );
+    }
   }
   for (const entry of detail.queue.filter((entry) => entry.status === "interrupted")) {
     actions.push(
@@ -3183,23 +3205,26 @@ function graphRunActionSpecs(detail: GraphRunDetail): GraphRunReviewSurface["act
     );
   }
   if (detail.run.status === "needs_repair") {
+    const repairSnapshotValid = graphRunHasValidSnapshot(detail.run);
     actions.push(
       actionSpec({
         schemaVersion: 1,
         actionId: `${detail.run.runId}:approve_repair`,
         decision: "approve_repair",
-        label: "Approve repair",
+        label: "Repair run",
+        description: detail.run.repairReason ?? "Repair the saved run state before continuing.",
         allowedRunStatuses: ["needs_repair"],
         allowedQueueStatuses: [],
-        requiredPayloadFields: [
-          {
-            path: "compiledGraph",
-            label: "Compiled graph",
-            kind: "compiledGraph",
-            required: false,
-          },
-          { path: "sourceFiles", label: "Source files", kind: "sourceFiles", required: false },
-        ],
+        requiredPayloadFields: repairSnapshotValid
+          ? []
+          : [
+              {
+                path: "compiledGraph",
+                label: "Compiled graph",
+                kind: "compiledGraph",
+              },
+              { path: "sourceFiles", label: "Source files", kind: "sourceFiles", required: false },
+            ],
         sideEffect: "resume",
       })
     );
@@ -3266,6 +3291,20 @@ function graphRunProductView(
       technicalSummary: { internalStatus: detail.run.status },
     };
   }
+  if (detail.run.status === "needs_repair") {
+    const repairAction = actions.find(
+      (action) => action.decision === "approve_repair" || action.decision === "retry_repair"
+    );
+    return {
+      schemaVersion: 1,
+      state: "restart_required",
+      title: "Run needs repair",
+      message: detail.run.repairReason ?? "Tessera needs to repair this run before continuing.",
+      ...(repairAction ? { primaryAction: productActionFromSpec(repairAction) } : {}),
+      secondaryActions: [],
+      technicalSummary: { internalStatus: detail.run.status },
+    };
+  }
 
   const attentionEntry = detail.queue.find((entry) => entry.status === "needs_attention");
   if (attentionEntry) {
@@ -3325,7 +3364,9 @@ function graphRunProductView(
   }
 
   const reviewEntry = detail.queue.find(
-    (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
+    (entry) =>
+      entry.status === "blocked" &&
+      (entry.nodeKind === "humanReview" || entry.nodeKind === "effect")
   );
   if (reviewEntry) {
     const reviewActions = actions.filter(
@@ -3566,13 +3607,27 @@ async function maybeDrainGraphRun(
   options: GraphRunHandlerOptions
 ): Promise<boolean> {
   const store = options.store ?? graphRunStore;
+  const { registry, workspaceRoot } = await graphRunConnectorRegistry(runId, store, options);
   const scriptAdapter = await graphRunScriptAdapter(runId, store, options);
-  const artifactWriteAdapter = await graphRunArtifactWriteAdapter(runId, store, options);
+  const artifactWriteAdapter =
+    options.artifactWriteAdapter ?? (workspaceRoot ? registry.artifactWriteAdapter : undefined);
+  const effectAdapter = options.effectAdapter ?? registry.effectAdapter;
   const agentAdapter = graphRunAgentAdapter(options);
-  const toolAdapter = graphRunToolAdapter(options);
-  const toolPolicies = graphRunDefaultToolPolicies(options);
-  const toolCapabilities = graphRunDefaultToolCapabilities(options);
-  if (!scriptAdapter && !artifactWriteAdapter && !agentAdapter && !toolAdapter) return false;
+  const toolAdapter = graphRunToolAdapter(options, registry);
+  const toolPolicies = { ...registry.toolPolicies, ...(options.toolPolicies ?? {}) };
+  const effectPolicies = { ...registry.effectPolicies, ...(options.effectPolicies ?? {}) };
+  const toolCapabilities = options.toolCapabilities ?? registry.capabilities;
+  const hasEffectAdapter = Boolean(effectAdapter);
+  const hasToolAdapter = Boolean(toolAdapter);
+  if (
+    !scriptAdapter &&
+    !artifactWriteAdapter &&
+    !hasEffectAdapter &&
+    !agentAdapter &&
+    !hasToolAdapter
+  ) {
+    return false;
+  }
   const queuedEntries = (await store.getQueue(runId)).filter((entry) => entry.status === "queued");
   if (
     options.blockOnMissingAdapters === false &&
@@ -3581,25 +3636,13 @@ async function maybeDrainGraphRun(
       graphRunQueuedEntryRequiresUnavailableAdapter(entry, {
         scriptAdapter: Boolean(scriptAdapter),
         artifactWriteAdapter: Boolean(artifactWriteAdapter),
+        effectAdapter: hasEffectAdapter,
         agentAdapter: Boolean(agentAdapter),
-        toolAdapter: Boolean(toolAdapter),
+        toolAdapter: hasToolAdapter,
       })
     )
   ) {
     return false;
-  }
-  if (!scriptAdapter && !agentAdapter && !artifactWriteAdapter && toolAdapter) {
-    if (queuedEntries.length === 0 || queuedEntries.some((entry) => entry.nodeKind !== "tool")) {
-      return false;
-    }
-  }
-  if (!scriptAdapter && artifactWriteAdapter) {
-    if (
-      queuedEntries.length === 0 ||
-      queuedEntries.some((entry) => entry.nodeKind !== "artifactWrite")
-    ) {
-      return false;
-    }
   }
   await drainPlaybookGraphRun({
     runId,
@@ -3623,6 +3666,8 @@ async function maybeDrainGraphRun(
     ...(toolAdapter ? { toolAdapter } : {}),
     toolPolicies,
     toolCapabilities,
+    effectAdapter,
+    effectPolicies,
     ...(artifactWriteAdapter ? { artifactWriteAdapter } : {}),
   });
   return true;
@@ -3633,6 +3678,7 @@ function graphRunQueuedEntryRequiresUnavailableAdapter(
   adapters: {
     scriptAdapter: boolean;
     artifactWriteAdapter: boolean;
+    effectAdapter: boolean;
     agentAdapter: boolean;
     toolAdapter: boolean;
   }
@@ -3642,6 +3688,8 @@ function graphRunQueuedEntryRequiresUnavailableAdapter(
       return !adapters.agentAdapter;
     case "artifactWrite":
       return !adapters.artifactWriteAdapter;
+    case "effect":
+      return !adapters.effectAdapter;
     case "script":
       return !adapters.scriptAdapter;
     case "tool":
@@ -3695,7 +3743,8 @@ export async function recoverGraphRunInterruptedWork(
   let requeued = 0;
   let needsAttention = recovered.needsAttention;
   const autoRecoveredQueueEntryIds: string[] = [];
-  const toolPolicies = graphRunDefaultToolPolicies(options);
+  const { registry } = await graphRunConnectorRegistry(runId, store, options);
+  const toolPolicies = { ...registry.toolPolicies, ...(options.toolPolicies ?? {}) };
   const operationRecords = await store.listOperationRecords(runId);
   for (const entry of interruptedEntries) {
     if (
@@ -4768,11 +4817,13 @@ export async function handleGraphRunResume(
       branchItems: PlaybookGraphBranchItem[];
       artifactVersions: PlaybookGraphArtifactVersion[];
       reviewEvents: PlaybookGraphReviewEvent[];
+      effectRecords: EffectExecutionRecord[];
     } = {
       queueEntries: [],
       branchItems: [],
       artifactVersions: [],
       reviewEvents: [],
+      effectRecords: [],
     };
     const affectedArtifactIds = new Set<string>();
     const affectedReviewEventIds = new Set<string>();
@@ -4794,6 +4845,44 @@ export async function handleGraphRunResume(
       return event;
     };
 
+    const addEffectDecisionRecord = async (input: {
+      queueEntry: PlaybookGraphQueueEntry;
+      node: Extract<PlaybookGraphNode, { kind: "effect" }>;
+      status: "approved" | "denied";
+    }): Promise<EffectExecutionRecord> => {
+      const latestPreview = (await store.listEffectExecutionRecords(runId))
+        .reverse()
+        .find(
+          (record) =>
+            record.queueEntryId === input.queueEntry.queueEntryId &&
+            record.nodePath === input.queueEntry.nodePath &&
+            record.effectId === input.node.effectId &&
+            record.adapterId === input.node.adapterId
+        );
+      const record = EffectExecutionRecordSchema.parse({
+        schemaVersion: 1,
+        effectExecutionRecordId: `${input.queueEntry.queueEntryId}:effect:${input.status}:${randomUUID()}`,
+        runId,
+        queueEntryId: input.queueEntry.queueEntryId,
+        nodeId: input.node.id,
+        nodePath: input.queueEntry.nodePath,
+        effectId: input.node.effectId,
+        capability: input.node.capability,
+        adapterId: input.node.adapterId,
+        sideEffect: input.node.sideEffect,
+        status: input.status,
+        ...(latestPreview?.idempotencyKey ? { idempotencyKey: latestPreview.idempotencyKey } : {}),
+        ...(latestPreview?.preview ? { preview: latestPreview.preview } : {}),
+        reviewerDecision: input.status,
+        commitStatus: "not_attempted",
+        createdAt: now,
+        completedAt: now,
+      });
+      mutation.effectRecords.push(record);
+      affectedQueueEntryIds.add(input.queueEntry.queueEntryId);
+      return record;
+    };
+
     if (parsed.data.decision === "deny") {
       const queue = await store.getQueue(runId);
       const active = parsed.data.queueEntryId
@@ -4808,6 +4897,13 @@ export async function handleGraphRunResume(
             artifactId: node.artifact,
             decision: "denied",
             payload: parsed.data.payload,
+          });
+        }
+        if (node?.kind === "effect") {
+          await addEffectDecisionRecord({
+            queueEntry: active,
+            node,
+            status: "denied",
           });
         }
         mutation.queueEntries.push({
@@ -5135,6 +5231,20 @@ export async function handleGraphRunResume(
           repairReason: `Unknown blocked graph node: ${blocked.nodeId}`,
           updatedAt: now,
         };
+      } else if (node.kind === "effect") {
+        if (reviewDecision !== "approve") {
+          return Response.json(
+            { error: "Effect resume only supports approve or deny decisions" },
+            { status: 409 }
+          );
+        }
+        operationActionSpecId = `${blocked.queueEntryId}:effect:approve`;
+        operationIntent = "Approve effect";
+        await addEffectDecisionRecord({
+          queueEntry: blocked,
+          node,
+          status: "approved",
+        });
       } else if (node.kind !== "humanReview") {
         return Response.json(
           { error: `${node.kind} queue entries cannot be approved through human review resume` },
@@ -5184,7 +5294,33 @@ export async function handleGraphRunResume(
           affectedArtifactIds.add(feedbackVersion.artifactId);
         }
       }
-      if (node?.kind === "humanReview") {
+      if (node?.kind === "effect") {
+        const resumedQueue = {
+          ...blocked,
+          status: "queued" as const,
+          runtimeId: undefined,
+          leaseId: undefined,
+          claimedAt: undefined,
+          leaseExpiresAt: undefined,
+          blockedReason: undefined,
+          error: undefined,
+          completedAt: undefined,
+          updatedAt: now,
+        };
+        mutation.queueEntries.push(resumedQueue);
+        affectedQueueEntryIds.add(resumedQueue.queueEntryId);
+        mutation.run = {
+          ...run,
+          status: "running",
+          currentQueueEntryId: resumedQueue.queueEntryId,
+          blockedReason: undefined,
+          repairReason: undefined,
+          error: undefined,
+          completedAt: undefined,
+          updatedAt: now,
+        };
+        shouldDrain = true;
+      } else if (node?.kind === "humanReview") {
         const reviewAction = humanReviewActions(node).find((action) =>
           humanReviewActionMatches(action, blocked, reviewDecision, parsed.data.actionId)
         );
@@ -5300,6 +5436,7 @@ export async function handleGraphRunResume(
       branchItems: mutation.branchItems,
       artifactVersions: mutation.artifactVersions,
       reviewEvents: mutation.reviewEvents,
+      effectRecords: mutation.effectRecords,
       operationRecord: graphRunOperationRecord({
         runId,
         actionSpecId: operationActionSpecId,
@@ -5340,6 +5477,8 @@ interface PlaybookCatalogHandlerOptions {
 interface PlaybookRunPreferenceHandlerOptions {
   store?: PlaybookRunPreferenceStore;
 }
+
+type PlaybookPreflightHandlerOptions = PlaybookCatalogHandlerOptions;
 
 function shouldRefreshGraphPlaybookCatalog(
   options: PlaybookCatalogHandlerOptions,
@@ -5416,6 +5555,60 @@ export async function handlePlaybookGet(
   const projection = entry ?? imported;
   if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
   return Response.json(graphPlaybookDetail(projection));
+}
+
+export async function handlePlaybookPreflight(
+  req: Request,
+  playbookId: string,
+  options: PlaybookPreflightHandlerOptions = {}
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  const graphPlaybooks = graphPlaybookRequestScope(req, options);
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const parsed = PlaybookAssignmentPreviewRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.message }, { status: 400 });
+  }
+
+  const entry = await builtInGraphPlaybook(playbookId);
+  if (
+    entry === undefined &&
+    shouldRefreshGraphPlaybookCatalog(options, graphPlaybooks.catalogState)
+  ) {
+    await refreshInstalledGraphPlaybookRegistry({
+      installRoot: graphPlaybooks.installRoot,
+      cacheRoot: graphPlaybooks.cacheRoot,
+      state: graphPlaybooks.state,
+      catalogState: graphPlaybooks.catalogState,
+    });
+  }
+  const imported =
+    entry === undefined
+      ? await importedGraphPlaybookById(playbookId, graphPlaybooks.catalogState, {
+          includeSourceFiles: true,
+        })
+      : undefined;
+  const projection = entry ?? imported;
+  if (!projection) return Response.json({ error: "Unknown playbook id" }, { status: 404 });
+
+  const preview = resolvePlaybookGraphPreflight({
+    compiledGraph: projection.compiled,
+    ...(parsed.data.capabilityInventory
+      ? { capabilityInventory: parsed.data.capabilityInventory }
+      : {}),
+    ...(parsed.data.previousPlan ? { previousPlan: parsed.data.previousPlan } : {}),
+  });
+
+  return Response.json(PlaybookAssignmentPreviewResultSchema.parse(preview));
 }
 
 export async function handlePlaybookRunPreferenceRead(
@@ -5613,6 +5806,39 @@ async function handleInboxCancel(req: Request, messageId: string): Promise<Respo
   const message = inboxStore.cancel(messageId, parsed.data);
   if (!message) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
   return Response.json(message);
+}
+
+async function handleInboxConsume(req: Request, messageId: string): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const actor =
+    typeof body === "object" && body !== null && "actor" in body
+      ? String((body as { actor?: unknown }).actor)
+      : "system";
+  if (!actor.trim()) {
+    return Response.json({ error: "actor must be provided" }, { status: 400 });
+  }
+
+  const existing = inboxStore.get(messageId);
+  if (!existing) return Response.json({ error: "Unknown inbox message" }, { status: 404 });
+  try {
+    const message = inboxStore.consume(messageId, actor);
+    return Response.json(message);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 400 }
+    );
+  }
 }
 
 function handleTaskList(req: Request): Response {
@@ -6542,6 +6768,12 @@ const server = Bun.serve({
       return handlePlaybookList(req);
     }
 
+    const playbookPreflightMatch = pathname.match(/^\/playbooks\/([^/]+)\/preflight$/);
+    const playbookPreflightId = playbookPreflightMatch?.[1];
+    if (playbookPreflightId) {
+      return handlePlaybookPreflight(req, decodeURIComponent(playbookPreflightId));
+    }
+
     const playbookRunPreferenceMatch = pathname.match(/^\/playbooks\/([^/]+)\/run-preference$/);
     const playbookRunPreferenceId = playbookRunPreferenceMatch?.[1];
     if (playbookRunPreferenceId) {
@@ -6591,7 +6823,7 @@ const server = Bun.serve({
       if (req.method === "DELETE") return handleAgentProfileDelete(req, agentProfileId);
     }
 
-    const inboxActionMatch = pathname.match(/^\/inbox\/([^/]+)\/(resolve|snooze|cancel)$/);
+    const inboxActionMatch = pathname.match(/^\/inbox\/([^/]+)\/(resolve|snooze|consume|cancel)$/);
     const inboxActionId = inboxActionMatch?.[1];
     const inboxAction = inboxActionMatch?.[2];
     if (inboxActionId && inboxAction) {
@@ -6600,6 +6832,9 @@ const server = Bun.serve({
       }
       if (inboxAction === "snooze") {
         return handleInboxSnooze(req, decodeURIComponent(inboxActionId));
+      }
+      if (inboxAction === "consume") {
+        return handleInboxConsume(req, decodeURIComponent(inboxActionId));
       }
       return handleInboxCancel(req, decodeURIComponent(inboxActionId));
     }
@@ -6698,8 +6933,20 @@ const server = Bun.serve({
 // Validate and report connection info to the Tauri shell via stdout.
 const info = SidecarReadySchema.parse(
   socketPath
-    ? { type: "ready", transport: "unix", path: socketPath, token: TOKEN }
-    : { type: "ready", transport: "tcp", port: server.port, token: TOKEN }
+    ? {
+        type: "ready",
+        transport: "unix",
+        path: socketPath,
+        token: TOKEN,
+        graphRunWorker: graphRunBackgroundWorkerRef.current !== undefined,
+      }
+    : {
+        type: "ready",
+        transport: "tcp",
+        port: server.port,
+        token: TOKEN,
+        graphRunWorker: graphRunBackgroundWorkerRef.current !== undefined,
+      }
 );
 
 process.stdout.write(`${JSON.stringify(info)}\n`);

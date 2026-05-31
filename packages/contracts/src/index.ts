@@ -16,12 +16,14 @@ export const SidecarReadySchema = z.discriminatedUnion("transport", [
     transport: z.literal("unix"),
     path: z.string(),
     token: z.string(),
+    graphRunWorker: z.boolean().default(false),
   }),
   z.object({
     type: z.literal("ready"),
     transport: z.literal("tcp"),
     port: z.number(),
     token: z.string(),
+    graphRunWorker: z.boolean().default(false),
   }),
 ]);
 
@@ -453,6 +455,25 @@ export const MailReadResultSchema = z.object({
 });
 export type MailReadResult = z.infer<typeof MailReadResultSchema>;
 
+export const MailDraftResultSchema = z.object({
+  draft: z.object({
+    id: z.string().min(1),
+    messageId: z.string().optional(),
+    threadId: z.string().optional(),
+  }),
+});
+export type MailDraftResult = z.infer<typeof MailDraftResultSchema>;
+
+export const MailSendDraftResultSchema = z.object({
+  message: z.object({
+    id: z.string().min(1),
+    threadId: z.string().optional(),
+    labels: z.array(z.string()).default([]),
+    snippet: z.string().optional(),
+  }),
+});
+export type MailSendDraftResult = z.infer<typeof MailSendDraftResultSchema>;
+
 export const DriveFileSummarySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -484,6 +505,150 @@ export const DriveReadResultSchema = z
     }
   });
 export type DriveReadResult = z.infer<typeof DriveReadResultSchema>;
+
+export const SheetsTableNameSchema = z.enum([
+  "Suppliers",
+  "RFQs",
+  "Messages",
+  "Quotes",
+  "FollowUps",
+  "Decisions",
+]);
+export type SheetsTableName = z.infer<typeof SheetsTableNameSchema>;
+
+export const SheetsRowOperationSchema = z.enum([
+  "upsert",
+  "append",
+  "updateStatus",
+  "createWorkbook",
+]);
+export type SheetsRowOperation = z.infer<typeof SheetsRowOperationSchema>;
+
+export const SheetsSupplierWorkbookHeaders = {
+  Suppliers: ["supplier id", "name", "contact", "email", "platform URL", "country", "status"],
+  RFQs: ["batch id", "product spec", "quantity", "due date", "requested fields"],
+  Messages: ["supplier id", "thread id", "last sent", "last received", "follow-up count"],
+  Quotes: [
+    "supplier id",
+    "price",
+    "currency",
+    "MOQ",
+    "lead time",
+    "incoterm",
+    "confidence",
+    "source message id",
+  ],
+  FollowUps: ["supplier id", "reason", "draft", "approval status", "sent timestamp"],
+  Decisions: ["shortlisted", "rejected", "sample requested", "rationale"],
+} as const satisfies Record<z.infer<typeof SheetsTableNameSchema>, readonly string[]>;
+
+export const SheetsSupplierWorkbookTableSchema = z.object({
+  table: SheetsTableNameSchema,
+  headers: z.array(z.string().min(1)).min(1),
+});
+export type SheetsSupplierWorkbookTable = z.infer<typeof SheetsSupplierWorkbookTableSchema>;
+
+export const SheetsRowPreviewSchema = z.object({
+  action: SheetsRowOperationSchema,
+  spreadsheetId: z.string().min(1).optional(),
+  table: SheetsTableNameSchema.optional(),
+  key: z
+    .object({
+      column: z.string().min(1),
+      value: z.string().min(1),
+    })
+    .optional(),
+  before: z.record(z.unknown()).nullable().optional(),
+  after: z.record(z.unknown()).optional(),
+  changedCells: z
+    .array(
+      z.object({
+        column: z.string().min(1),
+        before: z.unknown().optional(),
+        after: z.unknown().optional(),
+      })
+    )
+    .default([]),
+  warnings: z.array(z.string()).default([]),
+});
+export type SheetsRowPreview = z.infer<typeof SheetsRowPreviewSchema>;
+
+export const SheetsWritePreviewResultSchema = z.object({
+  dryRun: z.literal(true),
+  operation: SheetsRowOperationSchema,
+  preview: SheetsRowPreviewSchema,
+  idempotencyKey: z.string().min(1),
+});
+export type SheetsWritePreviewResult = z.infer<typeof SheetsWritePreviewResultSchema>;
+
+export const SheetsWriteCommitResultSchema = z.object({
+  dryRun: z.literal(false),
+  operation: SheetsRowOperationSchema,
+  spreadsheetId: z.string().min(1),
+  table: SheetsTableNameSchema.optional(),
+  updatedRange: z.string().min(1).optional(),
+  updates: z.unknown().optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1),
+});
+export type SheetsWriteCommitResult = z.infer<typeof SheetsWriteCommitResultSchema>;
+
+export const SheetsWorkbookCreateResultSchema = z.object({
+  dryRun: z.boolean(),
+  operation: z.literal("createWorkbook").default("createWorkbook"),
+  spreadsheetId: z.string().min(1).optional(),
+  spreadsheetUrl: z.string().url().optional(),
+  title: z.string().min(1),
+  sheets: z.array(SheetsSupplierWorkbookTableSchema).min(1),
+  headers: z.record(z.array(z.string().min(1))).optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1).optional(),
+});
+export type SheetsWorkbookCreateResult = z.infer<typeof SheetsWorkbookCreateResultSchema>;
+
+export const DocsOperationSchema = z.enum(["createDocument", "appendText", "replacePlaceholders"]);
+export type DocsOperation = z.infer<typeof DocsOperationSchema>;
+
+export const DocsWritePreviewResultSchema = z.object({
+  dryRun: z.literal(true),
+  operation: DocsOperationSchema,
+  target: z
+    .object({
+      documentId: z.string().min(1).optional(),
+      title: z.string().min(1).optional(),
+    })
+    .default({}),
+  preview: z.object({
+    text: z.string().optional(),
+    replacements: z.record(z.string()).optional(),
+    warnings: z.array(z.string()).default([]),
+  }),
+  idempotencyKey: z.string().min(1),
+});
+export type DocsWritePreviewResult = z.infer<typeof DocsWritePreviewResultSchema>;
+
+export const DocsWriteCommitResultSchema = z.object({
+  dryRun: z.literal(false),
+  operation: DocsOperationSchema,
+  documentId: z.string().min(1),
+  documentUrl: z.string().url().optional(),
+  revisionId: z.string().min(1).optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1),
+});
+export type DocsWriteCommitResult = z.infer<typeof DocsWriteCommitResultSchema>;
+
+export const DocsCreateResultSchema = z.object({
+  dryRun: z.boolean(),
+  operation: z.literal("createDocument").default("createDocument"),
+  documentId: z.string().min(1).optional(),
+  title: z.string().min(1),
+  documentUrl: z.string().url().optional(),
+  textPreview: z.string().optional(),
+  idempotencyKey: z.string().min(1),
+  approvalId: z.string().min(1).optional(),
+});
+export type DocsCreateResult = z.infer<typeof DocsCreateResultSchema>;
 
 export const ContactSummarySchema = z.object({
   resourceName: z.string().min(1),
@@ -608,6 +773,8 @@ export const ShellCommandNameSchema = z.enum([
   "gcal",
   "mail",
   "drive",
+  "sheets",
+  "docs",
   "contacts",
 ]);
 export type ShellCommandName = z.infer<typeof ShellCommandNameSchema>;
@@ -849,7 +1016,17 @@ export const AuditRecordSchema = z.object({
 });
 export type AuditRecord = z.infer<typeof AuditRecordSchema>;
 
-export const WorkflowCapabilitySchema = z.enum(["web", "calendar", "mail", "drive", "contacts"]);
+export const WorkflowCapabilitySchema = z.enum([
+  "web",
+  "web.search",
+  "web.fetch",
+  "gmail.search",
+  "calendar",
+  "mail",
+  "drive",
+  "contacts",
+  "tool.workspace.write",
+]);
 export type WorkflowCapability = z.infer<typeof WorkflowCapabilitySchema>;
 
 export const CapabilityKindSchema = z.enum(["model", "skill", "tool", "integration"]);
@@ -942,6 +1119,78 @@ export const CANONICAL_CAPABILITIES = [
     description: "Can read account records.",
     version: 1,
     aliases: ["crm.accounts.read"],
+    deprecated: false,
+  },
+  {
+    id: "integration.web.search",
+    kind: "integration",
+    label: "Web search",
+    description: "Can search the public web.",
+    version: 1,
+    aliases: ["web.search"],
+    deprecated: false,
+  },
+  {
+    id: "integration.web.fetch",
+    kind: "integration",
+    label: "Web fetch",
+    description: "Can fetch a public web page.",
+    version: 1,
+    aliases: ["web.fetch"],
+    deprecated: false,
+  },
+  {
+    id: "integration.mail.messages.read",
+    kind: "integration",
+    label: "Read mail",
+    description: "Can read mail messages.",
+    version: 1,
+    aliases: ["mail.messages.read"],
+    deprecated: false,
+  },
+  {
+    id: "integration.mail.drafts.write",
+    kind: "integration",
+    label: "Draft mail",
+    description: "Can create mail drafts.",
+    version: 1,
+    aliases: ["mail.drafts.write"],
+    deprecated: false,
+  },
+  {
+    id: "integration.drive.files.read",
+    kind: "integration",
+    label: "Read drive files",
+    description: "Can read drive files.",
+    version: 1,
+    aliases: ["drive.files.read"],
+    deprecated: false,
+  },
+  {
+    id: "integration.contacts.read",
+    kind: "integration",
+    label: "Read contacts",
+    description: "Can look up contacts.",
+    version: 1,
+    aliases: ["contacts.read"],
+    deprecated: false,
+  },
+  {
+    id: "integration.sheets.rows.write",
+    kind: "integration",
+    label: "Write sheet rows",
+    description: "Can write rows to a spreadsheet.",
+    version: 1,
+    aliases: ["sheets.rows.write"],
+    deprecated: false,
+  },
+  {
+    id: "integration.docs.documents.write",
+    kind: "integration",
+    label: "Write documents",
+    description: "Can write document content.",
+    version: 1,
+    aliases: ["docs.documents.write"],
     deprecated: false,
   },
 ] as const satisfies readonly CanonicalCapability[];
@@ -1870,6 +2119,132 @@ export type PlaybookGraphToolNode = PlaybookGraphNodeBase & {
   outputArtifact?: string;
 };
 
+export const PlaybookGraphEffectSideEffectSchema = z.enum(["write", "external"]);
+export type PlaybookGraphEffectSideEffect = z.infer<typeof PlaybookGraphEffectSideEffectSchema>;
+
+export const PlaybookGraphEffectApprovalModeSchema = z.enum(["required", "none"]);
+export type PlaybookGraphEffectApprovalMode = z.infer<typeof PlaybookGraphEffectApprovalModeSchema>;
+
+export const PlaybookGraphEffectIdempotencySchema = z.enum(["required", "none"]);
+export type PlaybookGraphEffectIdempotency = z.infer<typeof PlaybookGraphEffectIdempotencySchema>;
+
+export const PlaybookGraphMaterializationFormatSchema = z.enum(["markdown", "json", "csv", "pdf"]);
+export type PlaybookGraphMaterializationFormat = z.infer<
+  typeof PlaybookGraphMaterializationFormatSchema
+>;
+
+export const PlaybookGraphWorkspaceEffectTargetSchema = z
+  .object({
+    kind: z.literal("workspace"),
+    path: PlaybookGraphOutputPathSchema,
+    format: PlaybookGraphMaterializationFormatSchema,
+  })
+  .strict();
+export type PlaybookGraphWorkspaceEffectTarget = z.infer<
+  typeof PlaybookGraphWorkspaceEffectTargetSchema
+>;
+
+export const PlaybookGraphExternalEffectTargetSchema = z
+  .object({
+    kind: z.literal("external"),
+    reference: z.string().min(1),
+    connectorId: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphExternalEffectTarget = z.infer<
+  typeof PlaybookGraphExternalEffectTargetSchema
+>;
+
+export const PlaybookGraphEffectTargetSchema = z.discriminatedUnion("kind", [
+  PlaybookGraphWorkspaceEffectTargetSchema,
+  PlaybookGraphExternalEffectTargetSchema,
+]);
+export type PlaybookGraphEffectTarget = z.infer<typeof PlaybookGraphEffectTargetSchema>;
+
+export const PlaybookGraphWorkspaceEffectOutputSchema = z
+  .object({
+    kind: z.literal("workspace"),
+    path: PlaybookGraphOutputPathSchema,
+    format: PlaybookGraphMaterializationFormatSchema,
+    bytes: z.number().int().nonnegative().optional(),
+    contentHash: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphWorkspaceEffectOutput = z.infer<
+  typeof PlaybookGraphWorkspaceEffectOutputSchema
+>;
+
+export const PlaybookGraphExternalEffectOutputSchema = z
+  .object({
+    kind: z.literal("external"),
+    reference: z.string().min(1),
+    connectorId: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+  })
+  .strict();
+export type PlaybookGraphExternalEffectOutput = z.infer<
+  typeof PlaybookGraphExternalEffectOutputSchema
+>;
+
+export const PlaybookGraphEffectOutputSchema = z.discriminatedUnion("kind", [
+  PlaybookGraphWorkspaceEffectOutputSchema,
+  PlaybookGraphExternalEffectOutputSchema,
+]);
+export type PlaybookGraphEffectOutput = z.infer<typeof PlaybookGraphEffectOutputSchema>;
+
+export const PlaybookGraphEffectInputSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  const format = value.format;
+  if (format !== undefined && !PlaybookGraphMaterializationFormatSchema.safeParse(format).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["format"],
+      message: "Effect materialization format must be markdown, json, csv, or pdf",
+    });
+  }
+
+  const path = value.path;
+  if (path !== undefined && !PlaybookGraphOutputPathSchema.safeParse(path).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["path"],
+      message: "Effect materialization path must be package-relative",
+    });
+  }
+
+  const target = value.target;
+  if (target !== undefined && !PlaybookGraphEffectTargetSchema.safeParse(target).success) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["target"],
+      message:
+        "Effect materialization target must be a workspace target or external output reference",
+    });
+  }
+});
+export type PlaybookGraphEffectInput = z.infer<typeof PlaybookGraphEffectInputSchema>;
+
+export type PlaybookGraphEffectPreview = {
+  schemaVersion: 1;
+  title: string;
+  summary: string;
+  payload?: Record<string, unknown>;
+};
+
+export type PlaybookGraphEffectNode = PlaybookGraphNodeBase & {
+  kind: "effect";
+  effectId: string;
+  capability: string;
+  adapterId: string;
+  sideEffect: PlaybookGraphEffectSideEffect;
+  approval: PlaybookGraphEffectApprovalMode;
+  idempotency: PlaybookGraphEffectIdempotency;
+  idempotencyKey?: string;
+  input: PlaybookGraphEffectInput;
+  preview?: PlaybookGraphEffectPreview;
+  outputArtifact?: string;
+};
+
 export type PlaybookGraphHumanReviewNode = PlaybookGraphNodeBase & {
   kind: "humanReview";
   artifact: string;
@@ -1921,6 +2296,7 @@ export type PlaybookGraphNode =
   | PlaybookGraphJoinNode
   | PlaybookGraphScriptNode
   | PlaybookGraphToolNode
+  | PlaybookGraphEffectNode
   | PlaybookGraphHumanReviewNode
   | PlaybookGraphParallelMapNode
   | PlaybookGraphAgentNode
@@ -1987,6 +2363,30 @@ const PlaybookGraphToolNodeSchema = PlaybookGraphNodeBaseSchema.extend({
   outputArtifact: z.string().min(1).optional(),
 }).strict();
 
+export const PlaybookGraphEffectPreviewSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    title: z.string().min(1),
+    summary: z.string().min(1),
+    payload: z.record(z.unknown()).optional(),
+  })
+  .strict();
+export type EffectPreview = z.infer<typeof PlaybookGraphEffectPreviewSchema>;
+
+const PlaybookGraphEffectNodeSchema = PlaybookGraphNodeBaseSchema.extend({
+  kind: z.literal("effect"),
+  effectId: z.string().min(1),
+  capability: z.string().min(1),
+  adapterId: z.string().min(1),
+  sideEffect: PlaybookGraphEffectSideEffectSchema,
+  approval: PlaybookGraphEffectApprovalModeSchema.default("required"),
+  idempotency: PlaybookGraphEffectIdempotencySchema.default("required"),
+  idempotencyKey: z.string().min(1).optional(),
+  input: PlaybookGraphEffectInputSchema.default({}),
+  preview: PlaybookGraphEffectPreviewSchema.optional(),
+  outputArtifact: z.string().min(1).optional(),
+}).strict();
+
 const PlaybookGraphHumanReviewActionSchema = z
   .object({
     id: PlaybookGraphNodeIdSchema,
@@ -2042,6 +2442,7 @@ export const PlaybookGraphNodeSchema = z.lazy(() =>
     PlaybookGraphJoinNodeSchema,
     PlaybookGraphScriptNodeSchema,
     PlaybookGraphToolNodeSchema,
+    PlaybookGraphEffectNodeSchema,
     PlaybookGraphHumanReviewNodeSchema,
     PlaybookGraphParallelMapNodeSchema,
     PlaybookGraphAgentNodeSchema,
@@ -2408,6 +2809,7 @@ export const PlaybookGraphQueueEntrySchema = z
       "join",
       "script",
       "tool",
+      "effect",
       "humanReview",
       "parallelMap",
       "agent",
@@ -2485,6 +2887,45 @@ export const PlaybookGraphReviewEventSchema = z
   })
   .strict();
 export type PlaybookGraphReviewEvent = z.infer<typeof PlaybookGraphReviewEventSchema>;
+
+export const EffectExecutionStatusSchema = z.enum([
+  "previewed",
+  "approved",
+  "denied",
+  "commit_requested",
+  "committed",
+  "replayed",
+  "failed",
+  "skipped",
+]);
+export type EffectExecutionStatus = z.infer<typeof EffectExecutionStatusSchema>;
+
+export const EffectExecutionRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    effectExecutionRecordId: z.string().min(1),
+    runId: z.string().min(1),
+    queueEntryId: z.string().min(1),
+    nodeId: z.string().min(1),
+    nodePath: PlaybookGraphNodePathSchema,
+    effectId: z.string().min(1),
+    capability: z.string().min(1),
+    adapterId: z.string().min(1),
+    sideEffect: PlaybookGraphEffectSideEffectSchema,
+    status: EffectExecutionStatusSchema,
+    idempotencyKey: z.string().min(1).optional(),
+    preview: PlaybookGraphEffectPreviewSchema.optional(),
+    reviewerDecision: z.enum(["approved", "denied"]).optional(),
+    commitStatus: z.enum(["not_attempted", "committed", "replayed", "failed"]).optional(),
+    outputArtifactId: z.string().min(1).optional(),
+    outputReference: z.string().min(1).optional(),
+    output: PlaybookGraphEffectOutputSchema.optional(),
+    error: z.string().min(1).optional(),
+    createdAt: z.string().datetime(),
+    completedAt: z.string().datetime().optional(),
+  })
+  .strict();
+export type EffectExecutionRecord = z.infer<typeof EffectExecutionRecordSchema>;
 
 export const PlaybookGraphOperationKindSchema = z.enum([
   "resume",
@@ -2912,6 +3353,7 @@ export const PlaybookGraphRunDetailSchema = z
     branchItems: z.array(PlaybookGraphBranchItemSchema).default([]),
     artifacts: z.array(PlaybookGraphArtifactVersionSchema).default([]),
     reviews: z.array(PlaybookGraphReviewEventSchema).default([]),
+    effects: z.array(EffectExecutionRecordSchema).default([]),
     operations: z.array(PlaybookGraphOperationRecordSchema).default([]),
   })
   .strict();
@@ -3069,6 +3511,31 @@ export const PlaybookRunDetailSchema = WorkflowRunResultSchema.extend({
 
 export type PlaybookRunDetail = z.infer<typeof PlaybookRunDetailSchema>;
 
+export function workflowStatusFromGraphRunStatus(
+  status: PlaybookGraphRunStatus
+): WorkflowRunStatus {
+  if (status === "completed") return "completed";
+  if (status === "blocked" || status === "interrupted") return "blocked";
+  if (status === "needs_attention") return "needs_attention";
+  if (status === "denied") return "denied";
+  if (status === "failed" || status === "needs_repair") return "failed";
+  return "running";
+}
+
+export function workflowStatusFromGraphRunRecord(run: PlaybookGraphRunRecord): WorkflowRunStatus {
+  if (run.status === "completed" && (run.error || run.repairReason || run.blockedReason)) {
+    return "failed";
+  }
+  return workflowStatusFromGraphRunStatus(run.status);
+}
+
+export function workflowStatusFromGraphRunDetail(
+  detail: PlaybookGraphRunDetail
+): WorkflowRunStatus {
+  if (detail.queue.some((entry) => entry.status === "failed")) return "failed";
+  return workflowStatusFromGraphRunRecord(detail.run);
+}
+
 export const WorkflowRunListResultSchema = z.object({
   runs: z.array(WorkflowRunResultSchema),
 });
@@ -3133,7 +3600,14 @@ export const InboxMessageTypeSchema = z.enum([
 ]);
 export type InboxMessageType = z.infer<typeof InboxMessageTypeSchema>;
 
-export const InboxStatusSchema = z.enum(["open", "snoozed", "resolved", "expired", "cancelled"]);
+export const InboxStatusSchema = z.enum([
+  "open",
+  "snoozed",
+  "resolved",
+  "expired",
+  "cancelled",
+  "consumed",
+]);
 export type InboxStatus = z.infer<typeof InboxStatusSchema>;
 
 export const InboxSeveritySchema = z.enum(["info", "warning", "critical"]);
@@ -3175,6 +3649,7 @@ export const InboxMessageSchema = z.object({
   deadline: z.string().datetime().optional(),
   snoozedUntil: z.string().datetime().optional(),
   resolvedAt: z.string().datetime().optional(),
+  consumedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   audit: z.array(InboxAuditEntrySchema).default([]),

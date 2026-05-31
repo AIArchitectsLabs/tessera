@@ -79,7 +79,7 @@ tessera/
 ## Getting Started
 
 ```bash
-git clone https://github.com/your-org/tessera.git
+git clone https://github.com/AIArchitectsLabs/tessera.git
 cd tessera
 bun install
 bun run dev
@@ -107,15 +107,22 @@ cd docs/public
 bunx mint@4.2.569 dev
 ```
 
+## Beta Packaging
+
+Large optional runtimes are installed on demand instead of bundled by default.
+See [docs/beta-packaging.md](./docs/beta-packaging.md) for the Google Workspace
+and browser automation beta story.
+
 ## Contributing
 
 Tessera is open source and welcomes contributions. Before diving in:
 
-1. Read [CLAUDE.md](./CLAUDE.md) — it covers architecture, package boundaries,
+1. Read [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, workflow, and pull request expectations.
+2. Read [CLAUDE.md](./CLAUDE.md) — it covers architecture, package boundaries,
    security requirements, and coding standards that all contributors (human and AI)
    are expected to follow.
-2. Open an issue before starting large changes so we can discuss the approach.
-3. Run `bun run check` before submitting a pull request.
+3. Open an issue before starting large changes so we can discuss the approach.
+4. Run `bun run check` before submitting a pull request.
 
 ## Security
 
@@ -124,7 +131,7 @@ By default it binds to a Unix domain socket (macOS/Linux) or named pipe (Windows
 with a per-session bearer token — no exposed TCP port, no remote access.
 
 If you discover a security vulnerability, please report it privately via
-[GitHub Security Advisories](https://github.com/your-org/tessera/security/advisories)
+[GitHub Security Advisories](https://github.com/AIArchitectsLabs/tessera/security/advisories)
 rather than opening a public issue.
 
 ## License

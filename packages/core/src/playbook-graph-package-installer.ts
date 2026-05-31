@@ -210,7 +210,7 @@ function extractInstalledGraph(sourceFiles: Record<string, string>): unknown {
 
 function parseComparableVersion(version: string): ComparableVersion | undefined {
   const match =
-    /^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+    /^(?:v)?(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:\.(0|[1-9]\d*))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
       version
     );
   if (!match) {
@@ -220,8 +220,8 @@ function parseComparableVersion(version: string): ComparableVersion | undefined 
   const prerelease = match[4];
   return {
     major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0),
     prerelease:
       prerelease === undefined
         ? []

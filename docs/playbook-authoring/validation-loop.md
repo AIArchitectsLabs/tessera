@@ -58,7 +58,7 @@ Capture this evidence in the relevant plan, package notes, or forward-test artif
 - undeclared artifacts
 - undeclared capabilities
 - agent outputs without schemas
-- artifact writes that cannot materialize final markdown, CSV, or JSON
+- artifact writes that cannot materialize final markdown, CSV, JSON, or PDF
 - review loops that do not return to a sensible downstream step
 - package/runtime version mismatches
 - standalone runner metadata or local executor entrypoints

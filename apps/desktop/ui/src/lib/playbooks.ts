@@ -60,6 +60,14 @@ export function playbookApprovalCopy(
     };
   }
 
+  if (run.approval?.reasonCode === "graph_repair") {
+    return {
+      prepared: run.approval.preview ?? "Tessera needs to repair this run before it can continue.",
+      approve:
+        "Tessera will repair the saved run state and continue from the pinned playbook snapshot.",
+    };
+  }
+
   if (playbook?.id === "sales.meeting-brief" && run.approval?.toolId === "workspace.writeProbe") {
     const company = inputValue(run, "company");
     const stakeholder = inputValue(run, "stakeholder");

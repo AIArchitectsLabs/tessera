@@ -34,8 +34,6 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
       { subcommand: "delete", approval: "ask", help: "Delete an event." },
     ],
   },
-  // Additional Google Workspace writes require a separate write-scope auth profile,
-  // dry-run previews, and Action Inbox approval before they are exposed here.
   {
     command: "mail",
     help: "Read and draft email.",
@@ -43,7 +41,8 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
       { subcommand: "list", approval: "allow", help: "List recent mail." },
       { subcommand: "read", approval: "allow", help: "Read one message." },
       { subcommand: "search", approval: "allow", help: "Search mail." },
-      { subcommand: "draft", approval: "ask", help: "Draft a reply." },
+      { subcommand: "draft", approval: "ask", help: "Create a Gmail draft." },
+      { subcommand: "send-draft", approval: "ask", help: "Send an existing Gmail draft." },
     ],
   },
   {
@@ -52,6 +51,53 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
     subcommands: [
       { subcommand: "search", approval: "allow", help: "Search drive files." },
       { subcommand: "read", approval: "allow", help: "Read a drive file." },
+    ],
+  },
+  {
+    command: "sheets",
+    help: "Preview and request approved Google Sheets workbook and row writes.",
+    subcommands: [
+      {
+        subcommand: "rows.upsert",
+        approval: "ask",
+        help: "Preview or execute an approved row upsert.",
+      },
+      {
+        subcommand: "rows.append",
+        approval: "ask",
+        help: "Preview or execute an approved idempotent row append.",
+      },
+      {
+        subcommand: "rows.updateStatus",
+        approval: "ask",
+        help: "Preview or execute an approved status update.",
+      },
+      {
+        subcommand: "workbook.create",
+        approval: "ask",
+        help: "Preview or execute an approved supplier workbook creation.",
+      },
+    ],
+  },
+  {
+    command: "docs",
+    help: "Preview and request approved Google Docs document writes.",
+    subcommands: [
+      {
+        subcommand: "documents.create",
+        approval: "ask",
+        help: "Preview or execute an approved document creation.",
+      },
+      {
+        subcommand: "documents.appendText",
+        approval: "ask",
+        help: "Preview or execute an approved text append.",
+      },
+      {
+        subcommand: "documents.replacePlaceholders",
+        approval: "ask",
+        help: "Preview or execute approved placeholder replacement.",
+      },
     ],
   },
   {

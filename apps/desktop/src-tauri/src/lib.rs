@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -24,7 +24,17 @@ const GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV: &str = "TESSERA_GOOGLE_WORKSPACE
 const GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE_ENV: &str = "TESSERA_GOOGLE_WORKSPACE_OAUTH_CLIENT_FILE";
 const GOOGLE_WORKSPACE_BUNDLED_OAUTH_CLIENT_FILE: &str = "google-workspace-oauth-client.json";
 const GOOGLE_WORKSPACE_GWS_CLIENT_SECRET_FILE: &str = "client_secret.json";
-const GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID: &str = "tessera";
+const GOOGLE_WORKSPACE_AUTH_SCOPES: &str = concat!(
+    "https://www.googleapis.com/auth/calendar.readonly,",
+    "https://www.googleapis.com/auth/gmail.readonly,",
+    "https://www.googleapis.com/auth/gmail.compose,",
+    "https://www.googleapis.com/auth/drive.readonly,",
+    "https://www.googleapis.com/auth/drive.file,",
+    "https://www.googleapis.com/auth/contacts.readonly,",
+    "https://www.googleapis.com/auth/documents.readonly,",
+    "https://www.googleapis.com/auth/documents,",
+    "https://www.googleapis.com/auth/spreadsheets"
+);
 const GWS_CLI_URL_ENV: &str = "TESSERA_GWS_CLI_URL";
 const GWS_CLI_SHA256_ENV: &str = "TESSERA_GWS_CLI_SHA256";
 const GWS_CLI_VERSION_ENV: &str = "TESSERA_GWS_CLI_VERSION";
@@ -47,6 +57,20 @@ const PYTHON_RUNNER_VERSION_ENV: &str = "TESSERA_PYTHON_RUNNER_VERSION";
 const PYTHON_RUNNER_SIZE_BYTES_ENV: &str = "TESSERA_PYTHON_RUNNER_SIZE_BYTES";
 const PYTHON_RUNNER_ARCHIVE_KIND_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_KIND";
 const PYTHON_RUNNER_ARCHIVE_ENTRY_ENV: &str = "TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY";
+const BROWSER_RUNTIME_URL_ENV: &str = "TESSERA_BROWSER_RUNTIME_URL";
+const BROWSER_RUNTIME_SHA256_ENV: &str = "TESSERA_BROWSER_RUNTIME_SHA256";
+const BROWSER_RUNTIME_VERSION_ENV: &str = "TESSERA_BROWSER_RUNTIME_VERSION";
+const BROWSER_RUNTIME_SIZE_BYTES_ENV: &str = "TESSERA_BROWSER_RUNTIME_SIZE_BYTES";
+const BROWSER_RUNTIME_ARCHIVE_KIND_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND";
+const BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY";
+const BROWSER_RUNTIME_ARCHIVE_ROOT_ENV: &str = "TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT";
+const TESSERA_GRAPH_RUN_WORKER_ENV: &str = "TESSERA_GRAPH_RUN_WORKER";
+
+static GOOGLE_WORKSPACE_CLI_PATH_CACHE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn path_env_value(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
@@ -153,7 +177,9 @@ impl SidecarHandle {
                     .context("Could not connect to sidecar Unix socket")?;
                 stream.write_all(header.as_bytes()).await?;
                 stream.write_all(body.as_bytes()).await?;
-                stream.read_to_end(&mut buf).await?;
+                stream.flush().await?;
+                let mut reader = BufReader::new(stream);
+                read_sidecar_http_response(&mut reader, &mut buf).await?;
             }
             SidecarTransport::Tcp(port) => {
                 let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", *port))
@@ -161,7 +187,9 @@ impl SidecarHandle {
                     .context("Could not connect to sidecar TCP socket")?;
                 stream.write_all(header.as_bytes()).await?;
                 stream.write_all(body.as_bytes()).await?;
-                stream.read_to_end(&mut buf).await?;
+                stream.flush().await?;
+                let mut reader = BufReader::new(stream);
+                read_sidecar_http_response(&mut reader, &mut buf).await?;
             }
         }
 
@@ -230,6 +258,118 @@ impl SidecarHandle {
         let mut sse = SseStream { reader };
         sse.skip_headers().await?;
         Ok(sse)
+    }
+}
+
+async fn read_sidecar_http_response<R>(reader: &mut R, buf: &mut Vec<u8>) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut headers = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).await?;
+        if read == 0 {
+            bail!("Sidecar closed the connection before sending response headers");
+        }
+        headers.extend_from_slice(&line);
+        if headers.ends_with(b"\r\n\r\n") || headers.ends_with(b"\n\n") {
+            break;
+        }
+        if headers.len() > 64 * 1024 {
+            bail!("Sidecar response headers are too large");
+        }
+    }
+
+    let header_text =
+        std::str::from_utf8(&headers).context("Sidecar response headers are not valid UTF-8")?;
+    buf.extend_from_slice(&headers);
+
+    if sidecar_response_is_chunked(header_text) {
+        read_chunked_sidecar_body(reader, buf).await?;
+        return Ok(());
+    }
+
+    let content_length = sidecar_response_content_length(header_text)?
+        .ok_or_else(|| anyhow!("Sidecar response missing Content-Length header"))?;
+    let mut body = vec![0; content_length];
+    reader.read_exact(&mut body).await?;
+    buf.extend_from_slice(&body);
+    Ok(())
+}
+
+fn sidecar_response_content_length(headers: &str) -> anyhow::Result<Option<usize>> {
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let trimmed = value.trim();
+            return trimmed
+                .parse::<usize>()
+                .map(Some)
+                .with_context(|| format!("Invalid Sidecar Content-Length header: {trimmed}"));
+        }
+    }
+    Ok(None)
+}
+
+fn sidecar_response_is_chunked(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        name.trim().eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+    })
+}
+
+async fn read_chunked_sidecar_body<R>(reader: &mut R, buf: &mut Vec<u8>) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).await?;
+        if read == 0 {
+            bail!("Sidecar closed the connection during chunked response");
+        }
+
+        let chunk_header = std::str::from_utf8(&line)
+            .context("Sidecar chunk header is not valid UTF-8")?
+            .trim();
+        let size_text = chunk_header
+            .split(';')
+            .next()
+            .unwrap_or(chunk_header)
+            .trim();
+        let chunk_size = usize::from_str_radix(size_text, 16)
+            .with_context(|| format!("Invalid Sidecar chunk size: {size_text}"))?;
+        if chunk_size == 0 {
+            loop {
+                line.clear();
+                let read = reader.read_until(b'\n', &mut line).await?;
+                if read == 0 {
+                    bail!("Sidecar closed the connection before chunked trailers ended");
+                }
+                if line == b"\r\n" || line == b"\n" {
+                    return Ok(());
+                }
+            }
+        }
+
+        let mut chunk = vec![0; chunk_size];
+        reader.read_exact(&mut chunk).await?;
+        buf.extend_from_slice(&chunk);
+        let mut chunk_ending = [0; 2];
+        reader.read_exact(&mut chunk_ending).await?;
+        if chunk_ending != *b"\r\n" {
+            bail!("Invalid Sidecar chunk ending");
+        }
     }
 }
 
@@ -340,13 +480,28 @@ async fn google_workspace_cli_path(
     app: &AppHandle,
     state: &SidecarHandle,
 ) -> Result<PathBuf, String> {
+    if let Some(path) = GOOGLE_WORKSPACE_CLI_PATH_CACHE
+        .lock()
+        .ok()
+        .and_then(|cached| cached.clone())
+        .filter(|path| path.exists())
+    {
+        return Ok(path);
+    }
+
     let bundled = bundled_gws_path(app).map_err(|error| error.to_string())?;
-    resolve_google_workspace_cli_path(
+    let path = resolve_google_workspace_cli_path(
         Some(&bundled),
         || async { managed_capability_binary_path(state, "google-workspace-cli", "gws").await },
         || async { managed_capability_binary_install(state, "google-workspace-cli", "gws").await },
     )
-    .await
+    .await?;
+    if path.is_absolute() {
+        if let Ok(mut cached) = GOOGLE_WORKSPACE_CLI_PATH_CACHE.lock() {
+            *cached = Some(path.clone());
+        }
+    }
+    Ok(path)
 }
 
 async fn resolve_google_workspace_cli_path<S, I, SFut, IFut>(
@@ -360,14 +515,14 @@ where
     I: FnOnce() -> IFut,
     IFut: Future<Output = anyhow::Result<CapabilityBinaryResult>>,
 {
-    if let Ok(Some(path)) = sidecar_get().await {
-        return Ok(path);
-    }
-
     if let Some(bundled) = bundled {
         if bundled.exists() {
             return Ok(bundled.to_path_buf());
         }
+    }
+
+    if let Ok(Some(path)) = sidecar_get().await {
+        return Ok(path);
     }
 
     if let Some(path) = sidecar_install()
@@ -485,15 +640,17 @@ fn normalize_google_workspace_oauth_client_file(path: &Path) -> anyhow::Result<(
     else {
         return Ok(());
     };
-    if installed.contains_key("project_id") && !had_bom {
+    // Tessera never sets a project id. A `project_id` here is routed by gws as the
+    // `x-goog-user-project` quota project, which gates every call behind `serviceUsageConsumer` on
+    // that project; without it, calls attribute to the OAuth client's own project, which is what we
+    // want. Strip any value (including the legacy "tessera" placeholder) so existing installs heal.
+    let removed_project_id = installed.remove("project_id").is_some();
+
+    // The file is already clean (no project id, no BOM): nothing to rewrite.
+    if !removed_project_id && !had_bom {
         return Ok(());
     }
 
-    installed
-        .entry("project_id".to_string())
-        .or_insert_with(|| {
-            serde_json::Value::String(GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID.to_string())
-        });
     let mut bytes = serde_json::to_vec_pretty(&value)?;
     bytes.push(b'\n');
     fs::write(path, bytes).with_context(|| format!("Could not update {}", path.display()))?;
@@ -566,6 +723,7 @@ fn apply_google_workspace_env(
         "GOOGLE_WORKSPACE_CLI_CONFIG_DIR",
         config_dir.to_string_lossy().as_ref(),
     );
+    command.env("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file");
     if let Some(client_id) = google_workspace_oauth_client_id() {
         command.env("GOOGLE_WORKSPACE_CLI_CLIENT_ID", client_id);
         if let Some(client_secret) = google_workspace_oauth_client_secret() {
@@ -584,11 +742,13 @@ fn workspace_cli_uses_google_workspace(args: &[&str]) -> bool {
         args.first().copied(),
         Some("calendar")
             | Some("contacts")
+            | Some("docs")
             | Some("drive")
             | Some("gcal")
             | Some("gmail")
             | Some("mail")
             | Some("people")
+            | Some("sheets")
     )
 }
 
@@ -660,12 +820,65 @@ fn google_authenticated_user_from_outputs(
 fn google_workspace_auth_status_connected(result: &SpawnResult) -> bool {
     json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
         .and_then(|value| {
-            value
+            let auth_method_connected = value
                 .get("auth_method")
                 .and_then(|auth_method| auth_method.as_str())
                 .map(|auth_method| auth_method != "none")
+                .unwrap_or(false);
+            if !auth_method_connected {
+                return Some(false);
+            }
+            if value
+                .get("credentials_readable")
+                .and_then(|readable| readable.as_bool())
+                == Some(false)
+            {
+                return Some(false);
+            }
+            if value
+                .get("encryption_valid")
+                .and_then(|valid| valid.as_bool())
+                == Some(false)
+            {
+                return Some(false);
+            }
+            if value.get("encryption_error").is_some() {
+                return Some(false);
+            }
+            Some(true)
         })
         .unwrap_or(false)
+}
+
+fn google_workspace_auth_status_message(result: &SpawnResult) -> String {
+    if let Some(value) =
+        json_object_from_process_output(&format!("{}\n{}", result.stderr, result.stdout))
+    {
+        if value.get("encryption_error").is_some()
+            || value
+                .get("credentials_readable")
+                .and_then(|readable| readable.as_bool())
+                == Some(false)
+            || value
+                .get("encryption_valid")
+                .and_then(|valid| valid.as_bool())
+                == Some(false)
+        {
+            return "Google Workspace credentials could not be read. Disconnect and reconnect Google Workspace.".to_string();
+        }
+        if value
+            .get("auth_method")
+            .and_then(|auth_method| auth_method.as_str())
+            .is_some_and(|auth_method| auth_method == "none")
+        {
+            return "Waiting for Google sign-in to finish.".to_string();
+        }
+        if value.get("token_error").is_some() {
+            return "Google Workspace token could not be refreshed. Disconnect and reconnect Google Workspace.".to_string();
+        }
+    }
+
+    google_workspace_process_message(result)
 }
 
 fn google_workspace_process_message(result: &SpawnResult) -> String {
@@ -713,7 +926,7 @@ fn extract_google_oauth_url(output: &str) -> Option<String> {
     })
 }
 
-fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 22] {
+fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 29] {
     [
         (GWS_CLI_URL_ENV, option_env!("TESSERA_GWS_CLI_URL")),
         (GWS_CLI_SHA256_ENV, option_env!("TESSERA_GWS_CLI_SHA256")),
@@ -790,6 +1003,34 @@ fn optional_capability_env_sources() -> [(&'static str, Option<&'static str>); 2
         (
             PYTHON_RUNNER_ARCHIVE_ENTRY_ENV,
             option_env!("TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY"),
+        ),
+        (
+            BROWSER_RUNTIME_URL_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_URL"),
+        ),
+        (
+            BROWSER_RUNTIME_SHA256_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_SHA256"),
+        ),
+        (
+            BROWSER_RUNTIME_VERSION_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_VERSION"),
+        ),
+        (
+            BROWSER_RUNTIME_SIZE_BYTES_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_SIZE_BYTES"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_KIND_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_ENTRY_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY"),
+        ),
+        (
+            BROWSER_RUNTIME_ARCHIVE_ROOT_ENV,
+            option_env!("TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT"),
         ),
     ]
 }
@@ -1178,6 +1419,36 @@ async fn attach_default_workflow_execution(
     Ok(request)
 }
 
+fn sidecar_base_env(
+    cli_path: &Path,
+    workflow_db_path: &Path,
+    task_db_path: &Path,
+    app_config_dir: &Path,
+    google_workspace_config_dir: &Path,
+    curated_skills_dir: &Path,
+    bin_dir: &Path,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("TESSERA_CLI_PATH", path_env_value(cli_path)),
+        ("TESSERA_WORKFLOW_DB_PATH", path_env_value(workflow_db_path)),
+        ("TESSERA_TASK_DB_PATH", path_env_value(task_db_path)),
+        ("TESSERA_APP_CONFIG_DIR", path_env_value(app_config_dir)),
+        (
+            "TESSERA_GWS_CONFIG_DIR",
+            path_env_value(google_workspace_config_dir),
+        ),
+        ("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file".to_string()),
+        (
+            "TESSERA_CURATED_SKILLS_DIR",
+            path_env_value(curated_skills_dir),
+        ),
+        (TESSERA_GRAPH_RUN_WORKER_ENV, "1".to_string()),
+        // pi-coding-agent resolves package assets at module init. Point it at the
+        // Tauri binaries/resource dir where packaging keeps package.json.
+        ("PI_PACKAGE_DIR", path_env_value(bin_dir)),
+    ]
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1204,32 +1475,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut sidecar_command = app
         .shell()
         .sidecar("tessera-sidecar")
-        .context("Could not create sidecar command")?
-        .env("TESSERA_CLI_PATH", cli_path.to_string_lossy().as_ref())
-        .env(
-            "TESSERA_WORKFLOW_DB_PATH",
-            workflow_db_path.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_TASK_DB_PATH",
-            task_db_path.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_APP_CONFIG_DIR",
-            app_config_dir.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_GWS_CONFIG_DIR",
-            google_workspace_config_dir.to_string_lossy().as_ref(),
-        )
-        .env(
-            "TESSERA_CURATED_SKILLS_DIR",
-            curated_skills_dir.to_string_lossy().as_ref(),
-        )
-        .env("TESSERA_GRAPH_RUN_WORKER", "1")
-        // pi-coding-agent resolves package assets at module init. Point it at the
-        // Tauri binaries/resource dir where packaging keeps package.json.
-        .env("PI_PACKAGE_DIR", bin_dir.to_string_lossy().as_ref());
+        .context("Could not create sidecar command")?;
+
+    for (name, value) in sidecar_base_env(
+        &cli_path,
+        &workflow_db_path,
+        &task_db_path,
+        &app_config_dir,
+        &google_workspace_config_dir,
+        &curated_skills_dir,
+        &bin_dir,
+    ) {
+        sidecar_command = sidecar_command.env(name, value);
+    }
 
     for (name, build_value) in optional_capability_env_sources() {
         if let Some(value) = runtime_or_build_env(name, build_value) {
@@ -1337,6 +1595,14 @@ struct GoogleWorkspaceOAuthClientStatus {
 struct GoogleWorkspaceOAuthClientSaveRequest {
     client_id: String,
     client_secret: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceDirEntry {
+    name: String,
+    relative_path: String,
+    is_directory: bool,
 }
 
 #[tauri::command]
@@ -1564,14 +1830,8 @@ async fn google_workspace_auth_status(
     run_google_workspace_cli_command(app, state, &["auth", "status"]).await
 }
 
-fn google_workspace_readonly_auth_args() -> Vec<&'static str> {
-    vec![
-        "auth",
-        "login",
-        "--readonly",
-        "--services",
-        "calendar,gmail,drive,people,docs,sheets",
-    ]
+fn google_workspace_auth_args() -> Vec<&'static str> {
+    vec!["auth", "login", "--scopes", GOOGLE_WORKSPACE_AUTH_SCOPES]
 }
 
 fn google_identity_auth_args() -> Vec<&'static str> {
@@ -1582,7 +1842,6 @@ fn google_workspace_oauth_client_json(client_id: &str, client_secret: &str) -> s
     serde_json::json!({
         "installed": {
             "client_id": client_id,
-            "project_id": GOOGLE_WORKSPACE_DEFAULT_PROJECT_ID,
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
@@ -1674,6 +1933,24 @@ async fn google_workspace_capability_install(
     state: tauri::State<'_, SidecarHandle>,
 ) -> Result<CapabilityBinaryResult, String> {
     managed_capability_binary_install(state.inner(), "google-workspace-cli", "gws")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn browser_runtime_capability_status(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_status(state.inner(), "browser-runtime", "chromium")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn browser_runtime_capability_install(
+    state: tauri::State<'_, SidecarHandle>,
+) -> Result<CapabilityBinaryResult, String> {
+    managed_capability_binary_install(state.inner(), "browser-runtime", "chromium")
         .await
         .map_err(|error| error.to_string())
 }
@@ -1790,22 +2067,56 @@ async fn playbook_run_preference_save(
 }
 
 #[tauri::command]
-async fn playbook_import(
+async fn playbook_preflight(
     state: State<'_, SidecarHandle>,
-    zip_path: String,
+    playbook_id: String,
+    request: serde_json::Value,
     user_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let mut params = Vec::new();
+    push_user_key_param(&mut params, user_key.as_deref())?;
+    let path = path_with_params(
+        format!("/playbooks/{}/preflight", percent_encode(&playbook_id)),
+        params,
+    );
+    let json = state
+        .post(&path, &request.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn playbook_import(
+    state: State<'_, SidecarHandle>,
+    zip_path: Option<String>,
+    source_path: Option<String>,
+    user_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let zip_path = zip_path.unwrap_or_default();
     let zip_path = zip_path.trim();
-    if zip_path.is_empty() {
-        return Err("zip_path is required".to_string());
+    let source_path = source_path.unwrap_or_default();
+    let source_path = source_path.trim();
+    if zip_path.is_empty() && source_path.is_empty() {
+        return Err("zip_path or source_path is required".to_string());
     }
-    if !std::path::Path::new(zip_path).is_absolute() {
+    if !zip_path.is_empty() && !source_path.is_empty() {
+        return Err("Provide either zip_path or source_path, not both".to_string());
+    }
+    if !zip_path.is_empty() && !std::path::Path::new(zip_path).is_absolute() {
         return Err("zip_path must be an absolute path".to_string());
+    }
+    if !source_path.is_empty() && !std::path::Path::new(source_path).is_absolute() {
+        return Err("source_path must be an absolute path".to_string());
     }
     let mut params = Vec::new();
     push_user_key_param(&mut params, user_key.as_deref())?;
     let path = path_with_params("/graph-playbooks/import".to_string(), params);
-    let body = serde_json::json!({ "zipPath": zip_path });
+    let body = if zip_path.is_empty() {
+        serde_json::json!({ "sourceRoot": source_path })
+    } else {
+        serde_json::json!({ "zipPath": zip_path })
+    };
     let json = state
         .post(&path, &body.to_string())
         .await
@@ -2527,7 +2838,7 @@ async fn integration_connection_test(
                         .map_err(|error| error.to_string())?;
                         return Ok(integration_settings::IntegrationConnectionTestResult {
                             ok: false,
-                            message: first_useful_process_line(&status),
+                            message: google_workspace_auth_status_message(&status),
                             provider: Some(provider),
                             search_provider: None,
                             user: None,
@@ -2594,6 +2905,8 @@ async fn integration_connection_test(
     let ok = result.exit_code == 0;
     let message = if ok {
         "Connection test succeeded".to_string()
+    } else if provider == Some(integration_settings::IntegrationProvider::GoogleWorkspace) {
+        google_workspace_process_message(&result)
     } else {
         result
             .stderr
@@ -2628,6 +2941,9 @@ async fn google_workspace_connection_status(
     if ok {
         integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
+    } else {
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, false)
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2635,7 +2951,7 @@ async fn google_workspace_connection_status(
         message: if ok {
             "Google Workspace connected.".to_string()
         } else {
-            "Waiting for Google sign-in to finish.".to_string()
+            google_workspace_auth_status_message(&status)
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
@@ -2668,12 +2984,9 @@ async fn google_workspace_connect(
         });
     }
 
-    let login = start_google_workspace_login_command(
-        &app,
-        state.inner(),
-        &google_workspace_readonly_auth_args(),
-    )
-    .await?;
+    let login =
+        start_google_workspace_login_command(&app, state.inner(), &google_workspace_auth_args())
+            .await?;
     if login.exit_code == 124 {
         return Ok(integration_settings::IntegrationConnectionTestResult {
             ok: false,
@@ -2698,6 +3011,9 @@ async fn google_workspace_connect(
     if ok {
         integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, true)
             .map_err(|error| error.to_string())?;
+    } else {
+        integration_settings::set_google_workspace_connected_for_user(&app, scoped_user_key, false)
+            .map_err(|error| error.to_string())?;
     }
 
     Ok(integration_settings::IntegrationConnectionTestResult {
@@ -2705,7 +3021,7 @@ async fn google_workspace_connect(
         message: if ok {
             "Google Workspace connected.".to_string()
         } else {
-            first_useful_process_line(&status)
+            google_workspace_auth_status_message(&status)
         },
         provider: Some(integration_settings::IntegrationProvider::GoogleWorkspace),
         search_provider: None,
@@ -2734,7 +3050,7 @@ async fn google_identity_connection_status(
         message: if ok {
             "Google sign-in complete.".to_string()
         } else {
-            "Waiting for Google sign-in to finish.".to_string()
+            google_workspace_auth_status_message(&status)
         },
         provider: None,
         search_provider: None,
@@ -2800,7 +3116,7 @@ async fn google_identity_connect(
         message: if ok {
             "Google sign-in complete.".to_string()
         } else {
-            first_useful_process_line(&status)
+            google_workspace_auth_status_message(&status)
         },
         provider: None,
         search_provider: None,
@@ -2828,7 +3144,25 @@ async fn google_workspace_health(
     app: AppHandle,
     state: State<'_, SidecarHandle>,
 ) -> Result<Vec<GoogleWorkspaceServiceHealth>, String> {
-    let checks: [(&str, Vec<&str>); 4] = [
+    let checks = google_workspace_health_checks();
+    let mut results = Vec::with_capacity(checks.len());
+
+    for (service, args, not_found_is_ok) in checks {
+        let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
+        let ok = google_workspace_health_ok(&result, not_found_is_ok);
+        let message = google_workspace_health_message(&result, not_found_is_ok);
+        results.push(GoogleWorkspaceServiceHealth {
+            service: service.to_string(),
+            ok,
+            message,
+        });
+    }
+
+    Ok(results)
+}
+
+fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool); 6] {
+    [
         (
             "Calendar",
             vec![
@@ -2838,6 +3172,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"maxResults\":1}",
             ],
+            false,
         ),
         (
             "Gmail",
@@ -2849,6 +3184,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"userId\":\"me\",\"maxResults\":1}",
             ],
+            false,
         ),
         (
             "Drive",
@@ -2859,6 +3195,7 @@ async fn google_workspace_health(
                 "--params",
                 "{\"pageSize\":1,\"fields\":\"files(id,name,mimeType)\"}",
             ],
+            false,
         ),
         (
             "Contacts",
@@ -2868,48 +3205,51 @@ async fn google_workspace_health(
                 "connections",
                 "list",
                 "--params",
-                "{\"resourceName\":\"people/me\",\"pageSize\":1}",
+                "{\"resourceName\":\"people/me\",\"pageSize\":1,\"personFields\":\"names,emailAddresses\"}",
             ],
+            false,
         ),
-    ];
-    let mut results = Vec::with_capacity(6);
-    let mut drive_ok = false;
+        (
+            "Docs",
+            vec![
+                "docs",
+                "documents",
+                "get",
+                "--params",
+                "{\"documentId\":\"tessera-health-check-nonexistent\"}",
+            ],
+            true,
+        ),
+        (
+            "Sheets",
+            vec![
+                "sheets",
+                "spreadsheets",
+                "get",
+                "--params",
+                "{\"spreadsheetId\":\"tessera-health-check-nonexistent\"}",
+            ],
+            true,
+        ),
+    ]
+}
 
-    for (service, args) in checks {
-        let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
-        let ok = result.exit_code == 0;
-        let message = if ok {
-            "Ready".to_string()
-        } else {
-            google_workspace_process_message(&result)
-        };
-        if service == "Drive" {
-            drive_ok = ok;
-        }
-        results.push(GoogleWorkspaceServiceHealth {
-            service: service.to_string(),
-            ok,
-            message,
-        });
+fn google_workspace_health_ok(result: &SpawnResult, not_found_is_ok: bool) -> bool {
+    result.exit_code == 0
+        || (not_found_is_ok
+            && google_workspace_process_message(result).contains("Requested entity was not found"))
+}
+
+fn google_workspace_health_message(result: &SpawnResult, not_found_is_ok: bool) -> String {
+    if result.exit_code == 0 {
+        return "Ready".to_string();
     }
 
-    let drive_message = if drive_ok {
-        "Ready through Drive file access.".to_string()
-    } else {
-        "Docs and Sheets use Drive file access. Fix Drive first, then test again.".to_string()
-    };
-    results.push(GoogleWorkspaceServiceHealth {
-        service: "Docs".to_string(),
-        ok: drive_ok,
-        message: drive_message.clone(),
-    });
-    results.push(GoogleWorkspaceServiceHealth {
-        service: "Sheets".to_string(),
-        ok: drive_ok,
-        message: drive_message,
-    });
-
-    Ok(results)
+    let message = google_workspace_process_message(result);
+    if not_found_is_ok && message.contains("Requested entity was not found") {
+        return "Ready".to_string();
+    }
+    message
 }
 
 fn search_connection_command(
@@ -3009,28 +3349,151 @@ async fn task_unsubscribe(
     Ok(())
 }
 
+fn canonical_workspace_root(workspace_root: &str) -> anyhow::Result<PathBuf> {
+    let workspace_root = workspace_root.trim();
+    if workspace_root.is_empty() {
+        bail!("workspaceRoot is required");
+    }
+    let workspace_root = Path::new(workspace_root);
+    if !workspace_root.is_absolute() {
+        bail!("workspaceRoot must be an absolute path");
+    }
+    let workspace = fs::canonicalize(workspace_root)
+        .with_context(|| format!("Could not access workspace: {}", workspace_root.display()))?;
+    if !workspace.is_dir() {
+        bail!("Workspace is not a directory: {}", workspace.display());
+    }
+    Ok(workspace)
+}
+
+fn clean_relative_workspace_path(path: &str) -> anyhow::Result<PathBuf> {
+    let mut clean_path = PathBuf::new();
+    for component in Path::new(path.trim()).components() {
+        match component {
+            Component::Normal(part) => clean_path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!("Workspace path must stay inside the selected workspace");
+            }
+        }
+    }
+    Ok(clean_path)
+}
+
+fn path_has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn path_has_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(part) => part.to_string_lossy().starts_with('.'),
+        _ => false,
+    })
+}
+
+fn resolve_workspace_path(
+    workspace_root: &str,
+    path: &str,
+    allow_absolute_path: bool,
+) -> anyhow::Result<PathBuf> {
+    let workspace = canonical_workspace_root(workspace_root)?;
+    let path = path.trim();
+    let target = if path.is_empty() {
+        workspace.clone()
+    } else {
+        let requested = Path::new(path);
+        if requested.is_absolute() {
+            if !allow_absolute_path {
+                bail!("Workspace path must be relative");
+            }
+            if path_has_parent_component(requested) {
+                bail!("Workspace path must stay inside the selected workspace");
+            }
+            requested.to_path_buf()
+        } else {
+            workspace.join(clean_relative_workspace_path(path)?)
+        }
+    };
+    let target = fs::canonicalize(&target)
+        .with_context(|| format!("Could not access path: {}", target.display()))?;
+    if !target.starts_with(&workspace) {
+        bail!("Workspace path must stay inside the selected workspace");
+    }
+    Ok(target)
+}
+
+fn workspace_relative_child_path(relative_path: &Path, child_name: &str) -> String {
+    if relative_path.as_os_str().is_empty() {
+        return child_name.to_string();
+    }
+    format!(
+        "{}/{}",
+        relative_path.to_string_lossy().replace('\\', "/"),
+        child_name
+    )
+}
+
+fn workspace_dir_list_impl(
+    workspace_root: &str,
+    relative_path: Option<&str>,
+) -> anyhow::Result<Vec<WorkspaceDirEntry>> {
+    let relative_path = clean_relative_workspace_path(relative_path.unwrap_or_default())?;
+    if path_has_hidden_component(&relative_path) {
+        bail!("Hidden workspace paths cannot be listed");
+    }
+    let target = resolve_workspace_path(
+        workspace_root,
+        relative_path.to_string_lossy().as_ref(),
+        false,
+    )?;
+    if !target.is_dir() {
+        bail!("Workspace path is not a directory: {}", target.display());
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&target)
+        .with_context(|| format!("Could not read directory: {}", target.display()))?
+    {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        entries.push(WorkspaceDirEntry {
+            relative_path: workspace_relative_child_path(&relative_path, &file_name),
+            name: file_name,
+            is_directory: file_type.is_dir(),
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        b.is_directory
+            .cmp(&a.is_directory)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn workspace_dir_list(
+    workspace_root: String,
+    relative_path: Option<String>,
+) -> Result<Vec<WorkspaceDirEntry>, String> {
+    workspace_dir_list_impl(&workspace_root, relative_path.as_deref())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn workspace_file_open(
     app: AppHandle,
     workspace_root: String,
     path: String,
 ) -> Result<(), String> {
-    let workspace = fs::canonicalize(&workspace_root)
-        .with_context(|| format!("Could not access workspace: {workspace_root}"))
-        .map_err(|error| error.to_string())?;
-    let requested = PathBuf::from(path.trim());
-    let target = if requested.is_absolute() {
-        requested
-    } else {
-        workspace.join(requested)
-    };
-    let target = fs::canonicalize(&target)
-        .with_context(|| format!("Could not access file: {}", target.display()))
-        .map_err(|error| error.to_string())?;
-
-    if !target.starts_with(&workspace) {
-        return Err("Cannot open files outside the selected workspace".to_string());
-    }
+    let target =
+        resolve_workspace_path(&workspace_root, &path, true).map_err(|error| error.to_string())?;
     if !target.is_file() {
         return Err(format!("Not a file: {}", target.display()));
     }
@@ -3137,7 +3600,6 @@ async fn agent_profile_reset(
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| setup(app))
@@ -3162,6 +3624,8 @@ pub fn run() {
             inbox_list,
             inbox_resolve,
             inbox_snooze,
+            browser_runtime_capability_install,
+            browser_runtime_capability_status,
             google_identity_connect,
             google_identity_connection_status,
             google_workspace_capability_install,
@@ -3192,6 +3656,7 @@ pub fn run() {
             playbook_get,
             playbook_import,
             playbook_list,
+            playbook_preflight,
             playbook_run_preference_get,
             playbook_run_preference_save,
             sidecar_ping,
@@ -3210,6 +3675,7 @@ pub fn run() {
             task_todo_apply,
             task_unsubscribe,
             task_update,
+            workspace_dir_list,
             workspace_file_open,
             workspace_style_guide_get,
             workspace_style_guide_save
@@ -3239,15 +3705,19 @@ pub fn run() {
 mod tests {
     use super::{
         connection_test_result, first_useful_process_line, google_identity_auth_args,
-        google_workspace_config_dir, google_workspace_gws_client_secret_path,
+        google_workspace_auth_args, google_workspace_config_dir,
+        google_workspace_gws_client_secret_path, google_workspace_health_checks,
+        google_workspace_health_message, google_workspace_health_ok,
         google_workspace_oauth_client_json, google_workspace_oauth_missing_message,
-        google_workspace_readonly_auth_args, normalize_google_workspace_oauth_client_file,
+        normalize_google_workspace_oauth_client_file, read_sidecar_http_response,
         resolve_google_workspace_cli_path, search_connection_command, tool_policy_runtime_json,
         workspace_cli_uses_google_workspace, CapabilityBinaryResult, SpawnResult,
-        GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV, GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
+        GOOGLE_WORKSPACE_AUTH_SCOPES, GOOGLE_WORKSPACE_OAUTH_CLIENT_ID_ENV,
+        GOOGLE_WORKSPACE_OAUTH_CLIENT_SECRET_ENV,
     };
     use crate::integration_settings::{IntegrationProvider, SearchProvider};
     use std::path::PathBuf;
+    use tokio::io::BufReader;
 
     fn capability_binary_result(path: Option<&str>) -> CapabilityBinaryResult {
         CapabilityBinaryResult {
@@ -3261,6 +3731,191 @@ mod tests {
             message: None,
             progress: None,
         }
+    }
+
+    #[test]
+    fn sidecar_base_env_enables_graph_worker_for_desktop_launches() {
+        let env = super::sidecar_base_env(
+            &PathBuf::from("/tmp/tessera-cli"),
+            &PathBuf::from("/tmp/workflow-runs.sqlite"),
+            &PathBuf::from("/tmp/tasks.sqlite"),
+            &PathBuf::from("/tmp/config"),
+            &PathBuf::from("/tmp/config/google-workspace"),
+            &PathBuf::from("/tmp/bin/skills"),
+            &PathBuf::from("/tmp/bin"),
+        )
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            env.get(super::TESSERA_GRAPH_RUN_WORKER_ENV)
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("PI_PACKAGE_DIR").map(String::as_str),
+            Some("/tmp/bin")
+        );
+    }
+
+    #[tokio::test]
+    async fn sidecar_response_reader_stops_after_content_length() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}HTTP/1.1 200 OK\r\n";
+        let mut reader = BufReader::new(&response[..]);
+        let mut buf = Vec::new();
+
+        read_sidecar_http_response(&mut reader, &mut buf)
+            .await
+            .expect("read response");
+
+        assert_eq!(
+            std::str::from_utf8(&buf).expect("utf8"),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sidecar_response_reader_decodes_chunked_body() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n";
+        let mut reader = BufReader::new(&response[..]);
+        let mut buf = Vec::new();
+
+        read_sidecar_http_response(&mut reader, &mut buf)
+            .await
+            .expect("read chunked response");
+
+        assert_eq!(
+            std::str::from_utf8(&buf).expect("utf8"),
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{}"
+        );
+    }
+
+    #[test]
+    fn workspace_dir_list_returns_visible_relative_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).expect("create src");
+        std::fs::create_dir_all(workspace.join(".git")).expect("create hidden dir");
+        std::fs::write(workspace.join("README.md"), "hello").expect("write file");
+
+        let entries = super::workspace_dir_list_impl(workspace.to_str().unwrap(), None)
+            .expect("list workspace");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "src");
+        assert_eq!(entries[0].relative_path, "src");
+        assert!(entries[0].is_directory);
+        assert_eq!(entries[1].name, "README.md");
+        assert_eq!(entries[1].relative_path, "README.md");
+        assert!(!entries[1].is_directory);
+    }
+
+    #[test]
+    fn workspace_dir_list_reads_nested_relative_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("src/nested")).expect("create nested");
+        std::fs::write(workspace.join("src/app.ts"), "export {};").expect("write file");
+
+        let entries = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("src"))
+            .expect("list nested workspace path");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/nested", "src/app.ts"]
+        );
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_missing_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("missing");
+
+        let error = super::workspace_dir_list_impl(missing.to_str().unwrap(), None)
+            .expect_err("missing workspace should fail");
+
+        assert!(error.to_string().contains("Could not access workspace"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_file_as_workspace_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace_file = dir.path().join("workspace.txt");
+        std::fs::write(&workspace_file, "not a directory").expect("write file");
+
+        let error = super::workspace_dir_list_impl(workspace_file.to_str().unwrap(), None)
+            .expect_err("file workspace root should fail");
+
+        assert!(error.to_string().contains("Workspace is not a directory"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_file_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("README.md"), "hello").expect("write file");
+
+        let error = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("README.md"))
+            .expect_err("file target should fail");
+
+        assert!(error.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_absolute_relative_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&outside).expect("create outside");
+
+        let error = super::workspace_dir_list_impl(
+            workspace.to_str().unwrap(),
+            Some(outside.to_str().unwrap()),
+        )
+        .expect_err("absolute listing target should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
+    }
+
+    #[test]
+    fn workspace_dir_list_rejects_parent_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+
+        let error = super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("../outside"))
+            .expect_err("parent traversal should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_dir_list_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        std::os::unix::fs::symlink(&outside, workspace.join("outside-link"))
+            .expect("create symlink");
+
+        let error =
+            super::workspace_dir_list_impl(workspace.to_str().unwrap(), Some("outside-link"))
+                .expect_err("symlink escape should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace path must stay inside the selected workspace"));
     }
 
     #[test]
@@ -3353,6 +4008,16 @@ mod tests {
             "calendarList",
             "list"
         ]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "sheets",
+            "rows.upsert",
+            "--dry-run"
+        ]));
+        assert!(workspace_cli_uses_google_workspace(&[
+            "docs",
+            "documents.create",
+            "--dry-run"
+        ]));
         assert!(!workspace_cli_uses_google_workspace(&[
             "web-search",
             "search",
@@ -3363,6 +4028,23 @@ mod tests {
             "fetch",
             "https://example.com"
         ]));
+    }
+
+    #[tokio::test]
+    async fn google_workspace_cli_path_prefers_existing_bundled_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundled_path = dir.path().join("gws");
+        std::fs::write(&bundled_path, b"#!/bin/sh\n").expect("write bundled gws");
+
+        let result = resolve_google_workspace_cli_path(
+            Some(&bundled_path),
+            || async { panic!("sidecar path lookup should not run when bundled gws exists") },
+            || async { panic!("sidecar install should not run when bundled gws exists") },
+        )
+        .await
+        .expect("resolve bundled gws path");
+
+        assert_eq!(result, bundled_path);
     }
 
     #[tokio::test]
@@ -3434,7 +4116,6 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
-                    "project_id": "tessera",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3446,7 +4127,7 @@ mod tests {
     }
 
     #[test]
-    fn google_workspace_oauth_client_normalization_adds_project_id() {
+    fn google_workspace_oauth_client_normalization_strips_project_id() {
         let path =
             std::env::temp_dir().join(format!("tessera-client-secret-{}.json", std::process::id()));
         std::fs::write(
@@ -3454,6 +4135,7 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
+                    "project_id": "tessera",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3469,10 +4151,8 @@ mod tests {
         let normalized: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read temp"))
                 .expect("parse normalized");
-        assert_eq!(
-            normalized["installed"]["project_id"],
-            serde_json::Value::String("tessera".to_string())
-        );
+        assert!(normalized["installed"].get("project_id").is_none());
+        assert_eq!(normalized["installed"]["client_id"], "client-id");
         let _ = std::fs::remove_file(path);
     }
 
@@ -3487,7 +4167,7 @@ mod tests {
             serde_json::json!({
                 "installed": {
                     "client_id": "client-id",
-                    "project_id": "tessera",
+                    "project_id": "admin-project-9182",
                     "client_secret": "client-secret",
                     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                     "token_uri": "https://oauth2.googleapis.com/token",
@@ -3505,10 +4185,7 @@ mod tests {
         assert!(!normalized.starts_with(&[0xEF, 0xBB, 0xBF]));
         let normalized: serde_json::Value =
             serde_json::from_slice(&normalized).expect("parse normalized");
-        assert_eq!(
-            normalized["installed"]["project_id"],
-            serde_json::Value::String("tessera".to_string())
-        );
+        assert!(normalized["installed"].get("project_id").is_none());
         let _ = std::fs::remove_file(path);
     }
 
@@ -3543,17 +4220,79 @@ mod tests {
     }
 
     #[test]
-    fn google_workspace_auth_uses_readonly_multi_service_profile() {
+    fn google_workspace_status_rejects_unreadable_encrypted_credentials() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "auth_method": "oauth2",
+                "encrypted_credentials_exists": true,
+                "encryption_valid": false,
+                "encryption_error": "Could not decrypt. May have been created on a different machine.",
+                "credentials_readable": false,
+            })
+            .to_string(),
+            stderr: "Using keyring backend: keyring\n".to_string(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(!super::google_workspace_auth_status_connected(&result));
         assert_eq!(
-            google_workspace_readonly_auth_args(),
-            vec![
-                "auth",
-                "login",
-                "--readonly",
-                "--services",
-                "calendar,gmail,drive,people,docs,sheets"
-            ]
+            super::google_workspace_auth_status_message(&result),
+            "Google Workspace credentials could not be read. Disconnect and reconnect Google Workspace."
         );
+    }
+
+    #[test]
+    fn google_workspace_status_accepts_readable_oauth_credentials() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "auth_method": "oauth2",
+                "encrypted_credentials_exists": true,
+                "encryption_valid": true,
+                "credentials_readable": true,
+            })
+            .to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(super::google_workspace_auth_status_connected(&result));
+    }
+
+    #[test]
+    fn google_workspace_env_uses_file_keyring_backend() {
+        let mut command = std::process::Command::new("/tmp/gws");
+        super::apply_google_workspace_env(
+            &mut command,
+            &PathBuf::from("/tmp/gws"),
+            &PathBuf::from("/tmp/gws-config"),
+        );
+
+        assert!(command.get_envs().any(|(key, value)| {
+            key == std::ffi::OsStr::new("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND")
+                && value == Some(std::ffi::OsStr::new("file"))
+        }));
+    }
+
+    #[test]
+    fn google_workspace_auth_requests_workspace_read_write_scopes() {
+        let args = google_workspace_auth_args();
+        assert_eq!(
+            args,
+            vec!["auth", "login", "--scopes", GOOGLE_WORKSPACE_AUTH_SCOPES]
+        );
+        assert!(!args.contains(&"--readonly"));
+        assert!(!args.contains(&"--full"));
+
+        let scopes: Vec<&str> = GOOGLE_WORKSPACE_AUTH_SCOPES.split(',').collect();
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.compose"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.file"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/spreadsheets"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/documents"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly"));
     }
 
     #[test]
@@ -3680,5 +4419,48 @@ mod tests {
             first_useful_process_line(&result),
             "Open browser to continue"
         );
+    }
+
+    #[test]
+    fn google_workspace_health_checks_docs_and_sheets_directly() {
+        let checks = google_workspace_health_checks();
+        let docs = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Docs")
+            .expect("docs check");
+        let sheets = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Sheets")
+            .expect("sheets check");
+        let contacts = checks
+            .iter()
+            .find(|(service, _, _)| *service == "Contacts")
+            .expect("contacts check");
+
+        assert_eq!(docs.1[0], "docs");
+        assert!(docs.2);
+        assert_eq!(sheets.1[0], "sheets");
+        assert!(sheets.2);
+        assert!(contacts.1.join(" ").contains("personFields"));
+    }
+
+    #[test]
+    fn google_workspace_health_accepts_not_found_for_api_probe() {
+        let result = SpawnResult {
+            stdout: serde_json::json!({
+                "error": {
+                    "message": "Requested entity was not found."
+                }
+            })
+            .to_string(),
+            stderr: "Using keyring backend: file\n".to_string(),
+            exit_code: 1,
+            signal: None,
+            duration_ms: 1,
+        };
+
+        assert!(google_workspace_health_ok(&result, true));
+        assert_eq!(google_workspace_health_message(&result, true), "Ready");
+        assert!(!google_workspace_health_ok(&result, false));
     }
 }

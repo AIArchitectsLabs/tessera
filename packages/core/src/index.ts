@@ -37,6 +37,7 @@ export {
   createSpawnShellExecutor,
   ShellExecutionError,
   ShellValidationError,
+  type SpawnShellExecutor,
   validateShellCall,
 } from "./shell-runtime.js";
 export {
@@ -153,6 +154,10 @@ export {
   type CompilePlaybookGraphOptions,
 } from "./playbook-graph-compiler.js";
 export {
+  resolvePlaybookGraphPreflight,
+  type ResolvePlaybookGraphPreflightOptions,
+} from "./playbook-graph-preflight.js";
+export {
   createPlaybookGraphCache,
   type PlaybookGraphCache,
 } from "./playbook-graph-cache.js";
@@ -195,9 +200,24 @@ export {
   type GraphRunStore,
   type PlaybookGraphAgentAdapterInput,
   type PlaybookGraphArtifactWriteAdapterInput,
+  type PlaybookGraphEffectAdapterInput,
+  type PlaybookGraphEffectAdapterResult,
+  type PlaybookGraphEffectExecutionPolicy,
   type PlaybookGraphRuntimeOptions,
   type PlaybookGraphRuntimeResult,
   type PlaybookGraphScriptAdapterInput,
   type PlaybookGraphToolAdapterInput,
   type PlaybookGraphToolExecutionPolicy,
 } from "./playbook-graph-runtime.js";
+export type {
+  GraphConnector,
+  GraphConnectorArtifactWrite,
+  GraphConnectorEffect,
+  GraphConnectorShellCommand,
+  GraphConnectorTool,
+} from "./graph-connector.js";
+export {
+  buildConnectorRegistry,
+  type BuildConnectorRegistryOptions,
+  type GraphConnectorRegistry,
+} from "./graph-connector-registry.js";

@@ -1,11 +1,19 @@
 import {
   ContactsLookupResultSchema,
+  DocsCreateResultSchema,
+  DocsWriteCommitResultSchema,
+  DocsWritePreviewResultSchema,
   DriveReadResultSchema,
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
+  SheetsWorkbookCreateResultSchema,
+  SheetsWriteCommitResultSchema,
+  SheetsWritePreviewResultSchema,
   type ShellToolCall,
   type ShellToolResult,
   ShellToolResultSchema,
@@ -61,11 +69,35 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   if (call.command === "mail" && call.subcommand === "read") {
     return MailReadResultSchema.parse(json);
   }
+  if (call.command === "mail" && call.subcommand === "draft") {
+    return MailDraftResultSchema.parse(json);
+  }
+  if (call.command === "mail" && call.subcommand === "send-draft") {
+    return MailSendDraftResultSchema.parse(json);
+  }
   if (call.command === "drive" && call.subcommand === "search") {
     return DriveSearchResultSchema.parse(json);
   }
   if (call.command === "drive" && call.subcommand === "read") {
     return DriveReadResultSchema.parse(json);
+  }
+  if (call.command === "sheets" && call.subcommand === "workbook.create") {
+    return SheetsWorkbookCreateResultSchema.parse(json);
+  }
+  if (call.command === "sheets") {
+    return json?.dryRun === true
+      ? SheetsWritePreviewResultSchema.parse(json)
+      : SheetsWriteCommitResultSchema.parse(json);
+  }
+  if (call.command === "docs" && call.subcommand === "documents.create") {
+    return json?.dryRun === true
+      ? DocsWritePreviewResultSchema.parse(json)
+      : DocsCreateResultSchema.parse(json);
+  }
+  if (call.command === "docs") {
+    return json?.dryRun === true
+      ? DocsWritePreviewResultSchema.parse(json)
+      : DocsWriteCommitResultSchema.parse(json);
   }
   if (call.command === "contacts" && call.subcommand === "lookup") {
     return ContactsLookupResultSchema.parse(json);
@@ -90,20 +122,27 @@ function isRetryableShellFailure(call: ShellToolCall, result: SpawnResult): bool
   return RETRYABLE_WEB_FETCH_ERROR.test(result.stderr);
 }
 
+export interface SpawnShellExecutor {
+  executeShell(call: ShellToolCall, env?: Record<string, string>): Promise<ShellToolResult>;
+}
+
 export function createSpawnShellExecutor(cli: {
-  runWorkspaceCli(args: string[], timeoutMs?: number): Promise<SpawnResult>;
-}): {
-  executeShell(call: ShellToolCall): Promise<ShellToolResult>;
-} {
+  runWorkspaceCli(
+    args: string[],
+    timeoutMs?: number,
+    env?: Record<string, string>
+  ): Promise<SpawnResult>;
+}): SpawnShellExecutor {
   return {
-    async executeShell(call) {
+    async executeShell(call, env) {
       const validated = validateShellCall(call);
       const attempts = maxAttemptsForCall(validated);
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         const spawnResult = SpawnResultSchema.parse(
           await cli.runWorkspaceCli(
             [validated.command, validated.subcommand, ...validated.args],
-            timeoutMsForCall(validated)
+            timeoutMsForCall(validated),
+            env
           )
         );
 

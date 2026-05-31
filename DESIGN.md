@@ -4,7 +4,7 @@
 - Status: Draft
 - Last refreshed: 2026-05-19
 - Primary product surfaces: Desktop Playbooks view, guided playbook run canvas, run details panel.
-- Evidence reviewed: `CLAUDE.md`, `docs/superpowers/specs/2026-05-08-guided-playbooks-ux-design.md`, `docs/superpowers/specs/2026-05-11-playbook-run-agent-and-usage-ux-design.md`, `docs/superpowers/specs/2026-05-18-playbook-execution-stabilization-design.md`, `apps/desktop/ui/src/components/PlaybooksView.tsx`, screenshot from 2026-05-19.
+- Evidence reviewed: `CLAUDE.md`, `README.md`, `docs/graph-built-in-playbooks.md`, `docs/public/index.mdx`, `apps/desktop/ui/src/components/PlaybooksView.tsx`, screenshot from 2026-05-19.
 
 ## Brand
 - Personality: calm, capable, business-grade, quietly intelligent.

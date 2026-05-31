@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { PlaybookGraphScriptAdapterInput } from "@tessera/core";
-import { hashPlaybookSourceFiles } from "@tessera/core";
+import { hardTimeoutMs, hashPlaybookSourceFiles } from "@tessera/core";
 import ts from "typescript";
 
 export interface RunPlaybookGraphScriptOptions {
@@ -13,7 +13,7 @@ export interface RunPlaybookGraphScriptOptions {
   bunExecutable?: string;
 }
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+export const SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS = hardTimeoutMs("script") ?? 2 * 60_000;
 const ALLOWED_EXTERNAL_IMPORT_PREFIX = "@tessera/plugin-sdk";
 const DANGEROUS_IMPORT_SPECIFIERS = [
   "node:fs",
@@ -405,8 +405,9 @@ try {
   const value = await script(payload.context);
   Bun.stdout.write(JSON.stringify({ ok: true, value: value === undefined ? null : value }));
 } catch (error) {
-  Bun.stderr.write(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  Bun.stdout.write(
+    JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })
+  );
 }
 `;
 }
@@ -415,7 +416,7 @@ export async function runPlaybookGraphScript(
   options: RunPlaybookGraphScriptOptions
 ): Promise<unknown> {
   const { sourceFiles, usesPluginSdk } = verifySourceBundle(options.input);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS;
   const tempRoot = await mkdtemp(join(tmpdir(), "tessera-graph-script-"));
   const runnerPath = join(tempRoot, `runner-${randomUUID()}.mjs`);
   const preloadPath = join(tempRoot, `sandbox-${randomUUID()}.mjs`);
@@ -497,7 +498,14 @@ export async function runPlaybookGraphScript(
     }
 
     const parsed = JSON.parse(stdout) as unknown;
-    if (typeof parsed !== "object" || parsed === null || (parsed as { ok?: unknown }).ok !== true) {
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error("Graph script produced an invalid result envelope");
+    }
+    if ((parsed as { ok?: unknown }).ok === false) {
+      const error = (parsed as { error?: unknown }).error;
+      throw new Error(`Graph script failed: ${typeof error === "string" ? error : "script error"}`);
+    }
+    if ((parsed as { ok?: unknown }).ok !== true) {
       throw new Error("Graph script produced an invalid result envelope");
     }
     return (parsed as { value?: unknown }).value;

@@ -141,6 +141,36 @@ describe("playbook UI helpers", () => {
     });
   });
 
+  test("describes graph repair approvals as saved-run recovery", () => {
+    const run = {
+      runId: "run-1",
+      workflowId: "reference.seo-geo-blog-article",
+      status: "failed",
+      input: {},
+      approval: {
+        toolId: "graph.approveRepair",
+        args: { runId: "run-1" },
+        capability: "write",
+        risk: {
+          mutates: false,
+          destructive: false,
+          external: false,
+          reversible: true,
+          dryRunSupported: false,
+        },
+        preview: "Pinned graph snapshot hash mismatch",
+        reasonCode: "graph_repair",
+      },
+      sourceGaps: [],
+    } satisfies PlaybookRunDetail;
+
+    expect(playbookApprovalCopy(run, null)).toEqual({
+      prepared: "Pinned graph snapshot hash mismatch",
+      approve:
+        "Tessera will repair the saved run state and continue from the pinned playbook snapshot.",
+    });
+  });
+
   test("detects dashboard playbooks by output kind", () => {
     const playbook: PlaybookSummary = {
       id: "ops.activity-snapshot",

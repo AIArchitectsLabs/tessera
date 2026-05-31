@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type {
   CompiledPlaybookGraph,
+  EffectExecutionRecord,
   PlaybookGraphArtifactVersion,
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
@@ -16,6 +17,8 @@ import { compilePlaybookGraph } from "./playbook-graph-compiler.js";
 import {
   type GraphRunStore,
   HEARTBEAT_STALENESS_MS,
+  type PlaybookGraphEffectAdapterInput,
+  type PlaybookGraphEffectExecutionPolicy,
   createGraphNodeMemoKeyParts,
   createPlaybookGraphExecutionContextPin,
   createPlaybookGraphMemoKey,
@@ -52,6 +55,7 @@ class MemoryGraphRunStore implements GraphRunStore {
   artifacts = new Map<string, PlaybookGraphArtifactVersion>();
   branchItems = new Map<string, PlaybookGraphBranchItem>();
   reviews: PlaybookGraphReviewEvent[] = [];
+  effects: EffectExecutionRecord[] = [];
   operations: PlaybookGraphOperationRecord[] = [];
   memos = new Map<string, PlaybookGraphNodeMemo>();
 
@@ -266,6 +270,39 @@ class MemoryGraphRunStore implements GraphRunStore {
     this.reviews.push(event);
   }
 
+  async listEffectExecutionRecords(runId: string): Promise<EffectExecutionRecord[]> {
+    return this.effects.filter((record) => record.runId === runId);
+  }
+
+  async addEffectExecutionRecord(record: EffectExecutionRecord): Promise<void> {
+    const existing = this.effects.find(
+      (candidate) => candidate.effectExecutionRecordId === record.effectExecutionRecordId
+    );
+    if (existing) {
+      expect(existing).toEqual(record);
+      return;
+    }
+    this.effects.push(record);
+  }
+
+  async findCommittedEffectExecutionRecord(input: {
+    runId: string;
+    nodePath: string;
+    capability: string;
+    adapterId: string;
+    idempotencyKey: string;
+  }): Promise<EffectExecutionRecord | undefined> {
+    return this.effects.find(
+      (record) =>
+        record.runId === input.runId &&
+        record.nodePath === input.nodePath &&
+        record.capability === input.capability &&
+        record.adapterId === input.adapterId &&
+        record.idempotencyKey === input.idempotencyKey &&
+        record.status === "committed"
+    );
+  }
+
   async listOperationRecords(runId: string): Promise<PlaybookGraphOperationRecord[]> {
     return this.operations.filter((record) => record.runId === runId);
   }
@@ -280,6 +317,7 @@ class MemoryGraphRunStore implements GraphRunStore {
     branchItems?: PlaybookGraphBranchItem[];
     artifactVersions?: PlaybookGraphArtifactVersion[];
     reviewEvents?: PlaybookGraphReviewEvent[];
+    effectRecords?: EffectExecutionRecord[];
     operationRecord: PlaybookGraphOperationRecord;
   }): Promise<void> {
     if (input.run) this.runs.set(input.run.runId, input.run);
@@ -287,6 +325,7 @@ class MemoryGraphRunStore implements GraphRunStore {
     for (const item of input.branchItems ?? []) this.branchItems.set(item.branchItemId, item);
     for (const version of input.artifactVersions ?? []) await this.addArtifactVersion(version);
     for (const event of input.reviewEvents ?? []) this.reviews.push(event);
+    for (const record of input.effectRecords ?? []) this.effects.push(record);
     this.operations.push(input.operationRecord);
   }
 
@@ -1185,6 +1224,83 @@ describe("drainPlaybookGraphRun", () => {
     expect(result.run.status).toBe("failed");
     expect(result.run.error).toContain("does not match schemas/review.schema.json");
     expect(await store.listArtifactVersions(run.runId)).toHaveLength(0);
+
+    const resumed = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-json-contract-failure-resume",
+      store,
+    });
+
+    expect(resumed.run.status).toBe("failed");
+    expect(resumed.run.error).toContain("does not match schemas/review.schema.json");
+  });
+
+  test("rejects command-shaped agent text before it can become a document artifact", async () => {
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/brief.md": "Return only the brief as Markdown.",
+      "schemas/brief.schema.json": JSON.stringify({
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+        },
+      }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.brief-internal-output",
+        version: "0.1.0",
+        name: "Brief Internal Output",
+        artifacts: {
+          brief: { schema: "schemas/brief.schema.json" },
+        },
+        start: "brief",
+        nodes: [
+          {
+            id: "brief",
+            kind: "agent",
+            prompt: "prompts/brief.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "brief", schema: "schemas/brief.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "test-compiler",
+      scriptSdkVersion: "test-sdk",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiled,
+      sourceFiles,
+      store,
+      runId: "run-agent-internal-output",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-agent-internal-output",
+      store,
+      agentAdapter() {
+        return {
+          status: "completed",
+          text: JSON.stringify({
+            cmd: "python3 - <<'PY'\nprint('research command')\nPY",
+            usage: { totalTokens: 100 },
+          }),
+        };
+      },
+    });
+
+    expect(result.run.status).toBe("failed");
+    expect(result.run.error).toContain("produced internal tool or command output");
+    expect(await store.listArtifactVersions(run.runId)).toHaveLength(0);
   });
 
   test("does not treat an omitted execution context as drift", async () => {
@@ -1440,6 +1556,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         nodes: [
           {
             id: "plan",
@@ -1510,6 +1627,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         nodes: [
           {
             id: "plan",
@@ -1579,6 +1697,650 @@ describe("drainPlaybookGraphRun", () => {
     expect(
       (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "writePlan")?.status
     ).toBe("memoized");
+  });
+
+  test("effect nodes require preview approval before commit and replay by idempotency key", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "writePlan",
+          },
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:plan",
+            input: {
+              value: { artifact: "plan" },
+              path: "out/plan.md",
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write plan",
+              summary: "Write the plan to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    let commits = 0;
+    const runtimeBase = {
+      runId: run.runId,
+      store,
+      scriptAdapter() {
+        return { title: "Plan" };
+      },
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: true,
+          sideEffect: "write" as const,
+          previewRequired: true,
+          approvalRequired: true,
+        },
+      },
+      effectAdapter({ node }: PlaybookGraphEffectAdapterInput) {
+        commits += 1;
+        return {
+          outputReference: String(node.input.path),
+          output: {
+            kind: "workspace",
+            path: String(node.input.path),
+            format: "markdown",
+            bytes: 16,
+          },
+        };
+      },
+    };
+
+    const blocked = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-preview",
+    });
+
+    expect(blocked.run.status).toBe("blocked");
+    const writeEntry = (await store.getQueue(run.runId)).find(
+      (entry) => entry.nodeId === "writePlan"
+    );
+    if (!writeEntry) throw new Error("Missing effect queue entry");
+    expect(writeEntry.status).toBe("blocked");
+    expect(commits).toBe(0);
+    expect(store.effects.map((record) => record.status)).toEqual(["previewed"]);
+
+    const previewRecord = store.effects[0];
+    if (!previewRecord) throw new Error("Missing effect preview record");
+    await store.addEffectExecutionRecord({
+      ...previewRecord,
+      effectExecutionRecordId: `${writeEntry.queueEntryId}:effect:approved`,
+      status: "approved",
+      reviewerDecision: "approved",
+      completedAt: "2026-05-15T00:00:10.000Z",
+      createdAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateQueueEntry({
+      ...writeEntry,
+      status: "queued",
+      blockedReason: undefined,
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+    const blockedRun = await store.getRun(run.runId);
+    if (!blockedRun) throw new Error("Missing run");
+    await store.updateRun({
+      ...blockedRun,
+      status: "running",
+      blockedReason: undefined,
+      completedAt: undefined,
+    });
+
+    const committed = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-commit",
+    });
+    expect(committed.run.status).toBe("completed");
+    expect(commits).toBe(1);
+    expect(store.effects.map((record) => record.status)).toEqual([
+      "previewed",
+      "approved",
+      "commit_requested",
+      "committed",
+    ]);
+    expect(store.effects.at(-1)?.output).toEqual({
+      kind: "workspace",
+      path: "out/plan.md",
+      format: "markdown",
+      bytes: 16,
+    });
+
+    const completedRun = await store.getRun(run.runId);
+    const completedWrite = (await store.getQueue(run.runId)).find(
+      (entry) => entry.nodeId === "writePlan"
+    );
+    if (!completedRun || !completedWrite) throw new Error("Missing completed effect state");
+    await store.updateRun({ ...completedRun, status: "running", completedAt: undefined });
+    await store.updateQueueEntry({
+      ...completedWrite,
+      status: "queued",
+      runtimeId: undefined,
+      leaseId: undefined,
+      claimedAt: undefined,
+      leaseExpiresAt: undefined,
+      completedAt: undefined,
+    });
+
+    await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-replay",
+    });
+    expect(commits).toBe(1);
+    expect(store.effects.at(-1)?.status).toBe("replayed");
+    expect(store.effects.at(-1)?.output).toEqual({
+      kind: "workspace",
+      path: "out/plan.md",
+      format: "markdown",
+      bytes: 16,
+    });
+  });
+
+  test("effect approval can be satisfied by a prior human review of the consumed artifact", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        nodes: [
+          {
+            id: "plan",
+            kind: "script",
+            run: "scripts/plan.ts",
+            inputs: {},
+            outputArtifact: "plan",
+            onSuccess: "writePlan",
+          },
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:human-approved-plan",
+            input: {
+              value: { artifact: "plan" },
+              path: "out/plan.md",
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write plan",
+              summary: "Write the approved plan to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-human-approved",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    let commits = 0;
+    const runtimeBase = {
+      runId: run.runId,
+      store,
+      scriptAdapter() {
+        return { title: "Plan" };
+      },
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: true,
+          sideEffect: "write" as const,
+          previewRequired: true,
+          approvalRequired: true,
+        },
+      },
+      effectAdapter({ node }: PlaybookGraphEffectAdapterInput) {
+        commits += 1;
+        return {
+          outputReference: String(node.input.path),
+          output: {
+            kind: "workspace",
+            path: String(node.input.path),
+            format: "markdown",
+            bytes: 16,
+          },
+        };
+      },
+    };
+
+    const blocked = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-human-preview",
+    });
+
+    expect(blocked.run.status).toBe("blocked");
+    const writeEntry = (await store.getQueue(run.runId)).find(
+      (entry) => entry.nodeId === "writePlan"
+    );
+    const planVersion = (await store.listArtifactVersions(run.runId)).find(
+      (artifact) => artifact.artifactId === "plan"
+    );
+    if (!writeEntry || !planVersion) throw new Error("Missing effect test state");
+
+    await store.addReviewEvent({
+      schemaVersion: 1,
+      reviewEventId: "review-plan-approved",
+      runId: run.runId,
+      queueEntryId: "queue-review-plan",
+      nodePath: "reviewPlan",
+      artifactId: "plan",
+      artifactVersionId: planVersion.versionId,
+      decision: "approved",
+      payload: {},
+      createdAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateQueueEntry({
+      ...writeEntry,
+      status: "queued",
+      blockedReason: undefined,
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateRun({
+      ...blocked.run,
+      status: "running",
+      blockedReason: undefined,
+      completedAt: undefined,
+    });
+
+    const committed = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-human-commit",
+    });
+
+    expect(committed.run.status).toBe("completed");
+    expect(commits).toBe(1);
+    expect(store.effects.map((record) => record.status)).toEqual([
+      "previewed",
+      "approved",
+      "commit_requested",
+      "committed",
+    ]);
+    expect(store.effects[1]).toMatchObject({
+      status: "approved",
+      reviewerDecision: "approved",
+      commitStatus: "not_attempted",
+    });
+  });
+
+  test("effect records prevent duplicate commits after stale checkpoint resume", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        start: "writePlan",
+        nodes: [
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "none",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:stale-resume",
+            input: { path: "out/plan.md", value: "Plan" },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-stale-resume",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const checkpointNodeSuccess = store.checkpointNodeSuccess.bind(store);
+    let rejectFirstCheckpoint = true;
+    store.checkpointNodeSuccess = async (input) => {
+      if (input.queueEntry.nodeKind === "effect" && rejectFirstCheckpoint) {
+        rejectFirstCheckpoint = false;
+        throw new Error("Cannot checkpoint graph node with a stale queue claim");
+      }
+      await checkpointNodeSuccess(input);
+    };
+    let commits = 0;
+    const runtimeBase = {
+      runId: run.runId,
+      store,
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: true,
+          sideEffect: "write" as const,
+          previewRequired: false,
+          approvalRequired: false,
+        },
+      },
+      effectAdapter({ node }: PlaybookGraphEffectAdapterInput) {
+        commits += 1;
+        return { outputReference: String(node.input.path), output: { path: node.input.path } };
+      },
+    };
+
+    await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-stale-first",
+    });
+
+    expect(commits).toBe(1);
+    expect(store.effects.map((record) => record.status)).toEqual(["commit_requested", "committed"]);
+    const runningEntry = (await store.getQueue(run.runId)).find(
+      (entry) => entry.nodeId === "writePlan"
+    );
+    if (!runningEntry) throw new Error("Missing stale effect queue entry");
+    expect(runningEntry.status).toBe("running");
+    await store.updateQueueEntry({
+      ...runningEntry,
+      status: "queued",
+      runtimeId: undefined,
+      leaseId: undefined,
+      claimedAt: undefined,
+      leaseExpiresAt: undefined,
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+
+    const resumed = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-stale-resume",
+    });
+
+    expect(resumed.run.status).toBe("completed");
+    expect(commits).toBe(1);
+    expect(store.effects.map((record) => record.status)).toEqual([
+      "commit_requested",
+      "committed",
+      "replayed",
+    ]);
+  });
+
+  test("unknown effect commit intent blocks retry before duplicate adapter call", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        start: "writePlan",
+        nodes: [
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "none",
+            idempotency: "none",
+            input: { path: "out/plan.md", value: "Plan" },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-unknown-intent",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const [entry] = await store.getQueue(run.runId);
+    if (!entry) throw new Error("Missing effect queue entry");
+    await store.addEffectExecutionRecord({
+      schemaVersion: 1,
+      effectExecutionRecordId: `${entry.queueEntryId}:effect:commit-requested`,
+      runId: run.runId,
+      queueEntryId: entry.queueEntryId,
+      nodeId: "writePlan",
+      nodePath: entry.nodePath,
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "commit_requested",
+      preview: {
+        schemaVersion: 1,
+        title: "Write plan",
+        summary: "workspace.write is ready to commit.",
+      },
+      commitStatus: "not_attempted",
+      createdAt: "2026-05-15T00:00:01.000Z",
+    });
+    let commits = 0;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-effect-unknown-intent",
+      store,
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: false,
+          sideEffect: "write",
+          previewRequired: false,
+          approvalRequired: false,
+        },
+      },
+      effectAdapter() {
+        commits += 1;
+        return { outputReference: "out/plan.md" };
+      },
+    });
+
+    expect(result.run.status).toBe("blocked");
+    expect(result.run.blockedReason).toContain("Effect commit status is unknown");
+    expect(commits).toBe(0);
+    expect(store.effects.map((record) => record.status)).toEqual(["commit_requested", "skipped"]);
+  });
+
+  test("effect policies enforce approval, explicit preview, and idempotency requirements", async () => {
+    const cases: Array<{
+      name: string;
+      nodePatch: Partial<
+        Extract<CompiledPlaybookGraph["graph"]["nodes"][number], { kind: "effect" }>
+      >;
+      policyPatch?: Partial<PlaybookGraphEffectExecutionPolicy>;
+      omitPreview?: boolean;
+      blockedReason: string;
+    }> = [
+      {
+        name: "approval",
+        nodePatch: { approval: "none" },
+        blockedReason: "Effect execution policy requires approval for workspace:workspace.write",
+      },
+      {
+        name: "preview",
+        nodePatch: { approval: "none" },
+        policyPatch: { approvalRequired: false },
+        omitPreview: true,
+        blockedReason:
+          "Effect execution policy requires an explicit preview for workspace:workspace.write",
+      },
+      {
+        name: "idempotency",
+        nodePatch: { idempotency: "none" },
+        policyPatch: { previewRequired: false },
+        blockedReason: "Effect execution policy requires idempotency for workspace:workspace.write",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const store = new MemoryGraphRunStore();
+      const baseNode = {
+        id: "writePlan",
+        kind: "effect" as const,
+        effectId: "workspace.write",
+        capability: "tool.workspace.write",
+        adapterId: "workspace",
+        sideEffect: "write" as const,
+        approval: "required" as const,
+        idempotency: "required" as const,
+        idempotencyKey: `workspace.write:${testCase.name}`,
+        input: { path: "out/plan.md", value: "Plan" },
+        preview: {
+          schemaVersion: 1 as const,
+          title: "Write plan",
+          summary: "Write the plan to the workspace.",
+        },
+        onSuccess: "completed",
+      };
+      const node = testCase.omitPreview
+        ? (({ preview: _preview, ...rest }) => ({ ...rest, ...testCase.nodePatch }))(baseNode)
+        : { ...baseNode, ...testCase.nodePatch };
+      const run = await createPlaybookGraphRun({
+        compiledGraph: compiledGraph({
+          capabilities: ["tool.workspace.write"],
+          start: "writePlan",
+          nodes: [node],
+        }),
+        store,
+        runId: `run-effect-policy-${testCase.name}`,
+        now: "2026-05-15T00:00:00.000Z",
+      });
+      let commits = 0;
+
+      const result = await drainPlaybookGraphRun({
+        runId: run.runId,
+        runtimeId: `runtime-effect-policy-${testCase.name}`,
+        store,
+        effectPolicies: {
+          "workspace:workspace.write": {
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            idempotent: true,
+            sideEffect: "write",
+            previewRequired: true,
+            approvalRequired: true,
+            ...testCase.policyPatch,
+          },
+        },
+        effectAdapter() {
+          commits += 1;
+          return { outputReference: "out/plan.md" };
+        },
+      });
+
+      expect(result.run.status).toBe("blocked");
+      expect(result.run.blockedReason).toBe(testCase.blockedReason);
+      expect(commits).toBe(0);
+      expect(store.effects).toEqual([]);
+    }
+  });
+
+  test("denied effect records stop before adapter commit", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
+        start: "writePlan",
+        nodes: [
+          {
+            id: "writePlan",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:denied",
+            input: { path: "out/plan.md", value: "Plan" },
+            preview: {
+              schemaVersion: 1,
+              title: "Write plan",
+              summary: "Write the plan to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-effect-denied",
+      now: "2026-05-15T00:00:00.000Z",
+    });
+    const runtimeBase = {
+      runId: run.runId,
+      store,
+      effectPolicies: {
+        "workspace:workspace.write": {
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          idempotent: true,
+          sideEffect: "write" as const,
+          previewRequired: true,
+          approvalRequired: true,
+        },
+      },
+      effectAdapter() {
+        throw new Error("adapter should not be called after denial");
+      },
+    };
+
+    await drainPlaybookGraphRun({ ...runtimeBase, runtimeId: "runtime-effect-denied-preview" });
+    const entry = (await store.getQueue(run.runId)).find(
+      (candidate) => candidate.nodeId === "writePlan"
+    );
+    if (!entry) throw new Error("Missing denied effect queue entry");
+    const previewRecord = store.effects[0];
+    if (!previewRecord) throw new Error("Missing denied effect preview record");
+    await store.addEffectExecutionRecord({
+      ...previewRecord,
+      effectExecutionRecordId: `${entry.queueEntryId}:effect:denied`,
+      status: "denied",
+      reviewerDecision: "denied",
+      completedAt: "2026-05-15T00:00:10.000Z",
+      createdAt: "2026-05-15T00:00:10.000Z",
+    });
+    await store.updateQueueEntry({
+      ...entry,
+      status: "queued",
+      blockedReason: undefined,
+      updatedAt: "2026-05-15T00:00:10.000Z",
+    });
+    const blockedRun = await store.getRun(run.runId);
+    if (!blockedRun) throw new Error("Missing denied effect run");
+    await store.updateRun({
+      ...blockedRun,
+      status: "running",
+      blockedReason: undefined,
+      completedAt: undefined,
+    });
+
+    const denied = await drainPlaybookGraphRun({
+      ...runtimeBase,
+      runtimeId: "runtime-effect-denied",
+    });
+    expect(denied.run.status).toBe("denied");
+    expect(store.effects.map((record) => record.status)).toEqual(["previewed", "denied"]);
   });
 
   test("executes agent nodes through an adapter and memoizes resume", async () => {
@@ -1783,6 +2545,56 @@ describe("drainPlaybookGraphRun", () => {
     ]);
     const lookup = (await store.getQueue(run.runId)).find((entry) => entry.nodeId === "lookup");
     expect(lookup?.consumesArtifacts).toEqual([expect.objectContaining({ artifactId: "items" })]);
+  });
+
+  test("resolves script input references before adapter execution", async () => {
+    const store = new MemoryGraphRunStore();
+    const run = await createPlaybookGraphRun({
+      compiledGraph: compiledGraph({
+        artifacts: {
+          normalized: { schema: "schemas/normalized.schema.json" },
+        },
+        start: "normalize",
+        nodes: [
+          {
+            id: "normalize",
+            kind: "script",
+            run: "scripts/normalize.ts",
+            inputs: {
+              batchId: { input: "batchId" },
+              supplierPayload: { input: "supplier.payload" },
+            },
+            outputArtifact: "normalized",
+            onSuccess: "completed",
+          },
+        ],
+      }),
+      store,
+      runId: "run-script-input-ref",
+      now: "2026-05-15T00:00:00.000Z",
+      input: {
+        batchId: "RFQ-2026-05-25",
+        supplier: { payload: '[{"name":"Apex Components"}]' },
+      },
+    });
+    let scriptNodeInputs: unknown;
+
+    const result = await drainPlaybookGraphRun({
+      runId: run.runId,
+      runtimeId: "runtime-script-input-ref",
+      store,
+      scriptAdapter({ node }) {
+        scriptNodeInputs = node.inputs;
+        return node.inputs;
+      },
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(scriptNodeInputs).toEqual({
+      batchId: "RFQ-2026-05-25",
+      supplierPayload: '[{"name":"Apex Components"}]',
+    });
+    expect((await store.listArtifactVersions(run.runId))[0]?.value).toEqual(scriptNodeInputs);
   });
 
   test("blocks tool nodes without an explicit execution policy", async () => {
@@ -2717,6 +3529,7 @@ describe("drainPlaybookGraphRun", () => {
     const store = new MemoryGraphRunStore();
     const run = await createPlaybookGraphRun({
       compiledGraph: compiledGraph({
+        capabilities: ["tool.workspace.write"],
         start: "writePlan",
         nodes: [
           {

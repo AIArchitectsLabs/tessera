@@ -5,6 +5,7 @@ import type {
   AgentProfileListResult,
   IntegrationSettingsRead,
   ModelSettingsRead,
+  PlaybookAssignmentPreviewResult,
   PlaybookDetail,
   PlaybookGraphRunDetail,
   PlaybookGraphRunListResult,
@@ -56,8 +57,8 @@ const playbook = {
   sourceHash: "sha256:source",
   category: "Sales",
   businessUseCase: "Prepare for a customer or prospect meeting",
-  requiredCapabilities: [],
-  optionalCapabilities: [],
+  requiredCapabilities: ["tool.workspace.write"],
+  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
   inputs: {},
   outputs: [{ kind: "meetingBrief", label: "Meeting brief" }],
   steps: [
@@ -126,8 +127,8 @@ const importedPlaybook = {
   description: "Imported archive playbook",
   graphHash: "sha256:imported-graph",
   sourceHash: "sha256:imported-source",
-  requiredCapabilities: [],
-  optionalCapabilities: [],
+  requiredCapabilities: ["tool.workspace.write"],
+  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
   inputs: {},
   outputs: [],
   steps: [],
@@ -260,6 +261,7 @@ const graphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -451,6 +453,151 @@ const graphRunSurface = {
 const graphReviewQueueEntry = graphRunDetail.queue[0];
 if (!graphReviewQueueEntry) throw new Error("Expected graph review queue fixture");
 
+const effectApprovalGraphRunDetail = {
+  ...graphRunDetail,
+  run: {
+    ...graphRunDetail.run,
+    currentQueueEntryId: "queue-write-brief",
+    blockedReason: "effect approval required",
+  },
+  queue: [
+    {
+      ...graphReviewQueueEntry,
+      queueEntryId: "queue-draft",
+      nodeId: "draftBrief",
+      nodePath: "draftBrief",
+      nodeKind: "agent",
+      status: "succeeded",
+      producesArtifacts: ["contentBrief"],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      completedAt: "2026-05-15T00:00:30.000Z",
+      updatedAt: "2026-05-15T00:00:30.000Z",
+      blockedReason: undefined,
+    },
+    {
+      ...graphReviewQueueEntry,
+      queueEntryId: "queue-write-brief",
+      nodeId: "writeContentBrief",
+      nodePath: "writeContentBrief",
+      nodeKind: "effect",
+      status: "blocked",
+      dependsOn: ["queue-draft"],
+      producesArtifacts: [],
+      declaredConsumesArtifacts: ["contentBrief"],
+      consumesArtifacts: [
+        {
+          artifactId: "contentBrief",
+          versionId: "content-brief-v1",
+          contentHash: "sha256:content-brief",
+        },
+      ],
+      recoveryPolicy: "block_for_review",
+      updatedAt: "2026-05-15T00:01:00.000Z",
+      blockedReason: "effect approval required",
+    },
+  ],
+  effects: [
+    {
+      schemaVersion: 1,
+      effectExecutionRecordId: "effect-preview-1",
+      runId: "graph-run-1",
+      queueEntryId: "queue-write-brief",
+      nodeId: "writeContentBrief",
+      nodePath: "writeContentBrief",
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "previewed",
+      commitStatus: "not_attempted",
+      preview: {
+        schemaVersion: 1,
+        title: "Write content brief",
+        summary: "Write the approved SEO/GEO content brief to the selected workspace.",
+      },
+      createdAt: "2026-05-15T00:01:00.000Z",
+    },
+  ],
+} satisfies PlaybookGraphRunDetail;
+
+const effectApprovalGraphRunSurface = {
+  ...graphRunSurface,
+  detail: effectApprovalGraphRunDetail,
+  activeArtifacts: graphRunSurface.activeArtifacts.filter(
+    (artifact) => artifact.artifactId === "contentBrief"
+  ),
+  actions: [
+    {
+      schemaVersion: 1,
+      actionId: "queue-write-brief:effect:approve",
+      decision: "approve",
+      label: "Approve",
+      description: "Write the approved SEO/GEO content brief to the selected workspace.",
+      queueEntryId: "queue-write-brief",
+      nodePath: "writeContentBrief",
+      nodeKind: "effect",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [],
+      sideEffect: "resume",
+      destructive: false,
+      invalidatesDownstream: false,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+    {
+      schemaVersion: 1,
+      actionId: "queue-write-brief:effect:deny",
+      decision: "deny",
+      label: "Stop run",
+      queueEntryId: "queue-write-brief",
+      nodePath: "writeContentBrief",
+      nodeKind: "effect",
+      allowedRunStatuses: ["blocked"],
+      allowedQueueStatuses: ["blocked"],
+      requiredPayloadFields: [],
+      sideEffect: "terminal",
+      destructive: true,
+      invalidatesDownstream: false,
+      requiresExecutionContext: false,
+      requiresProvider: false,
+      requiresCredential: false,
+      requiresWorkspace: false,
+    },
+  ],
+  productView: {
+    schemaVersion: 1,
+    state: "waiting_for_review",
+    title: "Review needed",
+    message: "Review what Tessera prepared before the run continues.",
+    primaryAction: {
+      actionId: "queue-write-brief:effect:approve",
+      label: "Approve",
+      tone: "primary",
+      decision: "approve",
+      queueEntryId: "queue-write-brief",
+    },
+    secondaryActions: [
+      {
+        actionId: "queue-write-brief:effect:deny",
+        label: "Stop run",
+        tone: "danger",
+        decision: "deny",
+        queueEntryId: "queue-write-brief",
+      },
+    ],
+    technicalSummary: {
+      internalStatus: "blocked:blocked",
+      queueEntryId: "queue-write-brief",
+      nodePath: "writeContentBrief",
+      nodeKind: "effect",
+    },
+  },
+} satisfies PlaybookGraphRunReviewSurface;
+
 const articleReviewGraphRunDetail = {
   ...graphRunDetail,
   run: {
@@ -603,6 +750,7 @@ const contextDriftGraphRunDetail = {
   branchItems: [],
   artifacts: [],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -665,6 +813,7 @@ const interruptedGraphRunDetail = {
   branchItems: [],
   artifacts: [],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -802,6 +951,12 @@ const completedGraphRunDetail = {
       value: {
         text: "## Meeting brief\n\nCreated the brief and saved it in the workspace.",
         boundaryViolations: 0,
+        provenance: {
+          sourceKinds: ["gmail", "web", "cbp"],
+          sourceCount: 5,
+          fixtureOnly: true,
+          notes: "fixture evidence",
+        },
         usage: {
           inputTokens: 1200,
           outputTokens: 340,
@@ -814,7 +969,55 @@ const completedGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const scriptOnlyCompletedGraphRunDetail = {
+  ...completedGraphRunDetail,
+  run: {
+    ...completedGraphRunDetail.run,
+    runId: "graph-run-script-completed",
+    updatedAt: "2026-05-10T07:17:00.000Z",
+    completedAt: "2026-05-10T07:17:00.000Z",
+  },
+  queue: [
+    {
+      schemaVersion: 1,
+      queueEntryId: "queue-script",
+      runId: "graph-run-script-completed",
+      nodeId: "buildSummary",
+      nodePath: "buildSummary",
+      nodeKind: "script",
+      status: "succeeded",
+      dependsOn: [],
+      producesArtifacts: ["meetingBrief"],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "rerun_if_no_success_memo",
+      attempt: 0,
+      createdAt: "2026-05-10T07:15:00.000Z",
+      updatedAt: "2026-05-10T07:17:00.000Z",
+      completedAt: "2026-05-10T07:17:00.000Z",
+    },
+  ],
+  artifacts: [
+    {
+      schemaVersion: 1,
+      runId: "graph-run-script-completed",
+      artifactId: "meetingBrief",
+      versionId: "brief-script-v1",
+      producerQueueEntryId: "queue-script",
+      nodePath: "buildSummary",
+      contentHash: "sha256:script-meeting-brief",
+      value: {
+        text: "## Meeting brief\n\nCreated by deterministic workflow steps.",
+        boundaryViolations: 0,
+      },
+      createdAt: "2026-05-10T07:17:00.000Z",
+    },
+  ],
 } satisfies PlaybookGraphRunDetail;
 
 const seoCompletedGraphRunDetail = {
@@ -838,7 +1041,7 @@ const seoCompletedGraphRunDetail = {
               "Reference graph playbook for a blog article workflow using generic Tessera orchestration.",
             outputs: [
               { kind: "contentBrief", label: "Content Brief" },
-              { kind: "articleDraft", label: "Blog Article Draft" },
+              { kind: "finalArticle", label: "Final Article" },
             ],
           },
           artifacts: {
@@ -984,6 +1187,20 @@ const seoCompletedGraphRunDetail = {
     {
       schemaVersion: 1,
       runId: "graph-run-seo-completed",
+      artifactId: "briefReview",
+      versionId: "brief-review-v1",
+      producerQueueEntryId: "queue-brief-review",
+      nodePath: "briefReview",
+      contentHash: "sha256:brief-review",
+      value: {
+        permissionDecisions: [],
+        status: "completed",
+      },
+      createdAt: "2026-05-18T12:31:35.000Z",
+    },
+    {
+      schemaVersion: 1,
+      runId: "graph-run-seo-completed",
       artifactId: "finalArticle",
       versionId: "final-article-v1",
       producerQueueEntryId: "queue-final-article",
@@ -1057,7 +1274,155 @@ const seoCompletedGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
+} satisfies PlaybookGraphRunDetail;
+
+const seoWriteContentBriefQueueEntry = seoCompletedGraphRunDetail.queue[0];
+if (!seoWriteContentBriefQueueEntry) throw new Error("Expected SEO content brief queue fixture");
+
+const seoEffectCompletedGraphRunDetail = {
+  ...seoCompletedGraphRunDetail,
+  run: {
+    ...seoCompletedGraphRunDetail.run,
+    snapshot: {
+      ...seoCompletedGraphRunDetail.run.snapshot,
+      snapshotJson: JSON.stringify({
+        graph: {
+          name: "SEO/GEO Blog Article Reference Playbook",
+          description: "Reference graph playbook for a blog article workflow.",
+          metadata: {
+            businessUseCase:
+              "Reference graph playbook for a blog article workflow using generic Tessera orchestration.",
+            outputs: [
+              { kind: "contentBrief", label: "Content Brief" },
+              { kind: "finalArticle", label: "Final Article" },
+            ],
+          },
+          artifacts: {
+            contentBrief: {
+              schema: "schemas/contentBrief.schema.json",
+            },
+            finalArticle: {
+              schema: "schemas/finalArticle.schema.json",
+            },
+          },
+          nodes: [
+            {
+              id: "writeContentBrief",
+              kind: "effect",
+              effectId: "workspace.write",
+              capability: "tool.workspace.write",
+              adapterId: "workspace",
+              sideEffect: "write",
+              outputArtifact: "contentBrief",
+              input: {
+                sourceArtifact: "contentBrief",
+                target: {
+                  kind: "workspace",
+                  path: "outputs/content-brief.md",
+                  format: "markdown",
+                },
+              },
+            },
+            {
+              id: "writeFinalArticle",
+              kind: "effect",
+              effectId: "workspace.write",
+              capability: "tool.workspace.write",
+              adapterId: "workspace",
+              sideEffect: "write",
+              outputArtifact: "finalArticle",
+              input: {
+                sourceArtifact: "finalArticle",
+                target: {
+                  kind: "workspace",
+                  path: "outputs/final-article.md",
+                  format: "markdown",
+                },
+              },
+            },
+          ],
+        },
+      }),
+    },
+  },
+  queue: [
+    {
+      ...seoWriteContentBriefQueueEntry,
+      nodeKind: "effect",
+    },
+    {
+      ...seoWriteContentBriefQueueEntry,
+      queueEntryId: "queue-write-final-article",
+      nodeId: "writeFinalArticle",
+      nodePath: "writeFinalArticle",
+      nodeKind: "effect",
+      declaredConsumesArtifacts: ["finalArticle"],
+      consumesArtifacts: [
+        {
+          artifactId: "finalArticle",
+          versionId: "final-article-v1",
+          contentHash: "sha256:final-article",
+        },
+      ],
+      createdAt: "2026-05-18T12:32:10.000Z",
+      updatedAt: "2026-05-18T12:32:15.000Z",
+      completedAt: "2026-05-18T12:32:15.000Z",
+    },
+  ],
+  effects: [
+    {
+      schemaVersion: 1,
+      effectExecutionRecordId: "effect-content-brief-committed",
+      runId: "graph-run-seo-completed",
+      queueEntryId: "queue-write-content-brief",
+      nodeId: "writeContentBrief",
+      nodePath: "writeContentBrief",
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "committed",
+      commitStatus: "committed",
+      reviewerDecision: "approved",
+      outputArtifactId: "contentBrief",
+      outputReference: "outputs/content-brief.md",
+      output: {
+        kind: "workspace",
+        path: "outputs/content-brief.md",
+        format: "markdown",
+        bytes: 128,
+      },
+      createdAt: "2026-05-18T12:31:45.000Z",
+      completedAt: "2026-05-18T12:31:45.000Z",
+    },
+    {
+      schemaVersion: 1,
+      effectExecutionRecordId: "effect-final-article-committed",
+      runId: "graph-run-seo-completed",
+      queueEntryId: "queue-write-final-article",
+      nodeId: "writeFinalArticle",
+      nodePath: "writeFinalArticle",
+      effectId: "workspace.write",
+      capability: "tool.workspace.write",
+      adapterId: "workspace",
+      sideEffect: "write",
+      status: "committed",
+      commitStatus: "committed",
+      reviewerDecision: "approved",
+      outputArtifactId: "finalArticle",
+      outputReference: "outputs/final-article.md",
+      output: {
+        kind: "workspace",
+        path: "outputs/final-article.md",
+        format: "markdown",
+        bytes: 256,
+      },
+      createdAt: "2026-05-18T12:32:15.000Z",
+      completedAt: "2026-05-18T12:32:15.000Z",
+    },
+  ],
 } satisfies PlaybookGraphRunDetail;
 
 const seoContentBriefOnlyGraphRunDetail = {
@@ -1167,6 +1532,7 @@ const dashboardGraphRunDetail = {
     },
   ],
   reviews: [],
+  effects: [],
   operations: [],
 } satisfies PlaybookGraphRunDetail;
 
@@ -1208,9 +1574,76 @@ let includeInterruptedRun = false;
 let includeImportedPlaybook = false;
 let useDeclaredImportedOutputs = false;
 let playbookListOverride: Promise<PlaybookListResult> | null = null;
+let graphRunListOverride: PlaybookGraphRunDetail["run"][] | null = null;
 let graphRunSurfaceOverride: PlaybookGraphRunReviewSurface | null = null;
 let seoGraphRunSurfaceQueue: PlaybookGraphRunReviewSurface[] = [];
 let savedPlaybookAssignmentPlan: WorkflowRunAssignmentPlan | null = null;
+let playbookAssignmentPreviewOverride: PlaybookAssignmentPreviewResult | null = null;
+
+function assignmentPreviewForPlaybook(
+  detail: PlaybookDetail,
+  previousPlan?: WorkflowRunAssignmentPlan
+): PlaybookAssignmentPreviewResult {
+  const agentSteps = detail.steps.filter((step) => step.kind === "agent");
+  const assignments: WorkflowRunAssignmentPlan["assignments"] = {};
+  const nodePreviews = agentSteps.map((step) => {
+    const candidates = [
+      {
+        agentId: "default",
+        agentLabel: "Tessera",
+        assignment: {
+          stepId: step.id,
+          agentId: "default",
+          agentLabel: "Tessera",
+          agentFingerprint: "default-agent",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          integrationCapabilities: [],
+        },
+        recommended: previousPlan?.assignments[step.id]?.agentId !== "analyst",
+        disabled: false,
+      },
+      {
+        agentId: "analyst",
+        agentLabel: "Analyst",
+        assignment: {
+          stepId: step.id,
+          agentId: "analyst",
+          agentLabel: "Analyst",
+          agentFingerprint: "analyst-agent",
+          skillCapabilities: [],
+          toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+          integrationCapabilities: [],
+        },
+        recommended: previousPlan?.assignments[step.id]?.agentId === "analyst",
+        disabled: false,
+      },
+    ];
+    const recommended = candidates.find((candidate) => candidate.recommended) ?? candidates[0];
+    if (!recommended) throw new Error("Expected an assignment candidate");
+    assignments[step.id] = recommended.assignment;
+    return {
+      stepId: step.id,
+      stepLabel: step.label ?? step.id,
+      kind: "agent" as const,
+      recommendedAgentId: recommended.agentId,
+      recommendedAgentLabel: recommended.agentLabel,
+      candidates,
+    };
+  });
+
+  return {
+    assignmentPlan: {
+      resolverVersion: 2,
+      createdAt: "2026-05-25T00:00:00.000Z",
+      assignments,
+    },
+    confirmationRequired: false,
+    blockers: [],
+    sourceGaps: [],
+    nodePreviews,
+  };
+}
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
   const currentImportedPlaybook = useDeclaredImportedOutputs
@@ -1268,7 +1701,21 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>) => {
         updatedAt: "2026-05-20T00:00:00.000Z",
       };
     }
+    case "playbook_preflight": {
+      if (playbookAssignmentPreviewOverride) return playbookAssignmentPreviewOverride;
+      const detail =
+        args?.playbookId === dashboardPlaybook.id
+          ? dashboardPlaybook
+          : args?.playbookId === importedPlaybook.id
+            ? currentImportedPlaybook
+            : playbook;
+      const request = args?.request as { previousPlan?: WorkflowRunAssignmentPlan } | undefined;
+      return assignmentPreviewForPlaybook(detail, request?.previousPlan);
+    }
     case "graph_run_list":
+      if (graphRunListOverride) {
+        return { runs: graphRunListOverride } satisfies PlaybookGraphRunListResult;
+      }
       return {
         runs:
           args?.playbookId === dashboardPlaybook.id
@@ -1443,7 +1890,9 @@ mock.module("@tauri-apps/api/core", () => ({
   invoke,
 }));
 
-const openMock = mock<() => Promise<string | null>>(async () => "/tmp/reference.playbook.zip");
+const openMock = mock<(_options?: unknown) => Promise<string | null>>(
+  async () => "/tmp/reference.playbook.zip"
+);
 
 mock.module("@tauri-apps/plugin-dialog", () => ({
   open: openMock,
@@ -1470,9 +1919,11 @@ beforeEach(() => {
   includeImportedPlaybook = false;
   useDeclaredImportedOutputs = false;
   playbookListOverride = null;
+  graphRunListOverride = null;
   graphRunSurfaceOverride = null;
   seoGraphRunSurfaceQueue = [];
   savedPlaybookAssignmentPlan = null;
+  playbookAssignmentPreviewOverride = null;
   modelSettings.selectedProvider = "openai";
   modelSettings.providers["openai-codex"] = {
     provider: "openai-codex",
@@ -1592,6 +2043,7 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
     });
+    expect(invoke.mock.calls.some(([command]) => command === "playbook_preflight")).toBe(true);
 
     fireEvent.click(view.getByRole("button", { name: "Change setup" }));
     let agentSelect: HTMLSelectElement | null = null;
@@ -1705,6 +2157,8 @@ describe("PlaybooksView", () => {
     fireEvent.click(view.getByRole("button", { name: "View run details" }));
     await waitFor(() => {
       expect(view.getByText("Assigned to Analyst • Tools: Workspace Read")).toBeTruthy();
+      expect(view.getByText("Source provenance")).toBeTruthy();
+      expect(view.getByText("Gmail, Web, CBP feed · 5 sources · fixture run")).toBeTruthy();
     });
 
     const artifactCard = view.getByTitle("Open artifact");
@@ -1718,6 +2172,33 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("explains completed script-only graph runs without provider usage", async () => {
+    graphRunListOverride = [scriptOnlyCompletedGraphRunDetail.run];
+    graphRunSurfaceOverride = {
+      schemaVersion: 1,
+      detail: scriptOnlyCompletedGraphRunDetail,
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      branches: [],
+      actions: [],
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 10/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected script-only run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("No model token usage recorded for this run.")).toBeTruthy();
+      expect(view.queryByText("Not reported by provider.")).toBeNull();
+    });
+  });
+
   test("does not list workspace-scoped runs when no workspace is selected", async () => {
     const view = renderPlaybooksView(null);
 
@@ -1727,7 +2208,7 @@ describe("PlaybooksView", () => {
     expect(view.queryByText(/May 9/)).toBeNull();
   });
 
-  test("shows materialized graph artifacts when playbook output declarations are empty", async () => {
+  test("shows declared final graph outputs without intermediate artifacts", async () => {
     includeImportedPlaybook = true;
     const view = renderPlaybooksView();
 
@@ -1752,9 +2233,9 @@ describe("PlaybooksView", () => {
       expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
       expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
       expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
-      expect(view.getAllByText("Final Output Manifest").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/final-output-manifest\.md/).length).toBeGreaterThan(0);
-      expect(view.queryByText("Content Brief Draft")).toBeNull();
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
+      expect(view.queryByText("Final Output Manifest")).toBeNull();
       expect(view.queryByText("Article Scorecard")).toBeNull();
       expect(view.getByText("Input 2k tokens")).toBeTruthy();
       expect(view.getByText("Output 600 tokens")).toBeTruthy();
@@ -1764,6 +2245,55 @@ describe("PlaybooksView", () => {
     const finalArticleLabel = view.getAllByText("Final Article")[0];
     const artifactCard = finalArticleLabel?.closest("button");
     if (!artifactCard) throw new Error("Expected artifact card");
+    fireEvent.click(artifactCard);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("workspace_file_open", {
+        workspaceRoot: "/tmp/workspace",
+        path: "outputs/final-article.md",
+      });
+    });
+  });
+
+  test("opens graph outputs materialized by committed effect records", async () => {
+    includeImportedPlaybook = true;
+    seoGraphRunSurfaceQueue = [
+      {
+        schemaVersion: 1,
+        detail: seoEffectCompletedGraphRunDetail,
+        activeArtifacts: [],
+        artifactTimeline: [],
+        timeline: [],
+        branches: [],
+        actions: [],
+      },
+    ];
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 18/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected SEO run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
+    });
+
+    const finalArticleLabel = view.getAllByText("Final Article")[0];
+    const artifactCard = finalArticleLabel?.closest("button");
+    if (!artifactCard) throw new Error("Expected effect materialized artifact card");
     fireEvent.click(artifactCard);
 
     await waitFor(() => {
@@ -1838,8 +2368,10 @@ describe("PlaybooksView", () => {
       expect(view.getByTestId("result-output-list").className).toContain("grid");
       expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
       expect(view.getAllByText(/outputs\/content-brief\.md/).length).toBeGreaterThan(0);
-      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
       expect(view.queryByText("Draft Article")).toBeNull();
       expect(view.queryByText("Structure Article Draft")).toBeNull();
     });
@@ -1888,8 +2420,10 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getAllByText("Content Brief").length).toBeGreaterThan(0);
-      expect(view.getAllByText("Blog Article Draft").length).toBeGreaterThan(0);
-      expect(view.getAllByText(/outputs\/blog-draft\.md/).length).toBeGreaterThan(0);
+      expect(view.getAllByText("Final Article").length).toBeGreaterThan(0);
+      expect(view.getAllByText(/outputs\/final-article\.md/).length).toBeGreaterThan(0);
+      expect(view.queryByText("Brief Review")).toBeNull();
+      expect(view.queryByText("Article Draft")).toBeNull();
     });
   });
 
@@ -1925,6 +2459,46 @@ describe("PlaybooksView", () => {
         request: {
           runId: "graph-run-context-drift",
           decision: "approve_context_change",
+        },
+      });
+    });
+  });
+
+  test("shows effect approval blocks as review work instead of setup errors", async () => {
+    graphRunSurfaceOverride = effectApprovalGraphRunSurface;
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Review needed")).toBeTruthy();
+      expect(view.getByText(/Tessera prepared content brief for review/)).toBeTruthy();
+      expect(view.queryByText("Needs setup attention.")).toBeNull();
+      expect(view.queryByText("The run is blocked by a runtime setup problem.")).toBeNull();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string } | undefined)?.runId === "graph-run-1"
+      );
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        runId: "graph-run-1",
+        request: {
+          runId: "graph-run-1",
+          actionId: "queue-write-brief:effect:approve",
+          decision: "approve",
+          queueEntryId: "queue-write-brief",
         },
       });
     });
@@ -1966,6 +2540,143 @@ describe("PlaybooksView", () => {
           queueEntryId: "queue-draft-interrupted",
         },
       });
+    });
+  });
+
+  test("does not present a completed graph run as ready when a queue entry failed", async () => {
+    graphRunSurfaceOverride = {
+      ...graphRunSurface,
+      detail: {
+        ...graphRunDetail,
+        run: {
+          ...graphRunDetail.run,
+          status: "completed",
+          error: "Graph node draftFollowUps produced followUpDrafts that does not match schema.",
+          currentQueueEntryId: "queue-draft-failed",
+          completedAt: "2026-05-15T00:02:00.000Z",
+          updatedAt: "2026-05-15T00:02:00.000Z",
+        },
+        queue: [
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-draft-failed",
+            nodeId: "draftFollowUps",
+            nodePath: "draftFollowUps",
+            nodeKind: "agent",
+            status: "failed",
+            error: "Graph node draftFollowUps produced followUpDrafts that does not match schema.",
+            blockedReason: undefined,
+            completedAt: "2026-05-15T00:02:00.000Z",
+            updatedAt: "2026-05-15T00:02:00.000Z",
+          },
+        ],
+      },
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      actions: [],
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Needs attention.")).toBeTruthy();
+      expect(
+        view.getByText("Tessera ran into a problem and could not finish this run.")
+      ).toBeTruthy();
+      expect(view.queryByText("Sales Meeting Brief is ready.")).toBeNull();
+    });
+  });
+
+  test("does not badge a completed graph run with an error as ready", async () => {
+    graphRunListOverride = [
+      {
+        ...completedGraphRunDetail.run,
+        status: "completed",
+        error: "Graph node draftFollowUps produced followUpDrafts that does not match schema.",
+        currentQueueEntryId: "queue-draft-failed",
+        completedAt: "2026-05-15T00:02:00.000Z",
+        updatedAt: "2026-05-15T00:02:00.000Z",
+      },
+    ];
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByText("Needs attention")).toBeTruthy();
+      expect(view.queryByText("Ready")).toBeNull();
+    });
+  });
+
+  test("shows the run failure before the latest resume event", async () => {
+    const failedRun = {
+      ...graphRunDetail.run,
+      status: "failed" as const,
+      error:
+        "Using keyring backend: keyring\nerror[api]: Request had insufficient authentication scopes.",
+      blockedReason: undefined,
+      currentQueueEntryId: "queue-sheets-failed",
+      updatedAt: "2026-05-15T00:02:00.000Z",
+    };
+    graphRunListOverride = [failedRun];
+    graphRunSurfaceOverride = {
+      ...graphRunSurface,
+      detail: {
+        ...graphRunDetail,
+        run: failedRun,
+        queue: [
+          {
+            ...graphReviewQueueEntry,
+            queueEntryId: "queue-sheets-failed",
+            nodeId: "commitSheetsLedger",
+            nodePath: "commitSheetsLedger",
+            nodeKind: "effect",
+            status: "failed",
+            error: failedRun.error,
+            blockedReason: undefined,
+            completedAt: "2026-05-15T00:02:00.000Z",
+            updatedAt: "2026-05-15T00:02:00.000Z",
+          },
+        ],
+        operations: [
+          {
+            schemaVersion: 1,
+            operationRecordId: "resume-operation",
+            operationAttemptId: "resume-attempt",
+            runId: failedRun.runId,
+            actionSpecId: "queue-review:approve",
+            kind: "resume",
+            status: "succeeded",
+            operatorIntent: "Approve outreach plan",
+            affectedArtifactIds: [],
+            affectedReviewEventIds: [],
+            affectedQueueEntryIds: ["queue-review"],
+            createdAt: "2026-05-15T00:01:30.000Z",
+            completedAt: "2026-05-15T00:01:31.000Z",
+          },
+        ],
+      },
+    };
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected graph run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText(/Google Workspace needs additional access/)).toBeTruthy();
+      expect(view.queryByText(/Using keyring backend/)).toBeNull();
+      expect(view.queryByText("Resume succeeded")).toBeNull();
     });
   });
 
@@ -2259,6 +2970,97 @@ describe("PlaybooksView", () => {
     }
   });
 
+  test("shows needs-repair graph runs as repair work", async () => {
+    const repairDetail = {
+      ...graphRunDetail,
+      run: {
+        ...graphRunDetail.run,
+        runId: "graph-run-repair",
+        status: "needs_repair",
+        currentQueueEntryId: undefined,
+        blockedReason: undefined,
+        repairReason: "Pinned graph snapshot hash mismatch",
+        updatedAt: "2026-05-15T00:02:00.000Z",
+      },
+      queue: [],
+    } satisfies PlaybookGraphRunDetail;
+    graphRunListOverride = [repairDetail.run];
+    graphRunSurfaceOverride = {
+      schemaVersion: 1,
+      detail: repairDetail,
+      activeArtifacts: [],
+      artifactTimeline: [],
+      timeline: [],
+      branches: [],
+      productView: {
+        schemaVersion: 1,
+        state: "restart_required",
+        title: "Run needs repair",
+        message: "Pinned graph snapshot hash mismatch",
+        primaryAction: {
+          actionId: "graph-run-repair:approve_repair",
+          label: "Repair run",
+          tone: "primary",
+          decision: "approve_repair",
+        },
+        secondaryActions: [],
+        technicalSummary: {
+          internalStatus: "needs_repair",
+        },
+      },
+      actions: [
+        {
+          schemaVersion: 1,
+          actionId: "graph-run-repair:approve_repair",
+          decision: "approve_repair",
+          label: "Repair run",
+          description: "Pinned graph snapshot hash mismatch",
+          allowedRunStatuses: ["needs_repair"],
+          allowedQueueStatuses: [],
+          requiredPayloadFields: [],
+          sideEffect: "resume",
+          destructive: false,
+          invalidatesDownstream: false,
+          requiresExecutionContext: false,
+          requiresProvider: false,
+          requiresCredential: false,
+          requiresWorkspace: false,
+        },
+      ],
+    } satisfies PlaybookGraphRunReviewSurface;
+    const view = renderPlaybooksView();
+
+    let runButton: HTMLElement | null = null;
+    await waitFor(() => {
+      runButton = view.getByText(/May 15/).closest("button");
+      expect(runButton).toBeTruthy();
+    });
+    if (!runButton) throw new Error("Expected needs-repair run button");
+    fireEvent.click(runButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Run needs repair")).toBeTruthy();
+      expect(view.getAllByText("Pinned graph snapshot hash mismatch").length).toBeGreaterThan(0);
+      expect(view.queryByText("Working")).toBeNull();
+      expect(view.getByRole("button", { name: "Repair run" })).toBeTruthy();
+    });
+
+    fireEvent.click(view.getByRole("button", { name: "Repair run" }));
+    await waitFor(() => {
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string } | undefined)?.runId === "graph-run-repair"
+      );
+      expect(resumeCall).toBeTruthy();
+      expect(resumeCall?.[1]).toMatchObject({
+        request: {
+          decision: "approve_repair",
+        },
+      });
+    });
+  });
+
   test("shows prepared artifact evidence before approving human review runs", async () => {
     const view = renderPlaybooksView();
 
@@ -2348,17 +3150,23 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getByRole("button", { name: "Request changes" })).toBeTruthy();
-      expect(view.getByPlaceholderText("Notes")).toBeTruthy();
+      expect(view.queryByLabelText("Notes")).toBeNull();
     });
 
-    const notesTextarea = view.getByPlaceholderText("Notes") as HTMLTextAreaElement;
+    fireEvent.click(view.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => {
+      expect(view.getByText("Tell Tessera what to change")).toBeTruthy();
+      expect(view.getByLabelText("Notes")).toBeTruthy();
+    });
+
+    const notesTextarea = view.getByLabelText("Notes") as HTMLTextAreaElement;
     fireEvent.change(notesTextarea, {
       target: { value: "Add examples from finance teams." },
     });
     await waitFor(() => {
       expect(notesTextarea.value).toBe("Add examples from finance teams.");
     });
-    const guidedRequestChangesButton = view.getAllByRole("button", { name: "Request changes" })[0];
+    const guidedRequestChangesButton = view.getByRole("button", { name: "Send change request" });
     if (!guidedRequestChangesButton) throw new Error("Expected guided request changes button");
     fireEvent.click(guidedRequestChangesButton);
 
@@ -2499,7 +3307,7 @@ describe("PlaybooksView", () => {
     });
   });
 
-  test("renders pinned dashboard runs with dashboard layout and refresh button", async () => {
+  test("opens pinned dashboards on the latest completed run by default", async () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
@@ -2511,14 +3319,6 @@ describe("PlaybooksView", () => {
     if (!dashboardButton) throw new Error("Expected dashboard playbook button");
     fireEvent.click(dashboardButton);
 
-    let runButton: HTMLElement | null = null;
-    await waitFor(() => {
-      runButton = view.getByText(/May 10/).closest("button");
-      expect(runButton).toBeTruthy();
-    });
-    if (!runButton) throw new Error("Expected dashboard run button");
-    fireEvent.click(runButton);
-
     await waitFor(() => {
       expect(view.getAllByText("Latest workspace update").length).toBeGreaterThan(0);
       expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
@@ -2528,15 +3328,32 @@ describe("PlaybooksView", () => {
       expect(view.getByText("7")).toBeTruthy();
       expect(view.getByRole("button", { name: /Refresh snapshot/i })).toBeTruthy();
     });
+    expect(view.queryByRole("button", { name: "Create snapshot" })).toBeNull();
+  });
+
+  test("opens an initially selected dashboard after its completed runs load", async () => {
+    playbookListOverride = Promise.resolve({ playbooks: [dashboardPlaybook, playbook] });
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Activity Snapshot").length).toBeGreaterThan(0);
+    });
+
+    await waitFor(() => {
+      expect(view.getByText(/May 10/)).toBeTruthy();
+      expect(view.getByText("Activity Snapshot is ready.")).toBeTruthy();
+      expect(view.getByText("7")).toBeTruthy();
+    });
+    expect(view.queryByRole("button", { name: "Create snapshot" })).toBeNull();
   });
 
   test("imports a playbook archive and selects the imported playbook", async () => {
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByTitle("Import playbook")).toBeTruthy();
+      expect(view.getByTitle("Import playbook archive")).toBeTruthy();
     });
-    fireEvent.click(view.getByTitle("Import playbook"));
+    fireEvent.click(view.getByTitle("Import playbook archive"));
 
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledWith({
@@ -2565,14 +3382,93 @@ describe("PlaybooksView", () => {
     });
   });
 
+  test("imports a playbook folder and selects the imported playbook", async () => {
+    graphRunListOverride = [];
+    openMock.mockImplementation(async () => "/tmp/supply-chain-risk-playbook");
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getByTitle("Import playbook folder")).toBeTruthy();
+    });
+    fireEvent.click(view.getByTitle("Import playbook folder"));
+
+    await waitFor(() => {
+      expect(openMock).toHaveBeenCalledWith({ multiple: false, directory: true });
+      expect(
+        invoke.mock.calls.some(
+          ([command, args]) =>
+            command === "playbook_import" &&
+            (args as Record<string, unknown>).sourcePath === "/tmp/supply-chain-risk-playbook" &&
+            (args as Record<string, unknown>).userKey === "user.test"
+        )
+      ).toBe(true);
+      expect(view.getByText("Folder selected")).toBeTruthy();
+      expect(view.getAllByText("Package 0.1.3").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    await waitFor(() => {
+      expect(view.getByText("Tessera needs these capabilities to run")).toBeTruthy();
+      expect(view.getByText("Workspace Write")).toBeTruthy();
+      expect(view.getByText("Tessera uses these sources when available")).toBeTruthy();
+      expect(view.getByText("Gmail Search")).toBeTruthy();
+      expect(view.getByText("Web Search")).toBeTruthy();
+      expect(view.getByText("Web Fetch")).toBeTruthy();
+    });
+  });
+
+  test("names blocked setup capabilities", async () => {
+    includeImportedPlaybook = true;
+    graphRunListOverride = [];
+    playbookAssignmentPreviewOverride = {
+      assignmentPlan: {
+        resolverVersion: 2,
+        createdAt: "2026-05-25T00:00:00.000Z",
+        assignments: {},
+      },
+      confirmationRequired: true,
+      blockers: [
+        {
+          stepId: "commitSheetsLedger",
+          kind: "integration",
+          capability: "integration.sheets.rows.write",
+          optional: false,
+          reason: "This required capability is not configured in the current workspace.",
+        },
+      ],
+      sourceGaps: [],
+      nodePreviews: [],
+    };
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    await waitFor(() => {
+      expect(
+        view.getByText(
+          "Sheets Rows Write: This required capability is not configured in the current workspace."
+        )
+      ).toBeTruthy();
+    });
+  });
+
   test("canceling playbook import leaves state unchanged", async () => {
     openMock.mockImplementation(async () => null);
     const view = renderPlaybooksView();
 
     await waitFor(() => {
-      expect(view.getByTitle("Import playbook")).toBeTruthy();
+      expect(view.getByTitle("Import playbook archive")).toBeTruthy();
     });
-    fireEvent.click(view.getByTitle("Import playbook"));
+    fireEvent.click(view.getByTitle("Import playbook archive"));
 
     await waitFor(() => {
       expect(openMock).toHaveBeenCalled();

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -14,6 +14,7 @@ export type OptionalCapabilityArchiveKind = "tar.gz" | "zip";
 export interface OptionalCapabilityArchive {
   kind: OptionalCapabilityArchiveKind;
   entry: string;
+  installRoot?: string;
 }
 
 export interface OptionalCapabilityAsset {
@@ -122,6 +123,13 @@ export interface OptionalCapabilityEnv {
   TESSERA_PYTHON_RUNNER_SIZE_BYTES?: string;
   TESSERA_PYTHON_RUNNER_ARCHIVE_KIND?: string;
   TESSERA_PYTHON_RUNNER_ARCHIVE_ENTRY?: string;
+  TESSERA_BROWSER_RUNTIME_URL?: string;
+  TESSERA_BROWSER_RUNTIME_SHA256?: string;
+  TESSERA_BROWSER_RUNTIME_VERSION?: string;
+  TESSERA_BROWSER_RUNTIME_SIZE_BYTES?: string;
+  TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND?: string;
+  TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY?: string;
+  TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT?: string;
   TESSERA_GWS_CLI_URL?: string;
   TESSERA_GWS_CLI_SHA256?: string;
   TESSERA_GWS_CLI_VERSION?: string;
@@ -300,6 +308,26 @@ export function optionalCapabilityDefinitionsFromEnv(
       assets: [pythonRunnerAsset],
     });
   }
+
+  const browserRuntimeExecutable = env.TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY?.trim() || "chromium";
+  const browserRuntimeAsset = assetFromEnv({
+    platform,
+    arch,
+    url: env.TESSERA_BROWSER_RUNTIME_URL,
+    sha256: env.TESSERA_BROWSER_RUNTIME_SHA256,
+    executableName: browserRuntimeExecutable,
+    sizeBytes: env.TESSERA_BROWSER_RUNTIME_SIZE_BYTES,
+    archiveKind: env.TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND,
+    archiveEntry: env.TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY,
+    archiveInstallRoot: env.TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT,
+  });
+  definitions.push({
+    id: "browser-runtime",
+    label: "Browser automation runtime",
+    version: env.TESSERA_BROWSER_RUNTIME_VERSION?.trim() || "managed",
+    binaries: [{ name: "chromium", relativePath: browserRuntimeExecutable }],
+    assets: browserRuntimeAsset ? [browserRuntimeAsset] : [],
+  });
 
   const gws = builtinGwsDefinition(platform);
   const envIsForHost = platform === process.platform && arch === process.arch;
@@ -481,7 +509,23 @@ export function createOptionalCapabilityManager(
             `Capability archive entry escapes the extract directory: ${definition.id}`
           );
         }
-        await copyFile(entryPath, outputPath);
+        if (archive.installRoot) {
+          const installRootPath = resolve(extractDir, archive.installRoot);
+          const installRootRelative = relative(extractDir, installRootPath);
+          if (installRootRelative.startsWith("..") || isAbsolute(installRootRelative)) {
+            throw new Error(
+              `Capability archive install root escapes the extract directory: ${definition.id}`
+            );
+          }
+          const outputRootPath = resolve(
+            capabilityDirectory(options.rootDir, definition),
+            installRootRelative
+          );
+          await mkdir(dirname(outputRootPath), { recursive: true });
+          await cp(installRootPath, outputRootPath, { recursive: true });
+        } else {
+          await copyFile(entryPath, outputPath);
+        }
       } finally {
         await rm(workDir, { recursive: true, force: true });
       }
@@ -640,11 +684,16 @@ function assetFromEnv(options: {
   sizeBytes: string | undefined;
   archiveKind?: string | undefined;
   archiveEntry?: string | undefined;
+  archiveInstallRoot?: string | undefined;
 }): OptionalCapabilityAsset | undefined {
   const url = options.url?.trim();
   const sha256 = options.sha256?.trim();
   if (!url || !sha256) return undefined;
-  const archive = archiveFromEnv(options.archiveKind, options.archiveEntry);
+  const archive = archiveFromEnv(
+    options.archiveKind,
+    options.archiveEntry,
+    options.archiveInstallRoot
+  );
   const parsedSize =
     options.sizeBytes !== undefined && options.sizeBytes.trim().length > 0
       ? Number.parseInt(options.sizeBytes, 10)
@@ -664,13 +713,15 @@ function assetFromEnv(options: {
 
 function archiveFromEnv(
   kindValue: string | undefined,
-  entryValue: string | undefined
+  entryValue: string | undefined,
+  installRootValue?: string | undefined
 ): OptionalCapabilityArchive | undefined {
   const kind = kindValue?.trim();
   const entry = entryValue?.trim();
+  const installRoot = installRootValue?.trim();
   if (!kind && !entry) return undefined;
   if ((kind !== "tar.gz" && kind !== "zip") || !entry) return undefined;
-  return { kind, entry };
+  return { kind, entry, ...(installRoot ? { installRoot } : {}) };
 }
 
 function binaryPath(

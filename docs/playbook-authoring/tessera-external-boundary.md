@@ -33,7 +33,7 @@ External playbook packages must not define `bin` entrypoints, standalone runner 
 
 ## Supply-Chain-Specific Boundary
 
-The supply-chain playbook keeps these inside `/Users/utpal/Code/projects/supply-chain-risk-playbook`:
+The supply-chain playbook keeps these inside its external package:
 
 - `riskSignal[]` schema and provenance fields.
 - Supplier, SKU, lane, material, port, and region entity mapping.
@@ -60,5 +60,5 @@ The boundary is enforced by generic validator behavior:
 
 | Package | Boundary evidence |
 | --- | --- |
-| `/Users/utpal/Code/projects/seo-geo-blog-reference-playbook` | SEO/GEO semantics, scoring, prompts, schemas, and final article/brief templates stay external. Tessera validation passes with 0 diagnostics. |
-| `/Users/utpal/Code/projects/supply-chain-risk-playbook` | Supply-chain risk taxonomy, `riskSignal[]`, prompts, schemas, scripts, fixtures, and final disruption packet stay external. Tessera validation passes with 0 diagnostics. |
+| SEO/GEO reference package | SEO/GEO semantics, scoring, prompts, schemas, and final article/brief templates stay external. Tessera validation passes with 0 diagnostics. |
+| Supply-chain risk package | Supply-chain risk taxonomy, `riskSignal[]`, prompts, schemas, scripts, fixtures, and final disruption packet stay external. Tessera validation passes with 0 diagnostics. |

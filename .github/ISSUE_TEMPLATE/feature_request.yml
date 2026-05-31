@@ -1,0 +1,34 @@
+name: Feature Request
+description: Suggest an improvement or new capability.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the smallest useful version of the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds or other approaches did you consider?
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and Privacy Considerations
+      description: Note any credential, filesystem, network, data retention, or approval implications.
+  - type: textarea
+    id: verification
+    attributes:
+      label: How Would We Verify This?
+      description: Tests, manual flows, docs, screenshots, or acceptance criteria.

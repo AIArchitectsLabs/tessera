@@ -32,6 +32,8 @@
       "apps/desktop/src-tauri/gen",
       "apps/desktop/src-tauri/binaries",
       "packages/core/src/builtin-graph-playbook-bundles.generated.ts",
+      "**/graphify-out",
+      ".graphify_python",
       ".omx",
       "bun.lockb"
     ]

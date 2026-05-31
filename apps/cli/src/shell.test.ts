@@ -5,6 +5,16 @@ import { dirname, join } from "node:path";
 import { executeCliCommand } from "./shell.js";
 import type { ExecuteCliCommandOptions } from "./shell.js";
 
+function writeExecutionToken(approvalId: string, idempotencyKey: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      approvalId,
+      idempotencyKey,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+  ).toString("base64url");
+}
+
 async function writePlaybookPackageFile(
   root: string,
   relativePath: string,
@@ -21,13 +31,23 @@ async function makeValidPlaybookPackage(
     nodeTools?: string[];
     includeOutputSchema?: boolean;
     includeArtifactWrite?: boolean;
+    includeEffectWrite?: boolean;
   } = {}
 ): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "tessera-cli-playbook-"));
-  const capabilities = options.capabilities ?? ["web.search"];
-  const nodeTools = options.nodeTools ?? ["web.search"];
   const includeOutputSchema = options.includeOutputSchema ?? true;
   const includeArtifactWrite = options.includeArtifactWrite ?? true;
+  const includeEffectWrite = options.includeEffectWrite ?? false;
+  const capabilities = options.capabilities ?? [
+    "web.search",
+    ...(includeArtifactWrite || includeEffectWrite ? ["tool.workspace.write"] : []),
+  ];
+  const nodeTools = options.nodeTools ?? ["web.search"];
+  const finalWriteNodeId = includeEffectWrite
+    ? "commitBrief"
+    : includeArtifactWrite
+      ? "writeBrief"
+      : "completed";
   const graph = {
     schemaVersion: 1,
     id: "operations.playbook-validation-fixture",
@@ -51,8 +71,35 @@ async function makeValidPlaybookPackage(
           artifact: "brief",
           ...(includeOutputSchema ? { schema: "schemas/brief.schema.json" } : {}),
         },
-        onSuccess: includeArtifactWrite ? "writeBrief" : "completed",
+        onSuccess: finalWriteNodeId,
       },
+      ...(includeEffectWrite
+        ? [
+            {
+              id: "commitBrief",
+              kind: "effect",
+              effectId: "workspace.write",
+              capability: "tool.workspace.write",
+              adapterId: "workspace",
+              sideEffect: "write",
+              approval: "required",
+              idempotency: "required",
+              idempotencyKey: "workspace.write:operations.playbook-validation-fixture:brief",
+              input: {
+                sourceArtifact: "brief",
+                value: { artifact: "brief" },
+                path: "Brief.md",
+                format: "markdown",
+              },
+              preview: {
+                schemaVersion: 1,
+                title: "Write brief",
+                summary: "Write the approved brief to the selected workspace.",
+              },
+              onSuccess: "completed",
+            },
+          ]
+        : []),
       ...(includeArtifactWrite
         ? [
             {
@@ -91,6 +138,21 @@ async function makeValidPlaybookPackage(
 describe("workspace cli shell commands", () => {
   test("validates a playbook package in text mode", async () => {
     const root = await makeValidPlaybookPackage();
+
+    const result = await executeCliCommand(["playbook", "validate", root]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Playbook validation passed");
+    expect(result.stdout).toContain("Summary: 0 error(s), 0 warning(s), 0 info");
+  });
+
+  test("accepts workspace write effects as final playbook writes", async () => {
+    const root = await makeValidPlaybookPackage({
+      capabilities: ["web.search", "tool.workspace.write"],
+      includeArtifactWrite: false,
+      includeEffectWrite: true,
+    });
 
     const result = await executeCliCommand(["playbook", "validate", root]);
 
@@ -164,7 +226,7 @@ describe("workspace cli shell commands", () => {
   version: "0.1.0",
   name: "Playbook Validation Fixture",
   artifacts: { brief: { schema: "schemas/missing.schema.json" } },
-  capabilities: [],
+  capabilities: ["tool.workspace.write"],
   start: "writeBrief",
   nodes: [{ id: "writeBrief", kind: "artifactWrite", artifact: "brief", path: "Brief.md", onSuccess: "completed" }]
 };\n`
@@ -642,6 +704,18 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("validates draft command usage", async () => {
+    const result = await executeCliCommand(
+      ["mail", "draft", "--to", "prospect@example.com", "--subject", "Weekly Update"],
+      {
+        runGwsCli: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
+      }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Usage: mail draft");
+  });
+
   test("returns normalized mail read results without splitting quoted recipients", async () => {
     let capturedArgs: string[] = [];
     const result = await executeCliCommand(["mail", "read", "msg-1"], {
@@ -694,6 +768,151 @@ describe("workspace cli shell commands", () => {
         labels: ["INBOX"],
       },
     });
+  });
+
+  test("creates a draft through gmail drafts create with encoded MIME", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Draft title",
+        "--body",
+        "Hello team\nSecond line",
+        "--cc",
+        "team@example.com",
+      ],
+      {
+        runGwsCli: async (args) => {
+          capturedArgs = args;
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              id: "draft-1",
+              message: {
+                id: "msg-1",
+                threadId: "thread-1",
+              },
+            }),
+            stderr: "",
+          };
+        },
+      }
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "drafts", "create"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    const bodyArg = JSON.parse(capturedArgs[capturedArgs.indexOf("--json") + 1] ?? "{}");
+    expect(params).toEqual({ userId: "me" });
+    const rawMessage = Buffer.from(bodyArg.message.raw, "base64url").toString("utf8");
+    expect(rawMessage).toContain("Hello team");
+    expect(rawMessage).toContain("Second line");
+    expect(rawMessage).toContain("Subject: Draft title");
+    expect(rawMessage).toContain("To: jane@example.com");
+    expect(rawMessage).toContain("Cc: team@example.com");
+    expect(rawMessage).toContain("Content-Transfer-Encoding: 8bit");
+    expect(rawMessage).not.toContain("Bcc:");
+    expect(JSON.parse(result.stdout)).toEqual({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+  });
+
+  test("sends an existing gmail draft by id", async () => {
+    let capturedArgs: string[] = [];
+    const result = await executeCliCommand(["mail", "send-draft", "draft-1"], {
+      runGwsCli: async (args) => {
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            id: "msg-1",
+            threadId: "thread-1",
+            labelIds: ["SENT", "INBOX"],
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(capturedArgs.slice(0, 4)).toEqual(["gmail", "users", "drafts", "send"]);
+    const params = JSON.parse(capturedArgs[capturedArgs.indexOf("--params") + 1] ?? "{}");
+    const jsonArg = JSON.parse(capturedArgs[capturedArgs.indexOf("--json") + 1] ?? "{}");
+    expect(params).toEqual({ userId: "me" });
+    expect(jsonArg).toEqual({ id: "draft-1" });
+    expect(JSON.parse(result.stdout)).toEqual({
+      message: {
+        id: "msg-1",
+        labels: ["SENT", "INBOX"],
+        threadId: "thread-1",
+        snippet: "",
+      },
+    });
+  });
+
+  test("returns usage error for incomplete mail draft args", async () => {
+    const result = await executeCliCommand(["mail", "draft", "--to", "jane@example.com"], {
+      runGwsCli: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain(
+      "Usage: mail draft --to <address> --subject <subject> --body <body>"
+    );
+  });
+
+  test("rejects line breaks in mail draft headers", async () => {
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Hello\nBcc: attacker@example.com",
+        "--body",
+        "Safe body",
+      ],
+      {
+        runGwsCli: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      }
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("mail headers cannot contain line breaks");
+  });
+
+  test("surfaces reconnection guidance for Google scope failures", async () => {
+    const result = await executeCliCommand(
+      [
+        "mail",
+        "draft",
+        "--to",
+        "jane@example.com",
+        "--subject",
+        "Draft title",
+        "--body",
+        "Hello team",
+      ],
+      {
+        runGwsCli: async () => ({
+          exitCode: 1,
+          stdout: "",
+          stderr: "Request had insufficient authentication scopes.",
+        }),
+      }
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Google Workspace needs additional access");
   });
 
   test("returns normalized drive search results", async () => {
@@ -1056,6 +1275,597 @@ describe("workspace cli shell commands", () => {
         },
       ],
     });
+  });
+
+  test("returns non-mutating sheets row dry-run previews", async () => {
+    const result = await executeCliCommand([
+      "sheets",
+      "rows.upsert",
+      "--spreadsheet",
+      "sheet-1",
+      "--table",
+      "Suppliers",
+      "--key-column",
+      "supplier id",
+      "--key-value",
+      "sup-1",
+      "--row-json",
+      JSON.stringify({ "supplier id": "sup-1", name: "Acme", status: "new" }),
+      "--dry-run",
+      "--idempotency-key",
+      "idem-1",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload).toMatchObject({
+      dryRun: true,
+      operation: "upsert",
+      idempotencyKey: "idem-1",
+      preview: { spreadsheetId: "sheet-1", table: "Suppliers" },
+    });
+  });
+
+  test("returns supplier workbook dry-run previews with exact table headers", async () => {
+    const result = await executeCliCommand([
+      "sheets",
+      "workbook.create",
+      "--title",
+      "Supplier Sourcing",
+      "--dry-run",
+      "--idempotency-key",
+      "idem-workbook",
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.dryRun).toBe(true);
+    expect(payload.sheets.map((sheet: { table: string }) => sheet.table)).toEqual([
+      "Suppliers",
+      "RFQs",
+      "Messages",
+      "Quotes",
+      "FollowUps",
+      "Decisions",
+    ]);
+    expect(payload.headers.Suppliers).toEqual([
+      "supplier id",
+      "name",
+      "contact",
+      "email",
+      "platform URL",
+      "country",
+      "status",
+    ]);
+  });
+
+  test("normalizes keyring noise from Google Sheets permission failures", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async () => ({
+            exitCode: 1,
+            stdout: "",
+            stderr: "Using keyring backend: file\nerror[api]: The caller does not have permission",
+          }),
+        }
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Google Workspace denied this request");
+      expect(result.stderr).not.toContain("Using keyring backend");
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("executes approved workbook creation through Drive then Sheets setup", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  id: "sheet-1",
+                  webViewLink: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+                }),
+                stderr: "",
+              };
+            }
+            if (operation === "sheets spreadsheets get") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  sheets: [{ properties: { sheetId: 0, title: "Sheet1" } }],
+                }),
+                stderr: "",
+              };
+            }
+            return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createWorkbook",
+        spreadsheetId: "sheet-1",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+        approvalId: "approval-workbook",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "sheets spreadsheets get",
+        "sheets spreadsheets batchUpdate",
+        "sheets spreadsheets values",
+      ]);
+      const createBody = JSON.parse(
+        capturedArgs[0]?.[(capturedArgs[0]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(createBody.mimeType).toBe("application/vnd.google-apps.spreadsheet");
+      const setupBody = JSON.parse(
+        capturedArgs[2]?.[(capturedArgs[2]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(setupBody.requests[0].updateSheetProperties.properties.title).toBe("Suppliers");
+      expect(setupBody.requests.some((request: { addSheet?: unknown }) => request.addSheet)).toBe(
+        true
+      );
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("falls back to Sheets create when Drive file creation needs another grant", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-workbook",
+      "idem-workbook"
+    );
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "workbook.create",
+          "--title",
+          "Supplier Sourcing",
+          "--execute",
+          "--approval",
+          "approval-workbook",
+          "--idempotency-key",
+          "idem-workbook",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 1,
+                stdout: "",
+                stderr: "Request had insufficient authentication scopes.",
+              };
+            }
+            if (operation === "sheets spreadsheets create") {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  spreadsheetId: "sheet-1",
+                  spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+                }),
+                stderr: "",
+              };
+            }
+            return { exitCode: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createWorkbook",
+        spreadsheetId: "sheet-1",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "sheets spreadsheets create",
+        "sheets spreadsheets values",
+      ]);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("blocks direct sheets execute when only approval id is provided", async () => {
+    const result = await executeCliCommand([
+      "sheets",
+      "rows.append",
+      "--spreadsheet",
+      "sheet-1",
+      "--table",
+      "Suppliers",
+      "--row-json",
+      JSON.stringify({ "supplier id": "sup-1", name: "Acme" }),
+      "--client-row-id",
+      "client-1",
+      "--execute",
+      "--approval",
+      "approval-1",
+      "--idempotency-key",
+      "idem-1",
+    ]);
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("--approval alone is not authority");
+  });
+
+  test("executes approved sheets row upserts through constrained value writes", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken("approval-1", "idem-1");
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "sheets",
+          "rows.upsert",
+          "--spreadsheet",
+          "sheet-1",
+          "--table",
+          "Suppliers",
+          "--key-column",
+          "supplier id",
+          "--key-value",
+          "sup-1",
+          "--row-json",
+          JSON.stringify({ status: "quoted" }),
+          "--execute",
+          "--approval",
+          "approval-1",
+          "--idempotency-key",
+          "idem-1",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            if (args.slice(0, 4).join(" ") === "sheets spreadsheets values get") {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({
+                  values: [
+                    [
+                      "supplier id",
+                      "name",
+                      "contact",
+                      "email",
+                      "platform URL",
+                      "country",
+                      "status",
+                    ],
+                    ["sup-1", "Acme", "", "", "", "US", "new"],
+                  ],
+                }),
+              };
+            }
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdout: JSON.stringify({ updatedRange: "'Suppliers'!A2:G2" }),
+            };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "upsert",
+        spreadsheetId: "sheet-1",
+        table: "Suppliers",
+        approvalId: "approval-1",
+      });
+      expect(capturedArgs[1]?.slice(0, 4)).toEqual(["sheets", "spreadsheets", "values", "update"]);
+      const body = JSON.parse(
+        capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(body.values[0]).toEqual(["sup-1", "Acme", "", "", "", "US", "quoted"]);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("returns non-mutating docs dry-run previews", async () => {
+    const createResult = await executeCliCommand([
+      "docs",
+      "documents.create",
+      "--title",
+      "RFQ Draft",
+      "--text",
+      "Hello supplier",
+      "--dry-run",
+      "--idempotency-key",
+      "idem-doc",
+    ]);
+
+    expect(createResult.exitCode).toBe(0);
+    expect(JSON.parse(createResult.stdout)).toMatchObject({
+      dryRun: true,
+      operation: "createDocument",
+      target: { title: "RFQ Draft" },
+    });
+
+    const textFileRoot = await mkdtemp(join(tmpdir(), "tessera-doc-text-"));
+    const textFilePath = join(textFileRoot, "draft.txt");
+    await writeFile(textFilePath, "Hello from a file", "utf8");
+    const fileCreateResult = await executeCliCommand([
+      "docs",
+      "documents.create",
+      "--title",
+      "RFQ File Draft",
+      "--text-file",
+      textFilePath,
+      "--dry-run",
+      "--idempotency-key",
+      "idem-doc-file",
+    ]);
+
+    expect(fileCreateResult.exitCode).toBe(0);
+    expect(JSON.parse(fileCreateResult.stdout)).toMatchObject({
+      dryRun: true,
+      preview: { text: "Hello from a file" },
+    });
+
+    const replaceResult = await executeCliCommand([
+      "docs",
+      "documents.replacePlaceholders",
+      "--document",
+      "doc-1",
+      "--replacements-json",
+      JSON.stringify({ "{{supplier_name}}": "Acme" }),
+      "--dry-run",
+      "--idempotency-key",
+      "idem-doc-replace",
+    ]);
+
+    expect(replaceResult.exitCode).toBe(0);
+    expect(JSON.parse(replaceResult.stdout)).toMatchObject({
+      dryRun: true,
+      operation: "replacePlaceholders",
+      target: { documentId: "doc-1" },
+    });
+  });
+
+  test("executes approved docs create and append through typed batch updates", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken("approval-doc", "idem-doc");
+    const capturedArgs: string[][] = [];
+    try {
+      const createResult = await executeCliCommand(
+        [
+          "docs",
+          "documents.create",
+          "--title",
+          "RFQ Draft",
+          "--text",
+          "Hello supplier",
+          "--execute",
+          "--approval",
+          "approval-doc",
+          "--idempotency-key",
+          "idem-doc",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            if (args.slice(0, 3).join(" ") === "drive files create") {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({
+                  id: "doc-1",
+                  webViewLink: "https://docs.google.com/document/d/doc-1/edit",
+                }),
+              };
+            }
+            return { exitCode: 0, stderr: "", stdout: JSON.stringify({}) };
+          },
+        }
+      );
+
+      expect(createResult.exitCode).toBe(0);
+      expect(JSON.parse(createResult.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createDocument",
+        documentId: "doc-1",
+        documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+        approvalId: "approval-doc",
+      });
+      expect(capturedArgs[0]?.slice(0, 3)).toEqual(["drive", "files", "create"]);
+      expect(capturedArgs[1]?.slice(0, 3)).toEqual(["docs", "documents", "batchUpdate"]);
+      const createBody = JSON.parse(
+        capturedArgs[1]?.[(capturedArgs[1]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(createBody.requests[0].insertText.text).toBe("Hello supplier");
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken(
+      "approval-append",
+      "idem-append"
+    );
+    const appendArgs: string[][] = [];
+    try {
+      const appendResult = await executeCliCommand(
+        [
+          "docs",
+          "documents.appendText",
+          "--document",
+          "doc-1",
+          "--text",
+          "Follow up",
+          "--execute",
+          "--approval",
+          "approval-append",
+          "--idempotency-key",
+          "idem-append",
+        ],
+        {
+          runGwsCli: async (args) => {
+            appendArgs.push(args);
+            if (args.slice(0, 3).join(" ") === "docs documents get") {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ body: { content: [{ endIndex: 12 }] } }),
+              };
+            }
+            return { exitCode: 0, stderr: "", stdout: JSON.stringify({}) };
+          },
+        }
+      );
+
+      expect(appendResult.exitCode).toBe(0);
+      expect(JSON.parse(appendResult.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "appendText",
+        documentId: "doc-1",
+        approvalId: "approval-append",
+      });
+      const appendBody = JSON.parse(
+        appendArgs[1]?.[(appendArgs[1]?.indexOf("--json") ?? -1) + 1] ?? "{}"
+      );
+      expect(appendBody.requests[0].insertText.location.index).toBe(11);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("falls back to Docs create when Drive document creation needs another grant", async () => {
+    const previousToken = process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN;
+    process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = writeExecutionToken("approval-doc", "idem-doc");
+    const capturedArgs: string[][] = [];
+    try {
+      const result = await executeCliCommand(
+        [
+          "docs",
+          "documents.create",
+          "--title",
+          "RFQ Draft",
+          "--text",
+          "Hello supplier",
+          "--execute",
+          "--approval",
+          "approval-doc",
+          "--idempotency-key",
+          "idem-doc",
+        ],
+        {
+          runGwsCli: async (args) => {
+            capturedArgs.push(args);
+            const operation = args.slice(0, 3).join(" ");
+            if (operation === "drive files create") {
+              return {
+                exitCode: 1,
+                stderr: "Request had insufficient authentication scopes.",
+                stdout: "",
+              };
+            }
+            if (operation === "docs documents create") {
+              return {
+                exitCode: 0,
+                stderr: "",
+                stdout: JSON.stringify({ documentId: "doc-1", title: "RFQ Draft" }),
+              };
+            }
+            return { exitCode: 0, stderr: "", stdout: JSON.stringify({}) };
+          },
+        }
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        dryRun: false,
+        operation: "createDocument",
+        documentId: "doc-1",
+        documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+      });
+      expect(capturedArgs.map((args) => args.slice(0, 3).join(" "))).toEqual([
+        "drive files create",
+        "docs documents create",
+        "docs documents batchUpdate",
+      ]);
+    } finally {
+      if (previousToken === undefined) {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = undefined;
+      } else {
+        process.env.TESSERA_GWS_WRITE_EXECUTION_TOKEN = previousToken;
+      }
+    }
   });
 
   test("returns usage errors for missing mail search query", async () => {

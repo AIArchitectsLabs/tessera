@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
+  EffectExecutionRecord,
   PlaybookGraphArtifactVersion,
   PlaybookGraphBranchItem,
   PlaybookGraphNodeMemo,
@@ -12,6 +13,7 @@ import type {
   PlaybookGraphRunRecord,
 } from "@tessera/contracts";
 import {
+  EffectExecutionRecordSchema,
   PlaybookGraphArtifactVersionSchema,
   PlaybookGraphBranchItemSchema,
   PlaybookGraphNodeMemoSchema,
@@ -145,6 +147,26 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       payload TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS playbook_graph_effect_execution_records (
+      effect_execution_record_id TEXT PRIMARY KEY NOT NULL,
+      run_id TEXT NOT NULL,
+      node_path TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      idempotency_key TEXT,
+      status TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_effect_records_run_idx
+      ON playbook_graph_effect_execution_records (run_id, created_at, effect_execution_record_id);
+
+    CREATE INDEX IF NOT EXISTS playbook_graph_effect_records_idempotency_idx
+      ON playbook_graph_effect_execution_records (
+        run_id, node_path, capability, adapter_id, idempotency_key, status, created_at
+      );
 
     CREATE TABLE IF NOT EXISTS playbook_graph_operation_records (
       operation_record_id TEXT PRIMARY KEY NOT NULL,
@@ -280,6 +302,33 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
   `);
   const listReviews = db.prepare<PayloadRow, [string]>(
     "SELECT payload FROM playbook_graph_review_events WHERE run_id = ? ORDER BY created_at ASC"
+  );
+  const getEffectRecordPayload = db.prepare<PayloadRow | null, [string]>(
+    "SELECT payload FROM playbook_graph_effect_execution_records WHERE effect_execution_record_id = ?"
+  );
+  const saveEffectRecord = db.prepare(`
+    INSERT INTO playbook_graph_effect_execution_records (
+      effect_execution_record_id, run_id, node_path, capability, adapter_id,
+      idempotency_key, status, payload, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const listEffectRecords = db.prepare<PayloadRow, [string]>(
+    "SELECT payload FROM playbook_graph_effect_execution_records WHERE run_id = ? ORDER BY created_at ASC, effect_execution_record_id ASC"
+  );
+  const findCommittedEffectRecord = db.prepare<
+    PayloadRow | null,
+    [string, string, string, string, string]
+  >(
+    `SELECT payload FROM playbook_graph_effect_execution_records
+     WHERE run_id = ?
+       AND node_path = ?
+       AND capability = ?
+       AND adapter_id = ?
+       AND idempotency_key = ?
+       AND status = 'committed'
+     ORDER BY created_at ASC, effect_execution_record_id ASC
+     LIMIT 1`
   );
   const getOperationRecordPayload = db.prepare<PayloadRow | null, [string]>(
     "SELECT payload FROM playbook_graph_operation_records WHERE operation_record_id = ?"
@@ -537,6 +586,27 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
     );
   }
 
+  function writeEffectExecutionRecord(record: EffectExecutionRecord): void {
+    const parsed = EffectExecutionRecordSchema.parse(record);
+    const existingById = getEffectRecordPayload.get(parsed.effectExecutionRecordId);
+    if (existingById) {
+      const previous = parseJson<unknown>(existingById.payload);
+      if (stableJsonStringify(previous) === stableJsonStringify(parsed)) return;
+      throw new Error("Effect execution record already exists with different durable payload");
+    }
+    saveEffectRecord.run(
+      parsed.effectExecutionRecordId,
+      parsed.runId,
+      parsed.nodePath,
+      parsed.capability,
+      parsed.adapterId,
+      parsed.idempotencyKey ?? null,
+      parsed.status,
+      JSON.stringify(parsed),
+      parsed.createdAt
+    );
+  }
+
   function writeBranchItem(item: PlaybookGraphBranchItem): void {
     const parsed = PlaybookGraphBranchItemSchema.parse(item);
     saveBranchItem.run(parsed.branchItemId, parsed.runId, JSON.stringify(parsed), parsed.updatedAt);
@@ -671,12 +741,14 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
       branchItems?: PlaybookGraphBranchItem[];
       artifactVersions?: PlaybookGraphArtifactVersion[];
       reviewEvents?: PlaybookGraphReviewEvent[];
+      effectRecords?: EffectExecutionRecord[];
       operationRecord: PlaybookGraphOperationRecord;
     }) => {
       if (input.run) writeRun(input.run);
       for (const entry of input.queueEntries ?? []) writeQueue(entry);
       for (const item of input.branchItems ?? []) writeBranchItem(item);
       for (const version of input.artifactVersions ?? []) writeArtifactVersion(version);
+      for (const record of input.effectRecords ?? []) writeEffectExecutionRecord(record);
       for (const event of input.reviewEvents ?? []) {
         const parsed = PlaybookGraphReviewEventSchema.parse(event);
         saveReview.run(
@@ -816,6 +888,24 @@ export function createPlaybookGraphRunStore(dbPath: string): PlaybookGraphRunSto
         JSON.stringify(parsed),
         parsed.createdAt
       );
+    },
+    async listEffectExecutionRecords(runId) {
+      return listEffectRecords
+        .all(runId)
+        .map((row) => EffectExecutionRecordSchema.parse(parseJson<unknown>(row.payload)));
+    },
+    async addEffectExecutionRecord(record) {
+      writeEffectExecutionRecord(record);
+    },
+    async findCommittedEffectExecutionRecord(input) {
+      const row = findCommittedEffectRecord.get(
+        input.runId,
+        input.nodePath,
+        input.capability,
+        input.adapterId,
+        input.idempotencyKey
+      );
+      return row ? EffectExecutionRecordSchema.parse(parseJson<unknown>(row.payload)) : undefined;
     },
     async listOperationRecords(runId) {
       return listOperations

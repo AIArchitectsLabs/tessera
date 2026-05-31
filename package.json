@@ -20,6 +20,7 @@
     "docs:check": "bun run docs:audit-public && bun run docs:check-style && bun run docs:validate",
     "docs:dev": "cd docs/public && bunx mint@4.2.569 dev",
     "docs:export": "cd docs/public && bunx mint@4.2.569 export --output ../../docs-export.zip",
+    "docs:prepare-github-pages": "bun run scripts/docs-prepare-github-pages.ts docs-site /tessera",
     "test": "bun run --filter '*' test"
   },
   "config": {

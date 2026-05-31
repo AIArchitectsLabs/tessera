@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { chromium } from "playwright";
 import {
   createPlaywrightBrowserExecutor,
-  isBrowserRuntimeUnavailableError,
   resolveBrowserRuntimeConfigFromEnv,
 } from "./browser-runtime.js";
 
@@ -13,6 +14,7 @@ let server: ReturnType<typeof Bun.serve>;
 let baseUrl = "";
 let rootDir = "";
 let serverAvailable = true;
+const verboseTestSkips = process.env.TESSERA_VERBOSE_TESTS === "1";
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -40,18 +42,33 @@ async function makeExecutor() {
   });
 }
 
+function hasConfiguredBrowserRuntime(): boolean {
+  return Boolean(
+    process.env.TESSERA_PLAYWRIGHT_BROWSERS_PATH?.trim() ||
+      process.env.TESSERA_BROWSER_EXECUTABLE_PATH?.trim() ||
+      process.env.TESSERA_PLAYWRIGHT_EXECUTABLE_PATH?.trim()
+  );
+}
+
+function hasLocalPlaywrightBrowser(): boolean {
+  return existsSync(chromium.executablePath());
+}
+
 async function runIfBrowserAvailable(
   fn: (executor: Awaited<ReturnType<typeof makeExecutor>>) => Promise<void>
 ) {
+  if (!hasConfiguredBrowserRuntime() && !hasLocalPlaywrightBrowser()) {
+    if (verboseTestSkips) {
+      console.info(
+        "Skipping browser runtime launch test: no local Playwright browser is installed."
+      );
+    }
+    return;
+  }
+
   const executor = await makeExecutor();
   try {
     await fn(executor);
-  } catch (error) {
-    if (isBrowserRuntimeUnavailableError(error)) {
-      console.warn(`Skipping browser runtime test: ${error.message}`);
-      return;
-    }
-    throw error;
   } finally {
     await executor.dispose();
   }
@@ -60,11 +77,13 @@ async function runIfBrowserAvailable(
 beforeAll(async () => {
   const port = await freePort().catch((error) => {
     serverAvailable = false;
-    console.warn(
-      `Skipping browser runtime server tests: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+    if (verboseTestSkips) {
+      console.info(
+        `Skipping browser runtime server tests: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     return undefined;
   });
   if (!port) return;

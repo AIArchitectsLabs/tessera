@@ -51,6 +51,7 @@ let handleGraphRunGitMilestoneCommit:
   | undefined;
 let handlePlaybookGet: typeof import("./server.js").handlePlaybookGet | undefined;
 let handlePlaybookList: typeof import("./server.js").handlePlaybookList | undefined;
+let handlePlaybookPreflight: typeof import("./server.js").handlePlaybookPreflight | undefined;
 let handlePlaybookRunPreferenceRead:
   | typeof import("./server.js").handlePlaybookRunPreferenceRead
   | undefined;
@@ -108,6 +109,7 @@ beforeAll(async () => {
     handleGraphRunGitMilestoneCommit = serverModule.handleGraphRunGitMilestoneCommit;
     handlePlaybookGet = serverModule.handlePlaybookGet;
     handlePlaybookList = serverModule.handlePlaybookList;
+    handlePlaybookPreflight = serverModule.handlePlaybookPreflight;
     handlePlaybookRunPreferenceRead = serverModule.handlePlaybookRunPreferenceRead;
     handlePlaybookRunPreferenceSave = serverModule.handlePlaybookRunPreferenceSave;
     handleWorkspaceStyleGuideRead = serverModule.handleWorkspaceStyleGuideRead;
@@ -441,6 +443,304 @@ function testReviewCompiledGraph() {
   });
 }
 
+function testEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.effect-surface",
+      version: "0.1.0",
+      name: "Effect Surface Graph",
+      capabilities: ["tool.workspace.write"],
+      start: "writeBrief",
+      nodes: [
+        {
+          id: "writeBrief",
+          kind: "effect",
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          sideEffect: "write",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "workspace.write:test-effect",
+          input: {
+            value: "Brief",
+            target: {
+              kind: "workspace",
+              path: "out/brief.md",
+              format: "markdown",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write brief",
+            summary: "Write the brief to the workspace.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testGmailDraftEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.gmail-draft-effect",
+      version: "0.1.0",
+      name: "Gmail Draft Effect Graph",
+      capabilities: ["integration.mail.drafts.write"],
+      start: "createDrafts",
+      nodes: [
+        {
+          id: "createDrafts",
+          kind: "effect",
+          effectId: "mail.draft",
+          capability: "integration.mail.drafts.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "mail.draft:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              batchId: "RFQ-1",
+              requests: [
+                {
+                  supplierId: "sup-1",
+                  command: "mail",
+                  subcommand: "draft",
+                  to: "supplier@example.com",
+                  cc: ["buyer@example.com"],
+                  bcc: [],
+                  subject: "RFQ follow-up",
+                  body: "Please confirm the missing quote details.",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:gmail-draft:sup-1",
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "gmail:drafts:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier follow-up Gmail drafts",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Create Gmail drafts",
+            summary: "Create reviewed supplier follow-up drafts in Gmail.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testSheetsLedgerEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.sheets-ledger-effect",
+      version: "0.1.0",
+      name: "Sheets Ledger Effect Graph",
+      capabilities: ["integration.sheets.rows.write"],
+      start: "writeLedger",
+      nodes: [
+        {
+          id: "writeLedger",
+          kind: "effect",
+          effectId: "sheets.ledger.write",
+          capability: "integration.sheets.rows.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "sheets.ledger:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              mode: "command_plan",
+              workbook: { spreadsheetId: "", title: "Supplier Ledger" },
+              operations: [
+                {
+                  id: "create-workbook",
+                  command: "sheets",
+                  subcommand: "workbook.create",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:workbook:create",
+                  args: { title: "Supplier Ledger" },
+                },
+                {
+                  id: "upsert-rfq-row",
+                  command: "sheets",
+                  subcommand: "rows.upsert",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:rfq:upsert",
+                  table: "RFQs",
+                  row: { "batch id": "RFQ-1", "product spec": "Bottle caps" },
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "google-sheets:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier RFQ ledger",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write Sheets ledger",
+            summary: "Create or update the supplier RFQ ledger in Google Sheets.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testDocsDocumentEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.docs-document-effect",
+      version: "0.1.0",
+      name: "Docs Document Effect Graph",
+      capabilities: ["integration.docs.documents.write"],
+      start: "writeDoc",
+      nodes: [
+        {
+          id: "writeDoc",
+          kind: "effect",
+          effectId: "docs.document.write",
+          capability: "integration.docs.documents.write",
+          adapterId: "google-workspace",
+          sideEffect: "external",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "docs.document:test-effect",
+          input: {
+            value: {
+              schemaVersion: 1,
+              operations: [
+                {
+                  id: "create-doc",
+                  command: "docs",
+                  subcommand: "documents.create",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:doc:create",
+                  args: { title: "Supplier RFQ Packet", text: "Initial packet" },
+                },
+                {
+                  id: "append-summary",
+                  command: "docs",
+                  subcommand: "documents.appendText",
+                  approvalRequired: true,
+                  idempotencyKey: "RFQ-1:doc:append",
+                  args: { text: "\nFinal summary" },
+                },
+              ],
+            },
+            target: {
+              kind: "external",
+              reference: "google-docs:RFQ-1",
+              connectorId: "google-workspace",
+              label: "Supplier RFQ packet",
+            },
+          },
+          preview: {
+            schemaVersion: 1,
+            title: "Write Google Doc",
+            summary: "Create or update the supplier RFQ packet in Google Docs.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
+function testArtifactEffectCompiledGraph() {
+  return compilePlaybookGraph({
+    graph: {
+      schemaVersion: 1,
+      id: "content.artifact-effect-surface",
+      version: "0.1.0",
+      name: "Artifact Effect Surface Graph",
+      artifacts: {
+        brief: { schema: "schemas/brief.schema.json" },
+      },
+      capabilities: ["tool.workspace.write"],
+      start: "draft",
+      nodes: [
+        {
+          id: "draft",
+          kind: "script",
+          run: "scripts/draft.ts",
+          inputs: {},
+          outputArtifact: "brief",
+          onSuccess: "writeBrief",
+        },
+        {
+          id: "writeBrief",
+          kind: "effect",
+          effectId: "workspace.write",
+          capability: "tool.workspace.write",
+          adapterId: "workspace",
+          sideEffect: "write",
+          approval: "required",
+          idempotency: "required",
+          idempotencyKey: "workspace.write:artifact-effect",
+          input: { path: "out/brief.md", value: { artifact: "brief" } },
+          preview: {
+            schemaVersion: 1,
+            title: "Write brief",
+            summary: "Write the brief to the workspace.",
+          },
+          onSuccess: "completed",
+        },
+      ],
+    },
+    sourceFiles: {
+      "playbook.ts": "export default graph;\n",
+      "scripts/draft.ts": "export default function draft() {}\n",
+    },
+    compilerVersion: "server-test",
+    scriptSdkVersion: "server-test",
+    compiledAt: "2026-05-15T00:00:00.000Z",
+  });
+}
+
 async function expectGraphPackageInstallBadRequest(sourceRoot: string): Promise<string> {
   const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
   const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
@@ -747,6 +1047,159 @@ describe("graph playbook import endpoint", () => {
     }
   });
 
+  test("imports a package folder through the import endpoint", async () => {
+    expect(handleGraphPlaybookImport).toBeDefined();
+    const sourceRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-source-"));
+    const installRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-install-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "tessera-sidecar-graph-cache-"));
+    const state: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    const catalogState: { entries: GraphPlaybookRegistryEntry[] } = { entries: [] };
+    try {
+      await writeGraphPackage(sourceRoot, "0.2.0");
+
+      const response = await handleGraphPlaybookImport?.(
+        new Request("http://localhost/graph-playbooks/import", {
+          method: "POST",
+          body: JSON.stringify({ sourceRoot }),
+        }),
+        {
+          installRoot,
+          cacheRoot,
+          state,
+          catalogState,
+          compilerVersion: "server-test",
+          scriptSdkVersion: "server-test",
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const imported = (await response?.json()) as Record<string, unknown>;
+      expect(imported).toMatchObject({
+        schemaVersion: 1,
+        status: "installed",
+        id: "content.seo-blog",
+        version: "0.2.0",
+        name: "SEO Blog Article",
+        warnings: [],
+      });
+      expect(catalogState.entries.find((entry) => entry.id === "content.seo-blog")).toMatchObject({
+        packageVersion: "0.2.0",
+      });
+    } finally {
+      await Promise.all(
+        [sourceRoot, installRoot, cacheRoot].map((root) =>
+          rm(root, { recursive: true, force: true })
+        )
+      );
+    }
+  });
+
+  test("preflights graph playbook assignment through sidecar-owned resolver", async () => {
+    expect(handlePlaybookPreflight).toBeDefined();
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.preflight",
+        version: "0.1.0",
+        name: "Preflight Graph",
+        artifacts: {
+          brief: { schema: "schemas/brief.schema.json" },
+        },
+        capabilities: ["tool.workspace.write"],
+        start: "draftBrief",
+        nodes: [
+          {
+            id: "draftBrief",
+            kind: "agent",
+            label: "Draft brief",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "brief", schema: "schemas/brief.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+        "prompts/draft.md": "Draft a brief.\n",
+        "schemas/brief.schema.json": '{"type":"object"}\n',
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-25T00:00:00.000Z",
+    });
+    const graphPlaybookState: { entries: GraphPlaybookRegistryEntry[]; loaded?: boolean } = {
+      loaded: true,
+      entries: [
+        {
+          id: "content.preflight",
+          packageVersion: "0.1.0",
+          name: "Preflight Graph",
+          graphHash: compiled.metadata.graphHash,
+          sourceHash: compiled.metadata.sourceHash,
+          installedRoot: "/tmp/content.preflight",
+          compiled,
+        },
+      ],
+    };
+    const getResponse = await handlePlaybookGet?.(
+      new Request("http://localhost/playbooks/content.preflight"),
+      "content.preflight",
+      { catalogState: graphPlaybookState }
+    );
+    expect(getResponse?.status).toBe(200);
+
+    const response = await handlePlaybookPreflight?.(
+      new Request("http://localhost/playbooks/content.preflight/preflight", {
+        method: "POST",
+        body: JSON.stringify({
+          workspaceRoot: "/tmp/workspace",
+          capabilityInventory: {
+            fingerprint: "inventory-1",
+            agents: [
+              {
+                id: "default",
+                label: "Tessera",
+                fingerprint: "agent-1",
+                modelCapabilities: ["model.reasoning"],
+                dataPolicies: ["cloud-ok"],
+                skillCapabilities: [],
+                toolCapabilities: ["tool.workspace.read", "tool.workspace.write"],
+              },
+            ],
+            models: [],
+            skills: [],
+            tools: [
+              { id: "tool.workspace.read", label: "Read workspace" },
+              { id: "tool.workspace.write", label: "Write workspace" },
+            ],
+            integrations: [],
+          },
+        }),
+      }),
+      "content.preflight",
+      { catalogState: graphPlaybookState }
+    );
+
+    expect(response?.status).toBe(200);
+    const preview = (await response?.json()) as Record<string, unknown>;
+    expect(preview).toMatchObject({
+      confirmationRequired: false,
+      blockers: [],
+      assignmentPlan: {
+        resolverVersion: 2,
+        assignments: {
+          draftBrief: {
+            stepId: "draftBrief",
+            agentId: "default",
+            agentLabel: "Tessera",
+          },
+        },
+      },
+    });
+  });
+
   test("scopes imported graph playbooks by user key", async () => {
     expect(handleGraphPlaybookImport).toBeDefined();
     expect(handlePlaybookList).toBeDefined();
@@ -906,7 +1359,7 @@ describe("graph playbook import endpoint", () => {
         list.playbooks.find((item) => item.id === "reference.seo-geo-blog-article")
       ).toMatchObject({
         name: "SEO/GEO Blog Article Reference Playbook",
-        requiredCapabilities: ["web"],
+        requiredCapabilities: ["web.search", "web.fetch"],
         phases: ["Intake", "Research", "Brief"],
       });
     } finally {
@@ -1875,6 +2328,935 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("rolls back effect approval records when operation ledger transaction fails", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed"]);
+
+      const failOperationLedger = async () => {
+        throw new Error("operation ledger unavailable");
+      };
+      const failingStore: GraphRunStore = {
+        ...store,
+        addOperationRecord: failOperationLedger,
+        applyGraphMutationWithOperationRecord: failOperationLedger,
+      };
+      const response = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store: failingStore, workspaceRoot }
+      );
+
+      expect(response?.status).toBe(500);
+      expect((await store.getRun(created.run.runId))?.status).toBe("blocked");
+      expect(
+        (await store.getQueue(created.run.runId)).find(
+          (entry) => entry.queueEntryId === effectEntry.queueEntryId
+        )?.status
+      ).toBe("blocked");
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed"]);
+      expect(await store.listOperationRecords(created.run.runId)).toEqual([]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("approves effect nodes through the graph resume API and commits once", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store }
+      );
+      expect(surfaceResponse?.status).toBe(200);
+      const surface = (await surfaceResponse?.json()) as {
+        actions: Array<{ decision: string; queueEntryId?: string; sideEffect: string }>;
+      };
+      expect(surface.actions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+            sideEffect: "resume",
+          }),
+          expect.objectContaining({
+            decision: "deny",
+            queueEntryId: effectEntry.queueEntryId,
+            sideEffect: "terminal",
+          }),
+        ])
+      );
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.map((r) => r.status)).toEqual([
+        "previewed",
+        "approved",
+        "commit_requested",
+        "committed",
+      ]);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "workspace",
+        path: "out/brief.md",
+        format: "markdown",
+        bytes: 6,
+      });
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe("Brief\n");
+
+      const queuedEffect = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.queueEntryId === effectEntry.queueEntryId
+      );
+      if (!queuedEffect) throw new Error("missing committed effect queue entry");
+      const completedRun = await store.getRun(created.run.runId);
+      if (!completedRun) throw new Error("missing completed effect run");
+      await store.updateRun({
+        ...completedRun,
+        status: "running",
+        completedAt: undefined,
+      });
+      await store.updateQueueEntry({
+        ...queuedEffect,
+        status: "queued",
+        runtimeId: undefined,
+        leaseId: undefined,
+        claimedAt: undefined,
+        leaseExpiresAt: undefined,
+        completedAt: undefined,
+      });
+      const replayResponse = await handleGraphRunDrain?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/drain`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(replayResponse?.status).toBe(200);
+      expect(
+        (await store.listEffectExecutionRecords(created.run.runId)).map((r) => r.status)
+      ).toEqual(["previewed", "approved", "commit_requested", "committed", "replayed"]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("approves Gmail draft effect nodes through the graph resume API", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: string[][] = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testGmailDraftEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "createDrafts");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Gmail draft effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args) {
+            calls.push(args);
+            return {
+              stdout: JSON.stringify({
+                draft: { id: "draft-1", messageId: "msg-1", threadId: "thread-1" },
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls).toEqual([
+        [
+          "mail",
+          "draft",
+          "--to",
+          "supplier@example.com",
+          "--subject",
+          "RFQ follow-up",
+          "--body",
+          "Please confirm the missing quote details.",
+          "--cc",
+          "buyer@example.com",
+        ],
+      ]);
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "gmail:drafts:RFQ-1:draft-1",
+        connectorId: "google-workspace",
+        label: "1 Gmail draft created",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves Sheets ledger effect nodes with sidecar write binding", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testSheetsLedgerEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeLedger");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Sheets ledger effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args, _timeoutMs, env) {
+            calls.push(env ? { args, env } : { args });
+            const operation = args[1];
+            if (operation === "workbook.create") {
+              return {
+                stdout: JSON.stringify({
+                  dryRun: false,
+                  operation: "createWorkbook",
+                  spreadsheetId: "sheet-1",
+                  title: "Supplier Ledger",
+                  sheets: [{ table: "RFQs", headers: ["batch id", "product spec"] }],
+                  headers: { RFQs: ["batch id", "product spec"] },
+                  idempotencyKey: "RFQ-1:workbook:create",
+                  approvalId: `${effectEntry.queueEntryId}:create-workbook`,
+                }),
+                stderr: "",
+                exitCode: 0,
+                signal: null,
+                durationMs: 7,
+              };
+            }
+            return {
+              stdout: JSON.stringify({
+                dryRun: false,
+                operation: "upsert",
+                spreadsheetId: "sheet-1",
+                table: "RFQs",
+                updatedRange: "RFQs!A2:E2",
+                idempotencyKey: "RFQ-1:rfq:upsert",
+                approvalId: `${effectEntry.queueEntryId}:upsert-rfq-row`,
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+        ["sheets", "workbook.create"],
+        ["sheets", "rows.upsert"],
+      ]);
+      expect(calls[0]?.env?.TESSERA_GWS_WRITE_EXECUTION_TOKEN).toBeTruthy();
+      expect(calls[1]?.args).toEqual(
+        expect.arrayContaining(["--spreadsheet", "sheet-1", "--key-column", "batch id"])
+      );
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "google-sheets:RFQ-1:sheet-1",
+        connectorId: "google-workspace",
+        label: "2 Google Sheets operations completed",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("approves Docs document effect nodes with sidecar write binding", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const calls: Array<{ args: string[]; env?: Record<string, string> }> = [];
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testDocsDocumentEffectCompiledGraph(),
+            drainDeterministic: true,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeDoc");
+      expect(created.run.status).toBe("blocked");
+      expect(effectEntry?.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing Docs document effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        {
+          store,
+          async workspaceCli(args, _timeoutMs, env) {
+            calls.push(env ? { args, env } : { args });
+            const operation = args[1];
+            if (operation === "documents.create") {
+              return {
+                stdout: JSON.stringify({
+                  dryRun: false,
+                  operation: "createDocument",
+                  title: "Supplier RFQ Packet",
+                  documentId: "doc-1",
+                  documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+                  idempotencyKey: "RFQ-1:doc:create",
+                  approvalId: `${effectEntry.queueEntryId}:create-doc`,
+                }),
+                stderr: "",
+                exitCode: 0,
+                signal: null,
+                durationMs: 7,
+              };
+            }
+            return {
+              stdout: JSON.stringify({
+                dryRun: false,
+                operation: "appendText",
+                documentId: "doc-1",
+                documentUrl: "https://docs.google.com/document/d/doc-1/edit",
+                idempotencyKey: "RFQ-1:doc:append",
+                approvalId: `${effectEntry.queueEntryId}:append-summary`,
+              }),
+              stderr: "",
+              exitCode: 0,
+              signal: null,
+              durationMs: 7,
+            };
+          },
+        }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      expect(calls.map((call) => call.args.slice(0, 2))).toEqual([
+        ["docs", "documents.create"],
+        ["docs", "documents.appendText"],
+      ]);
+      expect(calls[0]?.env?.TESSERA_GWS_WRITE_EXECUTION_TOKEN).toBeTruthy();
+      expect(calls[1]?.args).toEqual(
+        expect.arrayContaining(["--document", "doc-1", "--text", "\nFinal summary"])
+      );
+      const effectRecords = await store.listEffectExecutionRecords(created.run.runId);
+      expect(effectRecords.at(-1)?.output).toEqual({
+        kind: "external",
+        reference: "google-docs:RFQ-1:doc-1",
+        connectorId: "google-workspace",
+        label: "2 Google Docs operations completed",
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
+  test("materializes approved PDF workspace effect targets with output evidence", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.pdf-effect-surface",
+        version: "0.1.0",
+        name: "PDF Effect Surface Graph",
+        capabilities: ["tool.workspace.write"],
+        start: "writeBrief",
+        nodes: [
+          {
+            id: "writeBrief",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:pdf-effect",
+            input: {
+              value: "# Brief\n\nPDF packet.",
+              target: {
+                kind: "workspace",
+                path: "out/brief.pdf",
+                format: "pdf",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write PDF brief",
+              summary: "Write the brief PDF to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      expect(created.run.status).toBe("blocked");
+      if (!effectEntry) throw new Error("missing PDF effect queue entry");
+
+      const approveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(approveResponse?.status).toBe(200);
+      const approved = (await approveResponse?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      const pdf = await readFile(join(workspaceRoot, "out/brief.pdf"));
+      expect(pdf.subarray(0, 4).toString("utf8")).toBe("%PDF");
+      const committed = (await store.listEffectExecutionRecords(created.run.runId)).at(-1);
+      expect(committed?.status).toBe("committed");
+      expect(committed?.output).toMatchObject({
+        kind: "workspace",
+        path: "out/brief.pdf",
+        format: "pdf",
+      });
+      expect(committed?.outputReference).toBe("out/brief.pdf");
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("materializes approved JSON and CSV workspace effect targets with output evidence", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.structured-effect-surface",
+        version: "0.1.0",
+        name: "Structured Effect Surface Graph",
+        capabilities: ["tool.workspace.write"],
+        start: "writeJson",
+        nodes: [
+          {
+            id: "writeJson",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:json-effect",
+            input: {
+              value: { title: "Brief", ready: true },
+              target: {
+                kind: "workspace",
+                path: "out/brief.json",
+                format: "json",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write JSON brief",
+              summary: "Write the brief JSON to the workspace.",
+            },
+            onSuccess: "writeCsv",
+          },
+          {
+            id: "writeCsv",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:csv-effect",
+            input: {
+              value: [
+                { name: "Ada", note: 'comma, quote "ok"' },
+                { name: "Lin", note: "line\nbreak" },
+              ],
+              target: {
+                kind: "workspace",
+                path: "out/brief.csv",
+                format: "csv",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write CSV brief",
+              summary: "Write the brief CSV to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: {
+        "playbook.ts": "export default graph;\n",
+      },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: compiled,
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const jsonEntry = created.queue.find((entry) => entry.nodeId === "writeJson");
+      expect(created.run.status).toBe("blocked");
+      if (!jsonEntry) throw new Error("missing JSON effect queue entry");
+
+      const jsonApproveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: jsonEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(jsonApproveResponse?.status).toBe(200);
+      const afterJson = (await jsonApproveResponse?.json()) as {
+        run: { status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      expect(afterJson.run.status).toBe("blocked");
+      const csvEntry = afterJson.queue.find((entry) => entry.nodeId === "writeCsv");
+      if (!csvEntry) throw new Error("missing CSV effect queue entry");
+
+      const csvApproveResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: csvEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(csvApproveResponse?.status).toBe(200);
+      const afterCsv = (await csvApproveResponse?.json()) as { run: { status: string } };
+      expect(afterCsv.run.status).toBe("completed");
+
+      await expect(readFile(join(workspaceRoot, "out/brief.json"), "utf8")).resolves.toBe(
+        '{\n  "ready": true,\n  "title": "Brief"\n}\n'
+      );
+      await expect(readFile(join(workspaceRoot, "out/brief.csv"), "utf8")).resolves.toBe(
+        'name,note\nAda,"comma, quote ""ok"""\nLin,"line\nbreak"\n'
+      );
+      const committed = (await store.listEffectExecutionRecords(created.run.runId)).filter(
+        (record) => record.status === "committed"
+      );
+      expect(committed.map((record) => record.output)).toEqual([
+        {
+          kind: "workspace",
+          path: "out/brief.json",
+          format: "json",
+          bytes: 40,
+        },
+        {
+          kind: "workspace",
+          path: "out/brief.csv",
+          format: "csv",
+          bytes: 53,
+        },
+      ]);
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("denies effect nodes through the graph resume API before commit", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        { store }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const effectEntry = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      if (!effectEntry) throw new Error("missing effect queue entry");
+
+      const denyResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "deny",
+            queueEntryId: effectEntry.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(denyResponse?.status).toBe(200);
+      const denied = (await denyResponse?.json()) as { run: { status: string } };
+      expect(denied.run.status).toBe("denied");
+      const effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (r) => r.status
+      );
+      expect(effectStatuses).toHaveLength(2);
+      expect(effectStatuses).toContain("previewed");
+      expect(effectStatuses).toContain("denied");
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).rejects.toThrow();
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("edited artifact content creates a new effect preview instead of replaying stale writes", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunResume).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "tessera-graph-workspace-"));
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const createResponse = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({
+            compiledGraph: testArtifactEffectCompiledGraph(),
+            drainDeterministic: true,
+            workspaceRoot,
+          }),
+        }),
+        {
+          store,
+          scriptAdapter() {
+            return "Initial brief";
+          },
+        }
+      );
+      expect(createResponse?.status).toBe(200);
+      const created = (await createResponse?.json()) as {
+        run: { runId: string; status: string };
+        queue: Array<{ queueEntryId: string; nodeId: string; status: string }>;
+      };
+      const firstEffect = created.queue.find((entry) => entry.nodeId === "writeBrief");
+      if (!firstEffect) throw new Error("missing first effect queue entry");
+      expect(created.run.status).toBe("blocked");
+
+      const firstApprove = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: firstEffect.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(firstApprove?.status).toBe(200);
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe(
+        "Initial brief\n"
+      );
+
+      const editResponse = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "edit_artifact",
+            payload: {
+              artifactId: "brief",
+              value: "Edited brief",
+            },
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+      expect(editResponse?.status).toBe(200);
+      const edited = (await editResponse?.json()) as { run: { status: string } };
+      expect(edited.run.status).toBe("blocked");
+      let effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (record) => record.status
+      );
+      expect(effectStatuses.filter((status) => status === "previewed")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "approved")).toHaveLength(1);
+      expect(effectStatuses.filter((status) => status === "committed")).toHaveLength(1);
+      expect(effectStatuses).not.toContain("replayed");
+
+      const secondEffect = (await store.getQueue(created.run.runId)).find(
+        (entry) => entry.nodeId === "writeBrief" && entry.status === "blocked"
+      );
+      if (!secondEffect) throw new Error("missing second effect preview");
+      const secondApprove = await handleGraphRunResume?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/resume`, {
+          method: "POST",
+          body: JSON.stringify({
+            runId: created.run.runId,
+            decision: "approve",
+            queueEntryId: secondEffect.queueEntryId,
+          }),
+        }),
+        created.run.runId,
+        { store, workspaceRoot }
+      );
+
+      expect(secondApprove?.status).toBe(200);
+      const approved = (await secondApprove?.json()) as { run: { status: string } };
+      expect(approved.run.status).toBe("completed");
+      await expect(readFile(join(workspaceRoot, "out/brief.md"), "utf8")).resolves.toBe(
+        "Edited brief\n"
+      );
+      effectStatuses = (await store.listEffectExecutionRecords(created.run.runId)).map(
+        (record) => record.status
+      );
+      expect(effectStatuses.filter((status) => status === "previewed")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "approved")).toHaveLength(2);
+      expect(effectStatuses.filter((status) => status === "committed")).toHaveLength(2);
+      expect(effectStatuses).not.toContain("replayed");
+    } finally {
+      store.close();
+      await Promise.all([
+        rm(dirname(dbPath), { recursive: true, force: true }),
+        rm(workspaceRoot, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   test("creates graph runs from cache references and pins snapshots for later reads", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
@@ -2248,6 +3630,7 @@ describe("graph run endpoints", () => {
         id: "content.materialize",
         version: "0.1.0",
         name: "Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
@@ -2543,6 +3926,71 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("injects schema-bound output contracts into graph agent prompts", () => {
+    expect(graphRunAgentPrompt).toBeDefined();
+    const sourceFiles = {
+      "playbook.ts": "export default graph;\n",
+      "prompts/draft.md": "Draft the customer follow-up.",
+      "schemas/draft.schema.json": JSON.stringify({
+        type: "object",
+        required: ["schemaVersion", "drafts"],
+        properties: {
+          schemaVersion: { const: 1 },
+          drafts: { type: "array" },
+        },
+      }),
+    };
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.schema-agent",
+        version: "0.1.0",
+        name: "Schema Agent Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "agent",
+            prompt: "prompts/draft.md",
+            inputs: {},
+            tools: [],
+            output: { artifact: "draft", schema: "schemas/draft.schema.json" },
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles,
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+
+    const promptText = graphRunAgentPrompt?.({
+      run: {
+        runId: "run-schema-agent",
+        snapshot: {
+          ...compiled.metadata,
+          schemaVersion: 1,
+          snapshotJson: JSON.stringify(compiled),
+          sourceFiles,
+        },
+      },
+      node: compiled.graph.nodes[0],
+      input: {},
+      artifacts: {},
+      prompt: "Draft the customer follow-up.",
+    } as unknown as PlaybookGraphAgentAdapterInput);
+
+    expect(promptText).toContain("Output contract:");
+    expect(promptText).toContain("Return only a JSON value for artifact `draft`");
+    expect(promptText).toContain("schemas/draft.schema.json");
+    expect(promptText).toContain('"schemaVersion"');
+    expect(promptText).toContain('"drafts"');
+  });
+
   test("preserves provider token usage in graph agent artifacts", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const originalFetch = globalThis.fetch;
@@ -2796,6 +4244,68 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("still blocks mail send-draft under read-only mail capability", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.mail-send-draft-denied",
+        version: "0.1.0",
+        name: "Mail Send Draft Denied",
+        artifacts: {
+          message: { schema: "schemas/message.schema.json" },
+        },
+        capabilities: ["integration.mail.messages.read"],
+        start: "mail",
+        nodes: [
+          {
+            id: "mail",
+            kind: "tool",
+            capability: "integration.mail.messages.read",
+            args: { command: "mail", subcommand: "send-draft", args: ["draft-1"] },
+            outputArtifact: "message",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    let cliCalls = 0;
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli() {
+            cliCalls += 1;
+            return { stdout: "{}", stderr: "", exitCode: 0, signal: null, durationMs: 1 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; error?: string };
+        queue: Array<{ nodeId: string; status: string; error?: string }>;
+      };
+      expect(cliCalls).toBe(0);
+      expect(detail.run.status).toBe("failed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "mail", status: "failed" });
+      expect(detail.queue[0]?.error).toContain("cannot execute mail send-draft");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("drains parallelMap branch work and exposes branch items in graph details", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
@@ -3012,6 +4522,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-materialize",
         version: "0.1.0",
         name: "Workspace Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
@@ -3149,6 +4660,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-markdown-materialize",
         version: "0.1.0",
         name: "Workspace Markdown Materialize Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { brief: { schema: "schemas/brief.schema.json" } },
         start: "draft",
         nodes: [
@@ -3224,6 +4736,7 @@ describe("graph run endpoints", () => {
         id: "content.workspace-resume",
         version: "0.1.0",
         name: "Workspace Resume Graph",
+        capabilities: ["tool.workspace.write"],
         artifacts: { draft: { schema: "schemas/draft.schema.json" } },
         start: "draft",
         nodes: [
@@ -4537,6 +6050,71 @@ describe("graph run endpoints", () => {
     }
   });
 
+  test("surfaces needs-repair graph runs as repair work", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    expect(handleGraphRunReviewSurface).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: testCompiledGraph() }),
+        }),
+        { store }
+      );
+      expect(response?.status).toBe(200);
+      const created = (await response?.json()) as {
+        run: { runId: string };
+      };
+      const run = await store.getRun(created.run.runId);
+      if (!run) throw new Error("Missing graph run");
+      await store.updateRun({
+        ...run,
+        status: "needs_repair",
+        repairReason: "Pinned graph snapshot hash mismatch",
+        updatedAt: "2026-05-15T00:00:01.000Z",
+      });
+
+      const surfaceResponse = await handleGraphRunReviewSurface?.(
+        new Request(`http://localhost/graph-runs/${created.run.runId}/review-surface`),
+        created.run.runId,
+        { store }
+      );
+
+      expect(surfaceResponse?.status).toBe(200);
+      const surface = (await surfaceResponse?.json()) as {
+        actions: Array<{ decision: string; label: string; requiredPayloadFields: unknown[] }>;
+        productView?: {
+          state: string;
+          title: string;
+          message: string;
+          primaryAction?: { decision: string; label: string };
+          technicalSummary?: { internalStatus: string };
+        };
+      };
+      expect(surface.actions.find((action) => action.decision === "approve_repair")).toMatchObject({
+        label: "Repair run",
+        requiredPayloadFields: [],
+      });
+      expect(surface.productView).toMatchObject({
+        state: "restart_required",
+        title: "Run needs repair",
+        message: "Pinned graph snapshot hash mismatch",
+        primaryAction: {
+          decision: "approve_repair",
+          label: "Repair run",
+        },
+        technicalSummary: {
+          internalStatus: "needs_repair",
+        },
+      });
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
+
   test("repair approval must replace corrupted pinned snapshots before resume", async () => {
     expect(handleGraphRunCreate).toBeDefined();
     expect(handleGraphRunResume).toBeDefined();
@@ -5729,6 +7307,69 @@ describe("graph run endpoints", () => {
       await rm(dirname(dbPath), { recursive: true, force: true });
     }
   });
+
+  test("blocks mail draft shell subcommands under read-only mail graph capabilities", async () => {
+    expect(handleGraphRunCreate).toBeDefined();
+    const dbPath = join(await mkdtemp(join(tmpdir(), "tessera-graph-runs-")), "runs.sqlite");
+    const store = createPlaybookGraphRunStore(dbPath);
+    const compiled = compilePlaybookGraph({
+      graph: {
+        schemaVersion: 1,
+        id: "content.mail-draft-denied",
+        version: "0.1.0",
+        name: "Mail Draft Denied Graph",
+        artifacts: {
+          draft: { schema: "schemas/draft.schema.json" },
+        },
+        capabilities: ["integration.mail.messages.read"],
+        start: "draft",
+        nodes: [
+          {
+            id: "draft",
+            kind: "tool",
+            capability: "integration.mail.messages.read",
+            args: {
+              command: "mail",
+              subcommand: "draft",
+              args: ["--to", "prospect@example.com", "--subject", "Hi", "--body", "Test"],
+            },
+            outputArtifact: "draft",
+            onSuccess: "completed",
+          },
+        ],
+      },
+      sourceFiles: { "playbook.ts": "export default graph;\n" },
+      compilerVersion: "server-test",
+      scriptSdkVersion: "server-test",
+      compiledAt: "2026-05-15T00:00:00.000Z",
+    });
+    try {
+      const response = await handleGraphRunCreate?.(
+        new Request("http://localhost/graph-runs", {
+          method: "POST",
+          body: JSON.stringify({ compiledGraph: compiled, drainDeterministic: true }),
+        }),
+        {
+          store,
+          async workspaceCli() {
+            return { stdout: "{}", stderr: "", exitCode: 0, signal: null, durationMs: 1 };
+          },
+        }
+      );
+
+      expect(response?.status).toBe(200);
+      const detail = (await response?.json()) as {
+        run: { status: string; error?: string };
+        queue: Array<{ nodeId: string; status: string; error?: string }>;
+      };
+      expect(detail.run.status).toBe("failed");
+      expect(detail.queue[0]).toMatchObject({ nodeId: "draft", status: "failed" });
+      expect(detail.queue[0]?.error).toContain("cannot execute mail draft");
+    } finally {
+      store.close();
+      await rm(dirname(dbPath), { recursive: true, force: true });
+    }
+  });
 });
 
 describe("built-in graph playbook projection", () => {
@@ -5892,6 +7533,16 @@ describe("sidecar utility handlers", () => {
     await manager.install("google-workspace-cli");
 
     await expect(resolveGoogleWorkspaceCliEnv?.(["gcal", "list"], manager, {})).resolves.toEqual({
+      TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+    });
+    await expect(
+      resolveGoogleWorkspaceCliEnv?.(["sheets", "rows.upsert"], manager, {})
+    ).resolves.toEqual({
+      TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
+    });
+    await expect(
+      resolveGoogleWorkspaceCliEnv?.(["docs", "documents.create"], manager, {})
+    ).resolves.toEqual({
       TESSERA_GWS_CLI_PATH: join(rootDir, "google-workspace-cli", "0.22.5", "gws"),
     });
   });

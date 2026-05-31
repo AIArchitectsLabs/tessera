@@ -89,7 +89,7 @@ interface GoogleWorkspaceOAuthClientStatus {
   source: "build" | "bundled" | "missing" | "saved";
 }
 
-type GoogleWorkspaceCapabilityProgressPhase =
+type ManagedCapabilityProgressPhase =
   | "available"
   | "downloading"
   | "failed"
@@ -97,14 +97,14 @@ type GoogleWorkspaceCapabilityProgressPhase =
   | "installing"
   | "verifying";
 
-interface GoogleWorkspaceCapabilityProgress {
-  phase: GoogleWorkspaceCapabilityProgressPhase;
+interface ManagedCapabilityProgress {
+  phase: ManagedCapabilityProgressPhase;
   downloadedBytes?: number;
   totalBytes?: number;
   message?: string;
 }
 
-interface GoogleWorkspaceCapabilityStatus {
+interface ManagedCapabilityStatus {
   capabilityId: string;
   binaryName: string;
   path?: string;
@@ -113,7 +113,7 @@ interface GoogleWorkspaceCapabilityStatus {
   version: string;
   sizeBytes?: number;
   message?: string;
-  progress?: GoogleWorkspaceCapabilityProgress;
+  progress?: ManagedCapabilityProgress;
 }
 
 interface CodexDeviceCode {
@@ -299,8 +299,11 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
     GoogleWorkspaceServiceHealth[]
   >([]);
   const [googleWorkspaceCapability, setGoogleWorkspaceCapability] =
-    useState<GoogleWorkspaceCapabilityStatus | null>(null);
+    useState<ManagedCapabilityStatus | null>(null);
+  const [browserRuntimeCapability, setBrowserRuntimeCapability] =
+    useState<ManagedCapabilityStatus | null>(null);
   const [googleWorkspaceInstallConsent, setGoogleWorkspaceInstallConsent] = useState(false);
+  const [browserRuntimeInstallConsent, setBrowserRuntimeInstallConsent] = useState(false);
   const [searchStatus, setSearchStatus] = useState<StatusMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [memoryLoading, setMemoryLoading] = useState(true);
@@ -312,7 +315,15 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
     "codexSignIn" | "remove" | "save" | "test" | null
   >(null);
   const [activeIntegrationAction, setActiveIntegrationAction] = useState<
-    "connect" | "disconnect" | "installGws" | "remove" | "save" | "saveOAuthClient" | "test" | null
+    | "connect"
+    | "disconnect"
+    | "installBrowserRuntime"
+    | "installGws"
+    | "remove"
+    | "save"
+    | "saveOAuthClient"
+    | "test"
+    | null
   >(null);
   const [activeSearchAction, setActiveSearchAction] = useState<"remove" | "save" | "test" | null>(
     null
@@ -382,10 +393,15 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
         })
           .then((loadedMemoryReview) => ({ loadedMemoryReview }))
           .catch((error: unknown) => ({ error }));
-        const googleWorkspaceCapabilityResult = invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+        const googleWorkspaceCapabilityResult = invokeWithTimeout<ManagedCapabilityStatus>(
           "google_workspace_capability_status"
         )
           .then((loadedGoogleWorkspaceCapability) => ({ loadedGoogleWorkspaceCapability }))
+          .catch((error: unknown) => ({ error }));
+        const browserRuntimeCapabilityResult = invokeWithTimeout<ManagedCapabilityStatus>(
+          "browser_runtime_capability_status"
+        )
+          .then((loadedBrowserRuntimeCapability) => ({ loadedBrowserRuntimeCapability }))
           .catch((error: unknown) => ({ error }));
         const [loaded, loadedIntegrations, loadedGoogleWorkspaceOAuthClientStatus] =
           await Promise.all([
@@ -408,6 +424,15 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
         if ("loadedGoogleWorkspaceCapability" in loadedGoogleWorkspaceCapabilityResult) {
           setGoogleWorkspaceCapability(
             loadedGoogleWorkspaceCapabilityResult.loadedGoogleWorkspaceCapability
+          );
+        }
+        const loadedBrowserRuntimeCapabilityResult = await browserRuntimeCapabilityResult;
+        if (!active) {
+          return;
+        }
+        if ("loadedBrowserRuntimeCapability" in loadedBrowserRuntimeCapabilityResult) {
+          setBrowserRuntimeCapability(
+            loadedBrowserRuntimeCapabilityResult.loadedBrowserRuntimeCapability
           );
         }
         const loadedMemoryResult = await memoryStatusResult;
@@ -550,6 +575,9 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
   const googleWorkspaceProgressPercent = capabilityProgressPercent(
     googleWorkspaceCapability?.progress
   );
+  const browserRuntimeProgressPercent = capabilityProgressPercent(
+    browserRuntimeCapability?.progress
+  );
 
   function hydrateFromSettings(
     loaded: ModelSettingsRead,
@@ -577,11 +605,21 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
   }
 
   async function refreshGoogleWorkspaceCapability() {
-    const status = await invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+    const status = await invokeWithTimeout<ManagedCapabilityStatus>(
       "google_workspace_capability_status"
     );
     if (mountedRef.current) {
       setGoogleWorkspaceCapability(status);
+    }
+    return status;
+  }
+
+  async function refreshBrowserRuntimeCapability() {
+    const status = await invokeWithTimeout<ManagedCapabilityStatus>(
+      "browser_runtime_capability_status"
+    );
+    if (mountedRef.current) {
+      setBrowserRuntimeCapability(status);
     }
     return status;
   }
@@ -783,6 +821,7 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
     setIntegrationApiKey("");
     setIntegrationStatus(null);
     setGoogleWorkspaceInstallConsent(false);
+    setBrowserRuntimeInstallConsent(false);
   }
 
   function handleSearchProviderSelect(provider: SearchProvider) {
@@ -1268,7 +1307,7 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
     void pollStatus();
 
     try {
-      const next = await invokeWithTimeout<GoogleWorkspaceCapabilityStatus>(
+      const next = await invokeWithTimeout<ManagedCapabilityStatus>(
         "google_workspace_capability_install",
         undefined,
         120_000
@@ -1279,6 +1318,65 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
       setGoogleWorkspaceCapability(next);
       setGoogleWorkspaceInstallConsent(false);
       setIntegrationStatus({ message: "Google Workspace connector installed.", tone: "success" });
+    } catch (error) {
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIntegrationStatus({
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
+    } finally {
+      polling = false;
+      if (mountedRef.current && integrationRequestIdRef.current === requestId) {
+        setActiveIntegrationAction(null);
+      }
+    }
+  }
+
+  async function handleInstallBrowserRuntimeCapability() {
+    if (integrationBusy || !browserRuntimeCapability?.installAvailable) return;
+    if (browserRuntimeCapability.installed) return;
+    if (!browserRuntimeInstallConsent) {
+      setBrowserRuntimeInstallConsent(true);
+      setIntegrationStatus({
+        message: "Confirm download to install the browser automation runtime.",
+        tone: "info",
+      });
+      return;
+    }
+
+    const requestId = ++integrationRequestIdRef.current;
+    setActiveIntegrationAction("installBrowserRuntime");
+    setIntegrationStatus(null);
+    let polling = true;
+    const pollStatus = async () => {
+      while (polling) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+          return;
+        }
+        try {
+          await refreshBrowserRuntimeCapability();
+        } catch {
+          // The install request below owns the user-facing error.
+        }
+      }
+    };
+    void pollStatus();
+
+    try {
+      const next = await invokeWithTimeout<ManagedCapabilityStatus>(
+        "browser_runtime_capability_install",
+        undefined,
+        120_000
+      );
+      if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
+        return;
+      }
+      setBrowserRuntimeCapability(next);
+      setBrowserRuntimeInstallConsent(false);
+      setIntegrationStatus({ message: "Browser automation runtime installed.", tone: "success" });
     } catch (error) {
       if (!mountedRef.current || integrationRequestIdRef.current !== requestId) {
         return;
@@ -2091,8 +2189,8 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
                   {hasIntegrationCredential
-                    ? "Connected with read-only access."
-                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets with Google Workspace."}
+                    ? "Connected. Tessera can use approved Google Workspace actions for this account."
+                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates."}
                 </div>
 
                 {integrationAllowsCredentials && (
@@ -2290,6 +2388,101 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                           {googleWorkspaceCapability.sizeBytes !== undefined && (
                             <span className="text-xs text-muted-foreground">
                               {formatCapabilityBytes(googleWorkspaceCapability.sizeBytes)}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                  </div>
+                )}
+
+                {browserRuntimeCapability && (
+                  <div className="rounded-xl border border-border bg-background px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-foreground">
+                          Browser automation runtime
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {browserRuntimeCapabilityDescription(browserRuntimeCapability)}
+                        </div>
+                      </div>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                          browserRuntimeCapability.installed
+                            ? "bg-emerald-50 text-emerald-800"
+                            : browserRuntimeCapability.installAvailable
+                              ? "bg-amber-50 text-amber-800"
+                              : "bg-secondary text-muted-foreground"
+                        )}
+                      >
+                        {browserRuntimeCapabilityStatusLabel(browserRuntimeCapability)}
+                      </span>
+                    </div>
+
+                    {browserRuntimeCapability.progress &&
+                      activeIntegrationAction === "installBrowserRuntime" && (
+                        <div className="mt-4 space-y-2">
+                          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                            <span>
+                              {browserRuntimeCapabilityProgressLabel(
+                                browserRuntimeCapability.progress
+                              )}
+                            </span>
+                            <span>
+                              {browserRuntimeProgressPercent !== null
+                                ? `${browserRuntimeProgressPercent}%`
+                                : ""}
+                            </span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                            <div
+                              className={cn(
+                                "h-full rounded-full bg-primary transition-all",
+                                browserRuntimeProgressPercent === null && "w-1/2 animate-pulse"
+                              )}
+                              style={
+                                browserRuntimeProgressPercent === null
+                                  ? undefined
+                                  : { width: `${browserRuntimeProgressPercent}%` }
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                    {!browserRuntimeCapability.installed &&
+                      browserRuntimeCapability.installAvailable && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant={browserRuntimeInstallConsent ? "default" : "outline"}
+                            onClick={handleInstallBrowserRuntimeCapability}
+                            disabled={integrationBusy}
+                          >
+                            {activeIntegrationAction === "installBrowserRuntime" ? (
+                              <Loader2 size={16} className="animate-spin" />
+                            ) : (
+                              <Download size={16} />
+                            )}
+                            {browserRuntimeInstallConsent ? "Install runtime" : "Download runtime"}
+                          </Button>
+                          {browserRuntimeInstallConsent && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => {
+                                setBrowserRuntimeInstallConsent(false);
+                                setIntegrationStatus(null);
+                              }}
+                              disabled={integrationBusy}
+                            >
+                              Cancel
+                            </Button>
+                          )}
+                          {browserRuntimeCapability.sizeBytes !== undefined && (
+                            <span className="text-xs text-muted-foreground">
+                              {formatCapabilityBytes(browserRuntimeCapability.sizeBytes)}
                             </span>
                           )}
                         </div>
@@ -3385,13 +3578,13 @@ function providerConfigFromSettings(
   }
 }
 
-function googleWorkspaceCapabilityStatusLabel(status: GoogleWorkspaceCapabilityStatus): string {
+function googleWorkspaceCapabilityStatusLabel(status: ManagedCapabilityStatus): string {
   if (status.installed) return "Connector ready";
   if (status.installAvailable) return "Download required";
   return "Manual install";
 }
 
-function googleWorkspaceCapabilityDescription(status: GoogleWorkspaceCapabilityStatus): string {
+function googleWorkspaceCapabilityDescription(status: ManagedCapabilityStatus): string {
   if (status.installed) {
     return `Managed connector ${status.version} is installed.`;
   }
@@ -3404,9 +3597,26 @@ function googleWorkspaceCapabilityDescription(status: GoogleWorkspaceCapabilityS
   return status.message ?? "No managed connector is available for this system.";
 }
 
-function googleWorkspaceCapabilityProgressLabel(
-  progress: GoogleWorkspaceCapabilityProgress
-): string {
+function browserRuntimeCapabilityStatusLabel(status: ManagedCapabilityStatus): string {
+  if (status.installed) return "Runtime ready";
+  if (status.installAvailable) return "Download required";
+  return "Optional setup";
+}
+
+function browserRuntimeCapabilityDescription(status: ManagedCapabilityStatus): string {
+  if (status.installed) {
+    return `Managed browser runtime ${status.version} is installed.`;
+  }
+  if (status.installAvailable) {
+    const size = formatCapabilityBytes(status.sizeBytes);
+    return size
+      ? `Download managed browser runtime ${status.version} (${size}).`
+      : `Download managed browser runtime ${status.version}.`;
+  }
+  return status.message ?? "Browser automation can be set up later when a workflow needs it.";
+}
+
+function googleWorkspaceCapabilityProgressLabel(progress: ManagedCapabilityProgress): string {
   switch (progress.phase) {
     case "downloading":
       return "Downloading connector";
@@ -3423,7 +3633,24 @@ function googleWorkspaceCapabilityProgressLabel(
   }
 }
 
-function capabilityProgressPercent(progress?: GoogleWorkspaceCapabilityProgress): number | null {
+function browserRuntimeCapabilityProgressLabel(progress: ManagedCapabilityProgress): string {
+  switch (progress.phase) {
+    case "downloading":
+      return "Downloading runtime";
+    case "verifying":
+      return "Verifying download";
+    case "installing":
+      return "Installing runtime";
+    case "installed":
+      return "Runtime ready";
+    case "failed":
+      return progress.message ?? "Installation failed";
+    case "available":
+      return "Download ready";
+  }
+}
+
+function capabilityProgressPercent(progress?: ManagedCapabilityProgress): number | null {
   if (
     progress?.downloadedBytes === undefined ||
     progress.totalBytes === undefined ||

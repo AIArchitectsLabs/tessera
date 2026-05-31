@@ -24,6 +24,7 @@ export interface InboxListFilter {
 }
 
 export interface InboxStore {
+  consume(messageId: string, actor: string): InboxMessage | undefined;
   cancel(messageId: string, request: InboxCancelRequest): InboxMessage | undefined;
   close(): void;
   create(input: InboxCreateRequest): InboxMessage;
@@ -49,6 +50,7 @@ interface InboxMessageRow {
   deadline: string | null;
   snoozed_until: string | null;
   resolved_at: string | null;
+  consumed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +100,7 @@ function rowToMessage(row: InboxMessageRow, audit: InboxAuditRow[]): InboxMessag
     deadline: row.deadline ?? undefined,
     snoozedUntil: row.snoozed_until ?? undefined,
     resolvedAt: row.resolved_at ?? undefined,
+    consumedAt: row.consumed_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     audit: audit.map(rowToAudit),
@@ -118,7 +121,7 @@ export function createInboxStore(dbPath: string): InboxStore {
   const db = new Database(dbPath, { create: true, strict: true });
   configureSidecarSqlite(db, dbPath);
   db.exec(`
-    CREATE TABLE IF NOT EXISTS inbox_messages (
+  CREATE TABLE IF NOT EXISTS inbox_messages (
       id TEXT PRIMARY KEY NOT NULL,
       workspace_root TEXT,
       task_id TEXT,
@@ -134,6 +137,7 @@ export function createInboxStore(dbPath: string): InboxStore {
       deadline TEXT,
       snoozed_until TEXT,
       resolved_at TEXT,
+      consumed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -148,12 +152,25 @@ export function createInboxStore(dbPath: string): InboxStore {
       FOREIGN KEY (message_id) REFERENCES inbox_messages(id) ON DELETE CASCADE
     );
   `);
+  const existingColumns = db
+    .prepare("PRAGMA table_info(inbox_messages)")
+    .all()
+    .map((entry) => {
+      if (typeof entry === "object" && entry !== null && "name" in entry) {
+        return String((entry as { name: string }).name);
+      }
+      return "";
+    })
+    .filter(Boolean);
 
+  if (!existingColumns.includes("consumed_at")) {
+    db.exec("ALTER TABLE inbox_messages ADD COLUMN consumed_at TEXT");
+  }
   const insertMessage = db.prepare(`
     INSERT INTO inbox_messages (
-      id, workspace_root, task_id, turn_id, source, type, severity, status, title, body, context_json, actions_json, deadline, snoozed_until, resolved_at, created_at, updated_at
+      id, workspace_root, task_id, turn_id, source, type, severity, status, title, body, context_json, actions_json, deadline, snoozed_until, resolved_at, consumed_at, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertAudit = db.prepare(`
     INSERT INTO inbox_audit_entries (id, message_id, event, actor, payload_json, created_at)
@@ -172,6 +189,11 @@ export function createInboxStore(dbPath: string): InboxStore {
     UPDATE inbox_messages
     SET status = ?, snoozed_until = ?, resolved_at = ?, updated_at = ?
     WHERE id = ?
+  `);
+  const updateConsumedRow = db.prepare(`
+    UPDATE inbox_messages
+    SET status = ?, consumed_at = ?, updated_at = ?
+    WHERE id = ? AND status = ?
   `);
 
   function appendAudit(messageId: string, event: string, payload?: unknown): void {
@@ -215,6 +237,7 @@ export function createInboxStore(dbPath: string): InboxStore {
         parsed.deadline ?? null,
         null,
         null,
+        null,
         createdAt,
         createdAt
       );
@@ -229,6 +252,18 @@ export function createInboxStore(dbPath: string): InboxStore {
         .all()
         .map((row) => rowToMessage(row, listAuditRows.all(row.id)))
         .filter((message) => matchesFilter(message, filter));
+    },
+    consume(messageId, actor) {
+      const message = get(messageId);
+      if (!message) return undefined;
+      const now = nowIso();
+      const consumed = now;
+      const result = updateConsumedRow.run("consumed", consumed, now, messageId, "open");
+      if (result.changes === 0) {
+        throw new Error(`Inbox message cannot be consumed in current state: ${message.status}`);
+      }
+      appendAudit(messageId, "consumed", { actor });
+      return get(messageId);
     },
     resolve(messageId, request) {
       const message = get(messageId);

@@ -31,7 +31,7 @@ describe("optional capability manager", () => {
     );
 
     const ids = definitions.map((d) => d.id);
-    expect(ids).toEqual(["pdf-render", "pdf-transform", "google-workspace-cli"]);
+    expect(ids).toEqual(["pdf-render", "pdf-transform", "browser-runtime", "google-workspace-cli"]);
 
     const render = definitions.find((d) => d.id === "pdf-render");
     expect(render).toEqual({
@@ -77,8 +77,8 @@ describe("optional capability manager", () => {
       { platform: "darwin", arch: "arm64" }
     );
 
-    expect(definitions.map((d) => d.id)).toEqual(["google-workspace-cli"]);
-    const gws = definitions[0];
+    expect(definitions.map((d) => d.id)).toEqual(["browser-runtime", "google-workspace-cli"]);
+    const gws = definitions.find((d) => d.id === "google-workspace-cli");
     if (!gws) throw new Error("expected google-workspace-cli definition");
     expect(gws.version).toBe("0.22.5");
     expect(gws.binaries).toEqual([{ name: "gws", relativePath: "gws" }]);
@@ -168,7 +168,7 @@ describe("optional capability manager", () => {
       {},
       { platform: "win32", arch: "x64" }
     );
-    const gws = definitions[0];
+    const gws = definitions.find((d) => d.id === "google-workspace-cli");
     expect(gws?.binaries).toEqual([{ name: "gws", relativePath: "gws.exe" }]);
   });
 
@@ -219,6 +219,20 @@ describe("optional capability manager", () => {
     expect(definitions.find((d) => d.id === "pdf-transform")).toBeUndefined();
   });
 
+  test("keeps browser runtime unavailable until release metadata is set", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {},
+      { platform: "darwin", arch: "arm64" }
+    );
+    expect(definitions.find((d) => d.id === "browser-runtime")).toEqual({
+      id: "browser-runtime",
+      label: "Browser automation runtime",
+      version: "managed",
+      binaries: [{ name: "chromium", relativePath: "chromium" }],
+      assets: [],
+    });
+  });
+
   test("builds a Python skill runner capability from release metadata env", () => {
     const definitions = optionalCapabilityDefinitionsFromEnv(
       {
@@ -246,6 +260,43 @@ describe("optional capability manager", () => {
           executableName: "uv",
           sizeBytes: 15000000,
           archive: { kind: "tar.gz", entry: "uv" },
+        },
+      ],
+    });
+  });
+
+  test("builds a browser runtime capability from release metadata env", () => {
+    const definitions = optionalCapabilityDefinitionsFromEnv(
+      {
+        TESSERA_BROWSER_RUNTIME_URL: "https://downloads.tessera.local/chromium.zip",
+        TESSERA_BROWSER_RUNTIME_SHA256: "abc123",
+        TESSERA_BROWSER_RUNTIME_VERSION: "126.0.0",
+        TESSERA_BROWSER_RUNTIME_SIZE_BYTES: "160000000",
+        TESSERA_BROWSER_RUNTIME_ARCHIVE_KIND: "zip",
+        TESSERA_BROWSER_RUNTIME_ARCHIVE_ENTRY: "chromium/chrome-linux/chrome",
+        TESSERA_BROWSER_RUNTIME_ARCHIVE_ROOT: "chromium",
+      },
+      { platform: "linux", arch: "x64" }
+    );
+
+    expect(definitions.find((d) => d.id === "browser-runtime")).toEqual({
+      id: "browser-runtime",
+      label: "Browser automation runtime",
+      version: "126.0.0",
+      binaries: [{ name: "chromium", relativePath: "chromium/chrome-linux/chrome" }],
+      assets: [
+        {
+          platform: "linux",
+          arch: "x64",
+          url: "https://downloads.tessera.local/chromium.zip",
+          sha256: "abc123",
+          executableName: "chromium/chrome-linux/chrome",
+          sizeBytes: 160000000,
+          archive: {
+            kind: "zip",
+            entry: "chromium/chrome-linux/chrome",
+            installRoot: "chromium",
+          },
         },
       ],
     });
@@ -491,6 +542,57 @@ describe("optional capability manager", () => {
       const metadata = await stat(binaryPath ?? "");
       expect(metadata.mode & 0o777).toBe(0o755);
     }
+  });
+
+  test("preserves an archive install root when the runtime needs sibling files", async () => {
+    const rootDir = await mkdtemp("/tmp/tessera-capabilities-");
+    const archivePayload = Buffer.from("fake-browser-zip-bytes");
+    const binaryPayload = Buffer.from("#!/bin/sh\necho chromium\n");
+    const manager = createOptionalCapabilityManager({
+      rootDir,
+      platform: "linux",
+      arch: "x64",
+      definitions: [
+        {
+          id: "browser-runtime",
+          label: "Browser automation runtime",
+          version: "126.0.0",
+          binaries: [{ name: "chromium", relativePath: "chromium/chrome-linux/chrome" }],
+          assets: [
+            {
+              platform: "linux",
+              arch: "x64",
+              url: "https://downloads.tessera.local/chromium.zip",
+              sha256: sha256(archivePayload),
+              executableName: "chromium/chrome-linux/chrome",
+              sizeBytes: archivePayload.byteLength,
+              archive: {
+                kind: "zip",
+                entry: "chromium/chrome-linux/chrome",
+                installRoot: "chromium",
+              },
+            },
+          ],
+        },
+      ],
+      download: async () => archivePayload,
+      extract: async ({ outputDir, kind }) => {
+        expect(kind).toBe("zip");
+        await mkdir(join(outputDir, "chromium", "chrome-linux"), { recursive: true });
+        await writeFile(join(outputDir, "chromium", "chrome-linux", "chrome"), binaryPayload);
+        await writeFile(join(outputDir, "chromium", "chrome-linux", "resources.pak"), "resources");
+      },
+    });
+
+    await manager.install("browser-runtime");
+    const binaryPath = await manager.resolveBinary("browser-runtime", "chromium");
+    expect(binaryPath).toBe(
+      join(rootDir, "browser-runtime", "126.0.0", "chromium/chrome-linux/chrome")
+    );
+    await expect(readFile(binaryPath ?? "")).resolves.toEqual(binaryPayload);
+    await expect(
+      readFile(join(rootDir, "browser-runtime", "126.0.0", "chromium/chrome-linux/resources.pak"))
+    ).resolves.toEqual(Buffer.from("resources"));
   });
 
   test("rejects archive capabilities when the archive checksum does not match", async () => {

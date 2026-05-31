@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
-import { readDir } from "@tauri-apps/plugin-fs";
 import type {
   AgentProfile,
   AgentProfileListResult,
@@ -378,14 +377,27 @@ function TaskComposer({
   const [cursorPosition, setCursorPosition] = useState(0);
   const popoverRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const shouldLoadWorkspaceFiles = Boolean(workspaceRoot && value.includes("@"));
+  const slashQuery = slashSkillQuery(value, cursorPosition);
+  const shouldLoadSkills = slashQuery !== undefined;
 
   useEffect(() => {
+    if (!showAgentSelector) {
+      setAgents([]);
+      return;
+    }
     invoke<AgentProfileListResult>("agent_profile_list", { userKey })
       .then((res) => setAgents(res.profiles))
       .catch(console.error);
-  }, [userKey]);
+  }, [showAgentSelector, userKey]);
 
   useEffect(() => {
+    if (!shouldLoadSkills) {
+      setSkills([]);
+      setSkillsLoading(false);
+      setSkillsError(null);
+      return;
+    }
     let cancelled = false;
     setSkillsLoading(true);
     setSkillsError(null);
@@ -409,14 +421,14 @@ function TaskComposer({
     return () => {
       cancelled = true;
     };
-  }, [selectedAgentId, userKey, workspaceRoot]);
+  }, [selectedAgentId, shouldLoadSkills, userKey, workspaceRoot]);
 
   useEffect(() => {
     if (agentId) setSelectedAgentId(agentId);
   }, [agentId]);
 
   useEffect(() => {
-    if (!workspaceRoot) {
+    if (!workspaceRoot || !shouldLoadWorkspaceFiles) {
       setWorkspaceFiles([]);
       setFilesLoading(false);
       setFilesError(null);
@@ -445,7 +457,7 @@ function TaskComposer({
     return () => {
       cancelled = true;
     };
-  }, [workspaceRoot]);
+  }, [shouldLoadWorkspaceFiles, workspaceRoot]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -464,7 +476,6 @@ function TaskComposer({
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
   const selectedLabel = selectedAgent?.name || "Tessera";
   const enabledSkills = skills;
-  const slashQuery = slashSkillQuery(value, cursorPosition);
   const matchingSkills =
     slashQuery === undefined
       ? []
@@ -762,6 +773,12 @@ type FileMentionQuery = {
   start: number;
 };
 
+type WorkspaceDirEntry = {
+  name: string;
+  relativePath: string;
+  isDirectory: boolean;
+};
+
 function slashSkillQuery(value: string, cursorPosition: number): SlashSkillQuery | undefined {
   if (cursorPosition < 0) return undefined;
   const beforeCursor = value.slice(0, cursorPosition);
@@ -798,26 +815,25 @@ function fileMatchesQuery(path: string, query: string): boolean {
 async function loadWorkspaceFilePaths(workspaceRoot: string): Promise<string[]> {
   const paths: string[] = [];
 
-  async function visit(directoryPath: string, relativePrefix: string) {
+  async function visit(relativePath?: string) {
     if (paths.length >= MAX_WORKSPACE_FILE_MENTIONS) return;
-    const entries = await readDir(directoryPath);
-    const visibleEntries = entries
-      .filter((entry) => !entry.name.startsWith("."))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const entries = await invoke<WorkspaceDirEntry[]>(
+      "workspace_dir_list",
+      relativePath ? { workspaceRoot, relativePath } : { workspaceRoot }
+    );
+    const visibleEntries = entries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of visibleEntries) {
       if (paths.length >= MAX_WORKSPACE_FILE_MENTIONS) break;
-      const relativePath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
-      const absolutePath = `${directoryPath}/${entry.name}`;
       if (entry.isDirectory) {
-        await visit(absolutePath, relativePath);
+        await visit(entry.relativePath);
       } else {
-        paths.push(relativePath);
+        paths.push(entry.relativePath);
       }
     }
   }
 
-  await visit(workspaceRoot, "");
+  await visit();
   return paths;
 }
 

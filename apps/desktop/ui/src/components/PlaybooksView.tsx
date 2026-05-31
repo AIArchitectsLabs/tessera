@@ -37,10 +37,15 @@ import type {
   WorkspaceStyleGuideReadResult,
 } from "@tessera/contracts";
 import {
+  workflowStatusFromGraphRunDetail,
+  workflowStatusFromGraphRunRecord,
+} from "@tessera/contracts";
+import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
   FileText,
+  FolderPlus,
   Loader2,
   RefreshCw,
   Upload,
@@ -161,11 +166,29 @@ function normalizedStyleSelection(
   return copyType || override || toneNudges.length > 0 ? next : undefined;
 }
 
+function playbookRunErrorCopy(error: string | undefined): string | undefined {
+  if (!error) return undefined;
+  const message = error
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("Using keyring backend"))
+    .join("\n");
+  if (!message) return error;
+  if (/scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication/i.test(message)) {
+    return "Google Workspace needs additional access. Reconnect Google Workspace in Settings > Integrations and approve the requested Google access.";
+  }
+  if (/caller does not have permission|PERMISSION_DENIED|forbidden|access denied/i.test(message)) {
+    return "Google Workspace denied this request. Reconnect Google Workspace in Settings > Integrations and make sure this account can use the requested Google service.";
+  }
+  return message;
+}
+
 const NODE_KIND_SOFT_MS: Record<GraphQueueEntry["nodeKind"], number | undefined> = {
   script: 30_000,
   condition: 5_000,
   join: 5_000,
   tool: 120_000,
+  effect: 30_000,
   agent: 300_000,
   artifactWrite: 30_000,
   humanReview: undefined,
@@ -223,6 +246,15 @@ interface ReviewEvidence {
   preparedSummary: string;
   approveSummary: string;
   approveLabel: string;
+}
+
+interface SourceProvenanceSummary {
+  artifactId: string;
+  label: string;
+  sourceKinds: string[];
+  sourceCount: number | null;
+  fixtureOnly: boolean | null;
+  notes: string | null;
 }
 
 function stepIcon(status: WorkflowRunStepRecord["status"]) {
@@ -299,6 +331,27 @@ function mergeRunById<T extends { runId: string }>(runs: T[], nextRun: T): T[] {
 
 function formatCapabilityLabel(value: string): string {
   return titleFromId(value.replace(/^(?:skill|tool|integration)\./, ""));
+}
+
+function formatCapabilityBlockerMessage(blocker: {
+  capability: string;
+  reason?: string | null | undefined;
+}): string {
+  const label = formatCapabilityLabel(blocker.capability);
+  if (!blocker.reason) return `Tessera could not use ${label}.`;
+  if (blocker.reason.toLowerCase().includes(label.toLowerCase())) return blocker.reason;
+  return `${label}: ${blocker.reason}`;
+}
+
+function formatSourceKindLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "gmail" || normalized === "mail") return "Gmail";
+  if (normalized === "web" || normalized === "web.search" || normalized === "web.fetch") {
+    return "Web";
+  }
+  if (normalized === "feed" || normalized === "public-feed") return "Public feed";
+  if (normalized === "cbp") return "CBP feed";
+  return titleFromId(value);
 }
 
 function joinLabels(values: string[]): string {
@@ -383,6 +436,13 @@ function artifactPreviewText(value: unknown): string | null {
   const combined = [title, thesis].filter(Boolean).join("\n\n");
   if (combined) return combined;
   return null;
+}
+
+function compactReviewPreviewText(value: string): string {
+  return value
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .trim();
 }
 
 function parseJsonObjectFromText(value: string): Record<string, unknown> | null {
@@ -475,7 +535,11 @@ function reviewEvidenceFromSurface(
   const reviewEntry =
     surface.detail.queue.find(
       (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
-    ) ?? null;
+    ) ??
+    surface.detail.queue.find(
+      (entry) => entry.status === "blocked" && entry.nodeKind === "effect"
+    ) ??
+    null;
   if (!reviewEntry) return null;
 
   const consumedKeys = new Set(
@@ -536,6 +600,10 @@ function ReviewEvidenceBlock({
       : score?.pass === true
         ? "text-emerald-700"
         : "text-muted-foreground";
+  const previewText =
+    evidence.artifactPreview && compact
+      ? compactReviewPreviewText(evidence.artifactPreview)
+      : evidence.artifactPreview;
 
   return (
     <div className={cn("space-y-3", compact ? "text-amber-900" : "text-foreground")}>
@@ -572,14 +640,14 @@ function ReviewEvidenceBlock({
         </div>
       ) : null}
 
-      {evidence.artifactPreview && !hideArtifactPreview ? (
+      {previewText && !hideArtifactPreview ? (
         <div
           className={cn(
             "whitespace-pre-wrap text-sm leading-6",
             compact ? "line-clamp-6 text-amber-900" : "max-h-80 overflow-y-auto text-foreground"
           )}
         >
-          {evidence.artifactPreview}
+          {previewText}
         </div>
       ) : null}
     </div>
@@ -688,6 +756,8 @@ function visiblePlaybookOutputs(
   const declaredOutputs = outputs.filter((output) =>
     shouldShowResultOutput(output.kind, playbookOutputValue(output.kind, runOutputs))
   );
+  if (declaredOutputs.length > 0) return declaredOutputs;
+
   const declaredKinds = new Set(declaredOutputs.map((output) => output.kind));
 
   const materializedOutputs = Object.entries(runOutputs).flatMap(([kind, value]) => {
@@ -723,6 +793,8 @@ function graphRunResultOutputDeclarations(
 ): WorkflowOutputDeclaration[] {
   if (!detail) return [];
   const declared = graphSnapshotOutputDeclarations(detail);
+  if (declared.length > 0) return declared;
+
   const declaredKinds = new Set(declared.map((output) => output.kind));
   const runOutputs = graphRunOutputs(detail);
   const artifactIds = [...new Set(detail.artifacts.map((artifact) => artifact.artifactId))];
@@ -824,26 +896,32 @@ function orderedPhases(
   return [...new Set([...phaseOrder, ...runPhases])];
 }
 
-function workflowStatusFromGraph(
-  status: PlaybookGraphRunRecord["status"]
-): PlaybookRunDetail["status"] {
-  if (status === "completed") return "completed";
-  if (status === "blocked") return "blocked";
-  if (status === "interrupted") return "blocked";
-  if (status === "needs_attention") return "needs_attention";
-  if (status === "denied") return "denied";
-  if (status === "failed" || status === "needs_repair") {
-    return "failed";
-  }
-  return "running";
-}
-
 function runNeedsLiveRefresh(
   run: PlaybookRunDetail | null,
   graphRun: PlaybookGraphRunDetail | null
 ): boolean {
   if (run?.status === "running") return true;
   return graphRun?.run.status === "queued" || graphRun?.run.status === "running";
+}
+
+function latestCompletedRunForPlaybook(
+  runs: PlaybookRunDetail[],
+  playbookId: string
+): PlaybookRunDetail | null {
+  let latestRun: PlaybookRunDetail | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  for (const run of runs) {
+    if (run.workflowId !== playbookId || run.status !== "completed") continue;
+    const timestamp = Date.parse(run.updatedAt ?? "");
+    const comparableTime = Number.isFinite(timestamp) ? timestamp : 0;
+    if (!latestRun || comparableTime >= latestTime) {
+      latestRun = run;
+      latestTime = comparableTime;
+    }
+  }
+
+  return latestRun;
 }
 
 function workflowStepStatusFromGraph(
@@ -888,6 +966,96 @@ function graphRunOutputs(detail: PlaybookGraphRunDetail | null): Record<string, 
     outputs[artifactId] = { ...value, path };
   }
   return outputs;
+}
+
+function recordFromValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function sourceKindsFromValue(value: unknown): string[] {
+  const record = recordFromValue(value);
+  if (!record) return [];
+  const provenance = recordFromValue(record.provenance);
+  const sourceKinds = provenance?.sourceKinds ?? record.sourceKinds;
+  if (Array.isArray(sourceKinds)) {
+    return sourceKinds.filter((item): item is string => typeof item === "string" && !!item.trim());
+  }
+  const counts = recordFromValue(provenance?.sourceCounts) ?? recordFromValue(record.sourceCounts);
+  if (counts) return Object.keys(counts).filter((key) => key.trim());
+  const rows = Array.isArray(record.signals)
+    ? record.signals
+    : Array.isArray(record.items)
+      ? record.items
+      : Array.isArray(record.rows)
+        ? record.rows
+        : [];
+  return [
+    ...new Set(
+      rows
+        .map((row) => recordFromValue(row)?.sourceType)
+        .filter((item): item is string => typeof item === "string" && !!item.trim())
+    ),
+  ].sort();
+}
+
+function sourceCountFromValue(value: unknown): number | null {
+  const record = recordFromValue(value);
+  if (!record) return null;
+  const provenance = recordFromValue(record.provenance);
+  const summary = recordFromValue(record.summary);
+  const direct = provenance?.sourceCount ?? summary?.sourceCount ?? record.sourceCount;
+  if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+  const sourceCounts =
+    recordFromValue(provenance?.sourceCounts) ?? recordFromValue(record.sourceCounts);
+  if (sourceCounts) {
+    const total = Object.values(sourceCounts).reduce<number>(
+      (sum, value) => (typeof value === "number" && Number.isFinite(value) ? sum + value : sum),
+      0
+    );
+    if (total > 0) return total;
+  }
+  const rows = Array.isArray(record.signals)
+    ? record.signals
+    : Array.isArray(record.items)
+      ? record.items
+      : Array.isArray(record.rows)
+        ? record.rows
+        : [];
+  return rows.length > 0 ? rows.length : null;
+}
+
+function sourceProvenanceSummaries(
+  detail: PlaybookGraphRunDetail | null
+): SourceProvenanceSummary[] {
+  if (!detail) return [];
+  const latestByArtifact = new Map<string, PlaybookGraphRunDetail["artifacts"][number]>();
+  for (const artifact of detail.artifacts) latestByArtifact.set(artifact.artifactId, artifact);
+
+  return [...latestByArtifact.values()].flatMap((artifact) => {
+    const record = recordFromValue(artifact.value);
+    const provenance = recordFromValue(record?.provenance);
+    const sourceKinds = sourceKindsFromValue(artifact.value);
+    const sourceCount = sourceCountFromValue(artifact.value);
+    if (sourceKinds.length === 0 && sourceCount === null) return [];
+    const fixtureOnly =
+      typeof provenance?.fixtureOnly === "boolean"
+        ? provenance.fixtureOnly
+        : typeof record?.fixtureOnly === "boolean"
+          ? record.fixtureOnly
+          : null;
+    return [
+      {
+        artifactId: artifact.artifactId,
+        label: artifactLabel(artifact.artifactId),
+        sourceKinds,
+        sourceCount,
+        fixtureOnly,
+        notes: typeof provenance?.notes === "string" ? provenance.notes : null,
+      },
+    ];
+  });
 }
 
 function graphNodeRecords(value: unknown): Record<string, unknown>[] {
@@ -1068,28 +1236,78 @@ function graphRunArtifactWritePaths(detail: PlaybookGraphRunDetail): Map<string,
   }
 
   const nodes = graph.nodes;
-  if (!Array.isArray(nodes)) return paths;
+  if (Array.isArray(nodes)) {
+    const completedNodeIds = new Set(
+      detail.queue
+        .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
+        .map((entry) => entry.nodeId)
+    );
+    for (const node of nodes) {
+      if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+      const candidate = node as Record<string, unknown>;
+      if (
+        candidate.kind !== "artifactWrite" ||
+        typeof candidate.id !== "string" ||
+        typeof candidate.artifact !== "string" ||
+        typeof candidate.path !== "string" ||
+        !completedNodeIds.has(candidate.id)
+      ) {
+        continue;
+      }
+      paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
+    }
+  }
 
-  const completedNodeIds = new Set(
-    detail.queue
-      .filter((entry) => entry.nodeKind === "artifactWrite" && entry.status === "succeeded")
-      .map((entry) => entry.nodeId)
-  );
-  for (const node of nodes) {
-    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
-    const candidate = node as Record<string, unknown>;
+  const effectNodeById = new Map<string, Record<string, unknown>>();
+  for (const node of graphNodeRecords(graph)) {
+    if (typeof node.id === "string" && node.kind === "effect") {
+      effectNodeById.set(node.id, node);
+    }
+  }
+
+  for (const effect of detail.effects) {
     if (
-      candidate.kind !== "artifactWrite" ||
-      typeof candidate.id !== "string" ||
-      typeof candidate.artifact !== "string" ||
-      typeof candidate.path !== "string" ||
-      !completedNodeIds.has(candidate.id)
+      effect.status !== "committed" &&
+      effect.status !== "replayed" &&
+      effect.commitStatus !== "committed" &&
+      effect.commitStatus !== "replayed"
     ) {
       continue;
     }
-    paths.set(candidate.artifact, renderGraphArtifactWritePath(candidate.path, detail.run.input));
+    const artifactId =
+      effect.outputArtifactId ??
+      effectArtifactIdFromNode(effectNodeById.get(effect.nodeId)) ??
+      effectArtifactIdFromNode(effectNodeById.get(lastNodePathSegment(effect.nodePath)));
+    const outputPath =
+      effect.output?.kind === "workspace" ? effect.output.path : effect.outputReference;
+    if (!artifactId || !outputPath) continue;
+    paths.set(artifactId, renderGraphArtifactWritePath(outputPath, detail.run.input));
   }
   return paths;
+}
+
+function lastNodePathSegment(nodePath: string): string {
+  const segments = nodePath.split("/");
+  return segments[segments.length - 1] ?? nodePath;
+}
+
+function effectArtifactIdFromNode(node: Record<string, unknown> | undefined): string | null {
+  if (!node) return null;
+  if (typeof node.outputArtifact === "string" && node.outputArtifact.trim()) {
+    return node.outputArtifact;
+  }
+  const input = node.input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const inputRecord = input as Record<string, unknown>;
+  if (typeof inputRecord.sourceArtifact === "string" && inputRecord.sourceArtifact.trim()) {
+    return inputRecord.sourceArtifact;
+  }
+  const value = inputRecord.value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const valueRecord = value as Record<string, unknown>;
+  return typeof valueRecord.artifact === "string" && valueRecord.artifact.trim()
+    ? valueRecord.artifact
+    : null;
 }
 
 function graphRunWorkspaceRoot(detail: PlaybookGraphRunDetail | null): string | null {
@@ -1158,6 +1376,10 @@ function graphRunUsage(detail: PlaybookGraphRunDetail | null): TokenUsage | unde
   return usage;
 }
 
+function playbookRunHasModelStep(run: PlaybookRunDetail): boolean {
+  return run.steps?.some((step) => step.kind === "agent") ?? false;
+}
+
 function dashboardLayoutFromPlaybook(
   playbook: PlaybookSummary | PlaybookDetail | null
 ): DashboardLayout | null {
@@ -1173,11 +1395,38 @@ function graphRunApproval(
     !detail ||
     (detail.run.status !== "blocked" &&
       detail.run.status !== "interrupted" &&
-      detail.run.status !== "needs_attention")
+      detail.run.status !== "needs_attention" &&
+      detail.run.status !== "needs_repair")
   ) {
     return undefined;
   }
   const productAction = productView?.primaryAction;
+  if (
+    detail.run.status === "needs_repair" &&
+    productAction &&
+    (productAction.decision === "approve_repair" || productAction.decision === "retry_repair")
+  ) {
+    return {
+      toolId: "graph.approveRepair",
+      args: {
+        playbookId: detail.run.playbookId,
+        runId: detail.run.runId,
+      },
+      capability: "write",
+      risk: {
+        mutates: false,
+        destructive: false,
+        external: false,
+        reversible: true,
+        dryRunSupported: false,
+      },
+      preview:
+        productView?.message ??
+        detail.run.repairReason ??
+        "Tessera needs to repair this run before continuing.",
+      reasonCode: "graph_repair",
+    };
+  }
   if (
     productView?.state === "retry_available" &&
     productAction &&
@@ -1290,11 +1539,14 @@ function graphRunApproval(
     };
   }
   const reviewEntry = detail.queue.find(
-    (entry) => entry.status === "blocked" && entry.nodeKind === "humanReview"
+    (entry) =>
+      entry.status === "blocked" &&
+      (entry.nodeKind === "humanReview" || entry.nodeKind === "effect")
   );
   if (!reviewEntry) return undefined;
+  const isEffectApproval = reviewEntry.nodeKind === "effect";
   return {
-    toolId: "graph.humanReview",
+    toolId: isEffectApproval ? "graph.effectApproval" : "graph.humanReview",
     args: {
       playbookId: detail.run.playbookId,
       runId: detail.run.runId,
@@ -1308,8 +1560,10 @@ function graphRunApproval(
       reversible: true,
       dryRunSupported: false,
     },
-    preview: "Tessera paused at a review checkpoint. Review what it prepared before continuing.",
-    reasonCode: "graph_human_review",
+    preview: isEffectApproval
+      ? "Tessera paused before writing to the workspace. Review what it prepared before continuing."
+      : "Tessera paused at a review checkpoint. Review what it prepared before continuing.",
+    reasonCode: isEffectApproval ? "graph_effect_approval" : "graph_human_review",
   };
 }
 
@@ -1343,7 +1597,7 @@ function graphRunToPlaybookRunDetail(
     startedAt: entry.claimedAt ?? entry.createdAt,
     nodeKind: entry.nodeKind,
     ...(entry.completedAt ? { completedAt: entry.completedAt } : {}),
-    ...(entry.error ? { error: entry.error } : {}),
+    ...(entry.error ? { error: playbookRunErrorCopy(entry.error) } : {}),
     ...(entry.claimedAt ? { claimedAt: entry.claimedAt } : {}),
     ...(entry.lastHeartbeatAt ? { lastHeartbeatAt: entry.lastHeartbeatAt } : {}),
     updatedAt: entry.updatedAt,
@@ -1353,7 +1607,7 @@ function graphRunToPlaybookRunDetail(
     runId: detail.run.runId,
     workflowId: detail.run.playbookId,
     packageVersion: detail.run.snapshot.packageVersion,
-    status: workflowStatusFromGraph(detail.run.status),
+    status: workflowStatusFromGraphRunDetail(detail),
     currentStepId: detail.run.currentQueueEntryId,
     input: detail.run.input,
     outputs,
@@ -1361,7 +1615,9 @@ function graphRunToPlaybookRunDetail(
     ...(usage ? { usage } : {}),
     dashboardLayout: dashboardLayoutFromPlaybook(playbookForRun) ?? undefined,
     approval: graphRunApproval(detail, playbookForRun, productView),
-    error: detail.run.error ?? detail.run.repairReason,
+    error: playbookRunErrorCopy(
+      detail.run.error ?? detail.run.repairReason ?? detail.run.blockedReason
+    ),
     startedAt: detail.run.startedAt,
     updatedAt: detail.run.updatedAt,
     completedAt: detail.run.completedAt,
@@ -1391,12 +1647,12 @@ function graphRunRecordToPlaybookRunDetail(
     runId: run.runId,
     workflowId: run.playbookId,
     packageVersion: run.snapshot.packageVersion,
-    status: workflowStatusFromGraph(run.status),
+    status: workflowStatusFromGraphRunRecord(run),
     currentStepId: run.currentQueueEntryId,
     input: run.input,
     outputs: {},
     assignmentPlan: run.assignmentPlan,
-    error: run.error ?? run.repairReason,
+    error: playbookRunErrorCopy(run.error ?? run.repairReason ?? run.blockedReason),
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     completedAt: run.completedAt,
@@ -1520,6 +1776,11 @@ function buildCapabilityInventory(
       capabilities: [
         "integration.calendar.events.read",
         "integration.mail.read",
+        "integration.mail.drafts.write",
+        "integration.mail.drafts.send",
+        "integration.sheets.workbooks.write",
+        "integration.sheets.rows.write",
+        "integration.docs.documents.write",
         "integration.drive.read",
         "integration.contacts.read",
       ],
@@ -1618,70 +1879,6 @@ function buildCapabilityInventory(
   };
 }
 
-function assignmentForInventoryAgent(
-  stepId: string,
-  agent: WorkflowCapabilityInventory["agents"][number]
-): WorkflowNodeAssignment {
-  return {
-    stepId,
-    agentId: agent.id,
-    agentLabel: agent.label,
-    agentFingerprint: agent.fingerprint,
-    skillCapabilities: agent.skillCapabilities,
-    toolCapabilities: agent.toolCapabilities,
-    integrationCapabilities: [],
-  };
-}
-
-function buildGraphAssignmentPreview(
-  detail: PlaybookSummary | PlaybookDetail | null,
-  capabilityInventory: WorkflowCapabilityInventory | null
-): PlaybookAssignmentPreviewResult | null {
-  if (!detail || !("steps" in detail) || !capabilityInventory) return null;
-
-  const agentSteps = detail.steps.filter((step) => step.kind === "agent");
-  const assignments: WorkflowRunAssignmentPlan["assignments"] = {};
-  const defaultAgent = capabilityInventory.agents[0];
-
-  const nodePreviews = agentSteps.map((step) => {
-    const candidates = capabilityInventory.agents.map((agent, index) => ({
-      agentId: agent.id,
-      agentLabel: agent.label,
-      assignment: assignmentForInventoryAgent(step.id, agent),
-      recommended: index === 0,
-      disabled: false,
-    }));
-    const recommended = candidates[0];
-    if (recommended) {
-      assignments[step.id] = recommended.assignment;
-    }
-    return {
-      stepId: step.id,
-      stepLabel: step.label ?? titleFromId(step.id),
-      kind: "agent" as const,
-      ...(recommended
-        ? {
-            recommendedAgentId: recommended.agentId,
-            recommendedAgentLabel: recommended.agentLabel,
-          }
-        : {}),
-      candidates,
-    };
-  });
-
-  return {
-    assignmentPlan: {
-      resolverVersion: 1,
-      createdAt: new Date().toISOString(),
-      assignments: defaultAgent === undefined && agentSteps.length > 0 ? {} : assignments,
-    },
-    confirmationRequired: false,
-    blockers: [],
-    sourceGaps: [],
-    nodePreviews,
-  };
-}
-
 function assignmentPlanWithCurrentCandidates(
   savedPlan: WorkflowRunAssignmentPlan,
   preview: PlaybookAssignmentPreviewResult
@@ -1757,11 +1954,17 @@ function Section({
   );
 }
 
-function UsageSummary({ usage }: { usage: TokenUsage | undefined }) {
+function UsageSummary({
+  usage,
+  modelStepRan,
+}: {
+  usage: TokenUsage | undefined;
+  modelStepRan: boolean;
+}) {
   if (!usage) {
     return (
       <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-        Not reported by provider.
+        {modelStepRan ? "Not reported by provider." : "No model token usage recorded for this run."}
       </div>
     );
   }
@@ -2096,6 +2299,50 @@ function parseGraphActionPayload(
   return payload;
 }
 
+function reviewActionHelp(action: PlaybookGraphResumeActionSpec, approveCopy: string): string {
+  if (action.description) return action.description;
+  if (action.decision === "approve") return approveCopy;
+  if (action.decision === "approve_repair" || action.decision === "retry_repair") {
+    return "Repair the saved run state and continue from the pinned playbook snapshot.";
+  }
+  if (action.decision === "request_changes") {
+    return "Tell Tessera what to revise before anything else happens.";
+  }
+  if (action.decision === "deny") {
+    return "Stop this run here without applying workspace changes.";
+  }
+  return "Continue with this review decision.";
+}
+
+function reviewPayloadHeading(action: PlaybookGraphResumeActionSpec): string {
+  if (action.decision === "request_changes") return "Tell Tessera what to change";
+  if (action.decision === "deny") return "Add a reason before stopping";
+  return action.label;
+}
+
+function reviewPayloadSubmitLabel(action: PlaybookGraphResumeActionSpec): string {
+  if (action.decision === "request_changes") return "Send change request";
+  if (action.decision === "deny") return "Stop run";
+  return action.label;
+}
+
+function reviewPayloadPlaceholder(
+  action: PlaybookGraphResumeActionSpec,
+  field: PlaybookGraphResumeActionSpec["requiredPayloadFields"][number]
+): string {
+  const fieldName = field.label.toLowerCase();
+  if (field.kind === "string") {
+    if (action.decision === "request_changes") {
+      return "Describe what should change before Tessera continues.";
+    }
+    if (fieldName.includes("reason")) return "Why should this run stop?";
+    return field.label;
+  }
+  if (fieldName.includes("supplier")) return '["supplier-id"]';
+  if (field.kind === "object") return "{ }";
+  return "JSON value";
+}
+
 function GraphRuntimeSection({
   runs,
   detail,
@@ -2202,7 +2449,9 @@ function GraphRuntimeSection({
           <div className="mt-3 space-y-3">
             {detail.run.blockedReason || detail.run.repairReason || detail.run.error ? (
               <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-                {detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error}
+                {playbookRunErrorCopy(
+                  detail.run.blockedReason ?? detail.run.repairReason ?? detail.run.error
+                )}
               </div>
             ) : null}
 
@@ -2904,8 +3153,7 @@ function GuidedStart({
               key={`${blocker.stepId}:${blocker.capability}`}
               className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
             >
-              {blocker.reason ??
-                `Tessera could not use ${formatCapabilityLabel(blocker.capability)}.`}
+              {formatCapabilityBlockerMessage(blocker)}
             </div>
           ))}
         </div>
@@ -3049,7 +3297,25 @@ function GuidedStart({
         ) : null}
       </div>
 
-      {capabilityInventory && playbook.optionalCapabilities.length > 0 ? (
+      {playbook.requiredCapabilities.length > 0 ? (
+        <div className="mb-5">
+          <div className="mb-2 text-xs text-muted-foreground">
+            Tessera needs these capabilities to run
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {playbook.requiredCapabilities.map((cap) => (
+              <span
+                key={cap}
+                className="rounded-full border border-border bg-secondary px-3 py-1 text-xs text-foreground"
+              >
+                {formatCapabilityLabel(cap)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {playbook.optionalCapabilities.length > 0 ? (
         <div className="mb-8">
           <div className="mb-2 text-xs text-muted-foreground">
             Tessera uses these sources when available
@@ -3445,23 +3711,39 @@ function GuidedReview({
   const recoveryNextCopy =
     productState === "retry_available"
       ? "Tessera will retry this step and continue the run."
-      : productState === "restart_required"
-        ? "Restart Tessera, then start the playbook again."
-        : approveCopy;
+      : productView?.primaryAction?.decision === "approve_repair" ||
+          productView?.primaryAction?.decision === "retry_repair"
+        ? "Tessera will repair the saved run state and continue from the pinned playbook snapshot."
+        : productState === "restart_required"
+          ? "Restart Tessera, then start the playbook again."
+          : approveCopy;
   const recoveryNextLabel =
     productState === "retry_available" ? "What happens if you retry" : "What happens next";
   const [openingArtifact, setOpeningArtifact] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, string>>>({});
   const [payloadError, setPayloadError] = useState<string | null>(null);
+  const [activePayloadActionId, setActivePayloadActionId] = useState<string | null>(null);
   const reviewRootRef = useRef<HTMLDivElement | null>(null);
   const openWorkspaceRoot = artifactWorkspaceRoot ?? workspaceRoot;
   const canOpenArtifact = !!openWorkspaceRoot && !!reviewEvidence?.artifactPath;
-  const actionsWithPayloadFields = [primaryAction, ...secondaryActions].filter(
-    (action): action is PlaybookGraphResumeActionSpec =>
-      action !== undefined && action.requiredPayloadFields.length > 0
+  const reviewActionOptions = [primaryAction, ...secondaryActions].filter(
+    (action): action is PlaybookGraphResumeActionSpec => action !== undefined
   );
+  const activePayloadAction =
+    reviewActionOptions.find(
+      (action) =>
+        action.actionId === activePayloadActionId && action.requiredPayloadFields.length > 0
+    ) ?? null;
   const hasStopAction = secondaryActions.some((action) => action.decision === "deny");
+
+  function reviewActionLabel(action: PlaybookGraphResumeActionSpec): string {
+    if (action.actionId === primaryAction?.actionId) return primaryActionLabel;
+    return (
+      productView?.secondaryActions.find((candidate) => candidate.actionId === action.actionId)
+        ?.label ?? action.label
+    );
+  }
 
   async function openReviewArtifact() {
     if (!openWorkspaceRoot || !reviewEvidence?.artifactPath) return;
@@ -3508,6 +3790,15 @@ function GuidedReview({
         payloadParseError instanceof Error ? payloadParseError.message : String(payloadParseError)
       );
     }
+  }
+
+  function handleReviewAction(action: PlaybookGraphResumeActionSpec) {
+    if (action.requiredPayloadFields.length > 0) {
+      setPayloadError(null);
+      setActivePayloadActionId(action.actionId);
+      return;
+    }
+    submitReviewAction(action);
   }
 
   return (
@@ -3577,41 +3868,144 @@ function GuidedReview({
               </div>
             </>
           )}
-          <div>
-            <div className="font-medium">What happens if you stop</div>
-            <p className="mt-1">The run stops here and nothing changes in your workspace.</p>
-          </div>
-          {actionsWithPayloadFields.length > 0 ? (
-            <div className="border-t border-amber-200 pt-4">
-              {actionsWithPayloadFields.map((action) => (
-                <div key={action.actionId} className="space-y-2">
-                  {action.requiredPayloadFields.map((field) => {
-                    const value = payloadDrafts[action.actionId]?.[field.path] ?? "";
-                    return (
-                      <label key={field.path} className="block">
-                        <span className="font-medium">{field.label}</span>
-                        <textarea
-                          data-guided-review-action={action.actionId}
-                          data-payload-field={field.path}
-                          className="mt-1 min-h-20 w-full resize-y rounded-md border border-amber-200 bg-white px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
-                          value={value}
-                          placeholder={
-                            field.kind === "string"
-                              ? field.label
-                              : field.kind === "object"
-                                ? "{ }"
-                                : "JSON value"
-                          }
-                          onChange={(event) =>
-                            updatePayloadDraft(action.actionId, field.path, event.target.value)
-                          }
-                        />
-                      </label>
-                    );
-                  })}
+          <div className="border-t border-amber-200 pt-4">
+            <div className="font-medium">Choose next step</div>
+            <p className="mt-1">Nothing else happens until you choose one of these actions.</p>
+            <div className="mt-3 space-y-2">
+              {!primaryAction ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{primaryActionLabel}</div>
+                    <p className="mt-0.5 text-xs text-amber-700">{approveCopy}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-9 rounded-md px-5"
+                    onClick={onApprove}
+                    disabled={running}
+                  >
+                    {running ? <Loader2 size={14} className="animate-spin" /> : null}
+                    {primaryActionLabel}
+                  </Button>
+                </div>
+              ) : null}
+              {reviewActionOptions.map((action) => (
+                <div
+                  key={action.actionId}
+                  className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{reviewActionLabel(action)}</div>
+                    <p className="mt-0.5 text-xs text-amber-700">
+                      {reviewActionHelp(action, approveCopy)}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={
+                      action.actionId === primaryAction?.actionId || action.decision === "approve"
+                        ? "default"
+                        : action.decision === "deny"
+                          ? "outline"
+                          : "secondary"
+                    }
+                    className="h-9 rounded-md px-5"
+                    onClick={() => handleReviewAction(action)}
+                    disabled={running}
+                  >
+                    {running &&
+                    (action.actionId === primaryAction?.actionId ||
+                      action.decision === "approve") ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : null}
+                    {reviewActionLabel(action)}
+                  </Button>
                 </div>
               ))}
-              {payloadError ? <p className="text-xs text-red-700">{payloadError}</p> : null}
+              {!hasStopAction ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-100 pt-3 first:border-t-0 first:pt-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">Stop run</div>
+                    <p className="mt-0.5 text-xs text-amber-700">
+                      Stop this run here without applying workspace changes.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9 rounded-md px-5"
+                    onClick={onStop}
+                    disabled={running}
+                  >
+                    Stop run
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {activePayloadAction ? (
+            <div className="border-t border-amber-200 pt-4">
+              <div className="font-medium">{reviewPayloadHeading(activePayloadAction)}</div>
+              <p className="mt-1 text-xs text-amber-700">
+                {reviewActionHelp(activePayloadAction, approveCopy)}
+              </p>
+              <div className="mt-3 space-y-3">
+                {activePayloadAction.requiredPayloadFields.map((field) => {
+                  const value = payloadDrafts[activePayloadAction.actionId]?.[field.path] ?? "";
+                  return (
+                    <label key={field.path} className="block">
+                      <span className="font-medium">{field.label}</span>
+                      <textarea
+                        data-guided-review-action={activePayloadAction.actionId}
+                        data-payload-field={field.path}
+                        className="mt-1 min-h-20 w-full resize-y rounded-md border border-amber-200 bg-white px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+                        value={value}
+                        placeholder={reviewPayloadPlaceholder(activePayloadAction, field)}
+                        onChange={(event) =>
+                          updatePayloadDraft(
+                            activePayloadAction.actionId,
+                            field.path,
+                            event.target.value
+                          )
+                        }
+                      />
+                      {field.kind !== "string" ? (
+                        <span className="mt-1 block text-xs text-amber-700">Enter valid JSON.</span>
+                      ) : null}
+                    </label>
+                  );
+                })}
+              </div>
+              {payloadError ? <p className="mt-2 text-xs text-red-700">{payloadError}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activePayloadAction.decision === "deny" ? "outline" : "default"}
+                  className="h-9 rounded-md px-5"
+                  onClick={() => submitReviewAction(activePayloadAction)}
+                  disabled={running}
+                >
+                  {running ? <Loader2 size={14} className="animate-spin" /> : null}
+                  {reviewPayloadSubmitLabel(activePayloadAction)}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-9 rounded-md px-5"
+                  onClick={() => {
+                    setPayloadError(null);
+                    setActivePayloadActionId(null);
+                  }}
+                  disabled={running}
+                >
+                  Cancel
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -3628,41 +4022,6 @@ function GuidedReview({
             >
               {openingArtifact ? <Loader2 size={14} className="animate-spin" /> : null}
               Open {reviewEvidence.artifactLabel.toLowerCase()}
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            className="h-9 rounded-md px-5"
-            onClick={primaryAction ? () => submitReviewAction(primaryAction) : onApprove}
-            disabled={running}
-          >
-            {running ? <Loader2 size={14} className="animate-spin" /> : null}
-            {primaryActionLabel}
-          </Button>
-          {secondaryActions.map((action) => (
-            <Button
-              key={action.actionId}
-              type="button"
-              size="sm"
-              variant={action.decision === "deny" ? "outline" : "secondary"}
-              className="h-9 rounded-md px-5"
-              onClick={() => submitReviewAction(action)}
-              disabled={running}
-            >
-              {action.label}
-            </Button>
-          ))}
-          {!hasStopAction ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-9 rounded-md px-5"
-              onClick={onStop}
-              disabled={running}
-            >
-              Stop run
             </Button>
           ) : null}
           <Button
@@ -3751,6 +4110,8 @@ function GuidedResult({
       ? "Here's what changed, what's at risk, and what needs follow-up."
       : (resultSub[resultRun.status] ?? "");
   const visibleOutputs = visiblePlaybookOutputs(outputs, runOutputs, inferredOutputKinds);
+  const failureMessage =
+    resultRun.status === "failed" ? (resultRun.error ?? latestEvent?.message) : null;
 
   async function openArtifact(path: string) {
     if (!openWorkspaceRoot) return;
@@ -3785,12 +4146,15 @@ function GuidedResult({
         {sub ? <p className="mt-2 text-sm text-muted-foreground">{sub}</p> : null}
         {resultRun.status === "completed" ? (
           <div className="mt-3">
-            <UsageSummary usage={resultRun.usage} />
+            <UsageSummary
+              usage={resultRun.usage}
+              modelStepRan={playbookRunHasModelStep(resultRun)}
+            />
           </div>
         ) : null}
-        {resultRun.status === "failed" && latestEvent ? (
+        {failureMessage ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {latestEvent.message}
+            {failureMessage}
           </p>
         ) : null}
         {blockedWithoutApproval ? (
@@ -3991,6 +4355,10 @@ function DetailsPanel({
     () => reviewEvidenceFromSurface(selectedGraphRunSurface),
     [selectedGraphRunSurface]
   );
+  const sourceProvenance = useMemo(
+    () => sourceProvenanceSummaries(selectedGraphRun),
+    [selectedGraphRun]
+  );
   const reviewEvents =
     selectedGraphRun?.reviews.filter((review) => review.decision !== "requested") ?? [];
 
@@ -4122,6 +4490,30 @@ function DetailsPanel({
                       className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
                     >
                       {gap.reason ?? formatCapabilityLabel(gap.capability)}
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            ) : null}
+
+            {sourceProvenance.length > 0 ? (
+              <Section title="Source provenance" subtitle="Evidence used by this run">
+                <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+                  {sourceProvenance.map((source) => (
+                    <div key={source.artifactId} className="px-3 py-2 text-xs">
+                      <div className="font-medium text-foreground">{source.label}</div>
+                      <div className="mt-0.5 text-muted-foreground">
+                        {source.sourceKinds.length > 0
+                          ? source.sourceKinds.map(formatSourceKindLabel).join(", ")
+                          : "Source count recorded"}
+                        {source.sourceCount !== null
+                          ? ` · ${source.sourceCount} source${source.sourceCount === 1 ? "" : "s"}`
+                          : ""}
+                        {source.fixtureOnly ? " · fixture run" : ""}
+                      </div>
+                      {source.notes ? (
+                        <div className="mt-0.5 text-muted-foreground">{source.notes}</div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -4270,10 +4662,13 @@ export function PlaybooksView({
     () => playbooks.filter((p) => !!p.businessUseCase || !!p.graphHash),
     [playbooks]
   );
+  const completedRunForPlaybook = useCallback(
+    (playbookId: string) => latestCompletedRunForPlaybook([...runs, ...runHistory], playbookId),
+    [runHistory, runs]
+  );
   const hasCompletedRun = useCallback(
-    (playbookId: string) =>
-      runHistory.some((run) => run.workflowId === playbookId && run.status === "completed"),
-    [runHistory]
+    (playbookId: string) => completedRunForPlaybook(playbookId) !== null,
+    [completedRunForPlaybook]
   );
   const pinnedDashboards = useMemo(
     () =>
@@ -4355,6 +4750,23 @@ export function PlaybooksView({
   const contentScrollResetKey = `${guidedState}:${selectedPlaybookId ?? ""}:${selectedRunId ?? ""}`;
 
   useEffect(() => {
+    if (!selectedPlaybookForUi || selectedRunId || !isDashboardPlaybook(selectedPlaybookForUi)) {
+      return;
+    }
+    const latestDashboardRun = completedRunForPlaybook(selectedPlaybookForUi.id);
+    if (!latestDashboardRun) return;
+
+    selectedRunIdRef.current = latestDashboardRun.runId;
+    selectedGraphRunIdRef.current = null;
+    setSelectedRunId(latestDashboardRun.runId);
+    setSelectedRunDetail(latestDashboardRun);
+    setSelectedGraphRunId(null);
+    setSelectedGraphRunDetail(null);
+    setSelectedGraphRunSurface(null);
+    setShowStartForm(false);
+  }, [completedRunForPlaybook, selectedPlaybookForUi, selectedRunId]);
+
+  useEffect(() => {
     const contentPane = contentScrollRef.current;
     if (!contentPane) return;
     contentPane.dataset.scrollResetKey = contentScrollResetKey;
@@ -4427,49 +4839,56 @@ export function PlaybooksView({
     }
 
     if (selectedGraphHash) {
-      const preview = buildGraphAssignmentPreview(selectedPlaybookForUi, capabilityInventory);
       setSetupError(null);
-      setAssignmentPreview(preview);
-      setDraftAssignmentPlan(preview?.assignmentPlan ?? null);
-      setAgentsConfirmed(true);
-      if (preview) {
-        void (async () => {
-          try {
-            const result = await invoke<PlaybookRunPreferenceReadResult>(
-              "playbook_run_preference_get",
-              {
-                playbookId: selectedPlaybookId,
-                workspaceRoot,
-                userKey,
-              }
-            );
-            if (assignmentPreferenceRequestRef.current !== requestId) return;
-            if (result.preference) {
-              setDraftAssignmentPlan(
-                assignmentPlanWithCurrentCandidates(result.preference.assignmentPlan, preview)
-              );
-              setAgentsConfirmed(true);
+      setAssignmentPreview(null);
+      setDraftAssignmentPlan(null);
+      setAgentsConfirmed(false);
+      void (async () => {
+        try {
+          const preference = await invoke<PlaybookRunPreferenceReadResult>(
+            "playbook_run_preference_get",
+            {
+              playbookId: selectedPlaybookId,
+              workspaceRoot,
+              userKey,
             }
-          } catch (loadError) {
-            if (assignmentPreferenceRequestRef.current !== requestId) return;
-            setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
-          }
-        })();
-      }
+          );
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+
+          const previousPlan = preference.preference?.assignmentPlan;
+          const preview = await invoke<PlaybookAssignmentPreviewResult>("playbook_preflight", {
+            playbookId: selectedPlaybookId,
+            request: {
+              workspaceRoot,
+              capabilityInventory,
+              ...(previousPlan ? { previousPlan } : {}),
+            },
+            userKey,
+          });
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+
+          setAssignmentPreview(preview);
+          setDraftAssignmentPlan(
+            previousPlan
+              ? assignmentPlanWithCurrentCandidates(previousPlan, preview)
+              : (preview.assignmentPlan ?? null)
+          );
+          setAgentsConfirmed((preview.blockers ?? []).length === 0);
+        } catch (loadError) {
+          if (assignmentPreferenceRequestRef.current !== requestId) return;
+          setSetupError(loadError instanceof Error ? loadError.message : String(loadError));
+          setAssignmentPreview(null);
+          setDraftAssignmentPlan(null);
+          setAgentsConfirmed(false);
+        }
+      })();
       return;
     }
 
     setAssignmentPreview(null);
     setDraftAssignmentPlan(null);
     setAgentsConfirmed(false);
-  }, [
-    capabilityInventory,
-    selectedGraphHash,
-    selectedPlaybookForUi,
-    selectedPlaybookId,
-    userKey,
-    workspaceRoot,
-  ]);
+  }, [capabilityInventory, selectedGraphHash, selectedPlaybookId, userKey, workspaceRoot]);
 
   const loadPlaybooks = useCallback(async () => {
     setLoadingPlaybooks(true);
@@ -4888,56 +5307,69 @@ export function PlaybooksView({
     selectedRunId,
   ]);
 
-  const importPlaybook = useCallback(async () => {
-    setError(null);
-    setRefreshNotice(null);
-    setImportEvents([]);
-    let selectedPath: string | string[] | null;
-    try {
-      selectedPath = await open({
-        multiple: false,
-        filters: [{ name: "Playbook archive", extensions: ["playbook", "zip"] }],
-      });
-    } catch (dialogError) {
-      setError(dialogError instanceof Error ? dialogError.message : String(dialogError));
-      return;
-    }
-    if (!selectedPath || typeof selectedPath !== "string") {
-      return;
-    }
+  const importPlaybook = useCallback(
+    async (kind: "archive" | "folder") => {
+      setError(null);
+      setRefreshNotice(null);
+      setImportEvents([]);
+      let selectedPath: string | string[] | null;
+      try {
+        selectedPath =
+          kind === "folder"
+            ? await open({ multiple: false, directory: true })
+            : await open({
+                multiple: false,
+                filters: [{ name: "Playbook archive", extensions: ["playbook", "zip"] }],
+              });
+      } catch (dialogError) {
+        setError(dialogError instanceof Error ? dialogError.message : String(dialogError));
+        return;
+      }
+      if (!selectedPath || typeof selectedPath !== "string") {
+        return;
+      }
 
-    setImportingPlaybook(true);
-    setImportEvents(["Archive selected", "Installing playbook package"]);
-    try {
-      const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
-        zipPath: selectedPath,
-        userKey,
-      });
-      setImportEvents((current) => [
-        ...current,
-        `${imported.name} ${imported.version} ${imported.status}`,
-        "Refreshing playbooks and run history",
+      setImportingPlaybook(true);
+      setImportEvents([
+        kind === "folder" ? "Folder selected" : "Archive selected",
+        "Installing playbook package",
       ]);
-      const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
-      setPlaybooks(result.playbooks);
-      setSelectedPlaybookId(imported.id);
-      setSelectedRunId(null);
-      setSelectedRunDetail(null);
-      setSelectedGraphRunId(null);
-      setSelectedGraphRunDetail(null);
-      await Promise.all([loadPlaybookDetail(imported.id), loadRuns(imported.id), loadRunHistory()]);
-      setImportEvents((current) => [...current, "Ready to run"]);
-      const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
-      setRefreshNotice(
-        `${imported.name} ${imported.version} ${imported.status}.${warningCopy}`.trim()
-      );
-    } catch (importError) {
-      setImportEvents((current) => [...current, "Import failed"]);
-      setError(importError instanceof Error ? importError.message : String(importError));
-    } finally {
-      setImportingPlaybook(false);
-    }
-  }, [loadPlaybookDetail, loadRunHistory, loadRuns, userKey]);
+      try {
+        const imported = await invoke<GraphPlaybookImportResult>("playbook_import", {
+          ...(kind === "folder" ? { sourcePath: selectedPath } : { zipPath: selectedPath }),
+          userKey,
+        });
+        setImportEvents((current) => [
+          ...current,
+          `${imported.name} ${imported.version} ${imported.status}`,
+          "Refreshing playbooks and run history",
+        ]);
+        const result = await invoke<PlaybookListResult>("playbook_list", { userKey });
+        setPlaybooks(result.playbooks);
+        setSelectedPlaybookId(imported.id);
+        setSelectedRunId(null);
+        setSelectedRunDetail(null);
+        setSelectedGraphRunId(null);
+        setSelectedGraphRunDetail(null);
+        await Promise.all([
+          loadPlaybookDetail(imported.id),
+          loadRuns(imported.id),
+          loadRunHistory(),
+        ]);
+        setImportEvents((current) => [...current, "Ready to run"]);
+        const warningCopy = imported.warnings.length > 0 ? ` ${imported.warnings.join(" ")}` : "";
+        setRefreshNotice(
+          `${imported.name} ${imported.version} ${imported.status}.${warningCopy}`.trim()
+        );
+      } catch (importError) {
+        setImportEvents((current) => [...current, "Import failed"]);
+        setError(importError instanceof Error ? importError.message : String(importError));
+      } finally {
+        setImportingPlaybook(false);
+      }
+    },
+    [loadPlaybookDetail, loadRunHistory, loadRuns, userKey]
+  );
 
   async function startRun(
     inputOverride?: Record<string, unknown>,
@@ -5062,7 +5494,9 @@ export function PlaybooksView({
             ? "retry_interrupted"
             : selectedRun.approval?.reasonCode === "graph_needs_attention_retry"
               ? "retry_needs_attention"
-              : "approve";
+              : selectedRun.approval?.reasonCode === "graph_repair"
+                ? "approve_repair"
+                : "approve";
       const actionDecision =
         action?.decision ?? (decision === "approve" ? approvalDecision : "deny");
       const productActionId =
@@ -5164,10 +5598,15 @@ export function PlaybooksView({
       )}
       onClick={() => {
         const isSamePlaybook = selectedPlaybookId === playbook.id;
+        const latestDashboardRun = isDashboardPlaybook(playbook)
+          ? completedRunForPlaybook(playbook.id)
+          : null;
         setSelectedPlaybookId(playbook.id);
-        setShowStartForm(true);
-        setSelectedRunId(null);
-        setSelectedRunDetail(null);
+        setShowStartForm(latestDashboardRun === null);
+        selectedRunIdRef.current = latestDashboardRun?.runId ?? null;
+        selectedGraphRunIdRef.current = null;
+        setSelectedRunId(latestDashboardRun?.runId ?? null);
+        setSelectedRunDetail(latestDashboardRun);
         setSelectedGraphRunId(null);
         setSelectedGraphRunDetail(null);
         setSelectedGraphRunSurface(null);
@@ -5211,15 +5650,26 @@ export function PlaybooksView({
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 rounded-full"
-                onClick={() => void importPlaybook()}
+                onClick={() => void importPlaybook("archive")}
                 disabled={loadingPlaybooks || running || importingPlaybook}
-                title="Import playbook"
+                title="Import playbook archive"
               >
                 {importingPlaybook ? (
                   <Loader2 size={14} className="animate-spin" />
                 ) : (
                   <Upload size={14} />
                 )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+                onClick={() => void importPlaybook("folder")}
+                disabled={loadingPlaybooks || running || importingPlaybook}
+                title="Import playbook folder"
+              >
+                <FolderPlus size={14} />
               </Button>
               <Button
                 type="button"

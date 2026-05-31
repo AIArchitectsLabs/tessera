@@ -233,6 +233,114 @@ describe("validatePlaybookGraph", () => {
     ).toThrow(/Undeclared capability/);
   });
 
+  test("rejects effect nodes that use undeclared capabilities", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["web.search"],
+        start: "write",
+        nodes: [
+          {
+            id: "write",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:test",
+            input: {
+              value: { artifact: "scorecard" },
+              target: {
+                kind: "workspace",
+                path: "scorecard.md",
+                format: "markdown",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write scorecard",
+              summary: "Write the scorecard to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/Undeclared capability/);
+  });
+
+  test("rejects effect targets that do not match the side-effect class", () => {
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["tool.workspace.write"],
+        start: "write",
+        nodes: [
+          {
+            id: "write",
+            kind: "effect",
+            effectId: "workspace.write",
+            capability: "tool.workspace.write",
+            adapterId: "workspace",
+            sideEffect: "external",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "workspace.write:test",
+            input: {
+              value: { artifact: "scorecard" },
+              target: {
+                kind: "workspace",
+                path: "scorecard.md",
+                format: "markdown",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Write scorecard",
+              summary: "Write the scorecard to the workspace.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/requires a write effect/);
+
+    expect(() =>
+      validatePlaybookGraph({
+        ...graph,
+        capabilities: ["integration.drive.write"],
+        start: "publish",
+        nodes: [
+          {
+            id: "publish",
+            kind: "effect",
+            effectId: "drive.publish",
+            capability: "integration.drive.write",
+            adapterId: "drive",
+            sideEffect: "write",
+            approval: "required",
+            idempotency: "required",
+            idempotencyKey: "drive.publish:test",
+            input: {
+              value: { artifact: "scorecard" },
+              target: {
+                kind: "external",
+                reference: "gdrive://scorecard",
+              },
+            },
+            preview: {
+              schemaVersion: 1,
+              title: "Publish scorecard",
+              summary: "Publish the scorecard externally.",
+            },
+            onSuccess: "completed",
+          },
+        ],
+      })
+    ).toThrow(/requires an external effect/);
+  });
+
   test("rejects agent tool use that is missing from graph capabilities", () => {
     expect(() =>
       validatePlaybookGraph({
@@ -331,5 +439,37 @@ describe("validatePlaybookGraph", () => {
         nodes: [branchNode, requireNode(graph.nodes, 1)],
       })
     ).toThrow(/Unknown artifact/);
+  });
+});
+
+describe("artifactWrite capability rule", () => {
+  const artifactWriteGraph = (capabilities: string[]) => ({
+    schemaVersion: 1,
+    id: "ops.write-check",
+    version: "1",
+    name: "Write check",
+    artifacts: { doc: { schema: "./schemas/doc.schema.json" } },
+    capabilities,
+    limits: {},
+    start: "persist",
+    nodes: [
+      {
+        id: "persist",
+        kind: "artifactWrite",
+        artifact: "doc",
+        path: "out/doc.md",
+        onSuccess: "completed",
+      },
+    ],
+  });
+
+  test("rejects artifactWrite without tool.workspace.write", () => {
+    expect(() => validatePlaybookGraph(artifactWriteGraph([]))).toThrow(
+      /requires the tool\.workspace\.write capability/
+    );
+  });
+
+  test("accepts artifactWrite when tool.workspace.write is declared", () => {
+    expect(() => validatePlaybookGraph(artifactWriteGraph(["tool.workspace.write"]))).not.toThrow();
   });
 });

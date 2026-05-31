@@ -109,6 +109,26 @@ function validateAgentOutputContract(options: {
   );
 }
 
+function validateEffectTargetContract(options: { node: PlaybookGraphNode; path: string }): void {
+  const { node } = options;
+  if (node.kind !== "effect") return;
+
+  const target = node.input.target;
+  if (!isRecord(target)) return;
+
+  if (target.kind === "workspace" && node.sideEffect !== "write") {
+    throw new Error(
+      `Workspace materialization target at ${options.path}.${node.id} requires a write effect`
+    );
+  }
+
+  if (target.kind === "external" && node.sideEffect !== "external") {
+    throw new Error(
+      `External materialization target at ${options.path}.${node.id} requires an external effect`
+    );
+  }
+}
+
 function collectArtifactRefs(value: unknown, refs: string[]): void {
   if (!isRecord(value)) {
     if (Array.isArray(value)) {
@@ -131,6 +151,9 @@ function consumedArtifacts(node: PlaybookGraphNode): string[] {
 
   if (node.kind === "script" || node.kind === "agent") {
     collectArtifactRefs(node.inputs, refs);
+  }
+  if (node.kind === "effect") {
+    collectArtifactRefs(node.input, refs);
   }
   if (node.kind === "parallelMap") {
     collectArtifactRefs(node.items, refs);
@@ -182,11 +205,26 @@ function validateGraphNodes(options: {
     }
 
     validateAgentOutputContract({ artifacts: options.artifacts, node, path: options.path });
+    validateEffectTargetContract({ node, path: options.path });
 
     if (node.kind === "tool" && !options.declaredCapabilities.has(node.capability)) {
       throw new Error(
         `Undeclared capability used by ${options.path}.${node.id}: ${node.capability}`
       );
+    }
+
+    if (node.kind === "effect" && !options.declaredCapabilities.has(node.capability)) {
+      throw new Error(
+        `Undeclared capability used by ${options.path}.${node.id}: ${node.capability}`
+      );
+    }
+
+    if (node.kind === "effect" && node.idempotency === "required" && !node.idempotencyKey) {
+      throw new Error(`Effect node ${options.path}.${node.id} requires an idempotency key`);
+    }
+
+    if (node.kind === "effect" && node.approval === "required" && !node.preview) {
+      throw new Error(`Effect node ${options.path}.${node.id} requires a preview`);
     }
 
     if (node.kind === "agent") {
@@ -195,6 +233,15 @@ function validateGraphNodes(options: {
           throw new Error(`Undeclared agent tool used by ${options.path}.${node.id}: ${tool}`);
         }
       }
+    }
+
+    if (
+      node.kind === "artifactWrite" &&
+      !options.declaredCapabilities.has("tool.workspace.write")
+    ) {
+      throw new Error(
+        `artifactWrite node ${options.path}.${node.id} requires the tool.workspace.write capability`
+      );
     }
 
     for (const artifact of consumedArtifacts(node)) {

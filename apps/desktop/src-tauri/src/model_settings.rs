@@ -846,9 +846,8 @@ mod tests {
                 .expect("local provider")
                 .base_url = None;
 
-            let read =
-                redact_with_known_credentials_for_user(settings, BTreeMap::new(), None)
-                    .expect("redact");
+            let read = redact_with_known_credentials_for_user(settings, BTreeMap::new(), None)
+                .expect("redact");
 
             assert_eq!(
                 read.providers
@@ -909,9 +908,8 @@ mod tests {
             known_credentials.insert(ModelProvider::Openrouter, false);
             known_credentials.insert(ModelProvider::Local, false);
 
-            let read =
-                redact_with_known_credentials_for_user(settings, known_credentials, None)
-                    .expect("redact");
+            let read = redact_with_known_credentials_for_user(settings, known_credentials, None)
+                .expect("redact");
 
             assert_eq!(
                 read.providers

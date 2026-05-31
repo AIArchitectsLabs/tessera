@@ -6,8 +6,12 @@ import {
   compilePlaybookGraph,
   createPlaybookGraphQueueEntry,
   createPlaybookGraphSnapshot,
+  hardTimeoutMs,
 } from "@tessera/core";
-import { runPlaybookGraphScript } from "./playbook-graph-script-runner.js";
+import {
+  SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS,
+  runPlaybookGraphScript,
+} from "./playbook-graph-script-runner.js";
 
 const now = "2026-05-15T00:00:00.000Z";
 
@@ -71,6 +75,12 @@ function scriptInput(
 }
 
 describe("runPlaybookGraphScript", () => {
+  test("uses the runtime script hard timeout by default", () => {
+    const scriptHardTimeoutMs = hardTimeoutMs("script");
+    if (scriptHardTimeoutMs === undefined) throw new Error("Expected script hard timeout");
+    expect(SCRIPT_RUNNER_DEFAULT_TIMEOUT_MS).toBe(scriptHardTimeoutMs);
+  });
+
   test("executes a pinned TypeScript script with relative imports", async () => {
     const output = await runPlaybookGraphScript({
       input: scriptInput(
@@ -166,11 +176,17 @@ export default () => ({
   });
 
   test("reports script errors without runner-exit noise", async () => {
-    await expect(
-      runPlaybookGraphScript({
+    let error: unknown;
+    try {
+      await runPlaybookGraphScript({
         input: scriptInput("export default () => { throw new Error('Missing bodyMarkdown'); };\n"),
-      })
-    ).rejects.toThrow("Graph script failed: Missing bodyMarkdown");
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("Graph script failed: Missing bodyMarkdown");
+    expect(String(error)).not.toContain("process.exit");
   });
 
   test("times out scripts that do not finish", async () => {

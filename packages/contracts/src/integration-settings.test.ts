@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   BraveSearchResultSchema,
   ContactsLookupResultSchema,
+  DocsWriteCommitResultSchema,
+  DocsWritePreviewResultSchema,
   DriveReadResultSchema,
   DriveSearchResultSchema,
   GcalListResultSchema,
@@ -11,8 +13,13 @@ import {
   IntegrationCredentialDeleteRequestSchema,
   IntegrationSettingsReadSchema,
   IntegrationSettingsSaveRequestSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
+  SheetsWorkbookCreateResultSchema,
+  SheetsWriteCommitResultSchema,
+  SheetsWritePreviewResultSchema,
   WebFetchResultSchema,
   WebSearchResultSchema,
 } from "./index.js";
@@ -259,6 +266,31 @@ describe("integration settings contracts", () => {
     expect(parsed.message.text).toBe("");
   });
 
+  test("parses normalized mail draft payloads", () => {
+    const parsed = MailDraftResultSchema.parse({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+
+    expect(parsed.draft.id).toBe("draft-1");
+  });
+
+  test("parses normalized mail send-draft payloads", () => {
+    const parsed = MailSendDraftResultSchema.parse({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        labels: ["SENT"],
+        snippet: "Message sent",
+      },
+    });
+
+    expect(parsed.message.id).toBe("msg-1");
+  });
+
   test("parses normalized drive search payloads", () => {
     const parsed = DriveSearchResultSchema.parse({
       files: [
@@ -298,6 +330,66 @@ describe("integration settings contracts", () => {
         },
       })
     ).toThrow(/readable content/i);
+  });
+
+  test("parses sheets write preview and commit payloads", () => {
+    const preview = SheetsWritePreviewResultSchema.parse({
+      dryRun: true,
+      operation: "upsert",
+      idempotencyKey: "idem-1",
+      preview: {
+        action: "upsert",
+        spreadsheetId: "sheet-1",
+        table: "Suppliers",
+        key: { column: "supplier id", value: "sup-1" },
+        before: null,
+        after: { "supplier id": "sup-1", name: "Acme" },
+        changedCells: [{ column: "name", after: "Acme" }],
+      },
+    });
+
+    expect(preview.preview.table).toBe("Suppliers");
+
+    const commit = SheetsWriteCommitResultSchema.parse({
+      dryRun: false,
+      operation: "append",
+      spreadsheetId: "sheet-1",
+      table: "Suppliers",
+      updatedRange: "Suppliers!A2:G2",
+      idempotencyKey: "idem-1",
+      approvalId: "approval-1",
+    });
+
+    expect(commit.approvalId).toBe("approval-1");
+  });
+
+  test("parses supplier workbook and docs write payloads", () => {
+    const workbook = SheetsWorkbookCreateResultSchema.parse({
+      dryRun: true,
+      operation: "createWorkbook",
+      title: "Supplier Sourcing",
+      sheets: [{ table: "Suppliers", headers: ["supplier id", "name"] }],
+      idempotencyKey: "idem-workbook",
+    });
+    expect(workbook.sheets[0]?.table).toBe("Suppliers");
+
+    const docsPreview = DocsWritePreviewResultSchema.parse({
+      dryRun: true,
+      operation: "replacePlaceholders",
+      target: { documentId: "doc-1" },
+      preview: { replacements: { "{{supplier_name}}": "Acme" } },
+      idempotencyKey: "idem-doc",
+    });
+    expect(docsPreview.preview.replacements?.["{{supplier_name}}"]).toBe("Acme");
+
+    const docsCommit = DocsWriteCommitResultSchema.parse({
+      dryRun: false,
+      operation: "appendText",
+      documentId: "doc-1",
+      idempotencyKey: "idem-doc",
+      approvalId: "approval-doc",
+    });
+    expect(docsCommit.documentId).toBe("doc-1");
   });
 
   test("parses normalized contacts lookup payloads", () => {
@@ -386,6 +478,34 @@ describe("shell parsed payload contracts", () => {
 
     expect(parsed.provider).toBe("brave-search");
     expect(parsed.results[0]?.position).toBe(1);
+  });
+
+  test("parses draft payloads", () => {
+    const parsed = MailDraftResultSchema.parse({
+      draft: {
+        id: "draft-1",
+        messageId: "msg-1",
+        threadId: "thread-1",
+      },
+    });
+
+    expect(parsed.draft.id).toBe("draft-1");
+    expect(parsed.draft.messageId).toBe("msg-1");
+    expect(parsed.draft.threadId).toBe("thread-1");
+  });
+
+  test("parses send-draft payloads", () => {
+    const parsed = MailSendDraftResultSchema.parse({
+      message: {
+        id: "msg-1",
+        threadId: "thread-1",
+        labels: ["SENT"],
+        snippet: "Sent",
+      },
+    });
+
+    expect(parsed.message.id).toBe("msg-1");
+    expect(parsed.message.labels).toEqual(["SENT"]);
   });
 });
 

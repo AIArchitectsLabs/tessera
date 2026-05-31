@@ -17,6 +17,9 @@ import {
   PlaybookGraphRunReviewSurfaceSchema,
   PlaybookGraphSnapshotSchema,
   PlaybookRunProductViewSchema,
+  workflowStatusFromGraphRunDetail,
+  workflowStatusFromGraphRunRecord,
+  workflowStatusFromGraphRunStatus,
 } from "./index.js";
 
 const now = "2026-05-15T00:00:00.000Z";
@@ -137,6 +140,68 @@ describe("PlaybookGraphRunRecordSchema", () => {
     expect(interrupted.status).toBe("interrupted");
     expect(attention.status).toBe("needs_attention");
     expect(repair.repairReason).toBe("snapshot hash mismatch");
+  });
+});
+
+describe("graph run workflow status projection", () => {
+  test("maps graph run statuses into legacy workflow status buckets", () => {
+    expect(workflowStatusFromGraphRunStatus("queued")).toBe("running");
+    expect(workflowStatusFromGraphRunStatus("running")).toBe("running");
+    expect(workflowStatusFromGraphRunStatus("blocked")).toBe("blocked");
+    expect(workflowStatusFromGraphRunStatus("interrupted")).toBe("blocked");
+    expect(workflowStatusFromGraphRunStatus("needs_attention")).toBe("needs_attention");
+    expect(workflowStatusFromGraphRunStatus("completed")).toBe("completed");
+    expect(workflowStatusFromGraphRunStatus("failed")).toBe("failed");
+    expect(workflowStatusFromGraphRunStatus("denied")).toBe("denied");
+    expect(workflowStatusFromGraphRunStatus("needs_repair")).toBe("failed");
+  });
+
+  test("keeps anomalous completed runs and failed queue entries out of ready state", () => {
+    const completedRun = PlaybookGraphRunRecordSchema.parse({
+      schemaVersion: 1,
+      runId: "run-1",
+      playbookId: "content.seo-blog",
+      status: "completed",
+      input: {},
+      snapshot,
+      error: "artifact write failed after completion",
+      startedAt: now,
+      updatedAt: later,
+    });
+    const cleanCompletedRun = { ...completedRun, error: undefined };
+    const failedEntry = PlaybookGraphQueueEntrySchema.parse({
+      schemaVersion: 1,
+      queueEntryId: "queue-1",
+      runId: "run-1",
+      nodeId: "draft",
+      nodePath: "draft",
+      nodeKind: "agent",
+      status: "failed",
+      dependsOn: [],
+      producesArtifacts: [],
+      declaredConsumesArtifacts: [],
+      consumesArtifacts: [],
+      artifactBindingState: "resolved",
+      recoveryPolicy: "block_for_review",
+      attempt: 1,
+      createdAt: now,
+      updatedAt: later,
+      error: "agent failed",
+    });
+
+    expect(workflowStatusFromGraphRunRecord(completedRun)).toBe("failed");
+    expect(workflowStatusFromGraphRunRecord(cleanCompletedRun)).toBe("completed");
+    expect(
+      workflowStatusFromGraphRunDetail({
+        run: cleanCompletedRun,
+        queue: [failedEntry],
+        branchItems: [],
+        artifacts: [],
+        reviews: [],
+        effects: [],
+        operations: [],
+      })
+    ).toBe("failed");
   });
 });
 

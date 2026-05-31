@@ -17,13 +17,11 @@ import type {
   TaskUpdateRequest,
   TodoOperation,
 } from "@tessera/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 
 import { InboxView } from "@/components/InboxView";
 import { LoginView } from "@/components/LoginView";
-import { PlaybooksView } from "@/components/PlaybooksView";
 import { type AppView, RailNav } from "@/components/RailNav";
-import { SettingsView } from "@/components/SettingsView";
 import { Sidebar } from "@/components/Sidebar";
 import { TaskDetail as TaskDetailView } from "@/components/TaskDetail";
 import type { TaskListView } from "@/components/TaskList";
@@ -36,6 +34,12 @@ const AUTH_SESSION_STORAGE_KEY = "tessera_auth_session";
 const GOOGLE_CLIENT_ID = "876556347828-cdd8n59esdnt33l3ojegi5g2oa5irpcf.apps.googleusercontent.com";
 const GOOGLE_AUTH_POLL_INTERVAL_MS = 2_000;
 const GOOGLE_AUTH_MAX_POLLS = 60;
+const PlaybooksView = lazy(() =>
+  import("@/components/PlaybooksView").then((module) => ({ default: module.PlaybooksView }))
+);
+const SettingsView = lazy(() =>
+  import("@/components/SettingsView").then((module) => ({ default: module.SettingsView }))
+);
 
 interface AuthSession {
   authenticatedAt: string;
@@ -100,6 +104,14 @@ function googleAuthIsWaiting(message: string): boolean {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function LazyViewFallback() {
+  return (
+    <main className="flex flex-1 items-center justify-center bg-background text-sm text-muted-foreground">
+      Loading...
+    </main>
+  );
 }
 
 export default function App() {
@@ -522,11 +534,13 @@ export default function App() {
         onViewChange={setActiveView}
       />
       {settingsOpen ? (
-        <SettingsView
-          onClose={() => setSettingsOpen(false)}
-          userKey={authSession.userKey}
-          workspaceRoot={workspaceRoot}
-        />
+        <Suspense fallback={<LazyViewFallback />}>
+          <SettingsView
+            onClose={() => setSettingsOpen(false)}
+            userKey={authSession.userKey}
+            workspaceRoot={workspaceRoot}
+          />
+        </Suspense>
       ) : activeView === "inbox" ? (
         <InboxView
           error={inboxError}
@@ -542,12 +556,14 @@ export default function App() {
           workspaceRoot={workspaceRoot}
         />
       ) : activeView === "playbooks" ? (
-        <PlaybooksView
-          initialPlaybooks={prefetchedPlaybooks}
-          onWorkspaceSelect={handleWorkspaceSelect}
-          userKey={authSession.userKey}
-          workspaceRoot={workspaceRoot}
-        />
+        <Suspense fallback={<LazyViewFallback />}>
+          <PlaybooksView
+            initialPlaybooks={prefetchedPlaybooks}
+            onWorkspaceSelect={handleWorkspaceSelect}
+            userKey={authSession.userKey}
+            workspaceRoot={workspaceRoot}
+          />
+        </Suspense>
       ) : (
         <>
           <Sidebar

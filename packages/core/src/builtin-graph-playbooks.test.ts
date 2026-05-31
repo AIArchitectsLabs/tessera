@@ -56,13 +56,20 @@ describe("built-in graph playbooks", () => {
       if (!entry) throw new Error(`Missing built-in graph: ${id}`);
       const agent = entry.compiled.graph.nodes.find((node) => node.kind === "agent");
       const review = entry.compiled.graph.nodes.find((node) => node.kind === "humanReview");
-      const write = entry.compiled.graph.nodes.find((node) => node.kind === "artifactWrite");
+      const write = entry.compiled.graph.nodes.find((node) => node.kind === "effect");
 
       expect(agent?.onSuccess).toBe(review?.id);
       expect(review?.onApprove).toBe(write?.id);
       expect(review?.onRequestChanges).toBe(agent?.id);
       expect(write?.onSuccess).toBe("completed");
-      expect(write?.path).toContain("{{inputs.");
+      expect(write?.effectId).toBe("workspace.write");
+      expect(write?.capability).toBe("tool.workspace.write");
+      expect(write?.input.target).toMatchObject({ kind: "workspace", format: "markdown" });
+      const target = write?.input.target;
+      if (!target || typeof target !== "object" || Array.isArray(target)) {
+        throw new Error("Expected workspace write target");
+      }
+      expect(String((target as Record<string, unknown>).path)).toContain("{{inputs.");
     }
   });
 
@@ -86,10 +93,17 @@ describe("built-in graph playbooks", () => {
       "Return only the final meeting brief as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-brief.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
+    expect(entry.sourceFiles["prompts/draft-brief.md"]).not.toContain("use the shell tool");
     expect(entry.sourceFiles["prompts/draft-brief.md"]).not.toContain(
       "and include account context"
+    );
+    expect(JSON.parse(entry.sourceFiles["schemas/meetingBrief.schema.json"] ?? "{}")).toMatchObject(
+      {
+        required: ["text"],
+        properties: { text: { type: "string", minLength: 1 } },
+      }
     );
   });
 
@@ -115,9 +129,15 @@ describe("built-in graph playbooks", () => {
       "Return only the final renewal risk brief as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-risk-review.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
     expect(entry.sourceFiles["prompts/draft-risk-review.md"]).not.toContain("and source gaps");
+    expect(
+      JSON.parse(entry.sourceFiles["schemas/businessBrief.schema.json"] ?? "{}")
+    ).toMatchObject({
+      required: ["text"],
+      properties: { text: { type: "string", minLength: 1 } },
+    });
   });
 
   test("weekly status digest exposes only the stakeholder-facing digest artifact", async () => {
@@ -142,9 +162,15 @@ describe("built-in graph playbooks", () => {
       "Return only the final weekly status digest as Markdown"
     );
     expect(entry.sourceFiles["prompts/draft-status-digest.md"]).toContain(
-      "Do not include internal working notes"
+      "Do not include commands, JSON wrappers, stack traces"
     );
     expect(entry.sourceFiles["prompts/draft-status-digest.md"]).not.toContain("and source gaps");
+    expect(JSON.parse(entry.sourceFiles["schemas/statusDigest.schema.json"] ?? "{}")).toMatchObject(
+      {
+        required: ["text"],
+        properties: { text: { type: "string", minLength: 1 } },
+      }
+    );
   });
 
   test("activity snapshot preserves the legacy refreshable dashboard contract", async () => {

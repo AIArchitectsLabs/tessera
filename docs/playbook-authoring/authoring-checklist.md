@@ -44,7 +44,7 @@ Use this checklist when turning an idea into an external Tessera playbook packag
 - [ ] Every branch returns to a sensible downstream fan-in or terminal state.
 - [ ] Review/rework loops are bounded and cannot spin forever.
 - [ ] Human review pauses on artifacts the user can actually inspect.
-- [ ] Final artifacts are materialized as markdown, CSV, or JSON.
+- [ ] Final artifacts are materialized as markdown, CSV, JSON, or PDF.
 
 ## 6. Prompts
 

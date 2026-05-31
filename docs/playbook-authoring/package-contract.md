@@ -1,6 +1,6 @@
 # Tessera External Playbook Package Contract
 
-This contract is the source of truth for external playbook package authoring. The local `tessera-playbook-author` skill should point back here instead of becoming a separate standard.
+This contract is the source of truth for external playbook package authoring. The portable `docs/playbook-authoring/tessera-playbook-author-portable.md` instructions and any installed `tessera-playbook-author` skill should point back here instead of becoming a separate standard.
 
 ## Runtime Contract
 
@@ -34,7 +34,7 @@ The exact filenames may vary by package format, but every package must expose:
 - declared artifacts
 - declared capabilities
 - fixture/golden inputs for deterministic package-local tests
-- final materialization targets for markdown, CSV, or JSON outputs
+- final materialization targets for markdown, CSV, JSON, or PDF outputs
 
 ## Ownership Boundary
 
@@ -79,7 +79,7 @@ External playbooks own:
 ## Artifact Rules
 
 - Every declared final artifact must be materializable.
-- Supported V1 materialization targets are markdown, CSV, and JSON.
+- Supported V1 materialization targets are markdown, CSV, JSON, and PDF.
 - Final artifacts should identify their audience and acceptance check.
 - Draft-only intermediate artifacts should not masquerade as final outputs.
 

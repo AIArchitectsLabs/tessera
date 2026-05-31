@@ -4,8 +4,10 @@ import type {
   DriveSearchResult,
   GcalListResult,
   GcalReadResult,
+  MailDraftResult,
   MailListResult,
   MailReadResult,
+  MailSendDraftResult,
 } from "@tessera/contracts";
 import {
   ContactsLookupResultSchema,
@@ -13,8 +15,10 @@ import {
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
+  MailSendDraftResultSchema,
 } from "@tessera/contracts";
 
 export interface GoogleWorkspaceConnector {
@@ -23,6 +27,8 @@ export interface GoogleWorkspaceConnector {
   listMail(request: { limit: number; query?: string }): Promise<MailListResult>;
   searchMail(request: { query: string; limit: number }): Promise<MailListResult>;
   readMail(request: { messageId: string }): Promise<MailReadResult>;
+  createMailDraft(request: { raw: string }): Promise<MailDraftResult>;
+  sendMailDraft(request: { draftId: string }): Promise<MailSendDraftResult>;
   searchDrive(request: { query: string; limit: number }): Promise<DriveSearchResult>;
   readDriveFile(request: {
     fileId: string;
@@ -125,6 +131,69 @@ export function createGwsGoogleWorkspaceConnector(options: {
       });
     },
 
+    async createMailDraft(request) {
+      const payload = await runGwsJson(options, [
+        "gmail",
+        "users",
+        "drafts",
+        "create",
+        "--params",
+        JSON.stringify({
+          userId: "me",
+        }),
+        "--json",
+        JSON.stringify({
+          message: {
+            raw: request.raw,
+          },
+        }),
+      ]);
+      const payloadRecord = isRecord(payload) ? payload : {};
+      const draftMessage = isRecord(payloadRecord.message) ? payloadRecord.message : {};
+      const draft: {
+        id: string;
+        messageId?: string;
+        threadId?: string;
+      } = {
+        id: stringField(payloadRecord, "id"),
+        messageId: stringField(draftMessage, "id"),
+      };
+      if (stringField(draftMessage, "threadId")) {
+        draft.threadId = stringField(draftMessage, "threadId");
+      }
+      return MailDraftResultSchema.parse({ draft });
+    },
+
+    async sendMailDraft(request) {
+      const payload = await runGwsJson(options, [
+        "gmail",
+        "users",
+        "drafts",
+        "send",
+        "--params",
+        JSON.stringify({
+          userId: "me",
+        }),
+        "--json",
+        JSON.stringify({
+          id: request.draftId,
+        }),
+      ]);
+
+      const message = isRecord(payload) ? payload : {};
+      const parsedLabels = Array.isArray(message.labelIds)
+        ? message.labelIds.filter((value): value is string => typeof value === "string")
+        : [];
+      return MailSendDraftResultSchema.parse({
+        message: {
+          id: stringField(message, "id"),
+          threadId: stringField(message, "threadId"),
+          snippet: stringField(message, "snippet"),
+          labels: parsedLabels,
+        },
+      });
+    },
+
     async searchDrive(request) {
       const query = escapeDriveQuery(request.query);
       const payload = await runGwsJson(options, [
@@ -208,13 +277,21 @@ export function createGwsGoogleWorkspaceConnector(options: {
   };
 }
 
-export async function runGwsCli(args: string[]): Promise<CommandResult> {
+export async function runGwsCli(
+  args: string[],
+  profile: "read" | "write" = "read"
+): Promise<CommandResult> {
   const binary = process.env.TESSERA_GWS_CLI_PATH?.trim() || "gws";
+  const configDir =
+    profile === "write"
+      ? process.env.TESSERA_GWS_WRITE_CONFIG_DIR?.trim() ||
+        process.env.TESSERA_GWS_CONFIG_DIR?.trim()
+      : process.env.TESSERA_GWS_CONFIG_DIR?.trim();
   const env = {
     ...process.env,
-    ...(process.env.TESSERA_GWS_CONFIG_DIR?.trim()
-      ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: process.env.TESSERA_GWS_CONFIG_DIR.trim() }
-      : {}),
+    ...(configDir ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir } : {}),
+    GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND:
+      process.env.GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND?.trim() || "file",
   };
   const proc = Bun.spawn([binary, ...args], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -223,6 +300,10 @@ export async function runGwsCli(args: string[]): Promise<CommandResult> {
     proc.exited,
   ]);
   return { exitCode, stdout, stderr };
+}
+
+export async function runGwsWriteCli(args: string[]): Promise<CommandResult> {
+  return runGwsCli(args, "write");
 }
 
 async function runGwsJson(
@@ -246,9 +327,19 @@ async function runGwsJson(
   }
 }
 
-function normalizeGwsError(stderr: string): string {
-  const message = stderr.trim();
+export function normalizeGwsError(stderr: string): string {
+  const message = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("Using keyring backend"))
+    .join("\n");
   if (!message) return "";
+  if (/scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication/i.test(message)) {
+    return "Google Workspace needs additional access. Reconnect Google Workspace in Settings > Integrations and approve the requested Google access.";
+  }
+  if (/caller does not have permission|PERMISSION_DENIED|forbidden|access denied/i.test(message)) {
+    return "Google Workspace denied this request. Reconnect Google Workspace in Settings > Integrations and make sure this account can use the requested Google service.";
+  }
   if (/auth|credential|login|token/i.test(message)) {
     return "Google Workspace is not connected. Connect Google Workspace in Settings > Integrations.";
   }

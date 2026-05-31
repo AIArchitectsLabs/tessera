@@ -34,6 +34,9 @@ export interface PlaywrightBrowserExecutorOptions {
   recipeDir: string;
   browsersPath?: string;
   executablePath?: string;
+  resolveLaunchOptions?: () =>
+    | Promise<Pick<PlaywrightBrowserExecutorOptions, "browsersPath" | "executablePath">>
+    | Pick<PlaywrightBrowserExecutorOptions, "browsersPath" | "executablePath">;
   headless?: boolean;
   now?: () => string;
 }
@@ -76,7 +79,7 @@ function validateHttpUrl(rawUrl: string): URL {
 function describePlaywrightLaunchError(error: unknown): BrowserRuntimeUnavailableError {
   const message = error instanceof Error ? error.message : String(error);
   return new BrowserRuntimeUnavailableError(
-    `Browser runtime unavailable. Install Playwright Chromium for local browser tests or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH for packaged runtime. ${message}`
+    `Browser runtime unavailable. Install the browser automation runtime from Settings, install Playwright Chromium for local browser tests, or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH. ${message}`
   );
 }
 
@@ -98,7 +101,7 @@ function describePlaywrightRuntimeError(error: unknown): Error {
 
   const message = error instanceof Error ? error.message : String(error);
   return new BrowserRuntimeUnavailableError(
-    `Browser runtime became unavailable while executing an action. Install Playwright Chromium for local browser tests or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH for packaged runtime. ${message}`
+    `Browser runtime became unavailable while executing an action. Install the browser automation runtime from Settings, install Playwright Chromium for local browser tests, or set TESSERA_PLAYWRIGHT_BROWSERS_PATH / TESSERA_BROWSER_EXECUTABLE_PATH. ${message}`
   );
 }
 
@@ -171,14 +174,19 @@ export function createPlaywrightBrowserExecutor(
     await mkdir(options.profileDir, { recursive: true });
     await mkdir(options.artifactDir, { recursive: true });
     await mkdir(options.recipeDir, { recursive: true });
-    if (options.browsersPath) {
-      process.env.PLAYWRIGHT_BROWSERS_PATH = options.browsersPath;
+    const launchOptions = {
+      browsersPath: options.browsersPath,
+      executablePath: options.executablePath,
+      ...(options.resolveLaunchOptions ? await options.resolveLaunchOptions() : {}),
+    };
+    if (launchOptions.browsersPath) {
+      process.env.PLAYWRIGHT_BROWSERS_PATH = launchOptions.browsersPath;
     }
 
     try {
       context = await chromium.launchPersistentContext(options.profileDir, {
         headless: options.headless ?? true,
-        ...(options.executablePath ? { executablePath: options.executablePath } : {}),
+        ...(launchOptions.executablePath ? { executablePath: launchOptions.executablePath } : {}),
         viewport: { width: 1280, height: 900 },
       });
       context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
