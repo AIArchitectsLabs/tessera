@@ -51,6 +51,8 @@ jobs:
           mkdir -p docs-site
           unzip -q docs-export.zip -d docs-site
 
+      - run: bun run docs:prepare-github-pages
+
       - uses: actions/upload-pages-artifact@v4
         with:
           path: docs-site
