@@ -142,7 +142,10 @@ function modelCapabilities(provider: AgentProviderConfig) {
     baseUrl: providerBaseUrl(provider),
     reasoning: provider.provider !== "local",
     input: ["text"],
-    cost: provider.provider === "google" ? geminiCostForModel(provider.model) : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost:
+      provider.provider === "google"
+        ? geminiCostForModel(provider.model)
+        : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow:
       provider.provider === "google"
         ? geminiContextWindowForModel(provider.model)
