@@ -3247,7 +3247,14 @@ describe("PlaybooksView", () => {
     fireEvent.click(advancedRequestChangesButton);
 
     await waitFor(() => {
-      const resumeCall = invoke.mock.calls.find(([command]) => command === "graph_run_resume");
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string; request?: { payload?: { notes?: string } } } | undefined)
+            ?.runId === "graph-run-1" &&
+          (args as { request?: { payload?: { notes?: string } } } | undefined)?.request?.payload
+            ?.notes === "Revise tone"
+      );
       expect(resumeCall).toBeTruthy();
       expect(resumeCall?.[1]).toMatchObject({
         runId: "graph-run-1",
