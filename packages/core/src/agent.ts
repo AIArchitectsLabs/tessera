@@ -77,6 +77,7 @@ export async function executeAgentTurn(options: ExecuteAgentTurnOptions): Promis
     (request.provider.provider === "openai" ||
       request.provider.provider === "anthropic" ||
       request.provider.provider === "openrouter" ||
+      request.provider.provider === "google" ||
       request.provider.provider === "openai-codex") &&
     !apiKey &&
     !codexCredentialFromCredential(request.credential)

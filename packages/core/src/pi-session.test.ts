@@ -1050,6 +1050,27 @@ describe("createTesseraModelRegistry", () => {
     expect(result.model).toBeDefined();
     await expect(result.modelRegistry.authStorage.getApiKey("local")).resolves.toBeUndefined();
   });
+
+  test("registers Google AI Studio models with Gemini specs and credentials", async () => {
+    const result = await createTesseraModelRegistry({
+      credential: "gemini-key",
+      provider: {
+        provider: "google",
+        model: "gemini-3.5-flash",
+        apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
+      },
+    });
+
+    expect(result.model).toMatchObject({
+      id: "gemini-3.5-flash",
+      provider: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      contextWindow: 1_048_576,
+      maxTokens: 65_536,
+      cost: { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 },
+    });
+    await expect(result.modelRegistry.authStorage.getApiKey("google")).resolves.toBe("gemini-key");
+  });
 });
 
 describe("runCodexResponsesTurn", () => {

@@ -27,6 +27,7 @@ pub enum ModelProvider {
     OpenaiCodex,
     Anthropic,
     Openrouter,
+    Google,
     Local,
 }
 
@@ -37,6 +38,7 @@ impl ModelProvider {
             Self::OpenaiCodex => "model.openai-codex",
             Self::Anthropic => "model.anthropic",
             Self::Openrouter => "model.openrouter",
+            Self::Google => "model.google",
             Self::Local => "model.local",
         }
     }
@@ -54,6 +56,7 @@ impl ModelProvider {
             Self::OpenaiCodex => "gpt-5.4",
             Self::Anthropic => "claude-sonnet-4-6",
             Self::Openrouter => "openai/gpt-5.4",
+            Self::Google => "gemini-3.5-flash",
             Self::Local => "llama3.2",
         }
     }
@@ -190,7 +193,10 @@ pub fn missing_credential_result(provider: ModelProvider) -> ModelConnectionTest
             ModelProvider::Local => {
                 "Local provider does not require an API key by default".to_string()
             }
-            ModelProvider::Openai | ModelProvider::Anthropic | ModelProvider::Openrouter => {
+            ModelProvider::Openai
+            | ModelProvider::Anthropic
+            | ModelProvider::Openrouter
+            | ModelProvider::Google => {
                 "Add an API key in Settings > Model before running this provider".to_string()
             }
             ModelProvider::OpenaiCodex => {
@@ -340,6 +346,7 @@ pub fn default_settings_file() -> SettingsFile {
         ModelProvider::OpenaiCodex,
         ModelProvider::Anthropic,
         ModelProvider::Openrouter,
+        ModelProvider::Google,
         ModelProvider::Local,
     ] {
         providers.insert(
@@ -695,6 +702,7 @@ mod tests {
             assert_eq!(ModelProvider::OpenaiCodex.account(), "model.openai-codex");
             assert_eq!(ModelProvider::Anthropic.account(), "model.anthropic");
             assert_eq!(ModelProvider::Openrouter.account(), "model.openrouter");
+            assert_eq!(ModelProvider::Google.account(), "model.google");
             assert_eq!(ModelProvider::Local.account(), "model.local");
         }
 
@@ -703,7 +711,7 @@ mod tests {
             let settings = default_settings_file();
 
             assert_eq!(settings.selected_provider, ModelProvider::Openai);
-            assert_eq!(settings.providers.len(), 5);
+            assert_eq!(settings.providers.len(), 6);
             assert_eq!(
                 settings
                     .providers
@@ -750,6 +758,10 @@ mod tests {
                     "openrouter": {
                         "provider": "openrouter",
                         "model": "openai/gpt-5.4"
+                    },
+                    "google": {
+                        "provider": "google",
+                        "model": "gemini-3.5-flash"
                     },
                     "local": {
                         "provider": "local",

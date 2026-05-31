@@ -84,6 +84,11 @@ const modelSettings: ModelSettingsRead = {
       model: "openrouter/openai/gpt-4.1",
       hasCredential: false,
     },
+    google: {
+      provider: "google",
+      model: "gemini-3.5-flash",
+      hasCredential: false,
+    },
     local: {
       provider: "local",
       model: "llama3.1",
@@ -846,6 +851,19 @@ describe("SettingsView model flow", () => {
     const openAiModel = view.getByLabelText("Model") as HTMLSelectElement;
     expect(openAiModel.tagName).toBe("SELECT");
     expect(Array.from(openAiModel.options).map((option) => option.value)).toContain("gpt-5.5");
+
+    fireEvent.click(view.getByRole("button", { name: /google ai studio/i }));
+    const googleModel = view.getByLabelText("Model") as HTMLSelectElement;
+    expect(Array.from(googleModel.options).map((option) => option.value)).toEqual([
+      "gemini-3.5-flash",
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview",
+      "gemini-3.1-flash-lite",
+      "gemini-3.1-flash-lite-preview",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+    ]);
   });
 
   test("starting Codex sign-in requests a device code", async () => {

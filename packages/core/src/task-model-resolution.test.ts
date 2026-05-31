@@ -10,6 +10,7 @@ const settings: ModelSettingsRead = {
     openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
+    google: { provider: "google", model: "gemini-3.5-flash", hasCredential: false },
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     local: {
       provider: "local",
@@ -133,5 +134,26 @@ describe("resolveTaskExecutionConfig", () => {
       baseUrl: "http://127.0.0.1:11434/v1",
     });
     expect(result.credential).toBeUndefined();
+  });
+
+  test("Google AI Studio uses the Gemini API key environment fallback and requires credentials", () => {
+    expect(() =>
+      resolveTaskExecutionConfig({
+        agent: DEFAULT_AGENT_PROFILE,
+        modelSettings: { ...settings, selectedProvider: "google" },
+      })
+    ).toThrow("google is not configured. Add an API key in Settings > Model.");
+
+    const result = resolveTaskExecutionConfig({
+      agent: DEFAULT_AGENT_PROFILE,
+      credential: "gemini-key",
+      modelSettings: { ...settings, selectedProvider: "google" },
+    });
+
+    expect(result.provider).toEqual({
+      provider: "google",
+      model: "gemini-3.5-flash",
+      apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
+    });
   });
 });

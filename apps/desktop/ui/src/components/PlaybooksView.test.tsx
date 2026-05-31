@@ -1543,6 +1543,7 @@ const modelSettings: ModelSettingsRead = {
     "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
     anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
     openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
+    google: { provider: "google", model: "gemini-3.5-flash", hasCredential: false },
     local: {
       provider: "local",
       model: "llama3.1",
@@ -3246,7 +3247,14 @@ describe("PlaybooksView", () => {
     fireEvent.click(advancedRequestChangesButton);
 
     await waitFor(() => {
-      const resumeCall = invoke.mock.calls.find(([command]) => command === "graph_run_resume");
+      const resumeCall = invoke.mock.calls.find(
+        ([command, args]) =>
+          command === "graph_run_resume" &&
+          (args as { runId?: string; request?: { payload?: { notes?: string } } } | undefined)
+            ?.runId === "graph-run-1" &&
+          (args as { request?: { payload?: { notes?: string } } } | undefined)?.request?.payload
+            ?.notes === "Revise tone"
+      );
       expect(resumeCall).toBeTruthy();
       expect(resumeCall?.[1]).toMatchObject({
         runId: "graph-run-1",

@@ -107,6 +107,9 @@ function providerBaseUrl(provider: AgentProviderConfig): string {
   if (provider.provider === "openai-codex") return "https://chatgpt.com/backend-api/codex";
   if (provider.provider === "anthropic") return "https://api.anthropic.com";
   if (provider.provider === "openrouter") return "https://openrouter.ai/api/v1";
+  if (provider.provider === "google") {
+    return "https://generativelanguage.googleapis.com/v1beta/openai";
+  }
   if (provider.provider === "local") return provider.baseUrl;
   return "https://api.openai.com/v1";
 }
@@ -121,7 +124,8 @@ function providerRequiresCredential(provider: AgentProviderConfig): boolean {
     provider.provider === "openai" ||
     provider.provider === "openai-codex" ||
     provider.provider === "anthropic" ||
-    provider.provider === "openrouter"
+    provider.provider === "openrouter" ||
+    provider.provider === "google"
   );
 }
 
@@ -138,9 +142,17 @@ function modelCapabilities(provider: AgentProviderConfig) {
     baseUrl: providerBaseUrl(provider),
     reasoning: provider.provider !== "local",
     input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: provider.provider === "anthropic" ? 200_000 : 128_000,
-    maxTokens: 8_192,
+    cost:
+      provider.provider === "google"
+        ? geminiCostForModel(provider.model)
+        : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow:
+      provider.provider === "google"
+        ? geminiContextWindowForModel(provider.model)
+        : provider.provider === "anthropic"
+          ? 200_000
+          : 128_000,
+    maxTokens: provider.provider === "google" ? geminiMaxTokensForModel(provider.model) : 8_192,
     ...(provider.provider === "local"
       ? {
           compat: {
@@ -154,6 +166,36 @@ function modelCapabilities(provider: AgentProviderConfig) {
         }
       : {}),
   };
+}
+
+function geminiCostForModel(model: string) {
+  if (model === "gemini-3.5-flash") {
+    return { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 };
+  }
+  if (model === "gemini-3.1-pro-preview" || model === "gemini-3-flash-preview") {
+    return { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 };
+  }
+  if (model.startsWith("gemini-3.1-flash-lite")) {
+    return { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0 };
+  }
+  if (model === "gemini-2.5-pro") {
+    return { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 };
+  }
+  if (model === "gemini-2.5-flash") {
+    return { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 };
+  }
+  if (model === "gemini-2.5-flash-lite") {
+    return { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0 };
+  }
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+function geminiContextWindowForModel(_model: string): number {
+  return 1_048_576;
+}
+
+function geminiMaxTokensForModel(_model: string): number {
+  return 65_536;
 }
 
 function textDeltaFromEvent(event: AgentSessionEvent): string {
@@ -511,7 +553,7 @@ export async function createTesseraModelRegistry(options: {
     modelRegistry.registerProvider(options.provider.provider, {
       ...(options.provider.provider === "local"
         ? { apiKey: "tessera-local-placeholder", authHeader: false }
-        : {}),
+        : { apiKey: "tessera-runtime-credential" }),
       baseUrl: providerBaseUrl(options.provider),
       models: [modelCapabilities(options.provider) as never],
     });

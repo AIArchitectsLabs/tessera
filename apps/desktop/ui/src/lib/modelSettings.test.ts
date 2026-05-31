@@ -17,12 +17,14 @@ describe("model settings UI helpers", () => {
     expect(providerLabel("openai-codex")).toBe("OpenAI Codex");
     expect(providerLabel("anthropic")).toBe("Anthropic");
     expect(providerLabel("openrouter")).toBe("OpenRouter");
+    expect(providerLabel("google")).toBe("Google AI Studio");
     expect(providerLabel("local")).toBe("Local OpenAI-compatible");
   });
 
   test("returns model placeholders", () => {
     expect(modelPlaceholderForProvider("openai")).toBe("gpt-5.4");
     expect(modelPlaceholderForProvider("openai-codex")).toBe("gpt-5.4");
+    expect(modelPlaceholderForProvider("google")).toBe("gemini-3.5-flash");
     expect(modelPlaceholderForProvider("local")).toBe("llama3.2");
   });
 
@@ -38,6 +40,16 @@ describe("model settings UI helpers", () => {
         "qwen/qwen3-coder",
       ])
     );
+    expect(modelOptionsForProvider("google").map((option) => option.value)).toEqual([
+      "gemini-3.5-flash",
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview",
+      "gemini-3.1-flash-lite",
+      "gemini-3.1-flash-lite-preview",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+    ]);
     expect(modelOptionsForProvider("local")).toEqual([]);
     expect(modelOptionsForProvider("openrouter", "custom/provider-model")[0]).toEqual({
       label: "Current: custom/provider-model",
@@ -87,6 +99,11 @@ describe("model settings UI helpers", () => {
         provider: "openrouter",
         model: "openrouter/auto",
         apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+      google: {
+        provider: "google",
+        model: "gemini-3.5-flash",
+        apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
       },
       local: {
         provider: "local",

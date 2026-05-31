@@ -15,6 +15,7 @@ describe("model settings contracts", () => {
         openai: { provider: "openai", model: "gpt-5.4", hasCredential: true },
         anthropic: { provider: "anthropic", model: "claude-sonnet-4-6", hasCredential: false },
         openrouter: { provider: "openrouter", model: "openai/gpt-5.4", hasCredential: false },
+        google: { provider: "google", model: "gemini-3.5-flash", hasCredential: false },
         "openai-codex": { provider: "openai-codex", model: "gpt-5.4", hasCredential: false },
         local: {
           provider: "local",
@@ -40,6 +41,31 @@ describe("model settings contracts", () => {
 
     expect(parsed.credential).toMatchObject({ apiKey: "sk-test" });
     expect(parsed.hasExistingCredential).toBe(true);
+  });
+
+  test("accepts Google AI Studio provider settings and save requests", () => {
+    const settings = ModelProviderSettingsSchema.parse({
+      provider: "google",
+      model: "gemini-3.5-flash",
+      hasCredential: true,
+    });
+
+    const save = ModelSettingsSaveRequestSchema.parse({
+      selectedProvider: "google",
+      provider: {
+        provider: "google",
+        model: "gemini-3.5-flash",
+        apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
+        thinkingLevel: "medium",
+      },
+      hasExistingCredential: true,
+    });
+
+    expect(settings.provider).toBe("google");
+    expect(save.provider).toMatchObject({
+      provider: "google",
+      apiKeyEnv: "GOOGLE_AI_STUDIO_API_KEY",
+    });
   });
 
   test("rejects a save request when selected and configured providers differ", () => {
