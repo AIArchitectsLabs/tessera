@@ -554,7 +554,11 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
   }, [setStyleGuideDraftText, workspaceRoot]);
 
   const hasCredential = settings?.providers[selectedProvider]?.hasCredential ?? false;
-  const hasIntegrationCredential = integrations?.providers.googleWorkspace.hasCredential ?? false;
+  const selectedIntegrationSettings = integrationProviderSettings(
+    integrations,
+    selectedIntegration
+  );
+  const hasIntegrationCredential = selectedIntegrationSettings?.hasCredential ?? false;
   const hasSearchCredential =
     searchProviderSettings(integrations, selectedSearchProvider)?.hasCredential ?? false;
   const integrationAllowsCredentials = integrationProviderSupportsCredential(selectedIntegration);
@@ -822,6 +826,10 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
     setIntegrationStatus(null);
     setGoogleWorkspaceInstallConsent(false);
     setBrowserRuntimeInstallConsent(false);
+  }
+
+  function handleIntegrationApiKeyInput(value: string) {
+    setIntegrationApiKey(value);
   }
 
   function handleSearchProviderSelect(provider: SearchProvider) {
@@ -2176,7 +2184,8 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {integrationProviderSupportsCredential(provider)
-                              ? hasIntegrationCredential
+                              ? (integrationProviderSettings(integrations, provider)
+                                  ?.hasCredential ?? false)
                                 ? "Saved key present"
                                 : "No saved key"
                               : "Uses Google Workspace CLI"}
@@ -2188,9 +2197,7 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                 </div>
 
                 <div className="rounded-xl border border-border bg-secondary/35 px-4 py-3 text-sm text-muted-foreground">
-                  {hasIntegrationCredential
-                    ? "Connected. Tessera can use approved Google Workspace actions for this account."
-                    : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates."}
+                  {integrationDescription(selectedIntegration, hasIntegrationCredential)}
                 </div>
 
                 {integrationAllowsCredentials && (
@@ -2206,7 +2213,8 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                           ? "Saved key present"
                           : `Paste ${integrationLabel(selectedIntegration)} API key`
                       }
-                      onChange={(event) => setIntegrationApiKey(event.target.value)}
+                      onChange={(event) => handleIntegrationApiKeyInput(event.currentTarget.value)}
+                      onInput={(event) => handleIntegrationApiKeyInput(event.currentTarget.value)}
                     />
                   </label>
                 )}
@@ -3786,6 +3794,41 @@ function searchProviderSettings(
       return integrations.search.providers.tavily;
     case "duckduckgo":
       return integrations.search.providers.duckduckgo;
+  }
+}
+
+function integrationProviderSettings(
+  integrations: IntegrationSettingsRead | null,
+  provider: IntegrationProvider
+) {
+  if (!integrations) {
+    return null;
+  }
+
+  switch (provider) {
+    case "brave-search":
+      return integrations.providers.braveSearch;
+    case "google-workspace":
+      return integrations.providers.googleWorkspace;
+    case "hubspot":
+      return integrations.providers.hubspot;
+  }
+}
+
+function integrationDescription(provider: IntegrationProvider, hasCredential: boolean): string {
+  switch (provider) {
+    case "google-workspace":
+      return hasCredential
+        ? "Connected. Tessera can use approved Google Workspace actions for this account."
+        : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates.";
+    case "hubspot":
+      return hasCredential
+        ? "Connected. Tessera can read HubSpot CRM totals and records, then create or update contacts, companies, and deals after approval."
+        : "Paste a HubSpot private app access token to let Tessera read CRM totals, contacts, companies, and deals from workspace tasks.";
+    case "brave-search":
+      return hasCredential
+        ? "Connected. Tessera can use Brave Search for live agent research."
+        : "Paste a Brave Search API key to enable live agent research.";
   }
 }
 

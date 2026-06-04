@@ -47,7 +47,7 @@ export interface RunTaskTurnOptions {
     capabilityManager?: OptionalCapabilityManager;
     shell?: {
       executeShell(call: {
-        command: "web-search" | "web-fetch" | "gcal" | "mail" | "drive" | "contacts";
+        command: "web-search" | "web-fetch" | "gcal" | "mail" | "drive" | "contacts" | "hubspot";
         subcommand: string;
         args: string[];
       }): Promise<unknown>;
@@ -333,7 +333,23 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
   const provider = opts.execution?.provider ?? opts.provider ?? DEFAULT_PROVIDER;
   const credential = opts.execution?.credential ?? opts.credential;
   const piRunner = opts.piRunner ?? runPiTaskTurn;
-  const shell = opts.cli ? createSpawnShellExecutor(opts.cli) : undefined;
+  const hubspotAccessToken = opts.execution?.integrationCredentials?.hubspotAccessToken;
+  const baseCli = opts.cli;
+  const shellCli =
+    baseCli && hubspotAccessToken
+      ? {
+          async runWorkspaceCli(args: string[], timeoutMs?: number) {
+            return baseCli.runWorkspaceCli(
+              args,
+              timeoutMs,
+              args[0] === "hubspot"
+                ? { TESSERA_HUBSPOT_ACCESS_TOKEN: hubspotAccessToken }
+                : undefined
+            );
+          },
+        }
+      : baseCli;
+  const shell = shellCli ? createSpawnShellExecutor(shellCli) : undefined;
 
   try {
     const task = store.getTask(taskId);

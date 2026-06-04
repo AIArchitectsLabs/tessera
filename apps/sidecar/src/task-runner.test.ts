@@ -193,6 +193,73 @@ describe("task runner", () => {
     ]);
   });
 
+  test("injects saved HubSpot credentials only for HubSpot shell commands", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Summarize HubSpot",
+    });
+    const userTurn = store.createUserTurn(task.id, "Show HubSpot totals");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const envs: Array<Record<string, string> | undefined> = [];
+    const argsSeen: string[][] = [];
+
+    const defaultAgent = AgentProfileSchema.parse({
+      id: "default",
+      name: "Tessera",
+      model: { mode: "default" },
+      createdAt: "2026-05-02T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      execution: {
+        agent: defaultAgent,
+        runtime: compileAgentRuntimeContext(defaultAgent),
+        provider: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          apiKeyEnv: "ANTHROPIC_API_KEY",
+        },
+        credential: { apiKey: "sk-runtime" },
+        integrationCredentials: { hubspotAccessToken: "pat-na1-test" },
+      },
+      cli: {
+        async runWorkspaceCli(args, _timeoutMs, envOverrides) {
+          argsSeen.push(args);
+          envs.push(envOverrides);
+          return {
+            stdout:
+              args[0] === "hubspot"
+                ? JSON.stringify({ counts: { contacts: 1, companies: 2, deals: 3 } })
+                : JSON.stringify({ results: [] }),
+            stderr: "",
+            exitCode: 0,
+            signal: null,
+            durationMs: 1,
+          };
+        },
+      },
+      piRunner: async ({ shell }) => {
+        await shell?.executeShell({ command: "hubspot", subcommand: "summary", args: [] });
+        await shell?.executeShell({ command: "web-search", subcommand: "search", args: ["crm"] });
+        return { text: "done", boundaryViolations: 0 };
+      },
+      publish() {},
+      delayMs: 0,
+    });
+
+    expect(argsSeen).toEqual([
+      ["hubspot", "summary"],
+      ["web-search", "search", "crm"],
+    ]);
+    expect(envs).toEqual([{ TESSERA_HUBSPOT_ACCESS_TOKEN: "pat-na1-test" }, undefined]);
+  });
+
   test("uses prompt override while preserving displayed user turn content", async () => {
     const store = makeStore();
     const task = store.createTask({

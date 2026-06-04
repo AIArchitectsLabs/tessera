@@ -7,6 +7,10 @@ import {
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  HubSpotObjectMutationResultSchema,
+  HubSpotObjectReadResultSchema,
+  HubSpotObjectSearchResultSchema,
+  HubSpotSummaryResultSchema,
   MailDraftResultSchema,
   MailListResultSchema,
   MailReadResultSchema,
@@ -101,6 +105,22 @@ function parseShellPayload(call: ShellToolCall, stdout: string): unknown {
   }
   if (call.command === "contacts" && call.subcommand === "lookup") {
     return ContactsLookupResultSchema.parse(json);
+  }
+  if (call.command === "hubspot" && call.subcommand === "summary") {
+    return HubSpotSummaryResultSchema.parse(json);
+  }
+  if (
+    call.command === "hubspot" &&
+    (call.subcommand === "contacts" ||
+      call.subcommand === "companies" ||
+      call.subcommand === "deals")
+  ) {
+    const action = call.args[0];
+    if (action === "search") return HubSpotObjectSearchResultSchema.parse(json);
+    if (action === "read") return HubSpotObjectReadResultSchema.parse(json);
+    if (action === "create" || action === "update") {
+      return HubSpotObjectMutationResultSchema.parse(json);
+    }
   }
   return json;
 }

@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
   IntegrationConnectionTestResult,
+  IntegrationProvider,
   IntegrationSettingsRead,
   IntegrationSettingsSaveRequest,
   MemoryForgetRequest,
@@ -106,6 +107,10 @@ const initialIntegrationSettings = (): IntegrationSettingsRead => ({
     },
     googleWorkspace: {
       provider: "google-workspace",
+      hasCredential: false,
+    },
+    hubspot: {
+      provider: "hubspot",
       hasCredential: false,
     },
   },
@@ -289,6 +294,36 @@ function updateSearchState(provider: SearchProvider, request?: Record<string, un
   };
 }
 
+function updateIntegrationCredentialState(provider: IntegrationProvider, hasCredential: boolean) {
+  integrationSettings = {
+    ...integrationSettings,
+    providers: {
+      ...integrationSettings.providers,
+      braveSearch: {
+        ...integrationSettings.providers.braveSearch,
+        hasCredential:
+          provider === "brave-search"
+            ? hasCredential
+            : integrationSettings.providers.braveSearch.hasCredential,
+      },
+      googleWorkspace: {
+        ...integrationSettings.providers.googleWorkspace,
+        hasCredential:
+          provider === "google-workspace"
+            ? hasCredential
+            : integrationSettings.providers.googleWorkspace.hasCredential,
+      },
+      hubspot: {
+        ...integrationSettings.providers.hubspot,
+        hasCredential:
+          provider === "hubspot"
+            ? hasCredential
+            : integrationSettings.providers.hubspot.hasCredential,
+      },
+    },
+  };
+}
+
 const invoke = async (command: string, args?: InvokeCall["args"]) => {
   invokeCalls.push({ command, args: args ? JSON.parse(JSON.stringify(args)) : undefined });
 
@@ -414,6 +449,21 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
       if (searchProvider) {
         updateSearchState(searchProvider, request);
       }
+      if (request?.provider) {
+        updateIntegrationCredentialState(
+          request.provider as IntegrationProvider,
+          Boolean(request.credential) ||
+            Boolean(
+              integrationSettings.providers[
+                request.provider === "google-workspace"
+                  ? "googleWorkspace"
+                  : request.provider === "hubspot"
+                    ? "hubspot"
+                    : "braveSearch"
+              ].hasCredential
+            )
+        );
+      }
 
       return integrationSettings;
     }
@@ -423,6 +473,9 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
         updateSearchState(searchProvider, {
           search: integrationSettings.search,
         });
+      }
+      if (args?.request?.provider) {
+        updateIntegrationCredentialState(args.request.provider as IntegrationProvider, false);
       }
       return integrationSettings;
     }
@@ -1221,6 +1274,51 @@ describe("SettingsView workspace integration flow", () => {
     });
     await waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "google_workspace_health")).toBe(true);
+    });
+  });
+
+  test("saving and testing HubSpot uses the pasted private app token", async () => {
+    const view = await renderIntegrationsView();
+
+    const section = workspaceIntegrationSection(view);
+    expect(section).toBeTruthy();
+    if (!section) throw new Error("Missing workspace integration section");
+
+    fireEvent.click(within(section).getByRole("button", { name: /HubSpot/i }));
+    await waitFor(() => {
+      expect(within(section).getByPlaceholderText("Paste HubSpot API key")).toBeTruthy();
+    });
+    const apiKeyInput = within(section).getByPlaceholderText(
+      "Paste HubSpot API key"
+    ) as HTMLInputElement;
+    fireEvent.input(apiKeyInput, { target: { value: "pat-na1-test" } });
+    await waitFor(() => {
+      expect(apiKeyInput.value).toBe("pat-na1-test");
+    });
+    fireEvent.click(within(section).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const saveCall = invokeCalls.find((call) => call.command === "integration_settings_save");
+      expect(saveCall?.args?.request).toEqual({
+        provider: "hubspot",
+        hasExistingCredential: false,
+        credential: { apiKey: "pat-na1-test" },
+      });
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("Saved key present")).toBeTruthy();
+    });
+
+    fireEvent.click(within(section).getByRole("button", { name: "Test connection" }));
+
+    await waitFor(() => {
+      const testCalls = invokeCalls.filter(
+        (call) => call.command === "integration_connection_test"
+      );
+      const testCall = testCalls[testCalls.length - 1];
+      expect(testCall?.args?.request).toEqual({
+        provider: "hubspot",
+      });
     });
   });
 

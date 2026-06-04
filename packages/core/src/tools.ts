@@ -22,7 +22,11 @@ import { evaluatePermission } from "./permission.js";
 import { validateShellCall } from "./shell-runtime.js";
 
 export interface WorkspaceCliExecutor {
-  runWorkspaceCli(args: string[], timeoutMs?: number): Promise<SpawnResult>;
+  runWorkspaceCli(
+    args: string[],
+    timeoutMs?: number,
+    envOverrides?: Record<string, string>
+  ): Promise<SpawnResult>;
 }
 
 export interface ShellExecutor {
@@ -156,6 +160,7 @@ export function createTesseraTools(options: ToolRegistryOptions): AgentTool<TSch
       "sheets",
       "docs",
       "contacts",
+      "hubspot",
     ]),
     subcommand: z.string().min(1),
     args: z.array(z.string()).default([]),

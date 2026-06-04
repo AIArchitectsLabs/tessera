@@ -1277,6 +1277,149 @@ describe("workspace cli shell commands", () => {
     });
   });
 
+  test("returns HubSpot CRM summary counts", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const result = await executeCliCommand(["hubspot", "summary"], {
+      getHubSpotAccessToken: async () => "hubspot-token",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), ...(init ? { init } : {}) });
+        const total = calls.length === 1 ? 12 : calls.length === 2 ? 5 : 7;
+        return new Response(JSON.stringify({ total, results: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      counts: { contacts: 12, companies: 5, deals: 7 },
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.hubapi.com/crm/v3/objects/contacts/search",
+      "https://api.hubapi.com/crm/v3/objects/companies/search",
+      "https://api.hubapi.com/crm/v3/objects/deals/search",
+    ]);
+    expect(calls[0]?.init?.headers).toMatchObject({
+      authorization: "Bearer hubspot-token",
+    });
+  });
+
+  test("returns normalized HubSpot search and read results", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const search = await executeCliCommand(
+      ["hubspot", "contacts", "search", "alex", "--limit", "3"],
+      {
+        getHubSpotAccessToken: async () => "hubspot-token",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), ...(init ? { init } : {}) });
+          return new Response(
+            JSON.stringify({
+              results: [
+                {
+                  id: "101",
+                  properties: { firstname: "Alex", email: "alex@example.com" },
+                  archived: false,
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        },
+      }
+    );
+
+    expect(search.exitCode).toBe(0);
+    expect(JSON.parse(search.stdout)).toMatchObject({
+      objectType: "contacts",
+      results: [{ id: "101", properties: { firstname: "Alex", email: "alex@example.com" } }],
+    });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ query: "alex", limit: 3 });
+
+    const read = await executeCliCommand(["hubspot", "deals", "read", "301"], {
+      getHubSpotAccessToken: async () => "hubspot-token",
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), ...(init ? { init } : {}) });
+        return new Response(
+          JSON.stringify({
+            id: "301",
+            properties: { dealname: "Expansion", amount: "25000" },
+            archived: false,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      },
+    });
+
+    expect(read.exitCode).toBe(0);
+    expect(JSON.parse(read.stdout)).toMatchObject({
+      objectType: "deals",
+      result: { id: "301", properties: { dealname: "Expansion", amount: "25000" } },
+    });
+    expect(calls.at(-1)?.url).toBe("https://api.hubapi.com/crm/v3/objects/deals/301");
+  });
+
+  test("creates and updates HubSpot CRM objects with properties JSON", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const create = await executeCliCommand(
+      [
+        "hubspot",
+        "companies",
+        "create",
+        "--properties-json",
+        JSON.stringify({ name: "Acme Corp" }),
+      ],
+      {
+        getHubSpotAccessToken: async () => "hubspot-token",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), ...(init ? { init } : {}) });
+          return new Response(
+            JSON.stringify({ id: "201", properties: { name: "Acme Corp" }, archived: false }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        },
+      }
+    );
+
+    expect(create.exitCode).toBe(0);
+    expect(JSON.parse(create.stdout)).toMatchObject({
+      objectType: "companies",
+      action: "create",
+      result: { id: "201", properties: { name: "Acme Corp" } },
+    });
+    expect(calls[0]?.init?.method).toBe("POST");
+
+    const update = await executeCliCommand(
+      [
+        "hubspot",
+        "deals",
+        "update",
+        "301",
+        "--properties-json",
+        JSON.stringify({ dealstage: "closedwon" }),
+      ],
+      {
+        getHubSpotAccessToken: async () => "hubspot-token",
+        fetchImpl: async (input, init) => {
+          calls.push({ url: String(input), ...(init ? { init } : {}) });
+          return new Response(
+            JSON.stringify({ id: "301", properties: { dealstage: "closedwon" }, archived: false }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+        },
+      }
+    );
+
+    expect(update.exitCode).toBe(0);
+    expect(JSON.parse(update.stdout)).toMatchObject({
+      objectType: "deals",
+      action: "update",
+      result: { id: "301", properties: { dealstage: "closedwon" } },
+    });
+    expect(calls.at(-1)?.url).toBe("https://api.hubapi.com/crm/v3/objects/deals/301");
+    expect(calls.at(-1)?.init?.method).toBe("PATCH");
+  });
+
   test("returns non-mutating sheets row dry-run previews", async () => {
     const result = await executeCliCommand([
       "sheets",

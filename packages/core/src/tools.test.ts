@@ -103,6 +103,33 @@ describe("createTesseraTools", () => {
     expect(summary.status).toBe("blocked");
   });
 
+  test("blocks approval-gated HubSpot mutations without a grant", async () => {
+    const tools = createTesseraTools({
+      cli: {
+        async runWorkspaceCli() {
+          return spawnResult;
+        },
+      },
+      shell: {
+        async executeShell() {
+          return shellResult;
+        },
+      },
+    });
+
+    const shell = tools.find((tool) => tool.name === "shell");
+    const result = await shell?.execute("call-1", {
+      command: "hubspot",
+      subcommand: "contacts",
+      args: ["create", "--properties-json", JSON.stringify({ email: "alex@example.com" })],
+    });
+
+    expect(result?.terminate).toBe(true);
+    if (!result) throw new Error("Expected shell result");
+    const summary = summarizeToolResult("shell", result, false);
+    expect(summary.status).toBe("blocked");
+  });
+
   test("accepts sheets command shape but blocks execute bypass without a grant", async () => {
     const calls: unknown[] = [];
     const tools = createTesseraTools({

@@ -1557,6 +1557,7 @@ const integrationSettings: IntegrationSettingsRead = {
   providers: {
     braveSearch: { provider: "brave-search", hasCredential: false },
     googleWorkspace: { provider: "google-workspace", hasCredential: false },
+    hubspot: { provider: "hubspot", hasCredential: false },
   },
   search: {
     mode: "auto",

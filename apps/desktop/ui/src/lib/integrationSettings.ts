@@ -1,6 +1,6 @@
 import type { IntegrationProvider, SearchMode, SearchProvider } from "@tessera/contracts";
 
-export const INTEGRATION_PROVIDERS: IntegrationProvider[] = ["google-workspace"];
+export const INTEGRATION_PROVIDERS: IntegrationProvider[] = ["google-workspace", "hubspot"];
 export const SEARCH_PROVIDERS: SearchProvider[] = ["brave-search", "tavily", "duckduckgo"];
 export const SEARCH_MODE_OPTIONS: SearchMode[] = ["auto", ...SEARCH_PROVIDERS];
 export const KEYLESS_SEARCH_PROVIDERS: SearchProvider[] = ["duckduckgo"];
@@ -10,6 +10,8 @@ export function integrationLabel(provider: IntegrationProvider): string {
   switch (provider) {
     case "google-workspace":
       return "Google Workspace";
+    case "hubspot":
+      return "HubSpot";
     case "brave-search":
       return "Brave Search";
   }

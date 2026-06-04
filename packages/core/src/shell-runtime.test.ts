@@ -634,6 +634,84 @@ describe("shell runtime", () => {
     });
   });
 
+  test("parses successful HubSpot summary and object search payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(args): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify(
+            args[1] === "summary"
+              ? { counts: { contacts: 10, companies: 4, deals: 2 } }
+              : {
+                  objectType: "contacts",
+                  results: [
+                    {
+                      id: "101",
+                      properties: { firstname: "Alex", email: "alex@example.com" },
+                      archived: false,
+                    },
+                  ],
+                }
+          ),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 10,
+        };
+      },
+    });
+
+    const summary = await executor.executeShell({
+      command: "hubspot",
+      subcommand: "summary",
+      args: [],
+    });
+    expect(summary.parsed).toEqual({ counts: { contacts: 10, companies: 4, deals: 2 } });
+
+    const search = await executor.executeShell({
+      command: "hubspot",
+      subcommand: "contacts",
+      args: ["search", "alex"],
+    });
+    expect(search.parsed).toMatchObject({
+      objectType: "contacts",
+      results: [{ id: "101", properties: { email: "alex@example.com" } }],
+    });
+  });
+
+  test("parses successful HubSpot mutation payloads from workspace cli stdout", async () => {
+    const executor = createSpawnShellExecutor({
+      async runWorkspaceCli(): Promise<SpawnResult> {
+        return {
+          stdout: JSON.stringify({
+            objectType: "deals",
+            action: "update",
+            result: {
+              id: "301",
+              properties: { dealstage: "closedwon" },
+              archived: false,
+            },
+          }),
+          stderr: "",
+          exitCode: 0,
+          signal: null,
+          durationMs: 10,
+        };
+      },
+    });
+
+    const result = await executor.executeShell({
+      command: "hubspot",
+      subcommand: "deals",
+      args: ["update", "301", "--properties-json", "{}"],
+    });
+
+    expect(result.parsed).toMatchObject({
+      objectType: "deals",
+      action: "update",
+      result: { id: "301", properties: { dealstage: "closedwon" } },
+    });
+  });
+
   test("wraps schema failures from workspace cli stdout in ShellExecutionError", async () => {
     const executor = createSpawnShellExecutor({
       async runWorkspaceCli(): Promise<SpawnResult> {
