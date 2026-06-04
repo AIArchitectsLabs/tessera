@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -6,15 +7,26 @@ use anyhow::{bail, Context, Result};
 #[cfg(not(target_os = "macos"))]
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::model_settings::{user_config_dir, validate_user_key, KEYCHAIN_SERVICE};
 
 pub const SETTINGS_FILE: &str = "integration-settings.json";
 static KEYCHAIN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static RUNTIME_CREDENTIALS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+static RUNTIME_SEARCH_CREDENTIALS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 
 fn keychain_lock() -> &'static Mutex<()> {
     KEYCHAIN_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn runtime_credentials() -> &'static Mutex<BTreeMap<String, String>> {
+    RUNTIME_CREDENTIALS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn runtime_search_credentials() -> &'static Mutex<BTreeMap<String, String>> {
+    RUNTIME_SEARCH_CREDENTIALS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -22,6 +34,7 @@ fn keychain_lock() -> &'static Mutex<()> {
 pub enum IntegrationProvider {
     BraveSearch,
     GoogleWorkspace,
+    Hubspot,
 }
 
 impl IntegrationProvider {
@@ -29,6 +42,7 @@ impl IntegrationProvider {
         match self {
             Self::BraveSearch => "integration.brave-search",
             Self::GoogleWorkspace => "integration.google-workspace",
+            Self::Hubspot => "integration.hubspot",
         }
     }
 
@@ -36,6 +50,7 @@ impl IntegrationProvider {
         match self {
             Self::BraveSearch => "Brave Search",
             Self::GoogleWorkspace => "Google Workspace",
+            Self::Hubspot => "HubSpot",
         }
     }
 
@@ -52,6 +67,7 @@ impl IntegrationProvider {
 pub enum SearchProvider {
     BraveSearch,
     Tavily,
+    #[serde(rename = "duckduckgo", alias = "duck-duck-go")]
     DuckDuckGo,
 }
 
@@ -86,6 +102,7 @@ pub enum SearchMode {
     Auto,
     BraveSearch,
     Tavily,
+    #[serde(rename = "duckduckgo", alias = "duck-duck-go")]
     DuckDuckGo,
 }
 
@@ -118,6 +135,8 @@ pub struct SettingsProviders {
     pub brave_search: ProviderConfig,
     #[serde(default = "default_google_workspace_provider_config")]
     pub google_workspace: ProviderConfig,
+    #[serde(default = "default_hubspot_provider_config")]
+    pub hubspot: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -142,6 +161,7 @@ pub struct SettingsFile {
 pub struct ReadProviders {
     pub brave_search: ProviderSettings,
     pub google_workspace: ProviderSettings,
+    pub hubspot: ProviderSettings,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -297,6 +317,7 @@ pub fn default_settings_file() -> SettingsFile {
         providers: SettingsProviders {
             brave_search: default_brave_search_provider_config(),
             google_workspace: default_google_workspace_provider_config(),
+            hubspot: default_hubspot_provider_config(),
         },
         search: default_search_settings(),
     }
@@ -316,6 +337,13 @@ fn default_brave_search_provider_config() -> ProviderConfig {
 fn default_google_workspace_provider_config() -> ProviderConfig {
     ProviderConfig {
         provider: IntegrationProvider::GoogleWorkspace,
+        connected: false,
+    }
+}
+
+fn default_hubspot_provider_config() -> ProviderConfig {
+    ProviderConfig {
+        provider: IntegrationProvider::Hubspot,
         connected: false,
     }
 }
@@ -345,7 +373,92 @@ fn load_settings_file(path: &Path) -> Result<SettingsFile> {
     }
 
     let text = fs::read_to_string(path).context("Could not read integration settings")?;
-    serde_json::from_str(&text).context("Could not parse integration settings")
+    let mut value: Value =
+        serde_json::from_str(&text).context("Could not parse integration settings")?;
+    normalize_settings_json(&mut value);
+    serde_json::from_value(value).context("Could not parse integration settings")
+}
+
+fn normalize_settings_json(value: &mut Value) {
+    let Some(root) = value.as_object_mut() else {
+        return;
+    };
+
+    let providers = root
+        .entry("providers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(providers) = providers {
+        normalize_provider_config(providers, "braveSearch", "brave-search");
+        normalize_provider_config(providers, "googleWorkspace", "google-workspace");
+        normalize_provider_config(providers, "hubspot", "hubspot");
+    }
+
+    let search = root
+        .entry("search")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(search) = search {
+        let mode = search.entry("mode").or_insert_with(|| json!("auto"));
+        normalize_search_mode(mode);
+        search
+            .entry("allowKeylessFallback")
+            .or_insert_with(|| json!(false));
+
+        let search_providers = search
+            .entry("providers")
+            .or_insert_with(|| json!({}))
+            .as_object_mut();
+        if let Some(search_providers) = search_providers {
+            normalize_search_provider_config(search_providers, "braveSearch", "brave-search");
+            normalize_search_provider_config(search_providers, "tavily", "tavily");
+            normalize_search_provider_config(search_providers, "duckduckgo", "duckduckgo");
+        }
+    }
+}
+
+fn normalize_provider_config(
+    providers: &mut serde_json::Map<String, Value>,
+    key: &str,
+    provider: &str,
+) {
+    let value = providers
+        .entry(key.to_string())
+        .or_insert_with(|| json!({}));
+    if !value.is_object() {
+        *value = json!({});
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("provider".to_string(), json!(provider));
+        object.entry("connected").or_insert_with(|| json!(false));
+    }
+}
+
+fn normalize_search_provider_config(
+    providers: &mut serde_json::Map<String, Value>,
+    key: &str,
+    provider: &str,
+) {
+    let value = providers
+        .entry(key.to_string())
+        .or_insert_with(|| json!({}));
+    if !value.is_object() {
+        *value = json!({});
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("provider".to_string(), json!(provider));
+    }
+}
+
+fn normalize_search_mode(value: &mut Value) {
+    let normalized = match value.as_str() {
+        Some("auto") => "auto",
+        Some("brave-search") => "brave-search",
+        Some("tavily") => "tavily",
+        Some("duckduckgo" | "duck-duck-go") => "duckduckgo",
+        _ => "auto",
+    };
+    *value = json!(normalized);
 }
 
 fn save_settings_file(path: &Path, settings: &SettingsFile) -> Result<()> {
@@ -374,35 +487,74 @@ pub fn get_credential_for_user(
     provider: IntegrationProvider,
     user_key: Option<&str>,
 ) -> Result<Option<String>> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return get_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
+        if let Some(value) = get_macos_credential(&account)? {
+            return Ok(Some(value));
+        }
+        return Ok(runtime_credentials()
+            .lock()
+            .expect("runtime integration credential cache poisoned")
+            .get(&account)
+            .cloned());
     }
 
     #[cfg(not(target_os = "macos"))]
-    match keyring_entry(provider, user_key)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error).context("Could not read integration credential"),
+    {
+        match keyring_entry(provider, user_key)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(runtime_credentials()
+                .lock()
+                .expect("runtime integration credential cache poisoned")
+                .get(&account)
+                .cloned()),
+            Err(error) => Err(error).context("Could not read integration credential"),
+        }
     }
+}
+
+pub fn get_credential_for_user_with_global_fallback(
+    provider: IntegrationProvider,
+    user_key: Option<&str>,
+) -> Result<Option<String>> {
+    let credential = get_credential_for_user(provider, user_key)?;
+    if credential.is_some() || user_key.is_none() {
+        return Ok(credential);
+    }
+    get_credential_for_user(provider, None)
 }
 
 pub fn get_search_credential_for_user(
     provider: SearchProvider,
     user_key: Option<&str>,
 ) -> Result<Option<String>> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return get_macos_search_credential(&provider.account_for_user(scoped_user_key(user_key)?));
+        if let Some(value) = get_macos_search_credential(&account)? {
+            return Ok(Some(value));
+        }
+        return Ok(runtime_search_credentials()
+            .lock()
+            .expect("runtime search credential cache poisoned")
+            .get(&account)
+            .cloned());
     }
 
     #[cfg(not(target_os = "macos"))]
-    match search_keyring_entry(provider, user_key)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error).context("Could not read search credential"),
+    {
+        match search_keyring_entry(provider, user_key)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(runtime_search_credentials()
+                .lock()
+                .expect("runtime search credential cache poisoned")
+                .get(&account)
+                .cloned()),
+            Err(error) => Err(error).context("Could not read search credential"),
+        }
     }
 }
 
@@ -411,19 +563,29 @@ fn set_credential_for_user(
     user_key: Option<&str>,
     api_key: &str,
 ) -> Result<()> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return set_macos_credential(
-            &provider.account_for_user(scoped_user_key(user_key)?),
-            api_key,
-        );
+        set_macos_credential(&account, api_key)?;
+        runtime_credentials()
+            .lock()
+            .expect("runtime integration credential cache poisoned")
+            .insert(account, api_key.to_string());
+        return Ok(());
     }
 
     #[cfg(not(target_os = "macos"))]
-    keyring_entry(provider, user_key)?
-        .set_password(api_key)
-        .context("Could not store integration credential")
+    {
+        keyring_entry(provider, user_key)?
+            .set_password(api_key)
+            .context("Could not store integration credential")?;
+        runtime_credentials()
+            .lock()
+            .expect("runtime integration credential cache poisoned")
+            .insert(account, api_key.to_string());
+        Ok(())
+    }
 }
 
 fn set_search_credential_for_user(
@@ -431,29 +593,44 @@ fn set_search_credential_for_user(
     user_key: Option<&str>,
     api_key: &str,
 ) -> Result<()> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
     #[cfg(target_os = "macos")]
     {
-        return set_macos_search_credential(
-            &provider.account_for_user(scoped_user_key(user_key)?),
-            api_key,
-        );
+        set_macos_search_credential(&account, api_key)?;
+        runtime_search_credentials()
+            .lock()
+            .expect("runtime search credential cache poisoned")
+            .insert(account, api_key.to_string());
+        return Ok(());
     }
 
     #[cfg(not(target_os = "macos"))]
-    search_keyring_entry(provider, user_key)?
-        .set_password(api_key)
-        .context("Could not store search credential")
+    {
+        search_keyring_entry(provider, user_key)?
+            .set_password(api_key)
+            .context("Could not store search credential")?;
+        runtime_search_credentials()
+            .lock()
+            .expect("runtime search credential cache poisoned")
+            .insert(account, api_key.to_string());
+        Ok(())
+    }
 }
 
 pub fn delete_credential_for_user(
     provider: IntegrationProvider,
     user_key: Option<&str>,
 ) -> Result<()> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
+    runtime_credentials()
+        .lock()
+        .expect("runtime integration credential cache poisoned")
+        .remove(&account);
     #[cfg(target_os = "macos")]
     {
-        return delete_macos_credential(&provider.account_for_user(scoped_user_key(user_key)?));
+        return delete_macos_credential(&account);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -467,12 +644,15 @@ pub fn delete_search_credential_for_user(
     provider: SearchProvider,
     user_key: Option<&str>,
 ) -> Result<()> {
+    let account = provider.account_for_user(scoped_user_key(user_key)?);
     let _guard = keychain_lock().lock().expect("keychain lock poisoned");
+    runtime_search_credentials()
+        .lock()
+        .expect("runtime search credential cache poisoned")
+        .remove(&account);
     #[cfg(target_os = "macos")]
     {
-        return delete_macos_search_credential(
-            &provider.account_for_user(scoped_user_key(user_key)?),
-        );
+        return delete_macos_search_credential(&account);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -661,6 +841,11 @@ fn redact_with_settings_for_user(
                 provider: IntegrationProvider::GoogleWorkspace,
                 has_credential: settings.providers.google_workspace.connected,
             },
+            hubspot: ProviderSettings {
+                provider: IntegrationProvider::Hubspot,
+                has_credential: get_credential_for_user(IntegrationProvider::Hubspot, user_key)?
+                    .is_some(),
+            },
         },
         search: SearchSettingsRead {
             mode: settings.search.mode,
@@ -745,6 +930,9 @@ fn save_at_path_for_user(
                     bail!("API key cannot be empty");
                 }
                 set_credential_for_user(provider, user_key, api_key)?;
+                if user_key.is_some() {
+                    set_credential_for_user(provider, None, api_key)?;
+                }
             }
         }
         IntegrationRequestTarget::Search(search_provider) => {
@@ -757,6 +945,9 @@ fn save_at_path_for_user(
                     bail!("DuckDuckGo does not use an API key");
                 }
                 set_search_credential_for_user(search_provider, user_key, api_key)?;
+                if user_key.is_some() {
+                    set_search_credential_for_user(search_provider, None, api_key)?;
+                }
             }
         }
     }
@@ -866,11 +1057,12 @@ mod tests {
         fs::write(
             &path,
             r#"{
-              "providers": {
-                "braveSearch": { "provider": "brave-search" },
-                "googleWorkspace": { "provider": "google-workspace" }
-              }
-            }"#,
+                "providers": {
+                  "braveSearch": { "provider": "brave-search" },
+                  "googleWorkspace": { "provider": "google-workspace" },
+                  "hubspot": { "provider": "hubspot" }
+                }
+              }"#,
         )
         .expect("write settings");
 
@@ -879,6 +1071,49 @@ mod tests {
         assert_eq!(settings.search.mode, SearchMode::Auto);
         assert!(!settings.search.allow_keyless_fallback);
         assert!(!settings.providers.google_workspace.connected);
+        assert_eq!(
+            settings.providers.hubspot.provider,
+            IntegrationProvider::Hubspot
+        );
+    }
+
+    #[test]
+    fn load_settings_file_repairs_legacy_provider_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(SETTINGS_FILE);
+
+        fs::write(
+            &path,
+            r#"{
+                "providers": {
+                  "braveSearch": { "provider": "duckduckgo" },
+                  "googleWorkspace": { "provider": "google-workspace", "connected": true }
+                },
+                "search": {
+                  "mode": "duck-duck-go",
+                  "allowKeylessFallback": true,
+                  "providers": {
+                    "braveSearch": { "provider": "brave-search" },
+                    "tavily": { "provider": "tavily" },
+                    "duckduckgo": { "provider": "duck-duck-go" }
+                  }
+                }
+              }"#,
+        )
+        .expect("write settings");
+
+        let settings = load_settings_file(&path).expect("load settings");
+
+        assert_eq!(
+            settings.providers.brave_search.provider,
+            IntegrationProvider::BraveSearch
+        );
+        assert_eq!(
+            settings.providers.hubspot.provider,
+            IntegrationProvider::Hubspot
+        );
+        assert!(settings.providers.google_workspace.connected);
+        assert_eq!(settings.search.mode, SearchMode::DuckDuckGo);
     }
 
     #[test]
@@ -909,11 +1144,12 @@ mod tests {
         fs::write(
             &path,
             r#"{
-              "providers": {
-                "braveSearch": { "provider": "brave-search" },
-                "googleWorkspace": { "provider": "google-workspace" }
-              }
-            }"#,
+                "providers": {
+                  "braveSearch": { "provider": "brave-search" },
+                  "googleWorkspace": { "provider": "google-workspace" },
+                  "hubspot": { "provider": "hubspot" }
+                }
+              }"#,
         )
         .expect("write settings");
 

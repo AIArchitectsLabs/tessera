@@ -1377,6 +1377,17 @@ async fn attach_default_task_execution(
     if let Some(credential) = credential {
         execution["credential"] = credential;
     }
+    if let Some(hubspot_access_token) =
+        integration_settings::get_credential_for_user_with_global_fallback(
+            integration_settings::IntegrationProvider::Hubspot,
+            user_key,
+        )
+        .map_err(|error| error.to_string())?
+    {
+        execution["integrationCredentials"] = serde_json::json!({
+            "hubspotAccessToken": hubspot_access_token
+        });
+    }
 
     request["execution"] = execution;
     Ok(request)
@@ -2846,6 +2857,10 @@ async fn integration_connection_test(
                     }
                     (vec!["gcal", "list", "--limit", "1"], None)
                 }
+                integration_settings::IntegrationProvider::Hubspot => (
+                    vec!["hubspot", "summary"],
+                    Some("TESSERA_HUBSPOT_ACCESS_TOKEN"),
+                ),
             };
             let credential = if credential_env_name.is_some() {
                 match request.credential {

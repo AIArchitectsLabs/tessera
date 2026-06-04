@@ -226,7 +226,7 @@ export type ModelRuntimeCredential = z.infer<typeof ModelRuntimeCredentialSchema
 
 export const GoogleWorkspaceProviderSchema = z.literal("google-workspace");
 
-export const IntegrationProviderSchema = z.enum(["brave-search", "google-workspace"]);
+export const IntegrationProviderSchema = z.enum(["brave-search", "google-workspace", "hubspot"]);
 export type IntegrationProvider = z.infer<typeof IntegrationProviderSchema>;
 
 const BraveSearchIntegrationSettingsSchema = z.object({
@@ -236,6 +236,11 @@ const BraveSearchIntegrationSettingsSchema = z.object({
 
 const GoogleWorkspaceIntegrationSettingsSchema = z.object({
   provider: GoogleWorkspaceProviderSchema,
+  hasCredential: z.boolean().default(false),
+});
+
+const HubSpotIntegrationSettingsSchema = z.object({
+  provider: z.literal("hubspot"),
   hasCredential: z.boolean().default(false),
 });
 
@@ -273,6 +278,10 @@ export const IntegrationSettingsReadSchema = z.object({
   providers: z.object({
     braveSearch: BraveSearchIntegrationSettingsSchema,
     googleWorkspace: GoogleWorkspaceIntegrationSettingsSchema,
+    hubspot: HubSpotIntegrationSettingsSchema.default({
+      provider: "hubspot",
+      hasCredential: false,
+    }),
   }),
   search: z
     .object({
@@ -664,6 +673,46 @@ export const ContactsLookupResultSchema = z.object({
 });
 export type ContactsLookupResult = z.infer<typeof ContactsLookupResultSchema>;
 
+export const HubSpotObjectTypeSchema = z.enum(["contacts", "companies", "deals"]);
+export type HubSpotObjectType = z.infer<typeof HubSpotObjectTypeSchema>;
+
+export const HubSpotObjectRecordSchema = z.object({
+  id: z.string().min(1),
+  properties: z.record(z.string()),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  archived: z.boolean().default(false),
+});
+export type HubSpotObjectRecord = z.infer<typeof HubSpotObjectRecordSchema>;
+
+export const HubSpotSummaryResultSchema = z.object({
+  counts: z.object({
+    contacts: z.number().int().nonnegative(),
+    companies: z.number().int().nonnegative(),
+    deals: z.number().int().nonnegative(),
+  }),
+});
+export type HubSpotSummaryResult = z.infer<typeof HubSpotSummaryResultSchema>;
+
+export const HubSpotObjectSearchResultSchema = z.object({
+  objectType: HubSpotObjectTypeSchema,
+  results: z.array(HubSpotObjectRecordSchema),
+});
+export type HubSpotObjectSearchResult = z.infer<typeof HubSpotObjectSearchResultSchema>;
+
+export const HubSpotObjectReadResultSchema = z.object({
+  objectType: HubSpotObjectTypeSchema,
+  result: HubSpotObjectRecordSchema,
+});
+export type HubSpotObjectReadResult = z.infer<typeof HubSpotObjectReadResultSchema>;
+
+export const HubSpotObjectMutationResultSchema = z.object({
+  objectType: HubSpotObjectTypeSchema,
+  action: z.enum(["create", "update"]),
+  result: HubSpotObjectRecordSchema,
+});
+export type HubSpotObjectMutationResult = z.infer<typeof HubSpotObjectMutationResultSchema>;
+
 export const ToolCapabilitySchema = z.enum(["read", "write"]);
 export type ToolCapability = z.infer<typeof ToolCapabilitySchema>;
 
@@ -776,6 +825,7 @@ export const ShellCommandNameSchema = z.enum([
   "sheets",
   "docs",
   "contacts",
+  "hubspot",
 ]);
 export type ShellCommandName = z.infer<typeof ShellCommandNameSchema>;
 
@@ -4489,6 +4539,11 @@ export const TaskExecutionConfigSchema = z.object({
   runtime: AgentRuntimeContextSchema,
   provider: AgentProviderConfigSchema,
   credential: ModelRuntimeCredentialSchema.optional(),
+  integrationCredentials: z
+    .object({
+      hubspotAccessToken: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 export type TaskExecutionConfig = z.infer<typeof TaskExecutionConfigSchema>;
 

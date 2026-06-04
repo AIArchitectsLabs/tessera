@@ -35,6 +35,7 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
   console.log("  sheets        Preview approved Google Sheets writes");
   console.log("  docs          Preview approved Google Docs writes");
   console.log("  contacts      Read Google Contacts");
+  console.log("  hubspot       Read and update HubSpot CRM records");
   console.log("  run <agent>   Run an agent headlessly");
   console.log("");
   console.log("Options:");

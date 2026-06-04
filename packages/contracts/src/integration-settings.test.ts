@@ -8,6 +8,10 @@ import {
   DriveSearchResultSchema,
   GcalListResultSchema,
   GcalReadResultSchema,
+  HubSpotObjectMutationResultSchema,
+  HubSpotObjectReadResultSchema,
+  HubSpotObjectSearchResultSchema,
+  HubSpotSummaryResultSchema,
   IntegrationConnectionTestRequestSchema,
   IntegrationConnectionTestResultSchema,
   IntegrationCredentialDeleteRequestSchema,
@@ -56,6 +60,10 @@ describe("integration settings contracts", () => {
           provider: "google-workspace",
           hasCredential: true,
         },
+        hubspot: {
+          provider: "hubspot",
+          hasCredential: true,
+        },
       },
       search: {
         mode: "auto",
@@ -69,6 +77,7 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.providers.googleWorkspace.hasCredential).toBe(true);
+    expect(parsed.providers.hubspot.hasCredential).toBe(true);
   });
 
   test("accepts save requests with an optional replacement key", () => {
@@ -84,6 +93,32 @@ describe("integration settings contracts", () => {
     }
     expect(parsed.provider).toBe("brave-search");
     expect(parsed.credential?.apiKey).toBe("brave-test");
+  });
+
+  test("accepts HubSpot save, delete, and test requests", () => {
+    const save = IntegrationSettingsSaveRequestSchema.parse({
+      provider: "hubspot",
+      hasExistingCredential: false,
+      credential: { apiKey: "pat-na1-test" },
+    });
+    expect("provider" in save).toBe(true);
+    if (!("provider" in save)) throw new Error("Expected provider request variant");
+    expect(save.provider).toBe("hubspot");
+
+    const deleteRequest = IntegrationCredentialDeleteRequestSchema.parse({
+      provider: "hubspot",
+    });
+    expect("provider" in deleteRequest).toBe(true);
+    if (!("provider" in deleteRequest)) throw new Error("Expected provider delete variant");
+    expect(deleteRequest.provider).toBe("hubspot");
+
+    const testRequest = IntegrationConnectionTestRequestSchema.parse({
+      provider: "hubspot",
+      credential: { apiKey: "pat-na1-test" },
+    });
+    expect("provider" in testRequest).toBe(true);
+    if (!("provider" in testRequest)) throw new Error("Expected provider test variant");
+    expect(testRequest.provider).toBe("hubspot");
   });
 
   test("accepts Tavily save requests without a top-level provider", () => {
@@ -406,6 +441,62 @@ describe("integration settings contracts", () => {
     });
 
     expect(parsed.contacts[0]?.emailAddresses[0]).toBe("alex@example.com");
+  });
+
+  test("parses HubSpot summary and CRM object payloads", () => {
+    const summary = HubSpotSummaryResultSchema.parse({
+      counts: {
+        contacts: 120,
+        companies: 42,
+        deals: 17,
+      },
+    });
+    expect(summary.counts.deals).toBe(17);
+
+    const search = HubSpotObjectSearchResultSchema.parse({
+      objectType: "contacts",
+      results: [
+        {
+          id: "101",
+          properties: {
+            firstname: "Alex",
+            lastname: "Morgan",
+            email: "alex@example.com",
+          },
+          createdAt: "2026-06-01T00:00:00.000Z",
+          updatedAt: "2026-06-02T00:00:00.000Z",
+          archived: false,
+        },
+      ],
+    });
+    expect(search.objectType).toBe("contacts");
+    expect(search.results[0]?.properties.email).toBe("alex@example.com");
+
+    const read = HubSpotObjectReadResultSchema.parse({
+      objectType: "deals",
+      result: {
+        id: "301",
+        properties: {
+          dealname: "Expansion",
+          amount: "25000",
+        },
+        archived: false,
+      },
+    });
+    expect(read.result.properties.amount).toBe("25000");
+
+    const mutation = HubSpotObjectMutationResultSchema.parse({
+      objectType: "companies",
+      action: "update",
+      result: {
+        id: "201",
+        properties: {
+          name: "Acme Corp",
+        },
+        archived: false,
+      },
+    });
+    expect(mutation.action).toBe("update");
   });
 
   test("defaults normalized contacts lookup payload fields", () => {

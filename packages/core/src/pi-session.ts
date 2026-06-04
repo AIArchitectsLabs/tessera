@@ -609,9 +609,11 @@ function buildPrompt(
 function buildAgentInstructions(
   agent: AgentProfile | undefined,
   runtime: AgentRuntimeContext | undefined,
-  options?: { hasTaskChecklistTool?: boolean }
+  options?: { hasTaskChecklistTool?: boolean; hasShellTool?: boolean }
 ): string | undefined {
-  if (!agent && !runtime && !options?.hasTaskChecklistTool) return undefined;
+  if (!agent && !runtime && !options?.hasTaskChecklistTool && !options?.hasShellTool) {
+    return undefined;
+  }
 
   const sections = [
     agent?.instructions ? `Agent instructions:\n${agent.instructions}` : "",
@@ -627,8 +629,11 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Task clarification guidance:\nIf progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
       : "",
-    options?.hasTaskChecklistTool
+    options?.hasShellTool
       ? "Web research guidance:\nWhen the user asks you to search the web, check current online information, or fetch the contents of a public URL, use the shell tool early. Prefer `web-search search ...` for research queries and `web-fetch fetch <url>` for specific pages."
+      : "",
+    options?.hasShellTool
+      ? "CRM guidance:\nWhen the user asks for HubSpot CRM data, use the shell tool instead of saying no connector is available. Use `hubspot summary` for total contacts, companies, and deals; `hubspot contacts search <query>`, `hubspot companies search <query>`, and `hubspot deals search <query>` for lookups; `hubspot contacts read <id>`, `hubspot companies read <id>`, and `hubspot deals read <id>` for records. Creating or updating HubSpot records requires approval."
       : "",
     "Skill guidance:\nUse skill_list to discover enabled procedural skills and skill_load to load a specific skill when it would materially improve the work. Active task skills are already included in this prompt and should be followed when relevant. If a loaded skill explicitly declares a Python helper, use skill_run_python instead of shelling out.",
   ].filter(Boolean);
@@ -745,9 +750,9 @@ function createShellToolDefinition(shell?: ShellExecutor): ToolDefinition[] {
     defineTool({
       name: "shell",
       label: "Shell",
-      description: "Run approved built-in CLI commands for web search and web fetch.",
+      description: "Run approved built-in CLI commands for web research and connected services.",
       promptSnippet:
-        "shell: run built-in read-only commands like web-search search <query> and web-fetch fetch <url>.",
+        "shell: run built-in commands like web-search search <query>, web-fetch fetch <url>, hubspot summary, and hubspot contacts|companies|deals search <query>.",
       parameters: Type.Object({
         command: Type.String(),
         subcommand: Type.String(),
@@ -846,6 +851,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
     }
     const agentInstructions = buildAgentInstructions(options.agent, runtime, {
       hasTaskChecklistTool: false,
+      hasShellTool: false,
     });
     const activeSkills = await activeSkillContent(options.skillRuntime);
     return runCodexResponsesTurn({
@@ -878,6 +884,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
 
   const agentInstructions = buildAgentInstructions(options.agent, runtime, {
     hasTaskChecklistTool: taskTools.some((tool) => tool.name === "todo"),
+    hasShellTool: shellTools.some((tool) => tool.name === "shell"),
   });
   const activeSkills = await activeSkillContent(options.skillRuntime);
 

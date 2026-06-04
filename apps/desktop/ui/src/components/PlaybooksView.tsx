@@ -2466,6 +2466,7 @@ function GraphRuntimeSection({
                   <div
                     key={action.actionId}
                     data-graph-action={action.actionId}
+                    data-testid={`graph-review-action-${action.actionId}`}
                     className="rounded-md border border-border bg-background px-3 py-2 text-xs"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
