@@ -3217,7 +3217,8 @@ describe("PlaybooksView", () => {
     });
     const blockedLabels = view.getAllByText("Blocked");
     const graphRunButton = blockedLabels[blockedLabels.length - 1]?.closest("button");
-    if (graphRunButton) fireEvent.click(graphRunButton);
+    if (!graphRunButton) throw new Error("Expected graph review run button");
+    fireEvent.click(graphRunButton);
 
     await waitFor(() => {
       expect(invoke.mock.calls.some(([command]) => command === "graph_run_review_surface")).toBe(
@@ -3233,18 +3234,19 @@ describe("PlaybooksView", () => {
 
     expect(view.queryByRole("button", { name: "Edit input" })).toBeNull();
     expect(view.queryByPlaceholderText(/JSON payload/i)).toBeNull();
-    const payloadTextareas = view.getAllByPlaceholderText("Notes") as HTMLTextAreaElement[];
-    const payloadTextarea = payloadTextareas[payloadTextareas.length - 1];
-    if (!payloadTextarea) throw new Error("Expected review payload field");
+    const payloadPanel = view.getByTestId("graph-review-action-queue-review:request_changes");
+    const payloadTextarea = within(payloadPanel).getByPlaceholderText(
+      "Notes"
+    ) as HTMLTextAreaElement;
     fireEvent.change(payloadTextarea, {
       target: { value: "Revise tone" },
     });
     await waitFor(() => {
       expect(payloadTextarea.value).toBe("Revise tone");
     });
-    const requestChangesButtons = view.getAllByRole("button", { name: "Request changes" });
-    const advancedRequestChangesButton = requestChangesButtons[requestChangesButtons.length - 1];
-    if (!advancedRequestChangesButton) throw new Error("Expected advanced request changes button");
+    const advancedRequestChangesButton = within(payloadPanel).getByRole("button", {
+      name: "Request changes",
+    });
     fireEvent.click(advancedRequestChangesButton);
 
     await waitFor(() => {
