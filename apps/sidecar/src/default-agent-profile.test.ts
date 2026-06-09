@@ -39,4 +39,22 @@ describe("mergeDefaultAgentProfile", () => {
 
     expect(merged.skills).toEqual(DEFAULT_AGENT_PROFILE.skills);
   });
+
+  test("upgrades previously shipped default skill lists", () => {
+    const merged = mergeDefaultAgentProfile(DEFAULT_AGENT_PROFILE, {
+      ...override,
+      skills: [
+        "planning",
+        "research-synthesis",
+        "word-docs",
+        "pdf-workflows",
+        "slide-decks",
+        "spreadsheets",
+        "workspace-delivery",
+        "decision-briefs",
+      ],
+    });
+
+    expect(merged.skills).toEqual(DEFAULT_AGENT_PROFILE.skills);
+  });
 });

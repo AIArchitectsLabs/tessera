@@ -45,8 +45,9 @@ describe("resolveTaskExecutionConfig", () => {
       "spreadsheets",
       "workspace-delivery",
       "decision-briefs",
+      "tessera-playbook-author",
     ]);
-    expect(result.runtime.compiledSummary).toContain("8 profile skills enabled");
+    expect(result.runtime.compiledSummary).toContain("9 profile skills enabled");
     expect("credential" in result.agent).toBe(false);
   });
 

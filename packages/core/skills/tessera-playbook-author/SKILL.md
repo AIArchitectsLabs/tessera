@@ -20,7 +20,7 @@ Prefer the repo-owned contract when the Tessera repo is available:
 - `docs/playbook-validation-guide.md`
 - `docs/playbook-authoring/tessera-playbook-author-portable.md`
 
-This skill is an ergonomic wrapper around those docs, not a separate standard. Harness-specific adapters may copy or symlink this directory into their own skill roots, but this docs copy is the central source.
+This skill is an ergonomic wrapper around those docs, not a separate standard. Harness-specific adapters may copy or symlink this directory into their own skill roots, but this installed skill directory is the central task-skill source.
 
 ## Workflow
 
