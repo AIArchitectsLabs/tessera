@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AgentProfileSchema,
   type AgentProviderConfig,
@@ -11,11 +14,12 @@ import type { OptionalCapabilityInstallProgress, OptionalCapabilityManager } fro
 import { workspaceKeyForRoot } from "@tessera/core";
 import { createMemoryManager } from "./memory-manager.js";
 import { createMemoryStore } from "./memory-store.js";
-import { runTaskTurn } from "./task-runner.js";
+import { resolvePendingTaskClarify, runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 
 const tempStores: ReturnType<typeof createTaskStore>[] = [];
 const tempMemoryStores: ReturnType<typeof createMemoryStore>[] = [];
+const tempDirs: string[] = [];
 
 function makeStore(): ReturnType<typeof createTaskStore> {
   const store = createTaskStore(":memory:");
@@ -23,12 +27,21 @@ function makeStore(): ReturnType<typeof createTaskStore> {
   return store;
 }
 
-afterEach(() => {
+async function makeWorkspace(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "tessera-task-runner-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
   for (const store of tempStores.splice(0)) {
     store.close();
   }
   for (const store of tempMemoryStores.splice(0)) {
     store.close();
+  }
+  for (const dir of tempDirs.splice(0)) {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -311,6 +324,62 @@ describe("task runner", () => {
     expect(store.getTask(task.id)?.todo?.items).toHaveLength(2);
   });
 
+  test("task runtime clarification requests pause and resume the turn", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Create an email summary playbook",
+    });
+    const userTurn = store.createUserTurn(task.id, "Make the playbook");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    let capturedResponse: unknown;
+    const events: TaskEvent[] = [];
+    const runPromise = runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ taskRuntime }) => {
+        capturedResponse = await taskRuntime?.requestClarify({
+          promptId: "source-path",
+          message: "Where should the playbook read emails from?",
+          options: [
+            {
+              id: "gmail",
+              label: "Gmail connector",
+              description: "Read from the authenticated Tessera email connector.",
+            },
+          ],
+        });
+        return { text: "Playbook generated.", boundaryViolations: 0 };
+      },
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    await waitUntil(() => events.some((event) => event.type === "task.clarify_requested"));
+
+    expect(store.getTask(task.id)?.status).toBe("waiting");
+    expect(store.getTask(task.id)?.clarify?.message).toBe(
+      "Where should the playbook read emails from?"
+    );
+    expect(events.some((event) => event.type === "task.clarify_requested")).toBe(true);
+
+    const response = {
+      promptId: "source-path",
+      selectedOptionId: "gmail",
+      cancelled: false,
+    };
+    store.clearClarify(task.id, response);
+    expect(resolvePendingTaskClarify(task.id, response)).toBe(true);
+    await runPromise;
+
+    expect(capturedResponse).toEqual(response);
+    expect(store.getTask(task.id)?.clarify).toBeUndefined();
+    expect(store.getTask(task.id)?.status).toBe("done");
+  });
+
   test("marks unfinished todo items completed when the task finishes successfully", async () => {
     const store = makeStore();
     const task = store.createTask({
@@ -591,10 +660,21 @@ describe("task runner", () => {
       taskId: task.id,
       userTurnId: userTurn.id,
       agentTurnId: agentTurn.id,
-      piRunner: async ({ onToolStart }) => {
+      piRunner: async ({ onToolEnd, onToolStart }) => {
         onToolStart?.({
           name: "workspace_write",
           args: { path: "OpenClaw-vs-Hermes-use-cases-analysis.pdf" },
+        });
+        onToolEnd?.({
+          name: "workspace_write",
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "Wrote OpenClaw-vs-Hermes-use-cases-analysis.pdf",
+              },
+            ],
+          },
         });
         return { text: "", boundaryViolations: 0 };
       },
@@ -607,6 +687,253 @@ describe("task runner", () => {
     expect(finalAgentTurn.content).toContain("workspace write");
     expect(finalAgentTurn.content).toContain("OpenClaw-vs-Hermes-use-cases-analysis.pdf");
     expect(finalAgentTurn.content).not.toContain("No response was produced");
+  });
+
+  test("does not count failed tool attempts as completed work", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Create a playbook package",
+    });
+    const userTurn = store.createUserTurn(task.id, "Create a weekly email summary playbook");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolEnd, onToolStart }) => {
+        onToolStart?.({
+          name: "workspace_write",
+          args: { path: "playbooks/weekly-email-summary/manifest.json" },
+        });
+        onToolEnd?.({
+          name: "workspace_write",
+          result: { error: "permission denied" },
+        });
+        return { text: "", boundaryViolations: 0 };
+      },
+      publish: () => undefined,
+      delayMs: 0,
+    });
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("failed");
+    expect(finalAgentTurn.error).toContain("did not receive a response");
+    expect(finalAgentTurn.content).not.toContain("Completed the task.");
+    expect(store.getTask(task.id)?.status).toBe("failed");
+  });
+
+  test("fails loudly when the model returns empty text without observable work", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "Create a playbook package",
+    });
+    const userTurn = store.createUserTurn(task.id, "Where did you create the playbook?");
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const events: TaskEvent[] = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async () => ({ text: "", boundaryViolations: 0 }),
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("failed");
+    expect(finalAgentTurn.error).toContain("did not receive a response");
+    expect(finalAgentTurn.content).not.toContain("Completed the task.");
+    expect(store.getTask(task.id)?.status).toBe("failed");
+
+    const finalTaskUpdate = events.filter((event) => event.type === "task.updated").at(-1);
+    if (finalTaskUpdate?.type === "task.updated") {
+      expect(finalTaskUpdate.task.status).toBe("failed");
+    }
+  });
+
+  test("playbook author tasks ask for a package name before fallback scaffold", async () => {
+    const store = makeStore();
+    const workspaceRoot = await makeWorkspace();
+    const request =
+      "I want to create a playbook that will ready emails and create a summary of the emails I have received last week. The summary should be saved the workspace.";
+    const task = store.createTask({
+      workspaceRoot,
+      initialInstruction: `/tessera-playbook-author ${request}`,
+    });
+    const userTurn = store.createUserTurn(task.id, request);
+    store.addActiveSkill(task.id, {
+      skillId: "codex:tessera-playbook-author",
+      name: "tessera-playbook-author",
+      source: "workspace",
+      activatedByTurnId: userTurn.id,
+    });
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const events: TaskEvent[] = [];
+
+    const runPromise = runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async () => ({
+        text: "Created the playbook package at playbooks/weekly-email-summary.",
+        boundaryViolations: 0,
+      }),
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    await waitUntil(() => events.some((event) => event.type === "task.clarify_requested"));
+    const clarify = store.getTask(task.id)?.clarify;
+    expect(clarify?.message).toBe("What should I call this playbook package?");
+    expect(clarify?.detail).toContain("Weekly Email Summary");
+    expect(clarify?.detail).toContain("playbooks/weekly-email-summary");
+    expect(clarify?.options).toEqual([
+      {
+        id: "use-suggested-name",
+        label: "Use Weekly Email Summary",
+        description: "playbooks/weekly-email-summary",
+      },
+    ]);
+
+    const response = {
+      promptId: clarify?.promptId ?? "",
+      selectedOptionId: "use-suggested-name",
+      cancelled: false,
+    };
+    store.clearClarify(task.id, response);
+    expect(resolvePendingTaskClarify(task.id, response)).toBe(true);
+    await runPromise;
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("completed");
+    expect(finalAgentTurn.content).toContain("playbooks/weekly-email-summary");
+    expect(finalAgentTurn.content).toContain("manifest.json");
+    expect(store.getTask(task.id)?.status).toBe("done");
+
+    const manifest = JSON.parse(
+      await readFile(join(workspaceRoot, "playbooks/weekly-email-summary/manifest.json"), "utf8")
+    );
+    expect(manifest).toMatchObject({
+      id: "weekly-email-summary",
+      name: "Weekly Email Summary",
+      entrypoint: "playbook.ts",
+    });
+    await expect(
+      readFile(join(workspaceRoot, "playbooks/weekly-email-summary/playbook.ts"), "utf8")
+    ).resolves.toContain("Weekly Email Summary");
+  });
+
+  test("playbook author fallback uses custom clarified package names", async () => {
+    const store = makeStore();
+    const workspaceRoot = await makeWorkspace();
+    const task = store.createTask({
+      workspaceRoot,
+      initialInstruction: "/tessera-playbook-author Create an email summary playbook",
+    });
+    const userTurn = store.createUserTurn(task.id, "Create an email summary playbook");
+    store.addActiveSkill(task.id, {
+      skillId: "tessera-playbook-author",
+      name: "tessera-playbook-author",
+      source: "workspace",
+      activatedByTurnId: userTurn.id,
+    });
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const events: TaskEvent[] = [];
+
+    const runPromise = runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async () => ({
+        text: "Created the playbook package.",
+        boundaryViolations: 0,
+      }),
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    await waitUntil(() => events.some((event) => event.type === "task.clarify_requested"));
+    const clarify = store.getTask(task.id)?.clarify;
+    const response = {
+      promptId: clarify?.promptId ?? "",
+      freeform: "Team Mail Digest",
+      cancelled: false,
+    };
+    store.clearClarify(task.id, response);
+    expect(resolvePendingTaskClarify(task.id, response)).toBe(true);
+    await runPromise;
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("completed");
+    expect(finalAgentTurn.content).toContain("playbooks/team-mail-digest");
+
+    const manifest = JSON.parse(
+      await readFile(join(workspaceRoot, "playbooks/team-mail-digest/manifest.json"), "utf8")
+    );
+    expect(manifest).toMatchObject({
+      id: "team-mail-digest",
+      name: "Team Mail Digest",
+      entrypoint: "playbook.ts",
+    });
+  });
+
+  test("playbook author tasks complete after a successful workspace package write", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "/tessera-playbook-author Create a weekly email summary playbook",
+    });
+    const userTurn = store.createUserTurn(task.id, "Create the playbook");
+    store.addActiveSkill(task.id, {
+      skillId: "tessera-playbook-author",
+      name: "tessera-playbook-author",
+      source: "workspace",
+      activatedByTurnId: userTurn.id,
+    });
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolEnd, onToolStart }) => {
+        onToolStart?.({
+          name: "workspace_write",
+          args: { path: "playbooks/weekly-email-summary/manifest.json" },
+        });
+        onToolEnd?.({
+          name: "workspace_write",
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "Wrote playbooks/weekly-email-summary/manifest.json",
+              },
+            ],
+          },
+        });
+        return {
+          text: "Created the playbook package at playbooks/weekly-email-summary.",
+          boundaryViolations: 0,
+        };
+      },
+      publish: () => undefined,
+      delayMs: 0,
+    });
+
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("completed");
+    expect(finalAgentTurn.content).toContain("playbooks/weekly-email-summary");
+    expect(store.getTask(task.id)?.status).toBe("done");
   });
 
   test("forwards execution agent to piRunner", async () => {
@@ -690,6 +1017,49 @@ describe("task runner", () => {
       { role: "user", content: "First message" },
       { role: "agent", content: "First response" },
     ]);
+  });
+
+  test("marks a completed task active while a follow-up turn runs", async () => {
+    const store = makeStore();
+    const task = store.createTask({
+      workspaceRoot: "/workspace/acme",
+      initialInstruction: "First message",
+    });
+    const firstUserTurn = task.turns[0];
+    if (!firstUserTurn) throw new Error("expected first turn");
+    store.updateTurn(firstUserTurn.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
+    store.createAgentTurn(task.id, "First response");
+    store.updateTask(task.id, { status: "done", latestActivity: "Completed" });
+
+    const secondUserTurn = store.createUserTurn(task.id, "Follow up");
+    const secondAgentTurn = store.createQueuedAgentTurn(task.id);
+    const events: TaskEvent[] = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: secondUserTurn.id,
+      agentTurnId: secondAgentTurn.id,
+      piRunner: async () => ({ text: "follow-up answer", boundaryViolations: 0 }),
+      publish: (event) => events.push(event),
+      delayMs: 0,
+    });
+
+    const taskUpdates = events.filter((event) => event.type === "task.updated");
+    const startingUpdate = taskUpdates[0];
+    if (startingUpdate?.type === "task.updated") {
+      expect(startingUpdate.task.status).toBe("active");
+      expect(startingUpdate.task.latestActivity).toBe("Starting");
+    }
+    const runningUpdate = taskUpdates[1];
+    if (runningUpdate?.type === "task.updated") {
+      expect(runningUpdate.task.status).toBe("active");
+      expect(runningUpdate.task.latestActivity).toBe("Running");
+    }
+    expect(store.getTask(task.id)?.status).toBe("done");
   });
 
   test("passes no conversation history on the first task turn", async () => {

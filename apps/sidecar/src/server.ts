@@ -170,7 +170,7 @@ import {
 } from "./playbook-run-preference-store.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
-import { runTaskTurn } from "./task-runner.js";
+import { resolvePendingTaskClarify, runTaskTurn } from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
@@ -6189,6 +6189,7 @@ async function handleTaskClarifyResolve(req: Request, taskId: string): Promise<R
     emittedAt: new Date().toISOString(),
     response: parsed.data,
   });
+  resolvePendingTaskClarify(taskId, parsed.data);
   return Response.json(task);
 }
 
@@ -6267,6 +6268,7 @@ async function handleTaskAudit(req: Request, taskId: string): Promise<Response> 
 
 async function handleTaskEvents(_req: Request, taskId: string): Promise<Response> {
   const encoder = new TextEncoder();
+  let cleanup = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
@@ -6291,16 +6293,13 @@ async function handleTaskEvents(_req: Request, taskId: string): Promise<Response
         }
       });
 
-      // _cleanup is attached here so the cancel() hook can tear down the interval
-      // and subscription without a class wrapper — standard workaround for
-      // ReadableStreamController having no built-in cancellation state slot.
-      (controller as unknown as { _cleanup: () => void })._cleanup = () => {
+      cleanup = () => {
         clearInterval(heartbeat);
         unsubscribe();
       };
     },
     cancel() {
-      (this as unknown as { _cleanup?: () => void })._cleanup?.();
+      cleanup();
     },
   });
 

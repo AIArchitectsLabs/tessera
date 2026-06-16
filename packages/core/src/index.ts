@@ -25,7 +25,13 @@ export {
   type PiTaskTurnResult,
   type RunPiTaskTurnOptions,
 } from "./pi-session.js";
-export { createTaskToolDefinitions, type TaskToolRuntime } from "./task-tools.js";
+export {
+  createTaskToolDefinitions,
+  type PlaybookPackageScaffoldInput,
+  type PlaybookPackageScaffoldResult,
+  type TaskClarifyInput,
+  type TaskToolRuntime,
+} from "./task-tools.js";
 export { evaluatePermission, type PermissionRequest } from "./permission.js";
 export {
   CLI_CATALOG,

@@ -7,6 +7,44 @@ description: Build or repair external Tessera playbook packages through an inter
 
 Use this portable skill to author or repair external Tessera playbook packages from any agent harness. Start with interview-driven discovery and an authoring brief; generate package files only after the workflow, runtime boundary, source inventory, review gates, effects, artifacts, and validation path are coherent.
 
+## Tessera Task Mode Contract
+
+When running inside Tessera task mode:
+
+- Use native Tessera tools, not textual tool markup. Never print `<tool_use>`, JSON command blobs, shell transcripts, or simulated tool calls as the answer.
+- If the package name/path is not explicit, use the clarification UI to ask what to call the playbook package. Include a concise suggested name/path as the first option and allow a custom name.
+- Once the package name/path is confirmed or accepted from the suggestion, start package generation by calling `playbook_package_scaffold` once. Use `workspace_write` afterward only for bespoke additions or repairs.
+- After a clarification response is received, continue immediately into package generation; do not stop after acknowledging the answer.
+- Completion requires a successful `playbook_package_scaffold` call or successful `workspace_write` calls under the package path. Prefer the scaffold tool for first-pass package creation.
+- The final message must name the package path and summarize files actually written.
+
+Minimum viable package writes:
+
+```text
+<package-path>/manifest.json
+<package-path>/playbook.ts
+<package-path>/schemas/finalArtifact.schema.json
+<package-path>/prompts/draft.md
+<package-path>/scripts/normalize.ts
+<package-path>/fixtures/sample.json
+<package-path>/tests/package.test.ts
+<package-path>/build.ts
+<package-path>/BUILD.md
+<package-path>/PLAYBOOK.md
+```
+
+Minimum content guidance:
+
+- `manifest.json`: `schemaVersion`, stable dotted or hyphenated `id`, `version`, `name`, `entrypoint: "playbook.ts"`.
+- `playbook.ts`: default-export a Tessera graph with `schemaVersion`, matching `id`/`version`, `inputs`, `artifacts`, declared `capabilities`, `start`, and `nodes`.
+- `schemas/*.schema.json`: JSON Schema for every agent output and final artifact.
+- `prompts/*.md`: task-specific instructions that return schema-shaped outputs only.
+- `scripts/*.ts`: deterministic package-local helpers only; no Tessera runtime imports and no standalone graph runner.
+- `tests/*.test.ts`: validate JSON files, lockstep ids/versions, references, and script behavior over fixtures.
+- `BUILD.md` and `build.ts`: dev-only validation/package notes; no dependency fields, lockfiles, or `bin` entrypoints.
+
+If time or model budget is tight, call `playbook_package_scaffold` first, then use `workspace_write` for the most important bespoke files. Do not claim the package is complete until every file you name has been written by a native tool.
+
 ## Canonical Contract
 
 Prefer the repo-owned contract when the Tessera repo is available:
@@ -33,6 +71,7 @@ This skill is an ergonomic wrapper around those docs, not a separate standard. H
    - Load `references/authoring-interview.md`.
    - Map the end-to-end workflow: trigger, user, decision, sources, tools/connectors, deterministic scripts, agent tasks, human review, effects, final artifacts, and import/use expectations.
    - Ask one focused question only when a missing answer would change graph shape, source access, effects, or final artifacts.
+   - When a structured clarification or ask-question tool is available, use that UI with concise options instead of embedding reply examples in transcript text.
 
 3. Authoring brief gate:
    - Use the canonical brief template when available.
@@ -42,7 +81,9 @@ This skill is an ergonomic wrapper around those docs, not a separate standard. H
    - Load `references/package-contract.md`.
    - Load `references/package-blueprint.md` for the from-scratch folder skeleton, graph conventions, build tooling, tests, and portability rules.
    - Use `docs/playbook-patterns.md` when choosing graph patterns.
+   - In Tessera task mode, ask for the playbook package name/path first when it is not explicit, suggesting a fallback such as `playbooks/weekly-email-summary`; then create the initial package with `playbook_package_scaffold`, and use `workspace_write` for bespoke additions or repairs. Do not emit Claude/Codex-style `<tool_use>` tags, shell transcripts, or command JSON in chat text.
    - Create or repair the package folder with `manifest.json`, `playbook.ts`, schemas, prompts, deterministic scripts, fixtures, tests, `build.ts`, `BUILD.md`, `PLAYBOOK.md`, and optional `package.json` only when useful for package-local tests.
+   - Do not report package generation as complete until workspace files have actually been written under the confirmed package path.
    - Use package-relative refs and explicit schemas for agent outputs.
    - Keep domain schemas, prompts, scripts, fixtures, scoring, and final templates in the external playbook package.
    - Keep dev build tooling outside the runtime payload and exclude generated archives, local metadata, dependency directories, and lockfiles.

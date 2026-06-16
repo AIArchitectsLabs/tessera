@@ -22,9 +22,9 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  CircleHelp,
   Clock,
   FileText,
-  ListTodo,
   Loader2,
   Sparkles,
   XCircle,
@@ -91,6 +91,7 @@ export function TaskDetail({
   const taskId = task?.id;
   const turnCount = task?.turns.length ?? 0;
   const artifactCount = task?.artifacts.length ?? 0;
+  const clarifyPromptId = task?.clarify?.promptId;
   const latestNotification = task?.notifications[task.notifications.length - 1];
   const lastTaskIdRef = useRef<string | null>(null);
 
@@ -98,6 +99,7 @@ export function TaskDetail({
     if (!taskId) return;
     void turnCount;
     void artifactCount;
+    void clarifyPromptId;
     const viewport = scrollAreaRef.current?.querySelector("[data-radix-scroll-area-viewport]");
     if (!(viewport instanceof HTMLDivElement)) return;
     const isNewTask = lastTaskIdRef.current !== taskId;
@@ -106,7 +108,7 @@ export function TaskDetail({
     const shouldStickToBottom = isNewTask || distanceFromBottom < 96;
     if (!shouldStickToBottom) return;
     viewport.scrollTop = viewport.scrollHeight;
-  }, [artifactCount, taskId, turnCount]);
+  }, [artifactCount, clarifyPromptId, taskId, turnCount]);
 
   async function handleSend(agentId?: string, agentLabel?: string) {
     if (!canSend) return;
@@ -204,7 +206,7 @@ export function TaskDetail({
         </div>
       </div>
 
-      {task.status === "waiting" && (
+      {task.status === "waiting" && !task.clarify && (
         <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-3 flex items-start gap-3 text-amber-600 dark:text-amber-400">
           <div className="shrink-0 mt-0.5">
             <svg
@@ -306,13 +308,20 @@ export function TaskDetail({
                   );
                 })}
               </section>
+              {task.clarify && (
+                <ClarifyCard
+                  key={task.clarify.promptId}
+                  clarify={task.clarify}
+                  onSubmit={onClarifyResolve}
+                />
+              )}
             </div>
           </ScrollArea>
 
           <TaskComposer
-            disabled={false}
+            disabled={Boolean(task.clarify)}
             busy={sendingTurn}
-            placeholder="Write a message..."
+            placeholder={task.clarify ? "Decision needed" : "Write a message..."}
             value={content}
             onChange={setContent}
             onSend={handleSend}
@@ -331,8 +340,6 @@ export function TaskDetail({
           onTodoUpdate={onTodoUpdate}
         />
       </div>
-
-      {task.clarify && <ClarifyDialog clarify={task.clarify} onSubmit={onClarifyResolve} />}
     </main>
   );
 }
@@ -1159,7 +1166,7 @@ function TodoPanel({
   );
 }
 
-function ClarifyDialog({
+function ClarifyCard({
   clarify,
   onSubmit,
 }: {
@@ -1170,13 +1177,20 @@ function ClarifyDialog({
   const [freeform, setFreeform] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const canContinue = Boolean(selectedOptionId || freeform.trim());
+
   async function submit(cancelled: boolean) {
+    if (!cancelled && !canContinue) return;
     setSubmitting(true);
     try {
       await onSubmit({
         promptId: clarify.promptId,
         cancelled,
-        ...(cancelled ? {} : selectedOptionId ? { selectedOptionId } : { freeform }),
+        ...(cancelled
+          ? {}
+          : selectedOptionId
+            ? { selectedOptionId }
+            : { freeform: freeform.trim() }),
       });
     } finally {
       setSubmitting(false);
@@ -1184,61 +1198,87 @@ function ClarifyDialog({
   }
 
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 p-6 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-3xl border border-border bg-background p-6 shadow-2xl">
-        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <ListTodo size={16} className="text-primary" />
-          Clarification needed
-        </div>
-        <p className="mt-3 text-sm leading-6 text-foreground">{clarify.message}</p>
-        {clarify.detail && <p className="mt-2 text-sm text-muted-foreground">{clarify.detail}</p>}
-        <div className="mt-4 space-y-2">
-          {clarify.options.map((option) => (
-            <label
-              key={option.id}
-              className="flex cursor-pointer items-start gap-3 rounded-2xl border border-border px-3 py-3"
-            >
-              <input
-                checked={selectedOptionId === option.id}
-                className="mt-1"
-                name={`clarify-${clarify.promptId}`}
-                onChange={() => setSelectedOptionId(option.id)}
-                type="radio"
+    <div className="flex justify-start">
+      <div className="w-full rounded-lg border border-amber-200 bg-amber-50/70 p-4 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/25">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background text-amber-600 shadow-sm dark:text-amber-300">
+            <CircleHelp size={17} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+              Decision needed
+            </div>
+            <p className="mt-2 text-sm leading-6 text-foreground">{clarify.message}</p>
+            {clarify.detail && (
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{clarify.detail}</p>
+            )}
+
+            {clarify.options.length > 0 && (
+              <div className="mt-4 grid gap-2">
+                {clarify.options.map((option) => {
+                  const selected = selectedOptionId === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedOptionId(option.id);
+                        setFreeform("");
+                      }}
+                      className={cn(
+                        "flex w-full items-start gap-3 rounded-md border bg-background px-3 py-3 text-left transition-colors",
+                        selected
+                          ? "border-foreground/40 text-foreground shadow-sm"
+                          : "border-border text-muted-foreground hover:border-foreground/25 hover:text-foreground"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                          selected
+                            ? "border-foreground bg-foreground text-background"
+                            : "border-border text-transparent"
+                        )}
+                      >
+                        <Check size={12} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">{option.label}</span>
+                        {option.description && (
+                          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+                            {option.description}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {clarify.allowFreeform && (
+              <textarea
+                value={freeform}
+                onChange={(event) => {
+                  setSelectedOptionId("");
+                  setFreeform(event.target.value);
+                }}
+                placeholder="Custom answer"
+                rows={3}
+                className="mt-4 min-h-20 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-foreground/30 focus:ring-2 focus:ring-ring/20"
               />
-              <span>
-                <span className="block text-sm font-medium text-foreground">{option.label}</span>
-                {option.description && (
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {option.description}
-                  </span>
-                )}
-              </span>
-            </label>
-          ))}
-        </div>
-        {clarify.allowFreeform && (
-          <textarea
-            value={freeform}
-            onChange={(event) => {
-              setSelectedOptionId("");
-              setFreeform(event.target.value);
-            }}
-            placeholder="Add a custom answer"
-            rows={3}
-            className="mt-4 w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm outline-none"
-          />
-        )}
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <Button variant="ghost" onClick={() => void submit(true)} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => void submit(false)}
-            disabled={submitting || (!selectedOptionId && !freeform.trim())}
-          >
-            {submitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : null}
-            Continue
-          </Button>
+            )}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <Button variant="ghost" onClick={() => void submit(true)} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button onClick={() => void submit(false)} disabled={submitting || !canContinue}>
+                {submitting ? <Loader2 size={14} className="mr-2 animate-spin" /> : null}
+                Continue
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

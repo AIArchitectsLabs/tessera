@@ -140,7 +140,6 @@ export default function App() {
   const [inboxError, setInboxError] = useState<string | null>(null);
   const [prefetchedPlaybooks, setPrefetchedPlaybooks] = useState<PlaybookSummary[] | null>(null);
   const taskDetailRequestId = useRef(0);
-  const reconnectAttemptsRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Keep a ref to selectedTaskId so stable callbacks can read the latest value
   // without becoming a dependency that causes effect re-runs.
@@ -216,6 +215,7 @@ export default function App() {
       setSelectedTask((current) =>
         current && current.id === task.id ? mergeTaskDetail(current, task) : task
       );
+      setTaskDetailError(null);
     } catch (error) {
       if (taskDetailRequestId.current !== requestId) return;
       setTaskDetailError(error instanceof Error ? error.message : String(error));
@@ -230,6 +230,7 @@ export default function App() {
   }, []);
 
   const handleEvent = useCallback((event: TaskEvent) => {
+    setTaskDetailError(null);
     setSelectedTask((current) => (current ? applyTaskEvent(current, event) : current));
     if (event.type === "task.updated") {
       setTasks((current) => mergeTaskSummary(current, event.task));
@@ -237,6 +238,7 @@ export default function App() {
   }, []);
 
   const handleSnapshot = useCallback((task: TaskDetail) => {
+    setTaskDetailError(null);
     setSelectedTask((current) =>
       current && current.id === task.id ? mergeTaskDetail(current, task) : task
     );
@@ -249,20 +251,15 @@ export default function App() {
   loadTaskDetailRef.current = loadTaskDetail;
 
   const handleReconnect = useCallback(() => {
-    const attempt = reconnectAttemptsRef.current;
-    if (attempt >= 3) {
-      reconnectAttemptsRef.current = 0;
-      setTaskDetailError("Connection to task updates lost. Refresh to retry.");
-      return;
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
     }
-    reconnectAttemptsRef.current = attempt + 1;
-    const delays = [250, 750, 2250];
     retryTimerRef.current = setTimeout(async () => {
       const taskId = selectedTaskIdRef.current;
       if (taskId) {
         await loadTaskDetailRef.current(taskId, { background: true });
       }
-    }, delays[attempt] ?? 250);
+    }, 500);
   }, []);
 
   useTaskEvents({
@@ -380,7 +377,6 @@ export default function App() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: writing to a ref, selectedTaskId is the trigger
   useEffect(() => {
-    reconnectAttemptsRef.current = 0;
     if (retryTimerRef.current !== null) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;

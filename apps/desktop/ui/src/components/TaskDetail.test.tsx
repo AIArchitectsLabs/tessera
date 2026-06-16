@@ -447,6 +447,55 @@ describe("TaskDetail composer", () => {
     });
   });
 
+  test("shows clarification requests as an inline decision card", async () => {
+    const onClarifyResolve = mock(async () => undefined);
+    const { view } = renderTaskDetail({
+      onClarifyResolve,
+      task: {
+        ...taskDetail(),
+        status: "waiting",
+        clarify: {
+          promptId: "source-path",
+          taskId: "task-1",
+          message: "Where should the playbook read emails from?",
+          detail: "Pick the source that should shape the package graph.",
+          allowFreeform: true,
+          options: [
+            {
+              id: "gmail",
+              label: "Gmail connector",
+              description: "Read from Tessera's authenticated email connector.",
+            },
+            {
+              id: "files",
+              label: "Uploaded files",
+              description: "Read from exported files in the workspace.",
+            },
+          ],
+          createdAt: "2026-05-07T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(view.getByText("Decision needed")).toBeTruthy();
+    expect(view.getByText("Where should the playbook read emails from?")).toBeTruthy();
+    expect(view.queryByText("Waiting for authorization")).toBeNull();
+    expect((view.getByPlaceholderText("Decision needed") as HTMLTextAreaElement).disabled).toBe(
+      true
+    );
+
+    fireEvent.click(view.getByRole("button", { name: /Uploaded files/ }));
+    fireEvent.click(view.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => {
+      expect(onClarifyResolve).toHaveBeenCalledWith({
+        promptId: "source-path",
+        selectedOptionId: "files",
+        cancelled: false,
+      });
+    });
+  });
+
   test("autocompletes a highlighted slash skill without sending the message", async () => {
     const { view, onCreateTurn } = renderTaskDetail();
     const textarea = view.getByPlaceholderText("Write a message...") as HTMLTextAreaElement;

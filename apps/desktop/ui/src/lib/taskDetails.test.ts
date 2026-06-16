@@ -74,4 +74,27 @@ describe("mergeTaskDetail", () => {
     expect(result.turns[0]?.status).toBe("running");
     expect(result.turns[0]?.content).toBe("Working on it");
   });
+
+  test("clears stale clarification when the incoming snapshot is newer", () => {
+    const current: TaskDetail = {
+      ...baseDetail,
+      updatedAt: "2026-05-03T00:00:03.000Z",
+      clarify: {
+        promptId: "prompt-1",
+        taskId: "task-1",
+        message: "Which source should I use?",
+        allowFreeform: true,
+        options: [],
+        createdAt: "2026-05-03T00:00:02.000Z",
+      },
+    };
+    const incoming: TaskDetail = {
+      ...baseDetail,
+      updatedAt: "2026-05-03T00:00:04.000Z",
+    };
+
+    const result = mergeTaskDetail(current, incoming);
+
+    expect(result.clarify).toBeUndefined();
+  });
 });
