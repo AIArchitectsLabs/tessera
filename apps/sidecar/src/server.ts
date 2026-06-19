@@ -16,6 +16,7 @@ import {
   DashboardLayoutSchema,
   type EffectExecutionRecord,
   EffectExecutionRecordSchema,
+  type GraphPlaybookImportResult,
   GraphPlaybookImportResultSchema,
   InboxCancelRequestSchema,
   InboxCreateRequestSchema,
@@ -170,7 +171,11 @@ import {
 } from "./playbook-run-preference-store.js";
 import { createTesseraSkillRegistry } from "./skill-registry.js";
 import { createTaskEventBus } from "./task-event-bus.js";
-import { resolvePendingTaskClarify, runTaskTurn } from "./task-runner.js";
+import {
+  type PlaybookAutoImportRuntime,
+  resolvePendingTaskClarify,
+  runTaskTurn,
+} from "./task-runner.js";
 import { createTaskStore } from "./task-store.js";
 const TOKEN = randomBytes(32).toString("hex"); // 256-bit bearer token, rotates each launch
 const TAURI_ORIGIN = "tauri://localhost";
@@ -1475,6 +1480,74 @@ interface GraphPlaybookInstallHandlerOptions {
   scriptSdkVersion?: string;
 }
 
+interface GraphPlaybookImportScopeOptions extends GraphPlaybookInstallHandlerOptions {
+  sourceRoot?: string;
+  userKey?: string;
+  zipPath?: string;
+}
+
+async function importGraphPlaybookForScope(
+  options: GraphPlaybookImportScopeOptions
+): Promise<GraphPlaybookImportResult> {
+  if (options.zipPath && options.sourceRoot) {
+    throw new Error("Provide either zipPath or sourceRoot, not both");
+  }
+  if (!options.zipPath && !options.sourceRoot) {
+    throw new Error("zipPath or sourceRoot is required");
+  }
+
+  const roots = graphPlaybookRootsForUserKey(options.userKey, options);
+  const states = graphPlaybookRegistryStatesForUserKey(options.userKey, options);
+  const builtIns = await builtInGraphPlaybooks();
+  const importOptions = {
+    installRoot: roots.installRoot,
+    cacheRoot: roots.cacheRoot,
+    builtInIds: builtIns.map((entry) => entry.id),
+    compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+    scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
+  };
+  let imported: GraphPlaybookImportResult;
+  if (options.zipPath) {
+    imported = await importGraphPlaybookArchive({
+      ...importOptions,
+      zipPath: options.zipPath,
+    });
+  } else {
+    const sourceRoot = options.sourceRoot;
+    if (!sourceRoot) {
+      throw new Error("zipPath or sourceRoot is required");
+    }
+    imported = await importGraphPlaybookFolder({
+      ...importOptions,
+      sourceRoot,
+    });
+  }
+  await refreshInstalledGraphPlaybookRegistry({
+    installRoot: roots.installRoot,
+    cacheRoot: roots.cacheRoot,
+    state: states.state,
+    catalogState: states.catalogState,
+  });
+
+  return GraphPlaybookImportResultSchema.parse(imported);
+}
+
+function taskPlaybookImportRuntimeForUserKey(
+  userKey: string | undefined
+): PlaybookAutoImportRuntime {
+  const roots = graphPlaybookRootsForUserKey(userKey);
+  return {
+    installRoot: roots.installRoot,
+    cacheRoot: roots.cacheRoot,
+    importPackage({ sourceRoot }) {
+      return importGraphPlaybookForScope({
+        sourceRoot,
+        ...(userKey ? { userKey } : {}),
+      });
+    },
+  };
+}
+
 function graphPlaybookInstallErrorStatus(error: unknown): number {
   const message = error instanceof Error ? error.message : String(error);
   const errorCode =
@@ -1607,34 +1680,14 @@ export async function handleGraphPlaybookImport(
     );
   }
 
-  const graphPlaybooks = graphPlaybookRequestScope(req, options);
-
   try {
-    const builtIns = await builtInGraphPlaybooks();
-    const importOptions = {
-      installRoot: graphPlaybooks.installRoot,
-      cacheRoot: graphPlaybooks.cacheRoot,
-      builtInIds: builtIns.map((entry) => entry.id),
-      compilerVersion: options.compilerVersion ?? `tessera-sidecar-${CORE_VERSION}`,
-      scriptSdkVersion: options.scriptSdkVersion ?? `tessera-sidecar-${CORE_VERSION}`,
-    };
-    const imported = zipPath
-      ? await importGraphPlaybookArchive({
-          ...importOptions,
-          zipPath,
-        })
-      : await importGraphPlaybookFolder({
-          ...importOptions,
-          sourceRoot,
-        });
-    await refreshInstalledGraphPlaybookRegistry({
-      installRoot: graphPlaybooks.installRoot,
-      cacheRoot: graphPlaybooks.cacheRoot,
-      state: graphPlaybooks.state,
-      catalogState: graphPlaybooks.catalogState,
+    const userKey = userKeyFromRequest(req);
+    const imported = await importGraphPlaybookForScope({
+      ...(userKey ? { userKey } : {}),
+      ...(zipPath ? { zipPath } : { sourceRoot }),
+      ...options,
     });
-
-    return Response.json(GraphPlaybookImportResultSchema.parse(imported));
+    return Response.json(imported);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ error: message }, { status: graphPlaybookInstallErrorStatus(error) });
@@ -5937,6 +5990,11 @@ async function handleTaskCreate(req: Request): Promise<Response> {
         cli: { runWorkspaceCli },
         memory: memoryManagerForUserKey(userKey),
         ...(execution ? { execution } : {}),
+        playbookImport: taskPlaybookImportRuntimeForUserKey(userKey),
+        playbookRunDiagnostics: {
+          ownerUserKey: userKey ?? LOCAL_GRAPH_RUN_OWNER_KEY,
+          store: graphRunStore,
+        },
         promptOverride: invocation.prompt,
         pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
         publish: (e) => taskEventBus.publish(taskId, e),
@@ -6078,6 +6136,11 @@ async function handleTaskCreateTurn(req: Request, taskId: string): Promise<Respo
         cli: { runWorkspaceCli },
         memory: memoryManagerForUserKey(userKey),
         ...(execution ? { execution } : {}),
+        playbookImport: taskPlaybookImportRuntimeForUserKey(userKey),
+        playbookRunDiagnostics: {
+          ownerUserKey: userKey ?? LOCAL_GRAPH_RUN_OWNER_KEY,
+          store: graphRunStore,
+        },
         promptOverride: invocation.prompt,
         pythonSkillRoot: join(TESSERA_DATA_DIR, "python-skills"),
         publish: (e) => taskEventBus.publish(taskId, e),

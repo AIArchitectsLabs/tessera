@@ -29,6 +29,12 @@ export {
   createTaskToolDefinitions,
   type PlaybookPackageScaffoldInput,
   type PlaybookPackageScaffoldResult,
+  type PlaybookPackageValidateInput,
+  type PlaybookPackageValidateResult,
+  type PlaybookPackageValidationStep,
+  type PlaybookRunDiagnosticsInput,
+  type PlaybookRunDiagnosticsIssue,
+  type PlaybookRunDiagnosticsResult,
   type TaskClarifyInput,
   type TaskToolRuntime,
 } from "./task-tools.js";

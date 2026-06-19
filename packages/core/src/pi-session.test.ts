@@ -730,6 +730,61 @@ describe("runPiTaskTurn", () => {
     ]);
   });
 
+  test("exposes the playbook package validation tool when taskRuntime can validate packages", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const seen: { requests: unknown[]; toolNames?: string[] } = { requests: [] };
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      seen.toolNames = factoryOpts.customTools.map((tool) => tool.name).sort();
+      const validateTool = factoryOpts.customTools.find(
+        (tool) => tool.name === "playbook_package_validate"
+      );
+      const result = await validateTool?.execute(
+        "call-1",
+        {
+          packagePath: "playbooks/weekly-email-summary",
+        },
+        undefined,
+        undefined,
+        undefined as never
+      );
+      expect(result?.details).toMatchObject({
+        packagePath: "playbooks/weekly-email-summary",
+        ok: true,
+      });
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Validate the playbook",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      taskRuntime: {
+        async validatePlaybookPackage(request) {
+          seen.requests.push(request);
+          return {
+            packagePath: request.packagePath,
+            ok: true,
+            steps: [
+              {
+                name: "Package tests",
+                command: "bun test tests",
+                ok: true,
+                exitCode: 0,
+                stdout: "",
+                stderr: "",
+              },
+            ],
+          };
+        },
+      },
+      workspaceRoot,
+    });
+
+    expect(seen.toolNames).toContain("playbook_package_validate");
+    expect(seen.requests).toEqual([{ packagePath: "playbooks/weekly-email-summary" }]);
+  });
+
   test("exposes the shell tool when a shell executor is provided", async () => {
     const workspaceRoot = await makeWorkspace();
     const seen: { toolNames?: string[]; calls: unknown[] } = { calls: [] };

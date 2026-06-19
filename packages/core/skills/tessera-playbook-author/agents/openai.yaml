@@ -1,4 +1,0 @@
-interface:
-  display_name: "Tessera Playbook Author"
-  short_description: "Build validated Tessera playbook packages"
-  default_prompt: "Use $tessera-playbook-author to interview me, draft an authoring brief, generate a playbook package folder, add dev build tooling, and validate it for Tessera import."

@@ -22,6 +22,8 @@ export function applyTaskEvent(detail: TaskDetail, event: TaskEvent): TaskDetail
         ...detail,
         auditRecords: [...detail.auditRecords, event.auditRecord],
       };
+    case "task.playbook_imported":
+      return detail;
     case "turn.created":
       if (detail.turns.some((t) => t.id === event.turn.id)) return detail;
       return { ...detail, turns: [...detail.turns, event.turn] };

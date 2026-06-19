@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tessera Playbook Debugger"
+  short_description: "Debug failed or blank Tessera playbook runs"
+  default_prompt: "Use $tessera-playbook-debugger to inspect the latest playbook run diagnostics, identify why the output failed or is blank, repair the playbook package, and validate it."

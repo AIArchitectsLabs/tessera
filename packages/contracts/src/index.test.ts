@@ -121,6 +121,29 @@ describe("TaskEvent schemas", () => {
     expect(TaskEventSchema.parse(obj)).toEqual(obj);
   });
 
+  test("parses task.playbook_imported event", () => {
+    const obj = {
+      type: "task.playbook_imported" as const,
+      taskId: "task-1",
+      emittedAt: "2026-05-01T00:00:00.000Z",
+      playbookId: "weekly-email-summary",
+      packagePath: "playbooks/weekly-email-summary",
+      versionBumpedFrom: "0.1.0",
+      import: {
+        schemaVersion: 1 as const,
+        status: "installed" as const,
+        id: "weekly-email-summary",
+        version: "0.1.1",
+        name: "Weekly Email Summary",
+        graphHash: `sha256:${"a".repeat(64)}`,
+        sourceHash: `sha256:${"b".repeat(64)}`,
+        warnings: [],
+      },
+    } satisfies TaskEvent;
+
+    expect(TaskEventSchema.parse(obj)).toEqual(obj);
+  });
+
   test("rejects malformed emittedAt", () => {
     const obj = {
       type: "task.updated",

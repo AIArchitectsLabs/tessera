@@ -829,6 +829,135 @@ async function listPlaybookPackageFiles(input: {
   return files;
 }
 
+function extractFinalArtifactIdFromPlaybook(content: string): string | undefined {
+  // Effect nodes consume the final artifact — highest signal
+  const effectMatch = content.match(
+    /kind\s*:\s*"effect"[\s\S]{0,600}?"?sourceArtifact"?\s*:\s*"([^"]+)"/
+  );
+  if (effectMatch?.[1]) return effectMatch[1];
+  // humanReview nodes review the final artifact
+  const reviewMatch = content.match(
+    /kind\s*:\s*"humanReview"[\s\S]{0,300}?"?artifact"?\s*:\s*"([^"]+)"/
+  );
+  if (reviewMatch?.[1]) return reviewMatch[1];
+  // Agent nodes emit the synthesized artifact via output.artifact
+  const agentOutputMatch = content.match(/"?output"?\s*:\s*\{[^}]*"?artifact"?\s*:\s*"([^"]+)"/);
+  if (agentOutputMatch?.[1]) return agentOutputMatch[1];
+  // Fall back to outputArtifact (used by script/tool nodes)
+  const outputArtifactMatch = content.match(/"?outputArtifact"?\s*:\s*"([^"]+)"/);
+  return outputArtifactMatch?.[1];
+}
+
+function playbookMetadataOutputsHasKind(content: string, kind: string): boolean {
+  // Match both JS literal (outputs:) and JSON ("outputs":)
+  const outputsMatch = content.match(/"?outputs"?\s*:\s*\[/);
+  if (!outputsMatch || outputsMatch.index === undefined) return false;
+  const afterOutputs = content.slice(outputsMatch.index);
+  const arrayEnd = afterOutputs.indexOf("]");
+  if (arrayEnd === -1) return false;
+  return afterOutputs.slice(0, arrayEnd).includes(`"${kind}"`);
+}
+
+function findJsonArrayEnd(content: string, afterOpenBracket: number): number | undefined {
+  let depth = 1;
+  let inString = false;
+  let escaped = false;
+  for (let i = afterOpenBracket; i < content.length; i++) {
+    const ch = content[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return undefined;
+}
+
+function hasPlaybookUIOutputAdditionIntent(prompt: string): boolean {
+  return /\b(?:display(?:ed)?|show(?:n)?|visible|appear|ui(?:\s+card)?|run.?result|result\s+card|output\s+card)\b/i.test(
+    prompt
+  );
+}
+
+interface PlaybookOutputsAdditionResult {
+  applied: boolean;
+  packagePath?: string;
+  summary?: string;
+}
+
+async function applyPlaybookOutputsAdditionFallback(input: {
+  packagePaths: string[];
+  prompt: string;
+  task: NonNullable<ReturnType<TaskStore["getTask"]>>;
+  workspaceRoot: string;
+}): Promise<PlaybookOutputsAdditionResult> {
+  if (!hasPlaybookUIOutputAdditionIntent(input.prompt)) return { applied: false };
+  const packagePaths = playbookPackagePathCandidatesForTask(input);
+  if (packagePaths.length !== 1) return { applied: false };
+  const packagePath = normalizePackagePath(packagePaths[0] ?? "");
+  if (!/^playbooks\/[^/]+$/.test(packagePath)) return { applied: false };
+
+  const absolutePlaybookPath = join(input.workspaceRoot, packagePath, "playbook.ts");
+  let content: string;
+  try {
+    content = await readFile(absolutePlaybookPath, "utf8");
+  } catch {
+    return { applied: false };
+  }
+
+  const finalArtifactId = extractFinalArtifactIdFromPlaybook(content);
+  if (!finalArtifactId) return { applied: false };
+  if (playbookMetadataOutputsHasKind(content, finalArtifactId)) return { applied: false };
+
+  const outputsMatch = content.match(/"?outputs"?\s*:\s*\[/);
+  if (!outputsMatch || outputsMatch.index === undefined) return { applied: false };
+
+  const afterOpen = outputsMatch.index + outputsMatch[0].length;
+  const closeIdx = findJsonArrayEnd(content, afterOpen);
+  if (closeIdx === undefined) return { applied: false };
+
+  const existingContent = content.slice(afterOpen, closeIdx).trim();
+  const separator = existingContent.length > 0 ? ", " : "";
+  const rawLabel = titleFromSlug(finalArtifactId);
+  // Convert generic artifact ids like "finalArtifact" or "scorecard" to readable labels.
+  // If the title is identical (camelCase collapsed), try to derive from the playbook name.
+  const playbookName = (() => {
+    const nameMatch = content.match(/"?name"?\s*:\s*"([^"]+)"/);
+    return nameMatch?.[1] ?? "";
+  })();
+  const label =
+    rawLabel.toLowerCase() === "finalartifact" || rawLabel.toLowerCase() === "scorecard"
+      ? playbookName || "Summary"
+      : rawLabel;
+  const newEntry = `{ kind: "${finalArtifactId}", label: "${label}" }`;
+  const updated =
+    content.slice(0, afterOpen) + existingContent + separator + newEntry + content.slice(closeIdx);
+
+  await writeFile(absolutePlaybookPath, updated, "utf8");
+  return {
+    applied: true,
+    packagePath,
+    summary: [
+      "Runner fallback: PI did not write files after the implementation retry, so the runner applied a deterministic metadata.outputs addition.",
+      `Added { kind: "${finalArtifactId}", label: "${label}" } to ${packagePath}/playbook.ts metadata.outputs.`,
+      `This makes the ${label} visible as a run-result UI card in Tessera.`,
+    ].join("\n"),
+  };
+}
+
 async function playbookBuilderUpdateContextPack(input: {
   packagePaths?: string[];
   prompt: string;
@@ -852,9 +981,13 @@ async function playbookBuilderUpdateContextPack(input: {
     .slice(0, PLAYBOOK_UPDATE_CONTEXT_FILE_LIMIT);
 
   const fileSections: string[] = [];
+  let playbookFileContent: string | undefined;
   for (const file of prioritizedFiles) {
     try {
       const content = await readFile(join(absolutePackagePath, file.path), "utf8");
+      if (file.path === "playbook.ts" || file.path === "playbook.js") {
+        playbookFileContent = content;
+      }
       fileSections.push(
         [
           `--- ${packagePath}/${file.path} ---`,
@@ -875,6 +1008,19 @@ async function playbookBuilderUpdateContextPack(input: {
       ? `\n- ... ${files.length - PLAYBOOK_UPDATE_CONTEXT_TREE_LIMIT} more file(s) omitted`
       : "";
 
+  const computedEditHint = (() => {
+    if (!playbookFileContent) return undefined;
+    const finalArtifactId = extractFinalArtifactIdFromPlaybook(playbookFileContent);
+    if (!finalArtifactId) return undefined;
+    if (playbookMetadataOutputsHasKind(playbookFileContent, finalArtifactId)) return undefined;
+    return [
+      `Computed run-result UI edit: the final artifact id is "${finalArtifactId}".`,
+      `Add { kind: "${finalArtifactId}", label: "<descriptive label>" } to the metadata.outputs array in ${packagePath}/playbook.ts.`,
+      "Prefer workspace_write (write the complete updated file) over workspace_edit (which requires exact text matching and will fail if whitespace does not match exactly).",
+      "The full file content is in the context snapshot above; copy it, make the single outputs array change, and write the updated file.",
+    ].join("\n");
+  })();
+
   return [
     "Tessera playbook implementation context (read-only snapshot for the next PI turn).",
     `Target package: ${packagePath}`,
@@ -890,6 +1036,7 @@ async function playbookBuilderUpdateContextPack(input: {
       "- Keep any existing markdown/file artifact behavior unless the user explicitly asks to replace it.",
       "- If the requested UI surface is still ambiguous, call clarify instead of editing.",
     ].join("\n"),
+    ...(computedEditHint ? [computedEditHint] : []),
     `Package file tree:\n${tree}${omittedTree}`,
     ...fileSections,
   ]
@@ -1188,10 +1335,11 @@ function playbookBuilderImplementationRetryPrompt(input: {
       ? "The user approved the prior repair or diagnostic next actions. Implement those package edits now."
       : "For a clear feature/update request, implement the requested workflow change now.",
     ...(diagnosticsBrief ? [diagnosticsBrief] : []),
-    "Use PI tools in this turn: inspect only as needed, then edit package files with workspace_edit or workspace_write.",
+    "Use PI tools in this turn: inspect only as needed, then edit package files with workspace_write or workspace_edit.",
+    "For playbook.ts changes, strongly prefer workspace_write (write the complete updated file content) over workspace_edit. workspace_edit requires oldText to match byte-for-byte; whitespace or indentation differences will cause it to fail silently. workspace_write avoids this: read the file content from the context snapshot, apply the change, and write the full content.",
     "If the requested target, workflow behavior, or UI surface is truly ambiguous, call clarify with one focused task-UI question instead of validating the unchanged package.",
     'For "display in UI", default to preserving the existing markdown/file output and additionally declaring/materializing a run-result UI output unless dashboard, chart, layout, or refreshable behavior is explicitly requested.',
-    "Concrete run-result UI edit recipe: in playbook.ts, find the final produced artifact id from `output.artifact` or `outputArtifact`; add or append a `metadata.outputs` entry whose `kind` is exactly that artifact id and whose `label` describes the user-facing result; keep existing workspaceDocument/file outputs; add or fix the artifact schema only if missing.",
+    "Concrete run-result UI edit recipe: the context snapshot below includes the final artifact id (look for the Computed run-result UI edit line). Add or append a metadata.outputs entry whose kind is exactly that artifact id and whose label describes the user-facing result. Use workspace_write to overwrite playbook.ts with the updated content. Keep existing workspaceDocument/file outputs.",
     "The runner intentionally withholds playbook_package_validate during this implementation retry and will validate automatically after a successful package write.",
     "The runner will fail this turn if no workspace_edit or workspace_write succeeds.",
     "Finish only after a package file changed or a clarify question was raised.",
@@ -2717,6 +2865,25 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       latestTask = store.getTask(taskId) ?? latestTask;
     }
     if (
+      playbookUpdateImplementationRetryUsed &&
+      !successfulWorkspaceFileActivity &&
+      result.boundaryViolations === 0
+    ) {
+      const fallback = await applyPlaybookOutputsAdditionFallback({
+        packagePaths: workspacePlaybookPackagePaths,
+        prompt,
+        task: latestTask,
+        workspaceRoot: task.workspaceRoot,
+      });
+      if (fallback.applied && fallback.packagePath && fallback.summary) {
+        successfulWorkspaceFileActivity = true;
+        const normalizedFallbackPath = normalizePackagePath(fallback.packagePath);
+        playbookPackagePathsNeedingValidation.add(normalizedFallbackPath);
+        playbookValidatedPackagePaths.delete(normalizedFallbackPath);
+        playbookRepairSummaries.push(fallback.summary);
+      }
+    }
+    if (
       result.boundaryViolations === 0 &&
       hasActivePlaybookSkill(latestTask) &&
       shouldUsePlaybookScaffoldFallback(prompt) &&
@@ -2803,6 +2970,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
     }
     if (
       result.boundaryViolations === 0 &&
+      !successfulWorkspaceFileActivity &&
       shouldUsePlaybookUpdateFlow({
         packagePaths: workspacePlaybookPackagePaths,
         prompt,
@@ -2878,6 +3046,7 @@ export async function runTaskTurn(opts: RunTaskTurnOptions): Promise<void> {
       }
     }
     if (
+      !successfulWorkspaceFileActivity &&
       shouldRequirePlaybookUpdateAction({
         boundaryViolations: result.boundaryViolations,
         clarifyToolActivity,

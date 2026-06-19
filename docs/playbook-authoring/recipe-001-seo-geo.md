@@ -20,7 +20,7 @@ The reference playbook proves this shape:
 | Path | External SEO/GEO reference package |
 | Manifest id | `reference.seo-geo-blog-article` |
 | Version | `0.1.26` |
-| Capabilities | `web.search`, `web.fetch`, `tool.workspace.write` |
+| Capabilities | `integration.web.search`, `integration.web.fetch`, `tool.workspace.write` |
 | Final artifacts | `contentBrief`, `finalArticle` |
 | Final materialized files | `SEO GEO Blog Article/Briefs/{{inputs.primaryKeyword}} - Content Brief.md`, `SEO GEO Blog Article/Articles/{{inputs.primaryKeyword}} - Final Article.md` |
 
@@ -109,7 +109,7 @@ Result:
 | --- | --- |
 | One normalized intake artifact starts the graph. | Topic, audience, primary keyword, secondary keywords, and article angle. |
 | Source plans are explicit artifacts. | Keyword clusters and SERP research items. |
-| Parallel source collection uses declared capabilities. | `web.search` and `web.fetch` for SEO/GEO research. |
+| Parallel source collection uses declared capabilities. | `integration.web.search` and `integration.web.fetch` for SEO/GEO research. |
 | Branch output is normalized before fan-in. | Source summaries include SERP snippets, competitor insights, audience jobs, examples, and evidence. |
 | Agent draft output is stored raw first. | Brief and article drafting prompts produce SEO/GEO content. |
 | Scripts structure raw output into schema-shaped artifacts. | Content brief and final article schemas. |

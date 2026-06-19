@@ -30,7 +30,8 @@ export const DEFAULT_AGENT_PROFILE: AgentProfile = {
     "spreadsheets",
     "workspace-delivery",
     "decision-briefs",
-    "tessera-playbook-author",
+    "tessera-playbook-builder",
+    "tessera-playbook-debugger",
   ],
   toolPolicyPreset: "workspace_editor",
   memoryDefaults:

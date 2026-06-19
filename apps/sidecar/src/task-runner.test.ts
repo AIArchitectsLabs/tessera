@@ -2257,6 +2257,10 @@ describe("task runner", () => {
     expect(prompts[1]).toContain('"Display in UI" can mean');
     expect(prompts[1]).toContain("Concrete run-result UI edit recipe");
     expect(prompts[1]).toContain("The runner will fail this turn if no workspace_edit");
+    expect(prompts[1]).toContain(
+      'Computed run-result UI edit: the final artifact id is "scorecard"'
+    );
+    expect(prompts[1]).toContain("Prefer workspace_write (write the complete updated file)");
     const finalAgentTurn = store.getTurn(agentTurn.id);
     expect(finalAgentTurn.status).toBe("completed");
     expect(finalAgentTurn.content).toContain("run-result UI output");
@@ -2337,6 +2341,86 @@ describe("task runner", () => {
     expect(finalAgentTurn.content).toContain(
       "Validation passed for playbooks/weekly-email-summary"
     );
+    expect(store.getTask(task.id)?.status).toBe("done");
+  });
+
+  test("playbook builder UI output update applies runner fallback when PI never writes files", async () => {
+    const store = makeStore();
+    const workspaceRoot = await makeWorkspace();
+    const packageRoot = join(workspaceRoot, "playbooks/weekly-email-summary");
+    await writePromptOnlyMailPackage(packageRoot);
+    const task = store.createTask({
+      workspaceRoot,
+      initialInstruction:
+        "/tessera-playbook-builder can you update weekly-email-summary so the summary is displayed in the UI.",
+    });
+    const userTurn = task.turns[0];
+    if (!userTurn) throw new Error("expected initial turn");
+    store.addActiveSkill(task.id, {
+      skillId: "tessera-playbook-builder",
+      name: "tessera-playbook-builder",
+      source: "workspace",
+      activatedByTurnId: userTurn.id,
+    });
+    const agentTurn = store.createQueuedAgentTurn(task.id);
+    const prompts: string[] = [];
+
+    await runTaskTurn({
+      store,
+      taskId: task.id,
+      userTurnId: userTurn.id,
+      agentTurnId: agentTurn.id,
+      piRunner: async ({ onToolEnd, onToolStart, prompt }) => {
+        prompts.push(prompt);
+        onToolStart?.({
+          name: "playbook_package_validate",
+          args: { packagePath: "playbooks/weekly-email-summary" },
+        });
+        onToolEnd?.({
+          name: "playbook_package_validate",
+          result: {
+            content: [{ type: "text", text: "Validated playbooks/weekly-email-summary" }],
+            details: {
+              packagePath: "playbooks/weekly-email-summary",
+              ok: true,
+              steps: [
+                {
+                  name: "Package tests",
+                  command: "bun test tests",
+                  ok: true,
+                  exitCode: 0,
+                  stdout: "",
+                  stderr: "",
+                },
+              ],
+            },
+          },
+        });
+        return {
+          text: "Validation passed for playbooks/weekly-email-summary.",
+          boundaryViolations: 0,
+        };
+      },
+      publish: () => undefined,
+      delayMs: 0,
+    });
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("Tessera runtime implementation retry");
+    const finalAgentTurn = store.getTurn(agentTurn.id);
+    expect(finalAgentTurn.status).toBe("completed");
+    expect(finalAgentTurn.content).toContain("Runner fallback");
+    expect(finalAgentTurn.content).toContain("finalArtifact");
+    expect(finalAgentTurn.content).toContain(
+      "Validation passed for playbooks/weekly-email-summary"
+    );
+    expect(finalAgentTurn.error).toBeUndefined();
+    const updatedPlaybook = await readFile(
+      join(workspaceRoot, "playbooks/weekly-email-summary/playbook.ts"),
+      "utf8"
+    );
+    expect(updatedPlaybook).toContain('"finalArtifact"');
+    expect(updatedPlaybook).toContain("workspaceDocument");
     expect(store.getTask(task.id)?.status).toBe("done");
   });
 

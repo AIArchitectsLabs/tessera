@@ -1182,16 +1182,16 @@ fn tool_policy_runtime_json(preset: &str) -> serde_json::Value {
             "label": "Elevated with approval",
             "approvalMode": "ask",
             "summary": "Can edit the workspace, research the public web, and maintain the task checklist, but should ask before taking mutating actions.",
-            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist", "Run declared skill Python helpers"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load", "skill_run_python"]
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Scaffold and validate Tessera playbook packages", "Manage task checklist", "Run declared skill Python helpers"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "playbook_package_scaffold", "playbook_package_validate", "todo", "skill_list", "skill_load", "skill_run_python"]
         }),
         _ => serde_json::json!({
             "preset": "workspace_editor",
             "label": "Workspace editor",
             "approvalMode": "never",
             "summary": "Can inspect the workspace, research the public web, maintain the task checklist, and update files directly when needed.",
-            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Manage task checklist", "Run declared skill Python helpers"],
-            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "todo", "skill_list", "skill_load", "skill_run_python"]
+            "capabilities": ["Read files", "List directories", "Search content", "Search and fetch public web pages", "Write files", "Edit files", "Scaffold and validate Tessera playbook packages", "Manage task checklist", "Run declared skill Python helpers"],
+            "allowedTools": ["workspace_read", "workspace_list", "workspace_search", "shell", "workspace_write", "workspace_edit", "playbook_package_scaffold", "playbook_package_validate", "todo", "skill_list", "skill_load", "skill_run_python"]
         }),
     }
 }

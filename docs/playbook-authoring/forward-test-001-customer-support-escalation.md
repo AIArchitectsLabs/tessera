@@ -1,11 +1,11 @@
 # Forward Test 001: Customer Support Escalation Triage
 
-This evidence closes the Phase 2A.5 forward-test gate for `tessera-playbook-author` V0.
+This evidence closes the Phase 2A.5 forward-test gate for `tessera-playbook-builder` V0.
 
 ## Test Prompt
 
 ```text
-Use $tessera-playbook-author to author a Customer Support Escalation Triage playbook.
+Use $tessera-playbook-builder to build a Customer Support Escalation Triage playbook.
 The playbook should help a support manager review urgent customer issues and prepare a daily escalation packet.
 We may use Gmail for support-manager email threads, web.fetch for public status-page evidence, and workspace writes for final markdown/CSV outputs.
 ```

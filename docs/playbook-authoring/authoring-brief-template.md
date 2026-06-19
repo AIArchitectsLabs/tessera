@@ -32,13 +32,26 @@ Use this brief before generating or repairing an external Tessera playbook packa
 | --- | --- | --- | --- | --- |
 |  |  |  |  |  |
 
-Capability examples:
+Use registered Tessera capability ids. Current examples:
 
-- `gmail.search`
-- `web.search`
-- `web.fetch`
-- public feed fetched through `web.fetch`
-- package-local deterministic script over fixture data
+- `tool.workspace.read`
+- `tool.workspace.write`
+- `integration.calendar.events.read`
+- `integration.crm.accounts.read`
+- `integration.web.search`
+- `integration.web.fetch`
+- `integration.mail.messages.read`
+- `integration.mail.drafts.write`
+- `integration.drive.files.read`
+- `integration.contacts.read`
+- `integration.sheets.rows.write`
+- `integration.docs.documents.write`
+- `skill.meeting-prep`
+- `skill.account-research`
+
+For every source required by the business outcome, name the executable graph node that collects it. A source listed only in a prompt is not sufficient for a usable connector-backed playbook.
+
+If a requested source, tool, skill, connector, or effect is not available in Tessera, record the platform gap instead of inventing a capability id.
 
 ## Data Requirements
 
@@ -59,6 +72,14 @@ Capability examples:
 | Draft |  |  |  |  |  |
 | Review |  |  |  |  |  |
 | Materialize |  |  |  |  |  |
+
+Production graph checks:
+
+- Required sources/effects are graph nodes, not prompt-only instructions.
+- Required runtime capabilities appear in `metadata.requiredCapabilities` and top-level `capabilities`.
+- Optional sources have explicit source-gap handling.
+- Effect nodes have approval, preview, idempotency, adapter, target, and materialization format.
+- Agent skill requirements are declared/documented as capabilities; package scripts do not execute skills.
 
 ## Schema Plan
 
@@ -98,6 +119,16 @@ Rules:
 | Artifact | Format | Audience | Materialization rule | Acceptance check |
 | --- | --- | --- | --- | --- |
 |  | markdown/csv/json/pdf |  |  |  |
+
+## Update And Upgrade Plan
+
+- Package identity to preserve:
+- Stable node/artifact ids to preserve:
+- Version bump rule:
+- Files future maintainers should edit for source changes:
+- Files future maintainers should edit for prompt/schema/output changes:
+- Validation command after every update:
+- Import/re-import notes:
 
 ## Validation Plan
 
