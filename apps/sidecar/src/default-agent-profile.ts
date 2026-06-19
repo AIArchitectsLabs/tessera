@@ -11,7 +11,32 @@ const LEGACY_DEFAULT_SKILL_SETS = [
     "workspace-delivery",
     "decision-briefs",
   ],
+  [
+    "planning",
+    "research-synthesis",
+    "word-docs",
+    "pdf-workflows",
+    "slide-decks",
+    "spreadsheets",
+    "workspace-delivery",
+    "decision-briefs",
+    "tessera-playbook-builder",
+  ],
+  [
+    "planning",
+    "research-synthesis",
+    "word-docs",
+    "pdf-workflows",
+    "slide-decks",
+    "spreadsheets",
+    "workspace-delivery",
+    "decision-briefs",
+    "tessera-playbook-builder",
+    "tessera-playbook-debugger",
+  ],
 ];
+
+const PLATFORM_PLAYBOOK_SKILLS = ["tessera-playbook-builder", "tessera-playbook-debugger"] as const;
 
 function sameSkillSet(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
@@ -24,7 +49,11 @@ function mergeDefaultSkills(base: AgentProfile, override: AgentProfile): string[
   if (LEGACY_DEFAULT_SKILL_SETS.some((skills) => sameSkillSet(override.skills, skills))) {
     return base.skills;
   }
-  return override.skills;
+  const missingPlatformSkills = PLATFORM_PLAYBOOK_SKILLS.filter(
+    (skill) => !override.skills.includes(skill)
+  );
+  if (missingPlatformSkills.length === 0) return override.skills;
+  return [...override.skills, ...missingPlatformSkills];
 }
 
 export function mergeDefaultAgentProfile(
