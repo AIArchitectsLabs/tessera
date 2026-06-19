@@ -49,6 +49,11 @@ interface AuthSession {
   userKey: string;
 }
 
+interface PlaybookImportSignal {
+  eventKey: string;
+  playbookId: string;
+}
+
 function userStorageKey(userKey: string, setting: string): string {
   return `tessera_user:${userKey}:${setting}`;
 }
@@ -139,8 +144,15 @@ export default function App() {
   const [loadingInbox, setLoadingInbox] = useState(false);
   const [inboxError, setInboxError] = useState<string | null>(null);
   const [prefetchedPlaybooks, setPrefetchedPlaybooks] = useState<PlaybookSummary[] | null>(null);
+  const [playbookImportSignal, setPlaybookImportSignal] = useState<PlaybookImportSignal | null>(
+    null
+  );
   const taskDetailRequestId = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeViewRef = useRef<AppView>(activeView);
+  activeViewRef.current = activeView;
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
   // Keep a ref to selectedTaskId so stable callbacks can read the latest value
   // without becoming a dependency that causes effect re-runs.
   const selectedTaskIdRef = useRef<string | null>(null);
@@ -235,6 +247,19 @@ export default function App() {
     if (event.type === "task.updated") {
       setTasks((current) => mergeTaskSummary(current, event.task));
     }
+    if (event.type === "task.playbook_imported" && !settingsOpenRef.current) {
+      setPlaybookImportSignal({
+        eventKey: [
+          event.emittedAt,
+          event.taskId,
+          event.playbookId,
+          event.import.version,
+          event.import.sourceHash,
+          event.packagePath ?? "",
+        ].join(":"),
+        playbookId: event.playbookId,
+      });
+    }
   }, []);
 
   const handleSnapshot = useCallback((task: TaskDetail) => {
@@ -268,6 +293,10 @@ export default function App() {
     onSnapshot: handleSnapshot,
     onReconnect: handleReconnect,
   });
+
+  const handlePlaybookImportHandled = useCallback(() => {
+    setPlaybookImportSignal(null);
+  }, []);
 
   const handleNewTask = () => {
     taskDetailRequestId.current += 1;
@@ -556,6 +585,8 @@ export default function App() {
           <PlaybooksView
             initialPlaybooks={prefetchedPlaybooks}
             onWorkspaceSelect={handleWorkspaceSelect}
+            onPlaybookImportHandled={handlePlaybookImportHandled}
+            playbookImportSignal={playbookImportSignal}
             userKey={authSession.userKey}
             workspaceRoot={workspaceRoot}
           />

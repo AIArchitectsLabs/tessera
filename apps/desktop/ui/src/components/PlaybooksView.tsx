@@ -61,6 +61,13 @@ interface PlaybooksViewProps {
   userKey: string;
   workspaceRoot: string | null;
   initialPlaybooks?: PlaybookSummary[] | null;
+  onPlaybookImportHandled?: () => void;
+  playbookImportSignal?: PlaybookImportSignal | null;
+}
+
+interface PlaybookImportSignal {
+  eventKey: string;
+  playbookId: string;
 }
 
 const statusCopy: Record<PlaybookRunDetail["status"], string> = {
@@ -1775,12 +1782,14 @@ function buildCapabilityInventory(
       ),
       capabilities: [
         "integration.calendar.events.read",
+        "integration.mail.messages.read",
         "integration.mail.read",
         "integration.mail.drafts.write",
         "integration.mail.drafts.send",
         "integration.sheets.workbooks.write",
         "integration.sheets.rows.write",
         "integration.docs.documents.write",
+        "integration.drive.files.read",
         "integration.drive.read",
         "integration.contacts.read",
       ],
@@ -4598,6 +4607,8 @@ export function PlaybooksView({
   onWorkspaceSelect,
   userKey,
   initialPlaybooks,
+  onPlaybookImportHandled,
+  playbookImportSignal,
 }: PlaybooksViewProps) {
   const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>(() => initialPlaybooks ?? []);
   const [selectedPlaybookDetail, setSelectedPlaybookDetail] = useState<PlaybookDetail | null>(null);
@@ -4656,6 +4667,7 @@ export function PlaybooksView({
   const selectedRunIdRef = useRef<string | null>(selectedRunId);
   const selectedGraphRunIdRef = useRef<string | null>(selectedGraphRunId);
   const selectedRunDetailRefreshRef = useRef<string | null>(null);
+  const handledPlaybookImportSignalRef = useRef<string | null>(null);
   const contentScrollRef = useRef<HTMLElement | null>(null);
 
   const businessPlaybooks = useMemo(
@@ -5153,6 +5165,52 @@ export function PlaybooksView({
   useEffect(() => {
     void loadPlaybooks();
   }, [loadPlaybooks]);
+
+  useEffect(() => {
+    if (!playbookImportSignal) return;
+    if (handledPlaybookImportSignalRef.current === playbookImportSignal.eventKey) return;
+    handledPlaybookImportSignalRef.current = playbookImportSignal.eventKey;
+
+    let cancelled = false;
+    const playbookId = playbookImportSignal.playbookId;
+    setError(null);
+    setRefreshNotice(null);
+    setSelectedPlaybookId(playbookId);
+    setSelectedRunId(null);
+    setSelectedRunDetail(null);
+    setSelectedGraphRunId(null);
+    setSelectedGraphRunDetail(null);
+    setSelectedGraphRunSurface(null);
+
+    void (async () => {
+      try {
+        await loadPlaybooks();
+        await Promise.all([loadPlaybookDetail(playbookId), loadRuns(playbookId), loadRunHistory()]);
+        if (!cancelled) {
+          setRefreshNotice("Playbook imported from task.");
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
+      } finally {
+        if (!cancelled) {
+          onPlaybookImportHandled?.();
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loadPlaybookDetail,
+    loadPlaybooks,
+    loadRunHistory,
+    loadRuns,
+    onPlaybookImportHandled,
+    playbookImportSignal,
+  ]);
 
   useEffect(() => {
     if (!playbooksLoaded) return;
