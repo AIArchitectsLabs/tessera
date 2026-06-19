@@ -10,7 +10,16 @@ export function textValueFromArtifact(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  for (const key of ["text", "markdown", "bodyMarkdown", "content", "body", "summary"]) {
+  for (const key of [
+    "text",
+    "markdown",
+    "summaryMarkdown",
+    "bodyMarkdown",
+    "contentMarkdown",
+    "content",
+    "body",
+    "summary",
+  ]) {
     const text = record[key];
     if (typeof text === "string" && text.trim().length > 0) return text;
   }
@@ -43,7 +52,25 @@ export function textValueFromArtifact(value: unknown): string | undefined {
         ].join("\n\n")
       : "",
   ].filter(Boolean);
-  return sections.length > 0 ? sections.join("\n\n") : undefined;
+  if (sections.length > 0) return sections.join("\n\n");
+
+  // Final fallback: render unknown-shape records as key-value markdown so
+  // materialization never produces blank output for a non-empty artifact.
+  const entries = Object.entries(record).filter(
+    ([, v]) => v !== null && v !== undefined && v !== ""
+  );
+  if (entries.length === 0) return undefined;
+  return entries
+    .map(([k, v]) => {
+      const val =
+        typeof v === "string"
+          ? v
+          : Array.isArray(v) || (typeof v === "object" && v !== null)
+            ? JSON.stringify(v, null, 2)
+            : String(v);
+      return `**${k}:** ${val}`;
+    })
+    .join("\n\n");
 }
 
 export function csvCell(value: unknown): string {
