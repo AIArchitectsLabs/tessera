@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { hubspotSearchObjects, hubspotSummary } from "./hubspot-connector.js";
+import {
+  HubSpotConnectorError,
+  hubspotMutateObject,
+  hubspotSearchObjects,
+  hubspotSummary,
+} from "./hubspot-connector.js";
 
 describe("HubSpot connector", () => {
   test("retries HubSpot search once after a secondly rate limit", async () => {
@@ -65,5 +70,26 @@ describe("HubSpot connector", () => {
       "https://api.hubapi.com/crm/v3/objects/deals/search",
     ]);
     expect(result.counts).toEqual({ contacts: 1, companies: 2, deals: 3 });
+  });
+
+  test("throws a validation error before making any request when update is called without an id", async () => {
+    let fetchCalled = false;
+    const opts = {
+      accessToken: "pat-test",
+      fetchImpl: async () => {
+        fetchCalled = true;
+        return new Response("{}", { status: 200 });
+      },
+    };
+
+    await expect(
+      hubspotMutateObject("contacts", "update", { firstname: "Alex" }, opts)
+    ).rejects.toThrow(HubSpotConnectorError);
+
+    await expect(
+      hubspotMutateObject("contacts", "update", { firstname: "Alex" }, opts)
+    ).rejects.toThrow("id is required for update");
+
+    expect(fetchCalled).toBe(false);
   });
 });

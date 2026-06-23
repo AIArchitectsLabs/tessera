@@ -197,9 +197,12 @@ export async function hubspotMutateObject(
   id?: string
 ): Promise<HubSpotObjectMutationResult> {
   const isUpdate = action === "update";
+  if (isUpdate && !id?.trim()) {
+    throw new HubSpotConnectorError("id is required for update");
+  }
   const payload = await hubspotJson(
     isUpdate
-      ? `/crm/v3/objects/${objectType}/${encodeURIComponent(id ?? "")}`
+      ? `/crm/v3/objects/${objectType}/${encodeURIComponent(id as string)}`
       : `/crm/v3/objects/${objectType}`,
     options,
     {

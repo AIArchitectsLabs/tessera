@@ -1398,6 +1398,18 @@ async fn attach_default_workflow_execution(
     mut request: serde_json::Value,
     user_key: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(hubspot_access_token) =
+        integration_settings::get_credential_for_user_with_global_fallback(
+            integration_settings::IntegrationProvider::Hubspot,
+            user_key,
+        )
+        .map_err(|error| error.to_string())?
+    {
+        request["integrationCredentials"] = serde_json::json!({
+            "hubspotAccessToken": hubspot_access_token
+        });
+    }
+
     if request.get("agentProvider").is_some() || request.get("credential").is_some() {
         return Ok(request);
     }
@@ -2869,8 +2881,11 @@ async fn integration_connection_test(
                         (!api_key.is_empty()).then(|| api_key.to_string())
                     }
                     None => {
-                        integration_settings::get_credential_for_user(provider, scoped_user_key)
-                            .map_err(|error| error.to_string())?
+                        integration_settings::get_credential_for_user_with_global_fallback(
+                            provider,
+                            scoped_user_key,
+                        )
+                        .map_err(|error| error.to_string())?
                     }
                 }
             } else {

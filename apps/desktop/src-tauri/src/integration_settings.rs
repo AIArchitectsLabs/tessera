@@ -1310,4 +1310,67 @@ mod tests {
         assert_eq!(result.search_provider, Some(SearchProvider::Tavily));
         assert_eq!(result.provider, None);
     }
+
+    // Serialises tests that mutate the global runtime-credential cache so they cannot
+    // interfere with each other when the test runner dispatches them in parallel.
+    static CACHE_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    fn cache_test_lock() -> &'static std::sync::Mutex<()> {
+        CACHE_TEST_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    #[test]
+    fn global_fallback_returns_globally_stored_runtime_credential_when_user_scoped_is_absent() {
+        let _guard = cache_test_lock().lock().unwrap();
+
+        let global_account = IntegrationProvider::Hubspot.account_for_user(None);
+        let user_account = IntegrationProvider::Hubspot.account_for_user(Some("testfallback"));
+        let cache = runtime_credentials();
+
+        // Clean slate, then seed only the global account.
+        {
+            let mut map = cache.lock().expect("runtime integration credential cache poisoned");
+            map.remove(&user_account);
+            map.insert(global_account.clone(), "test-global-pat".to_string());
+        }
+
+        // Calling with a user key that has no user-scoped entry should fall back to global.
+        let result = get_credential_for_user_with_global_fallback(
+            IntegrationProvider::Hubspot,
+            Some("testfallback"),
+        );
+
+        // Clean up before asserting so the cache is never left dirty.
+        cache
+            .lock()
+            .expect("runtime integration credential cache poisoned")
+            .remove(&global_account);
+
+        assert_eq!(result.expect("lookup should not error"), Some("test-global-pat".to_string()));
+    }
+
+    #[test]
+    fn global_fallback_returns_none_when_neither_user_nor_global_credential_exists() {
+        let _guard = cache_test_lock().lock().unwrap();
+
+        let global_account = IntegrationProvider::Hubspot.account_for_user(None);
+        let user_account =
+            IntegrationProvider::Hubspot.account_for_user(Some("testfallback-absent"));
+
+        // Ensure neither a user-scoped nor global entry is in the cache.
+        {
+            let mut map = runtime_credentials()
+                .lock()
+                .expect("runtime integration credential cache poisoned");
+            map.remove(&global_account);
+            map.remove(&user_account);
+        }
+
+        let result = get_credential_for_user_with_global_fallback(
+            IntegrationProvider::Hubspot,
+            Some("testfallback-absent"),
+        );
+
+        assert_eq!(result.expect("lookup should not error"), None);
+    }
 }
