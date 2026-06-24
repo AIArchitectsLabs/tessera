@@ -6,6 +6,7 @@ import {
   type WorkflowNodeAssignment,
   type WorkflowRunAssignmentPlan,
   type WorkflowSourceGap,
+  canonicalCapability,
 } from "@tessera/contracts";
 
 const LEGACY_CAPABILITY_ALIASES: Record<string, string[]> = {
@@ -13,9 +14,11 @@ const LEGACY_CAPABILITY_ALIASES: Record<string, string[]> = {
   "web.search": ["integration.search.read"],
   "web.fetch": ["integration.search.read"],
   calendar: ["integration.calendar.events.read"],
-  mail: ["integration.mail.read"],
-  "gmail.search": ["integration.mail.read"],
-  drive: ["integration.drive.read"],
+  mail: ["integration.mail.messages.read", "integration.mail.read"],
+  "gmail.search": ["integration.mail.messages.read", "integration.mail.read"],
+  "integration.mail.read": ["integration.mail.messages.read", "mail.messages.read"],
+  drive: ["integration.drive.files.read", "integration.drive.read"],
+  "integration.drive.read": ["integration.drive.files.read", "drive.files.read"],
   contacts: ["integration.contacts.read"],
 };
 
@@ -50,8 +53,21 @@ function assignmentForInventoryAgent(
   };
 }
 
+function relatedCapabilityIds(capability: string): Set<string> {
+  const related = new Set([capability, ...(LEGACY_CAPABILITY_ALIASES[capability] ?? [])]);
+  for (const value of [...related]) {
+    const canonical = canonicalCapability(value);
+    if (!canonical) continue;
+    related.add(canonical.id);
+    for (const alias of canonical.aliases) {
+      related.add(alias);
+    }
+  }
+  return related;
+}
+
 function inventoryCapabilityIds(inventory: WorkflowCapabilityInventory): Set<string> {
-  return new Set([
+  const declaredCapabilities = [
     ...inventory.tools.map((tool) => tool.id),
     ...inventory.integrations.flatMap((integration) =>
       integration.configured ? integration.capabilities : []
@@ -62,12 +78,14 @@ function inventoryCapabilityIds(inventory: WorkflowCapabilityInventory): Set<str
       ...agent.toolCapabilities,
     ]),
     ...inventory.models.flatMap((model) => (model.hasCredential ? model.capabilities : [])),
-  ]);
+  ];
+  return new Set(
+    declaredCapabilities.flatMap((capability) => [...relatedCapabilityIds(capability)])
+  );
 }
 
 function capabilitySatisfied(capability: string, available: Set<string>): boolean {
-  if (available.has(capability)) return true;
-  return (LEGACY_CAPABILITY_ALIASES[capability] ?? []).some((alias) => available.has(alias));
+  return [...relatedCapabilityIds(capability)].some((capabilityId) => available.has(capabilityId));
 }
 
 function capabilityKind(capability: string): WorkflowSourceGap["kind"] {

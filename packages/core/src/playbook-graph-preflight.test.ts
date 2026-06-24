@@ -193,6 +193,72 @@ describe("resolvePlaybookGraphPreflight", () => {
     expect(preview.sourceGaps).toEqual([]);
   });
 
+  test("accepts canonical mail read capability when Google Workspace reports the legacy mail capability", () => {
+    const preview = resolvePlaybookGraphPreflight({
+      compiledGraph: {
+        ...compiledGraph,
+        graph: {
+          ...compiledGraph.graph,
+          metadata: {
+            requiredCapabilities: ["integration.mail.messages.read"],
+          },
+          capabilities: ["integration.mail.messages.read"],
+        },
+      },
+      capabilityInventory: {
+        ...inventory,
+        integrations: [
+          ...inventory.integrations,
+          {
+            id: "integration.google-workspace",
+            label: "Google Workspace",
+            fingerprint: "google-1",
+            configured: true,
+            capabilities: ["integration.mail.read"],
+            dataPolicies: ["cloud-ok"],
+          },
+        ],
+      },
+    });
+
+    expect(preview.confirmationRequired).toBe(false);
+    expect(preview.blockers).toEqual([]);
+    expect(preview.sourceGaps).toEqual([]);
+  });
+
+  test("accepts canonical drive read capability when Google Workspace reports the legacy drive capability", () => {
+    const preview = resolvePlaybookGraphPreflight({
+      compiledGraph: {
+        ...compiledGraph,
+        graph: {
+          ...compiledGraph.graph,
+          metadata: {
+            requiredCapabilities: ["integration.drive.files.read"],
+          },
+          capabilities: ["integration.drive.files.read"],
+        },
+      },
+      capabilityInventory: {
+        ...inventory,
+        integrations: [
+          ...inventory.integrations,
+          {
+            id: "integration.google-workspace",
+            label: "Google Workspace",
+            fingerprint: "google-1",
+            configured: true,
+            capabilities: ["integration.drive.read"],
+            dataPolicies: ["cloud-ok"],
+          },
+        ],
+      },
+    });
+
+    expect(preview.confirmationRequired).toBe(false);
+    expect(preview.blockers).toEqual([]);
+    expect(preview.sourceGaps).toEqual([]);
+  });
+
   test("blocks required capabilities and reports optional source gaps", () => {
     const preview = resolvePlaybookGraphPreflight({
       compiledGraph,

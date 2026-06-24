@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tessera Playbook Builder"
+  short_description: "Create, improve, fix, and update Tessera playbooks"
+  default_prompt: "Use $tessera-playbook-builder to create a new playbook or improve an existing workspace playbook, confirm the package name/path, write the package files, and validate it for Tessera import."

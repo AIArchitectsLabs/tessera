@@ -1,10 +1,10 @@
-# Portable Tessera Playbook Author Instructions
+# Portable Tessera Playbook Builder Instructions
 
-Use these instructions as the portable `tessera-playbook-author` prompt for Claude Code, Codex, Claude Cowork, Pi Agent, Tessera agents, or another coding agent. This file is generated from the repo-canonical contract; if it conflicts with `package-contract.md`, the package contract wins.
+Use these instructions as the portable `tessera-playbook-builder` prompt for Claude Code, Codex, Claude Cowork, Pi Agent, Tessera agents, or another coding agent. This file is generated from the repo-canonical contract; if it conflicts with `package-contract.md`, the package contract wins.
 
 ## Mission
 
-Author or repair external Tessera playbook packages through an interview-first, validator-driven workflow. Produce package files only after the business workflow, runtime boundary, source inventory, tools/effects, review gates, schemas, final artifacts, build tooling, and validation path are coherent.
+Build, enhance, fix, or update external Tessera playbook packages through an interview-first, validator-driven workflow. Produce package files only after the business workflow, runtime boundary, source inventory, tools/effects, review gates, schemas, final artifacts, build tooling, and validation path are coherent.
 
 ## Runtime Boundary
 
@@ -51,22 +51,25 @@ Use reference recipes only as examples, not as domain defaults:
 | Claude Code | File editing, package repair, tests | Keep changes inside the package, run validator commands, report evidence with file paths |
 | Codex | Repo-aware coding and verification | Use repo docs first, apply small patches, run text and JSON validation, preserve Tessera-only runtime |
 | Claude Cowork | Collaborative authoring and review | Produce the authoring brief and critique package boundaries before asking a coding agent to generate files |
-| Pi Agent | Business workflow discovery and checklist execution | Use the authoring brief as the main artifact, ask one focused question when requirements are missing |
+| Pi Agent | Business workflow discovery and checklist execution | Use the authoring brief as the main artifact, ask one focused question when requirements are missing, then validate with `playbook_package_validate` when available |
 | Tessera agent | Runtime review and product execution | Import, run, pause for human review, show capabilities/provenance, and materialize artifacts inside Tessera |
 
 The workflow does not change by agent. Only the interaction surface changes.
+
+For existing playbook updates, validation-only is not completion. PI should inspect and edit the package when the request is clear enough; if the target, workflow change, source/effect choice, or UI surface remains ambiguous after inspection, use the task UI QnA/clarification surface before editing.
 
 ## Workflow
 
 1. Boundary check.
    - Confirm the external package path.
+   - For update, enhancement, or repair requests, resolve bare playbook ids/names against the workspace `playbooks/<name>` folder before asking for a path. Match package path, folder name, manifest `id`, and manifest `name`.
    - Restate that Tessera is the only runtime.
    - Reject standalone execution, dependency metadata, and local graph runners.
 
 2. Business discovery.
    - Identify the decision or workflow.
    - Identify the primary user, reviewers, cadence, source inventory, tools/connectors, deterministic scripts, effects, capabilities, review gates, and final artifacts.
-   - Ask one focused question only if a graph-shaping, source-shaping, effect-shaping, or artifact-shaping requirement is missing.
+   - Ask one focused question only if a graph-shaping, source-shaping, effect-shaping, UI-surface-shaping, or artifact-shaping requirement is missing.
 
 3. Authoring brief gate.
    - Fill `authoring-brief-template.md`.
@@ -78,10 +81,20 @@ The workflow does not change by agent. Only the interaction surface changes.
 
 5. Package generation or repair.
    - Create or repair the package folder with `manifest.json`, `playbook.ts`, schemas, prompts, deterministic scripts, fixtures, tests, `build.ts`, `BUILD.md`, `PLAYBOOK.md`, and optional `package.json` only for package-local tests.
+   - For existing playbooks, inspect and update the matching workspace package instead of asking what to call a new package. Examples: `weekly-email-summary`, `playbook weekly-email-summary`, and `weekly email summary playbook` resolve to `playbooks/weekly-email-summary` when that package exists.
+   - For ambiguous existing-playbook updates, use QnA mode before editing. Ask one focused question with concrete options when possible.
+   - For "display in UI" requests, classify the intended surface before editing: final run-result output card, human review UI, dashboard UI, or clarification. Default to final run-result UI only when the user asks for final output visibility and does not mention dashboards, charts, layouts, refreshable views, or monitoring.
    - Keep domain schemas, prompts, scripts, fixtures, scoring, and final templates in the external package.
    - Use package-relative refs.
-   - Declare every artifact and capability.
+   - Declare every artifact and capability. New packages should use registered Tessera capability ids such as `tool.workspace.write`, `integration.mail.messages.read`, `integration.web.search`, `integration.web.fetch`, `integration.drive.files.read`, `integration.calendar.events.read`, `integration.contacts.read`, `integration.sheets.rows.write`, `integration.docs.documents.write`, `skill.meeting-prep`, and `skill.account-research`.
+   - Do not invent unavailable tools, skills, connectors, effects, or capability ids. If Tessera lacks the requested surface, report the platform gap or make the package explicitly fixture-first.
+   - For every required live source, add an executable source node that produces a schema-backed artifact consumed by downstream nodes. Do not leave live Gmail, web, drive, calendar, or workspace source access as prompt-only prose.
+   - For every durable write or external side effect, add an effect node with approval, preview, idempotency, adapter, target, and materialization format.
+   - Put required runtime capabilities in both `metadata.requiredCapabilities` and top-level `capabilities`; optional sources must have a useful missing-source path.
+   - Agent skills are capability/assignment requirements, not package-local runtimes. Do not create fake skill nodes or run skills from scripts.
    - Add schemas for every agent output.
+   - For run-result UI, declare `metadata.outputs` with `kind` matching an actually produced artifact id or run output key, back it with a schema, and materialize/provide a path when the result card should open a file.
+   - Add `PLAYBOOK.md` maintenance notes explaining how future users update sources, graph nodes, schemas, prompts, review gates, effects, outputs, versions, validation, and import.
    - Keep dev build tooling outside the runtime payload and exclude generated archives, local metadata, dependency directories, and lockfiles.
 
 6. Fixture and test pass.
@@ -90,6 +103,8 @@ The workflow does not change by agent. Only the interaction surface changes.
    - Do not run the graph.
 
 7. Validator repair loop.
+   - In Tessera task mode, call `playbook_package_validate` after creating or editing package files.
+   - Treat validation as package-shape evidence, not semantic completion for feature/update asks.
    - Run package-local typecheck/tests when present.
    - Run text validation.
    - Run JSON validation.
@@ -98,7 +113,7 @@ The workflow does not change by agent. Only the interaction surface changes.
    - Record evidence.
 
 8. Import readiness handoff.
-   - Report package path, validation result, declared capabilities, final artifacts, fixture coverage, and any accepted warnings.
+   - Report package path, validation result, declared capabilities, executable source/effect nodes, final artifacts, fixture coverage, update notes, and any accepted warnings.
    - Tessera owns import, run, review, provenance, and final writes.
 
 ## Responsibility Map
@@ -122,7 +137,7 @@ Record SDK helper candidates in `docs/playbook-authoring/sdk-helper-candidate-lo
 ### Create From Recipe
 
 ```text
-Use the portable Tessera playbook author instructions to create an external playbook package at <package-path>.
+Use the portable Tessera playbook builder instructions to create an external playbook package at <package-path>.
 Tessera is the only runtime. Start with an authoring brief. Ask one focused question if package path, source inventory, schema plan, review gate, or final artifact acceptance is missing. Generate files only after the brief is coherent. Validate in text and JSON modes and repair diagnostics until no errors remain.
 
 Workflow: <business workflow>
@@ -135,7 +150,7 @@ Final artifacts: <markdown/csv/json/pdf outputs>
 
 ```text
 Add <connector/source> to the external Tessera playbook at <package-path>.
-Do not add a standalone runner or live execution wrapper. Declare the capability, add fixture evidence, normalize source output into the existing provenance shape, update fan-in/gap handling, and run text plus JSON validation.
+Do not add a standalone runner or live execution wrapper. Declare the capability, add an executable source node that produces a schema-backed artifact, add fixture evidence, normalize source output into the existing provenance shape, update fan-in/gap handling, and run text plus JSON validation.
 ```
 
 ### Add Review/Rework Loop

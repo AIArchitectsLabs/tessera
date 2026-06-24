@@ -20,16 +20,16 @@ The external playbook should prove this shape:
 | Path | External supply-chain risk package |
 | Manifest id | `supply-chain.early-warning-response` |
 | Version | `0.2.0` |
-| Capabilities | required `tool.workspace.write`; optional `gmail.search`, `web.search`, `web.fetch` |
+| Capabilities | required `tool.workspace.write`; future optional `integration.mail.messages.read`, `integration.web.search`, `integration.web.fetch` |
 | Final artifacts | `riskRegister`, `finalDisruptionPacket` |
 | Final materialized files | Risk register and final disruption packet workspace outputs |
 
 ## Fixture-First Source Strategy
 
-The current V1 package keeps the source surface fixture-first while declaring the live source shape for later connector-backed runs:
+The current V1 package keeps the source surface fixture-first and documents the live source shape for a later connector-backed upgrade:
 
 - Required runtime capability: `tool.workspace.write`.
-- Optional live source capabilities: `gmail.search`, `web.search`, and `web.fetch`.
+- Future live source capabilities: `integration.mail.messages.read`, `integration.web.search`, and `integration.web.fetch`.
 - Fixture evidence covers Gmail, web, CBP/feed, weather, and recall-style provenance without credentials.
 - Public feed content should be fetched and parsed by the playbook package, not by a Tessera-specific supply-chain runtime.
 - Live connector access remains a Tessera runtime concern.

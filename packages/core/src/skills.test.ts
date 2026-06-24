@@ -41,6 +41,8 @@ describe("skill registry", () => {
       "research-synthesis",
       "slide-decks",
       "spreadsheets",
+      "tessera-playbook-builder",
+      "tessera-playbook-debugger",
       "word-docs",
       "workspace-delivery",
     ]);
@@ -83,6 +85,16 @@ describe("skill registry", () => {
     await expect(registry.loadSkill("spreadsheets")).resolves.toMatchObject({
       source: "curated",
       content: expect.stringContaining("formulas and source data"),
+    });
+    await expect(registry.loadSkill("tessera-playbook-builder")).resolves.toMatchObject({
+      id: "tessera-playbook-builder",
+      source: "curated",
+      content: expect.stringContaining("build, enhance, fix, or update Tessera playbooks"),
+    });
+    await expect(registry.loadSkill("tessera-playbook-debugger")).resolves.toMatchObject({
+      id: "tessera-playbook-debugger",
+      source: "curated",
+      content: expect.stringContaining("playbook_run_diagnostics"),
     });
   });
 

@@ -17,15 +17,13 @@ import type {
   SkillDetail,
   SkillSummary,
   TaskSkillActivation,
-  TaskTodo,
-  TodoOperation,
   TokenUsage,
 } from "@tessera/contracts";
 import { BrowserActionInputSchema, compileAgentRuntimeContext } from "@tessera/contracts";
 import { findCliCommand, formatShellPreview } from "./cli-catalog.js";
 import type { OptionalCapabilityManager } from "./optional-capabilities.js";
 import type { PythonSkillRunInput, PythonSkillRunResult } from "./python-skill-runtime.js";
-import { createTaskToolDefinitions } from "./task-tools.js";
+import { type TaskToolRuntime, createTaskToolDefinitions } from "./task-tools.js";
 import type { BrowserExecutor, ShellExecutor } from "./tools.js";
 import { createWorkspaceGuard } from "./workspace-guard.js";
 import { createWorkspaceToolDefinitions } from "./workspace-tools.js";
@@ -89,9 +87,7 @@ export interface RunPiTaskTurnOptions {
     loadSkill(skillId: string): Promise<SkillDetail>;
     runPython?(input: PythonSkillRunInput): Promise<PythonSkillRunResult>;
   };
-  taskRuntime?: {
-    applyTodo(operation: TodoOperation): Promise<TaskTodo | undefined>;
-  };
+  taskRuntime?: TaskToolRuntime;
   workspaceRoot: string;
 }
 
@@ -352,6 +348,69 @@ function outputTextFromCodexResponse(payload: unknown): string {
     .join("");
 }
 
+interface CodexFunctionCall {
+  arguments: string;
+  call_id: string;
+  name: string;
+  type: "function_call";
+}
+
+function codexFunctionCallsFromResponse(payload: unknown): CodexFunctionCall[] {
+  if (!payload || typeof payload !== "object") return [];
+  const output = (payload as Record<string, unknown>).output;
+  if (!Array.isArray(output)) return [];
+
+  return output.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (record.type !== "function_call") return [];
+    if (
+      typeof record.call_id !== "string" ||
+      typeof record.name !== "string" ||
+      typeof record.arguments !== "string"
+    ) {
+      return [];
+    }
+    return [
+      {
+        type: "function_call",
+        call_id: record.call_id,
+        name: record.name,
+        arguments: record.arguments,
+      },
+    ];
+  });
+}
+
+function codexInputItemsFromResponse(payload: unknown): Array<Record<string, unknown>> {
+  if (!payload || typeof payload !== "object") return [];
+  const output = (payload as Record<string, unknown>).output;
+  return Array.isArray(output)
+    ? output.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === "object")
+      )
+    : [];
+}
+
+function addTokenUsage(
+  left: TokenUsage | undefined,
+  right: TokenUsage | undefined
+): TokenUsage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    totalTokens: left.totalTokens + right.totalTokens,
+    ...(left.cachedInputTokens !== undefined || right.cachedInputTokens !== undefined
+      ? { cachedInputTokens: (left.cachedInputTokens ?? 0) + (right.cachedInputTokens ?? 0) }
+      : {}),
+    ...(left.reasoningTokens !== undefined || right.reasoningTokens !== undefined
+      ? { reasoningTokens: (left.reasoningTokens ?? 0) + (right.reasoningTokens ?? 0) }
+      : {}),
+  };
+}
+
 function codexSseEvents(raw: string): Array<Record<string, unknown>> {
   return raw.split(/\n\n+/).flatMap((chunk) => {
     const data = chunk
@@ -437,12 +496,102 @@ async function codexErrorDetail(response: Response): Promise<string> {
   return `: ${raw.trim().slice(0, 240)}`;
 }
 
+function codexToolSchema(tool: ToolDefinition): Record<string, unknown> {
+  const parameters =
+    tool.parameters && typeof tool.parameters === "object"
+      ? (JSON.parse(JSON.stringify(tool.parameters)) as Record<string, unknown>)
+      : { type: "object", properties: {} };
+  return {
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    parameters,
+  };
+}
+
+function parseCodexToolArguments(call: CodexFunctionCall): Record<string, unknown> {
+  try {
+    const parsed = call.arguments ? JSON.parse(call.arguments) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch (error) {
+    throw new Error(
+      `Invalid JSON arguments for ${call.name}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+function textFromToolResult(result: unknown): string {
+  if (!result || typeof result !== "object") return String(result ?? "");
+  const record = result as Record<string, unknown>;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const item = part as Record<string, unknown>;
+        return item.type === "text" && typeof item.text === "string" ? item.text : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (text.trim()) return text;
+  }
+  if ("details" in record) return JSON.stringify(record.details);
+  return JSON.stringify(result);
+}
+
+async function executeCodexToolCall(input: {
+  call: CodexFunctionCall;
+  onToolEnd?: (tool: { name: string; result: unknown }) => void;
+  onToolStart?: (tool: { name: string; args: unknown }) => void;
+  toolsByName: Map<string, ToolDefinition>;
+}): Promise<Record<string, unknown>> {
+  const tool = input.toolsByName.get(input.call.name);
+  if (!tool) {
+    return {
+      type: "function_call_output",
+      call_id: input.call.call_id,
+      output: JSON.stringify({ error: `Unknown tool: ${input.call.name}` }),
+    };
+  }
+
+  try {
+    const args = parseCodexToolArguments(input.call);
+    input.onToolStart?.({ name: input.call.name, args });
+    const result = await tool.execute(
+      input.call.call_id,
+      args,
+      undefined,
+      undefined,
+      undefined as never
+    );
+    input.onToolEnd?.({ name: input.call.name, result });
+    return {
+      type: "function_call_output",
+      call_id: input.call.call_id,
+      output: textFromToolResult(result),
+    };
+  } catch (error) {
+    const result = { error: error instanceof Error ? error.message : String(error) };
+    input.onToolEnd?.({ name: input.call.name, result });
+    return {
+      type: "function_call_output",
+      call_id: input.call.call_id,
+      output: JSON.stringify(result),
+    };
+  }
+}
+
 export async function runCodexResponsesTurn(options: {
   credential: Extract<ModelRuntimeCredential, { authType: "codex-oauth" }>;
   fetchImpl?: FetchLike;
+  onToolEnd?: (tool: { name: string; result: unknown }) => void;
+  onToolStart?: (tool: { name: string; args: unknown }) => void;
   prompt: string;
   provider: Extract<AgentProviderConfig, { provider: "openai-codex" }>;
   timeoutMs?: number;
+  tools?: ToolDefinition[];
 }): Promise<PiTaskTurnResult> {
   const headers: Record<string, string> = {
     accept: "text/event-stream",
@@ -465,33 +614,71 @@ export async function runCodexResponsesTurn(options: {
           abortController?.abort();
         }, timeoutMs)
       : undefined;
-  let responseText: string;
+  const tools = options.tools ?? [];
+  const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+  const toolSchemas = tools.map(codexToolSchema);
+  const input: Array<Record<string, unknown>> = [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: options.prompt }],
+    },
+  ];
+  let finalText = "";
+  let completed = false;
+  let usage: TokenUsage | undefined;
+  const maxToolIterations = 12;
+
   try {
-    const response = await (options.fetchImpl ?? fetch)(`${options.credential.baseUrl}/responses`, {
-      method: "POST",
-      headers,
-      ...(abortController ? { signal: abortController.signal } : {}),
-      body: JSON.stringify({
-        model: options.provider.model,
-        instructions: "You are a helpful assistant.",
-        input: [
-          {
-            role: "user",
-            content: [{ type: "input_text", text: options.prompt }],
-          },
-        ],
-        ...(providerThinkingLevel(options.provider) !== "off"
-          ? { reasoning: { effort: providerThinkingLevel(options.provider) } }
-          : {}),
-        store: false,
-        stream: true,
-      }),
-    });
-    if (!response.ok) {
-      const detail = await codexErrorDetail(response);
-      throw new Error(`Codex Responses request failed with status ${response.status}${detail}`);
+    for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+      const response = await (options.fetchImpl ?? fetch)(
+        `${options.credential.baseUrl}/responses`,
+        {
+          method: "POST",
+          headers,
+          ...(abortController ? { signal: abortController.signal } : {}),
+          body: JSON.stringify({
+            model: options.provider.model,
+            instructions: "You are a helpful assistant.",
+            input,
+            ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
+            ...(providerThinkingLevel(options.provider) !== "off"
+              ? { reasoning: { effort: providerThinkingLevel(options.provider) } }
+              : {}),
+            store: false,
+            stream: true,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const detail = await codexErrorDetail(response);
+        throw new Error(`Codex Responses request failed with status ${response.status}${detail}`);
+      }
+
+      const parsed = parseCodexSseResponse(await response.text());
+      usage = addTokenUsage(usage, normalizeTokenUsage(parsed.payload));
+      const calls = codexFunctionCallsFromResponse(parsed.payload);
+      if (calls.length === 0) {
+        finalText = parsed.text;
+        completed = true;
+        break;
+      }
+
+      input.push(...codexInputItemsFromResponse(parsed.payload));
+      for (const call of calls) {
+        input.push(
+          await executeCodexToolCall({
+            call,
+            ...(options.onToolEnd ? { onToolEnd: options.onToolEnd } : {}),
+            ...(options.onToolStart ? { onToolStart: options.onToolStart } : {}),
+            toolsByName,
+          })
+        );
+      }
     }
-    responseText = await response.text();
+
+    if (!completed) {
+      throw new Error(`Codex Responses exceeded ${maxToolIterations} tool-call iterations`);
+    }
   } catch (error) {
     if (timedOut || (error instanceof Error && error.name === "AbortError")) {
       throw new Error(`Codex Responses request timed out after ${timeoutMs} ms`);
@@ -500,10 +687,8 @@ export async function runCodexResponsesTurn(options: {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
-  const parsed = parseCodexSseResponse(responseText);
-  const usage = normalizeTokenUsage(parsed.payload);
   return {
-    text: parsed.text,
+    text: finalText,
     boundaryViolations: 0,
     ...(usage ? { usage } : {}),
   };
@@ -600,7 +785,7 @@ function buildPrompt(
     sections.push(options.memoryContext);
   }
   sections.push(
-    "Response requirement:\nAfter using tools, always end your turn with a concise user-visible response summarizing what you did, where any deliverable was saved, and any relevant caveat. Do not end with only tool calls."
+    "Tool-use requirement:\nWhen a task requires a tool, invoke the platform's native function tool. Never print fake tool markup such as `<tool_use>`, JSON command blobs, shell transcripts, or simulated tool calls as chat text.\n\nResponse requirement:\nAfter using tools, always end your turn with a concise user-visible response summarizing what you did, where any deliverable was saved, and any relevant caveat. Do not end with only tool calls."
   );
   sections.push(`User task:\n${prompt}`);
   return sections.join("\n\n");
@@ -609,9 +794,9 @@ function buildPrompt(
 function buildAgentInstructions(
   agent: AgentProfile | undefined,
   runtime: AgentRuntimeContext | undefined,
-  options?: { hasTaskChecklistTool?: boolean; hasShellTool?: boolean }
+  options?: { hasTaskChecklistTool?: boolean; hasShellTool?: boolean; hasClarifyTool?: boolean }
 ): string | undefined {
-  if (!agent && !runtime && !options?.hasTaskChecklistTool && !options?.hasShellTool) {
+  if (!agent && !runtime && !options?.hasTaskChecklistTool && !options?.hasShellTool && !options?.hasClarifyTool) {
     return undefined;
   }
 
@@ -626,7 +811,7 @@ function buildAgentInstructions(
     options?.hasTaskChecklistTool
       ? "Task checklist guidance:\nWhen the user asks for a plan, checklist, or other multi-step work, create or update the task checklist early with the todo tool and keep it current as you work. Move items to in_progress or completed as the work advances, and make sure finished work is reflected in the checklist before you end your turn."
       : "",
-    options?.hasTaskChecklistTool
+    options?.hasClarifyTool
       ? "Task clarification guidance:\nIf progress is blocked by missing requirements, ambiguity, or a decision only the user can make, use the clarify tool instead of guessing. Prefer clarify early before taking irreversible or highly branchy action."
       : "",
     options?.hasShellTool
@@ -850,12 +1035,18 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
       throw new Error("openai-codex is not configured. Sign in with ChatGPT in Settings > Model.");
     }
     const agentInstructions = buildAgentInstructions(options.agent, runtime, {
-      hasTaskChecklistTool: false,
-      hasShellTool: false,
+      hasTaskChecklistTool: taskTools.some((tool) => tool.name === "todo"),
+      hasClarifyTool: taskTools.some((tool) => tool.name === "clarify"),
+      hasShellTool: shellTools.some((tool) => tool.name === "shell"),
     });
     const activeSkills = await activeSkillContent(options.skillRuntime);
-    return runCodexResponsesTurn({
+    const result = await runCodexResponsesTurn({
       credential: codexCredential,
+      ...(options.onToolEnd ? { onToolEnd: options.onToolEnd } : {}),
+      onToolStart(tool) {
+        options.onActivity?.(`Using ${tool.name}`);
+        options.onToolStart?.(tool);
+      },
       prompt: buildPrompt(options.prompt, {
         ...(agentInstructions ? { agentInstructions } : {}),
         ...(activeSkills ? { activeSkillContent: activeSkills } : {}),
@@ -865,7 +1056,9 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
           : {}),
       }),
       provider: options.provider,
+      tools: customTools,
     });
+    return { ...result, boundaryViolations };
   }
 
   const apiKey = apiKeyFromCredential(options.credential);
@@ -885,6 +1078,7 @@ export async function runPiTaskTurn(options: RunPiTaskTurnOptions): Promise<PiTa
   const agentInstructions = buildAgentInstructions(options.agent, runtime, {
     hasTaskChecklistTool: taskTools.some((tool) => tool.name === "todo"),
     hasShellTool: shellTools.some((tool) => tool.name === "shell"),
+    hasClarifyTool: taskTools.some((tool) => tool.name === "clarify"),
   });
   const activeSkills = await activeSkillContent(options.skillRuntime);
 

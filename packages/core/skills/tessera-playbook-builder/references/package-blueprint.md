@@ -51,17 +51,38 @@ Generated archives belong in `dist/` or the package root only after validation. 
 
 Keep `manifest.json`, `playbook.ts`, and `package.json` version values in lockstep when `package.json` exists. Procurement-style packages may omit `package.json`; then lock `manifest.json` and `playbook.ts`.
 
+## Production Grade Baseline
+
+A generated package should be a maintainable Tessera workflow, not a demo skeleton:
+
+- Use registered Tessera capability ids for tools, connectors, skills, and effects. New packages should prefer `tool.workspace.read`, `tool.workspace.write`, `integration.calendar.events.read`, `integration.crm.accounts.read`, `integration.web.search`, `integration.web.fetch`, `integration.mail.messages.read`, `integration.mail.drafts.write`, `integration.drive.files.read`, `integration.contacts.read`, `integration.sheets.rows.write`, `integration.docs.documents.write`, `skill.meeting-prep`, and `skill.account-research`.
+- Put required capabilities in both `metadata.requiredCapabilities` and top-level `capabilities`; optional capabilities must have a useful missing-source path.
+- Every required live source must be collected by an executable graph node and stored in a schema-backed raw-source artifact before an agent summarizes it.
+- Every durable write must be an `effect` node with approval, preview, idempotency, and a materialization target.
+- Every final run-result UI output must be declared in `metadata.outputs` with `kind` matching a produced artifact id or run output key, backed by a schema. Use `kind: "dashboard"` only for dashboard layouts.
+- Agent skills are assignment requirements, not package-local scripts. Document any skill capability that an agent step depends on, but do not create a fake `skill` node or run a skill helper outside Tessera.
+- `PLAYBOOK.md` must tell a future user how to update the workflow: sources, capabilities, graph nodes, schemas, prompts, review gates, outputs, version bumping, validation, and import.
+
 ## Graph Conventions
 
 Common node kinds:
 
 - `script` for deterministic package-local normalization, parsing, scoring, fan-in, structuring, and final formatting.
-- `tool` for declared Tessera capabilities such as `web.search`, `web.fetch`, `gmail.search`, or `tool.workspace.write`.
+- `tool` for declared Tessera capabilities such as `integration.web.search`, `integration.web.fetch`, `integration.mail.messages.read`, or `tool.workspace.write`.
 - `parallelMap` for bounded source fanout and branch fan-in.
 - `agent` for draft, review, summarize, and rework steps with schema-backed outputs.
 - `condition` for review/revision and data-presence routing.
 - `humanReview` for explicit approve/request-changes pauses.
 - `effect` for external writes.
+
+Working source rule:
+
+- If a requested playbook depends on a live source, add an executable `tool` or connector node for that source. Do not rely on an agent prompt to "use Gmail", "search the web", "read Drive", or "check the calendar" without a source node that actually produces evidence.
+- Use registered capability ids in tool/effect nodes. Do not invent connector ids or capability names.
+- Required live sources belong in `metadata.requiredCapabilities` and top-level `capabilities`; optional exploratory sources may be optional only when the playbook can still produce a useful final artifact without them.
+- Source nodes should write schema-backed raw-source artifacts, and downstream scripts or agents should consume those artifacts explicitly.
+- For email or Gmail workflows, prefer `integration.mail.messages.read` with `mail search` or `mail list`, a raw mail result artifact, and draft prompts that treat empty results as a source gap rather than inventing content.
+- Fixture data is required for package-local tests, but fixture coverage must not replace live source nodes when the user asked for a connector-backed runtime workflow.
 
 Effect nodes should be explicit about side effects:
 
@@ -155,10 +176,13 @@ Tests must not run the graph, exercise live connectors, handle human review paus
 Before reporting completion:
 
 - package folder exists with package-relative refs
+- graph uses only declared, registered capabilities or documented legacy aliases during repair
+- required live sources/effects have executable graph nodes, not prompt-only instructions
 - build tooling is present and dev-only
 - text validation passes
 - JSON validation passes
 - package-local tests pass or the gap is explained
 - final artifacts are markdown, CSV, JSON, or PDF
 - live capabilities are declared and fixture coverage is credential-free
+- `PLAYBOOK.md` documents update/upgrade steps for maintainers
 - no standalone runner, dependency fields, lockfiles, unsafe refs, or local graph execution wrappers exist

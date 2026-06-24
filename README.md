@@ -13,6 +13,36 @@ run tasks, review outputs, and keep work grounded in local workspace context.
 
 ---
 
+## Try It Locally
+
+Tessera is not available as a packaged installer yet, but developers can run the
+desktop app directly from source:
+
+```bash
+git clone https://github.com/AIArchitectsLabs/tessera.git
+cd tessera
+bun install
+bun run dev
+```
+
+`bun run dev` starts Tauri in development mode. On first run it builds the local
+sidecar and CLI binaries, starts the React/Vite dev server, and opens the
+Tessera desktop window.
+
+You will need:
+
+- [Rust](https://rustup.rs) stable
+- [Bun](https://bun.sh) 1.1 or newer
+- Platform build tools:
+  - **macOS:** Xcode Command Line Tools (`xcode-select --install`)
+  - **Linux:** `libwebkit2gtk`, `libssl-dev`, `libayatana-appindicator3-dev`
+  - **Windows:** Microsoft C++ Build Tools
+
+If the desktop window does not open, run `bun install` again after installing
+the missing prerequisite, then retry `bun run dev`.
+
+---
+
 ## Overview
 
 Tessera is built around the idea that AI agents should feel like capable
@@ -66,26 +96,6 @@ tessera/
 │   └── plugin-sdk/         # SDK for building plugins and MCP servers
 └── plugins/                # First-party plugins
 ```
-
-## Prerequisites
-
-- [Rust](https://rustup.rs) (stable)
-- [Bun](https://bun.sh) ≥ 1.1
-- Platform build tools:
-  - **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-  - **Linux:** `libwebkit2gtk`, `libssl-dev`, `libayatana-appindicator3-dev`
-  - **Windows:** Microsoft C++ Build Tools
-
-## Getting Started
-
-```bash
-git clone https://github.com/AIArchitectsLabs/tessera.git
-cd tessera
-bun install
-bun run dev
-```
-
-`bun run dev` launches the desktop app through the `@tessera/desktop` workspace.
 
 ## Common Commands
 

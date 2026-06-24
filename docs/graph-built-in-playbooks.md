@@ -129,6 +129,8 @@ See the `artifactWrite` nodes in the same three playbooks above for concrete fie
 
 Dashboard playbooks declare their output in `metadata.outputs` with `kind: "dashboard"`. The current built-in example is [`ops.activity-snapshot/playbook.ts`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/playbook.ts).
 
+Dashboard output is not the default meaning of "display in UI". If the user only wants the final playbook result visible in the run UI, declare a normal final output whose `kind` matches a produced artifact or run output key. Use `kind: "dashboard"` only for dashboard, chart, layout, refreshable monitoring, or similar dashboard surfaces.
+
 For dashboard playbooks:
 
 - Keep the output artifact and schema in `artifacts`, as in `artifacts.dashboard.schema` in [`ops.activity-snapshot/playbook.ts`](../packages/core/src/builtin-graph-playbooks/ops.activity-snapshot/playbook.ts).

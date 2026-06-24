@@ -27,6 +27,8 @@ Sources:
 Tools and effects:
 
 - Which connector/tool calls are needed during Tessera execution?
+- Which registered Tessera capability id backs each tool, connector, skill, or effect?
+- Which source claims must be backed by executable graph nodes rather than prompt instructions?
 - Which package-local scripts should normalize, score, parse, aggregate, or format data?
 - Which durable effects should happen at the end, such as workspace writes?
 - Which effects require approval, preview, idempotency, or audit notes?
@@ -44,14 +46,16 @@ Artifacts:
 - What final markdown, CSV, JSON, or PDF outputs are required?
 - Who reads each artifact?
 - What schema or template backs each artifact?
+- Should the result appear as a final run-result card, a human review step, a dashboard layout, or only as a materialized workspace file?
 
 Packaging:
 
-- What external package path should be created or repaired?
+- What external package path should be created or repaired? For existing playbooks, first resolve the target from `playbooks/<name>`, folder name, manifest `id`, or manifest `name`.
 - Should the package include a `package.json` for tests, or use manifest/playbook only?
 - What build command should validate, package, and release the folder?
 - What fixture coverage is required before import?
 - What import surface is expected: folder, zip, or both?
+- What should future maintainers edit when updating sources, prompts, schemas, review gates, outputs, or versions?
 
 ## Question Discipline
 
@@ -79,8 +83,11 @@ Do not generate package files until the brief names:
 - primary user
 - source inventory
 - tools/effects inventory
+- registered capability mapping for every source/effect/skill requirement
+- executable source nodes for every required live source
 - graph sketch
 - schema plan
 - review gates
 - final artifacts
+- update/upgrade plan
 - validation commands

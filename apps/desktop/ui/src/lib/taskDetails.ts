@@ -46,10 +46,11 @@ export function mergeTaskDetail(current: TaskDetail, incoming: TaskDetail): Task
   );
 
   const base = incoming.updatedAt >= current.updatedAt ? incoming : current;
+  const clarify = incoming.updatedAt >= current.updatedAt ? incoming.clarify : current.clarify;
 
   return {
     ...base,
-    clarify: incoming.clarify ?? current.clarify,
+    clarify,
     notifications,
     auditRecords,
     turns: [...turnsById.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),

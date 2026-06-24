@@ -33,10 +33,13 @@ Shape:
 
 Rules:
 
-- Public feeds are modeled as `web.fetch` plus package-local parsing until Tessera adds a generic feed capability.
+- A live source requirement must become an executable graph node, not only prose in an agent prompt.
+- Required sources should be listed in `metadata.requiredCapabilities` and top-level `capabilities`; optional sources should be optional only when the final artifact remains useful without them.
+- Public feeds are modeled as `integration.web.fetch` plus package-local parsing until Tessera adds a generic feed capability.
 - Connector-specific semantics stay inside the package.
 - The start surface should make capabilities visible before running.
 - Live connector access is not required for fixture validation.
+- For email/Gmail workflows, use `integration.mail.messages.read` with `mail search` or `mail list`, emit a raw mail artifact, and make downstream nodes preserve empty-source diagnostics.
 
 ## Pattern: Source Normalization
 
@@ -127,20 +130,21 @@ Rules:
 - CSV is best for queues, ledgers, and registers.
 - JSON is best for machine-readable downstream use.
 
-## Pattern: Fixture-First Live Connector Upgrade
+## Pattern: Fixture-First Future Connector Upgrade
 
-Use when live Gmail, web, feed, or external-source behavior is planned later.
+Use when live Gmail, web, feed, or external-source behavior is planned later and the package is explicitly fixture-first for now. Do not use this pattern when the user asked for a working connector-backed playbook.
 
 Shape:
 
 - Fixture source path proves normalization and fan-in.
-- Optional live source capability is declared.
+- Optional live source capability is documented as future work, not as current runtime behavior.
 - Runtime note explains live adapter requirements when the adapter is not registered.
 - Later connector work replaces fixture source nodes or command-plan outputs with live effect nodes.
 
 Rules:
 
 - Do not block package validation on live credentials.
+- Do not list future live sources as required capabilities or claim the package is connector-backed until executable source nodes exist.
 - Keep fixture data realistic enough to exercise provenance, gaps, duplicates, and noise.
 - Treat command plans as transitional only; do not call them final live writes.
 
@@ -169,6 +173,7 @@ Avoid:
 - Adding a package-local graph runner to make tests easier.
 - Validating only happy-path fixtures.
 - Letting prompts invent missing source facts.
+- Claiming live source support without executable source collection nodes.
 - Writing final artifacts before approval.
 - Hiding connector provenance in narrative text only.
 - Treating feed parsing, risk scoring, or content scoring as Tessera core behavior before it is proven generic.

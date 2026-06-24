@@ -2,6 +2,14 @@
 
 Run package-local checks first when present, then validation from the Tessera repo unless the installed CLI is known to be current.
 
+In Tessera task mode, prefer the native tool:
+
+```text
+playbook_package_validate(packagePath: "<external-package-path>")
+```
+
+It runs package-local checks and Tessera text/JSON validation when the task runner has CLI access. If it fails, repair the reported package files and run it again before completing the task.
+
 Common package-local checks:
 
 ```bash

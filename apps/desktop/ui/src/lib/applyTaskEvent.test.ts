@@ -169,6 +169,28 @@ describe("applyTaskEvent", () => {
     expect(result.artifacts.length).toBe(1);
   });
 
+  test("task.playbook_imported leaves task detail unchanged", () => {
+    const event: TaskEvent = {
+      type: "task.playbook_imported",
+      taskId: "task-1",
+      emittedAt: "2026-05-01T00:00:00.000Z",
+      playbookId: "weekly-email-summary",
+      packagePath: "playbooks/weekly-email-summary",
+      import: {
+        schemaVersion: 1,
+        status: "installed",
+        id: "weekly-email-summary",
+        version: "0.1.0",
+        name: "Weekly Email Summary",
+        graphHash: `sha256:${"a".repeat(64)}`,
+        sourceHash: `sha256:${"b".repeat(64)}`,
+        warnings: [],
+      },
+    };
+
+    expect(applyTaskEvent(baseDetail, event)).toBe(baseDetail);
+  });
+
   test("ignores event for different taskId", () => {
     const event: TaskEvent = {
       type: "task.updated",
