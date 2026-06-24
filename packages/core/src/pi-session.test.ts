@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "@mariozechner/pi-ai";
 import type {
   AgentSessionEvent,
@@ -48,7 +50,7 @@ class FakeSession implements PiSessionLike {
 }
 
 async function makeWorkspace() {
-  return realpath(await mkdtemp("/tmp/tessera-pi-session-"));
+  return realpath(await mkdtemp(join(tmpdir(), "tessera-pi-session-")));
 }
 
 describe("runPiTaskTurn", () => {
@@ -1062,6 +1064,40 @@ describe("runPiTaskTurn", () => {
     });
   });
 
+  test("does not allow approval-gated HubSpot mutations in task mode", async () => {
+    const workspaceRoot = await makeWorkspace();
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      const shellTool = factoryOpts.customTools.find((tool) => tool.name === "shell");
+      await expect(
+        shellTool?.execute(
+          "call-1",
+          {
+            command: "hubspot",
+            subcommand: "contacts",
+            args: ["create", "--properties-json", JSON.stringify({ email: "alex@example.com" })],
+          },
+          undefined,
+          undefined,
+          undefined as never
+        )
+      ).rejects.toThrow("requires approval");
+      return new FakeSession([]);
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Create a HubSpot contact",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      shell: {
+        async executeShell() {
+          throw new Error("should not be called");
+        },
+      },
+      workspaceRoot,
+    });
+  });
+
   test("nudges task mode to use todo for plans and multi-step work", async () => {
     const workspaceRoot = await makeWorkspace();
     let capturedSession: FakeSession | undefined;
@@ -1162,6 +1198,44 @@ describe("runPiTaskTurn", () => {
     );
     expect(capturedSession?.capturedPrompts[0]).toContain("web-search search ...");
     expect(capturedSession?.capturedPrompts[0]).toContain("web-fetch fetch <url>");
+  });
+
+  test("nudges task mode to use shell for HubSpot CRM requests", async () => {
+    const workspaceRoot = await makeWorkspace();
+    let capturedSession: FakeSession | undefined;
+    const factory: PiSessionFactory = async (factoryOpts) => {
+      const shellTool = factoryOpts.customTools.find((tool) => tool.name === "shell");
+      expect(shellTool?.description).toContain("connected services");
+      expect(shellTool?.promptSnippet).toContain("hubspot summary");
+      capturedSession = new FakeSession([]);
+      return capturedSession;
+    };
+
+    await runPiTaskTurn({
+      credential: "sk-test",
+      factory,
+      prompt: "Show me my HubSpot contacts, companies, and deals.",
+      provider: { provider: "openai", model: "gpt-5.4", apiKeyEnv: "OPENAI_API_KEY" },
+      shell: {
+        async executeShell() {
+          return {
+            command: "hubspot",
+            subcommand: "summary",
+            stdout: "{}",
+            stderr: "",
+            exitCode: 0,
+            durationMs: 1,
+          };
+        },
+      },
+      workspaceRoot,
+    });
+
+    const prompt = capturedSession?.capturedPrompts[0] ?? "";
+    expect(prompt).toContain("When the user asks for HubSpot CRM data, use the shell tool");
+    expect(prompt).toContain("hubspot summary");
+    expect(prompt).toContain("hubspot contacts search <query>");
+    expect(prompt).toContain("Creating or updating HubSpot records requires approval.");
   });
 });
 

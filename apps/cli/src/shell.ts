@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { URL } from "node:url";
 import {
+  type HubSpotObjectType,
   type IntegrationSettingsRead,
   IntegrationSettingsReadSchema,
   type SearchProvider,
@@ -26,6 +27,13 @@ import {
   runGwsCli,
   runGwsWriteCli,
 } from "./google-connector.js";
+import {
+  HubSpotConnectorError,
+  hubspotMutateObject,
+  hubspotReadObject,
+  hubspotSearchObjects,
+  hubspotSummary,
+} from "./hubspot-connector.js";
 
 const KEYCHAIN_SERVICE = "Tessera";
 const BRAVE_SEARCH_ACCOUNT = "integration.brave-search";
@@ -59,6 +67,7 @@ export interface ExecuteCliCommandOptions {
   playbookScriptSdkVersion?: string;
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   getBraveApiKey?: () => Promise<string | null>;
+  getHubSpotAccessToken?: () => Promise<string | null>;
   getTavilyApiKey?: () => Promise<string | null>;
   getSearchSettings?: () => Promise<IntegrationSettingsRead["search"]>;
   googleWorkspaceConnector?: GoogleWorkspaceConnector;
@@ -145,6 +154,11 @@ export async function executeCliCommand(
       return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
     }
 
+    if (command === "hubspot") {
+      const payload = await runHubSpotCommand(subcommand, args, options);
+      return { exitCode: 0, stdout: `${JSON.stringify(payload)}\n`, stderr: "" };
+    }
+
     throw new CliCommandError(
       `Unknown command: ${[command, subcommand].filter(Boolean).join(" ")}`
     );
@@ -155,7 +169,9 @@ export async function executeCliCommand(
         ? error.exitCode
         : error instanceof GoogleWorkspaceConnectorError
           ? error.exitCode
-          : 1;
+          : error instanceof HubSpotConnectorError
+            ? error.exitCode
+            : 1;
     return { exitCode, stdout: "", stderr: `${message}\n` };
   }
 }
@@ -935,6 +951,56 @@ async function runDriveRead(args: string[], options: ExecuteCliCommandOptions) {
 async function runContactsLookup(args: string[], options: ExecuteCliCommandOptions) {
   const { query, limit } = parseContactsLookupArgs(args);
   return createGoogleWorkspaceConnector(options).lookupContacts({ query, limit });
+}
+
+async function runHubSpotCommand(
+  subcommand: string | undefined,
+  args: string[],
+  options: ExecuteCliCommandOptions
+) {
+  const accessToken =
+    normalizeCredentialValue(await options.getHubSpotAccessToken?.()) ??
+    normalizeCredentialValue(process.env.TESSERA_HUBSPOT_ACCESS_TOKEN);
+  const connectorOptions = {
+    ...(accessToken ? { accessToken } : {}),
+    fetchImpl: (options.fetchImpl ?? fetch) as typeof fetch,
+  };
+  if (subcommand === "summary") {
+    if (args.length > 0) throw new CliCommandError("Usage: hubspot summary");
+    return hubspotSummary(connectorOptions);
+  }
+
+  const objectType = parseHubSpotObjectType(subcommand);
+  const action = args[0]?.trim();
+  if (action === "search") {
+    const { query, limit } = parseHubSpotSearchArgs(args.slice(1), objectType);
+    return hubspotSearchObjects(objectType, query, limit, connectorOptions);
+  }
+  if (action === "read") {
+    const id = args[1]?.trim();
+    if (!id || args.length !== 2) {
+      throw new CliCommandError(`Usage: hubspot ${objectType} read <id>`);
+    }
+    return hubspotReadObject(objectType, id, connectorOptions);
+  }
+  if (action === "create") {
+    const properties = parseHubSpotPropertiesArgs(args.slice(1), objectType, "create");
+    return hubspotMutateObject(objectType, "create", properties, connectorOptions);
+  }
+  if (action === "update") {
+    const id = args[1]?.trim();
+    if (!id) {
+      throw new CliCommandError(
+        `Usage: hubspot ${objectType} update <id> --properties-json <json>`
+      );
+    }
+    const properties = parseHubSpotPropertiesArgs(args.slice(2), objectType, "update");
+    return hubspotMutateObject(objectType, "update", properties, connectorOptions, id);
+  }
+
+  throw new CliCommandError(
+    `Usage: hubspot ${objectType} search <query> [--limit <n>] | read <id> | create --properties-json <json> | update <id> --properties-json <json>`
+  );
 }
 
 type WriteMode =
@@ -2425,6 +2491,78 @@ function parseContactsLookupArgs(args: string[]): { query: string; limit: number
   }
 
   return { query, limit };
+}
+
+function parseHubSpotObjectType(value: string | undefined): HubSpotObjectType {
+  if (value === "contacts" || value === "companies" || value === "deals") return value;
+  throw new CliCommandError(
+    "Usage: hubspot summary | hubspot contacts|companies|deals <search|read|create|update>"
+  );
+}
+
+function parseHubSpotSearchArgs(
+  args: string[],
+  objectType: HubSpotObjectType
+): { query: string; limit: number } {
+  let limit = 10;
+  const queryParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg)
+      throw new CliCommandError(`Usage: hubspot ${objectType} search <query> [--limit <n>]`);
+    if (arg === "--limit") {
+      const value = args[index + 1];
+      const parsed = Number(value);
+      if (!value || !Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliCommandError(`Usage: hubspot ${objectType} search <query> [--limit <n>]`);
+      }
+      limit = Math.min(parsed, 100);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new CliCommandError(`Usage: hubspot ${objectType} search <query> [--limit <n>]`);
+    }
+    queryParts.push(arg);
+  }
+
+  const query = queryParts.join(" ").trim();
+  if (!query)
+    throw new CliCommandError(`Usage: hubspot ${objectType} search <query> [--limit <n>]`);
+  return { query, limit };
+}
+
+function parseHubSpotPropertiesArgs(
+  args: string[],
+  objectType: HubSpotObjectType,
+  action: "create" | "update"
+): Record<string, string> {
+  if (args.length !== 2 || args[0] !== "--properties-json") {
+    throw new CliCommandError(
+      `Usage: hubspot ${objectType} ${action}${action === "update" ? " <id>" : ""} --properties-json <json>`
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args[1] ?? "");
+  } catch {
+    throw new CliCommandError("HubSpot properties JSON is invalid.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CliCommandError("HubSpot properties JSON must be an object.");
+  }
+
+  const properties: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (value === null || value === undefined) continue;
+    properties[key] = String(value);
+  }
+  if (Object.keys(properties).length === 0) {
+    throw new CliCommandError("HubSpot properties JSON must include at least one property.");
+  }
+  return properties;
 }
 
 function normalizeCredentialValue(value: string | null | undefined): string | undefined {

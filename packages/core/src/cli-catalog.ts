@@ -105,12 +105,36 @@ export const CLI_CATALOG: CliCommandCatalogEntry[] = [
     help: "Look up contacts.",
     subcommands: [{ subcommand: "lookup", approval: "allow", help: "Look up a contact." }],
   },
+  {
+    command: "hubspot",
+    help: "Read and update HubSpot CRM contacts, companies, and deals.",
+    subcommands: [
+      { subcommand: "summary", approval: "allow", help: "Summarize CRM object counts." },
+      {
+        subcommand: "contacts",
+        approval: "allow",
+        help: "Search, read, create, or update contacts.",
+      },
+      {
+        subcommand: "companies",
+        approval: "allow",
+        help: "Search, read, create, or update companies.",
+      },
+      { subcommand: "deals", approval: "allow", help: "Search, read, create, or update deals." },
+    ],
+  },
 ];
 
 export function findCliCommand(call: ShellToolCall): CliSubcommandPolicy | undefined {
-  return CLI_CATALOG.find((entry) => entry.command === call.command)?.subcommands.find(
+  const policy = CLI_CATALOG.find((entry) => entry.command === call.command)?.subcommands.find(
     (subcommand) => subcommand.subcommand === call.subcommand
   );
+  if (call.command !== "hubspot" || !policy) return policy;
+  const action = call.subcommand === "summary" ? "summary" : call.args[0];
+  return {
+    ...policy,
+    approval: action === "create" || action === "update" ? "ask" : "allow",
+  };
 }
 
 export function formatCliCatalogLine(entry: CliCommandCatalogEntry): string {

@@ -19,6 +19,7 @@ import {
 describe("integration settings UI helpers", () => {
   test("labels supported integration providers", () => {
     expect(integrationLabel("google-workspace")).toBe("Google Workspace");
+    expect(integrationLabel("hubspot")).toBe("HubSpot");
   });
 
   test("labels supported search providers and modes", () => {
@@ -36,7 +37,7 @@ describe("integration settings UI helpers", () => {
   });
 
   test("exports every supported integration provider", () => {
-    const expected: IntegrationProvider[] = ["google-workspace"];
+    const expected: IntegrationProvider[] = ["google-workspace", "hubspot"];
     expect(INTEGRATION_PROVIDERS).toEqual(expected);
   });
 
@@ -54,5 +55,6 @@ describe("integration settings UI helpers", () => {
   test("marks Google Workspace as CLI-connected", () => {
     expect(KEYLESS_INTEGRATION_PROVIDERS).toEqual(["google-workspace"]);
     expect(integrationProviderSupportsCredential("google-workspace")).toBe(false);
+    expect(integrationProviderSupportsCredential("hubspot")).toBe(true);
   });
 });
