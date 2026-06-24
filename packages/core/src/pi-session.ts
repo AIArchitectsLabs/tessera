@@ -796,7 +796,13 @@ function buildAgentInstructions(
   runtime: AgentRuntimeContext | undefined,
   options?: { hasTaskChecklistTool?: boolean; hasShellTool?: boolean; hasClarifyTool?: boolean }
 ): string | undefined {
-  if (!agent && !runtime && !options?.hasTaskChecklistTool && !options?.hasShellTool && !options?.hasClarifyTool) {
+  if (
+    !agent &&
+    !runtime &&
+    !options?.hasTaskChecklistTool &&
+    !options?.hasShellTool &&
+    !options?.hasClarifyTool
+  ) {
     return undefined;
   }
 
