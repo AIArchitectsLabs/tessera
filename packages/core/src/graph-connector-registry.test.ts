@@ -45,6 +45,24 @@ function webConnector(): GraphConnector<Ctx> {
   };
 }
 
+function googleWorkspaceProviderConnector(): GraphConnector<Ctx> {
+  return {
+    adapterId: "google-workspace",
+    label: "Google Workspace",
+    effects: [],
+    tools: [
+      {
+        capability: "integration.google-workspace.mail.messages.read",
+        satisfies: ["integration.mail.messages.read"],
+        provider: "google-workspace",
+        sideEffect: "read",
+        idempotent: true,
+        handler: (_input, ctx) => ({ provider: ctx.marker }),
+      },
+    ],
+  };
+}
+
 const ctx: Ctx = { marker: "ctx" };
 
 describe("buildConnectorRegistry", () => {
@@ -189,5 +207,24 @@ describe("buildConnectorRegistry", () => {
     expect(() =>
       buildConnectorRegistry({ connectors: [bad], ctx, shellToolAdapter: async () => ({}) })
     ).toThrow("has no handler and no shellAllowlist");
+  });
+
+  test("does not dispatch through provider satisfaction metadata", async () => {
+    const registry = buildConnectorRegistry({
+      connectors: [googleWorkspaceProviderConnector()],
+      ctx,
+      shellToolAdapter: async () => ({}),
+    });
+
+    await expect(
+      registry.toolAdapter({ node: { capability: "integration.mail.messages.read" } } as never)
+    ).rejects.toThrow(
+      "No graph tool adapter registered for capability: integration.mail.messages.read"
+    );
+    await expect(
+      registry.toolAdapter({
+        node: { capability: "integration.google-workspace.mail.messages.read" },
+      } as never)
+    ).resolves.toEqual({ provider: "ctx" });
   });
 });

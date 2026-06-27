@@ -34,8 +34,15 @@ export interface BuildConnectorRegistryOptions<Ctx> {
 }
 
 function assertCanonical(capability: string, where: string): void {
-  if (canonicalCapability(capability) === undefined) {
+  const canonical = canonicalCapability(capability);
+  if (!canonical || canonical.id !== capability) {
     throw new Error(`Connector ${where} references unknown capability: ${capability}`);
+  }
+}
+
+function assertPublishedCapabilities(capabilities: string[] | undefined, where: string): void {
+  for (const capability of capabilities ?? []) {
+    assertCanonical(capability, where);
   }
 }
 
@@ -65,6 +72,8 @@ export function buildConnectorRegistry<Ctx>(
         throw new Error(`Connector effect ${key} requires approval but not preview`);
       }
       assertCanonical(effect.capability, `effect ${key}`);
+      assertPublishedCapabilities(effect.publishedCapabilities, `effect ${key}`);
+      assertPublishedCapabilities(effect.satisfies, `effect ${key}`);
       effects.set(key, effect);
       effectPolicies[key] = {
         effectId: effect.effectId,
@@ -89,6 +98,8 @@ export function buildConnectorRegistry<Ctx>(
         throw new Error(`Connector tool ${tool.capability} has no handler and no shellAllowlist`);
       }
       assertCanonical(tool.capability, `tool ${tool.capability}`);
+      assertPublishedCapabilities(tool.publishedCapabilities, `tool ${tool.capability}`);
+      assertPublishedCapabilities(tool.satisfies, `tool ${tool.capability}`);
       tools.set(tool.capability, tool);
       toolAdapterIds.set(tool.capability, connector.adapterId);
       toolPolicies[tool.capability] = {
@@ -109,6 +120,14 @@ export function buildConnectorRegistry<Ctx>(
         );
       }
       assertCanonical(connector.artifactWrite.capability, `artifactWrite (${connector.adapterId})`);
+      assertPublishedCapabilities(
+        connector.artifactWrite.publishedCapabilities,
+        `artifactWrite (${connector.adapterId})`
+      );
+      assertPublishedCapabilities(
+        connector.artifactWrite.satisfies,
+        `artifactWrite (${connector.adapterId})`
+      );
       artifactWrite = { adapterId: connector.adapterId, descriptor: connector.artifactWrite };
       capabilities.add(connector.artifactWrite.capability);
     }

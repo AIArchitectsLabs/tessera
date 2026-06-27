@@ -9,7 +9,12 @@ export default {
     category: "customer-success",
     businessUseCase: "Prepare a renewal risk brief for an account",
     requiredCapabilities: [],
-    optionalCapabilities: ["web", "mail", "drive", "contacts"],
+    optionalCapabilities: [
+      "integration.web.search",
+      "integration.google-workspace.mail.messages.read",
+      "integration.google-workspace.drive.files.read",
+      "integration.google-workspace.contacts.read",
+    ],
     outputs: [
       {
         kind: "businessBrief",
@@ -115,7 +120,13 @@ export default {
       schema: "schemas/businessBrief.schema.json",
     },
   },
-  capabilities: ["web", "mail", "drive", "contacts", "tool.workspace.write"],
+  capabilities: [
+    "integration.web.search",
+    "integration.google-workspace.mail.messages.read",
+    "integration.google-workspace.drive.files.read",
+    "integration.google-workspace.contacts.read",
+    "tool.workspace.write",
+  ],
   limits: {},
   start: "draftRiskBrief",
   nodes: [

@@ -7,18 +7,6 @@ export const webConnector: GraphConnector<ConnectorContext> = {
   effects: [],
   tools: [
     {
-      capability: "web.search",
-      sideEffect: "read",
-      idempotent: true,
-      shellAllowlist: [{ command: "web-search", subcommand: "search" }],
-    },
-    {
-      capability: "web.fetch",
-      sideEffect: "read",
-      idempotent: true,
-      shellAllowlist: [{ command: "web-fetch", subcommand: "fetch" }],
-    },
-    {
       capability: "integration.web.search",
       sideEffect: "read",
       idempotent: true,

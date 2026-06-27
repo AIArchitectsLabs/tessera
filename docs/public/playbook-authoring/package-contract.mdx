@@ -36,4 +36,4 @@ CSV outputs are UTF-8 comma-separated rows. Fields with commas, quotes, or newli
 
 ## Capability Rules
 
-Every tool or connector use must be declared. Prefer generic capabilities such as Gmail, web search, web fetch, or package-local deterministic scripts. Domain-specific connector semantics should stay inside the external package until promoted as a generic Tessera primitive.
+Every tool or connector use must be declared. Prefer generic canonical capabilities such as `integration.mail.messages.read`, `integration.web.search`, `integration.web.fetch`, or package-local deterministic scripts. Provider-specific capabilities describe configured provider availability; package authors should prefer generic canonical ids unless the playbook truly requires one provider. Do not serialize broad legacy aliases such as `mail`, `web`, `gmail.search`, `web.search`, or `web.fetch`.

@@ -9,7 +9,13 @@ export default {
     category: "sales",
     businessUseCase: "Prepare for a customer or prospect meeting",
     requiredCapabilities: [],
-    optionalCapabilities: ["web", "calendar", "mail", "drive", "contacts"],
+    optionalCapabilities: [
+      "integration.web.search",
+      "integration.google-workspace.calendar.events.read",
+      "integration.google-workspace.mail.messages.read",
+      "integration.google-workspace.drive.files.read",
+      "integration.google-workspace.contacts.read",
+    ],
     outputs: [
       {
         kind: "meetingBrief",
@@ -119,7 +125,14 @@ export default {
       schema: "schemas/meetingBrief.schema.json",
     },
   },
-  capabilities: ["web", "calendar", "mail", "drive", "contacts", "tool.workspace.write"],
+  capabilities: [
+    "integration.web.search",
+    "integration.google-workspace.calendar.events.read",
+    "integration.google-workspace.mail.messages.read",
+    "integration.google-workspace.drive.files.read",
+    "integration.google-workspace.contacts.read",
+    "tool.workspace.write",
+  ],
   limits: {},
   start: "draftBrief",
   nodes: [

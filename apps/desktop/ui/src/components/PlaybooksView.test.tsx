@@ -58,7 +58,11 @@ const playbook = {
   category: "Sales",
   businessUseCase: "Prepare for a customer or prospect meeting",
   requiredCapabilities: ["tool.workspace.write"],
-  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
+  optionalCapabilities: [
+    "integration.mail.messages.read",
+    "integration.web.search",
+    "integration.web.fetch",
+  ],
   inputs: {},
   outputs: [{ kind: "meetingBrief", label: "Meeting brief" }],
   steps: [
@@ -128,7 +132,11 @@ const importedPlaybook = {
   graphHash: "sha256:imported-graph",
   sourceHash: "sha256:imported-source",
   requiredCapabilities: ["tool.workspace.write"],
-  optionalCapabilities: ["gmail.search", "web.search", "web.fetch"],
+  optionalCapabilities: [
+    "integration.mail.messages.read",
+    "integration.web.search",
+    "integration.web.fetch",
+  ],
   inputs: {},
   outputs: [],
   steps: [],
@@ -2044,7 +2052,25 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(view.getByText("Using saved setup: Tessera")).toBeTruthy();
     });
-    expect(invoke.mock.calls.some(([command]) => command === "playbook_preflight")).toBe(true);
+    const preflightCall = invoke.mock.calls.find(([command]) => command === "playbook_preflight");
+    expect(preflightCall).toBeTruthy();
+    const preflightInventory = (
+      preflightCall?.[1] as {
+        request?: {
+          capabilityInventory?: {
+            integrations?: Array<{ capabilities?: string[] }>;
+          };
+        };
+      }
+    )?.request?.capabilityInventory;
+    const integrationCapabilities =
+      preflightInventory?.integrations?.flatMap((integration) => integration.capabilities ?? []) ??
+      [];
+    expect(integrationCapabilities).toContain("integration.google-workspace.mail.messages.read");
+    expect(integrationCapabilities).toContain("integration.web.search");
+    expect(integrationCapabilities).not.toContain("integration.search.read");
+    expect(integrationCapabilities).not.toContain("integration.mail.read");
+    expect(integrationCapabilities).not.toContain("integration.drive.read");
 
     fireEvent.click(view.getByRole("button", { name: "Change setup" }));
     let agentSelect: HTMLSelectElement | null = null;
@@ -2157,7 +2183,7 @@ describe("PlaybooksView", () => {
 
     fireEvent.click(view.getByRole("button", { name: "View run details" }));
     await waitFor(() => {
-      expect(view.getByText("Assigned to Analyst • Tools: Workspace Read")).toBeTruthy();
+      expect(view.getByText("Assigned to Analyst • Tools: Read workspace")).toBeTruthy();
       expect(view.getByText("Source provenance")).toBeTruthy();
       expect(view.getByText("Gmail, Web, CBP feed · 5 sources · fixture run")).toBeTruthy();
     });
@@ -3422,11 +3448,11 @@ describe("PlaybooksView", () => {
 
     await waitFor(() => {
       expect(view.getByText("Tessera needs these capabilities to run")).toBeTruthy();
-      expect(view.getByText("Workspace Write")).toBeTruthy();
+      expect(view.getByText("Write workspace")).toBeTruthy();
       expect(view.getByText("Tessera uses these sources when available")).toBeTruthy();
-      expect(view.getByText("Gmail Search")).toBeTruthy();
-      expect(view.getByText("Web Search")).toBeTruthy();
-      expect(view.getByText("Web Fetch")).toBeTruthy();
+      expect(view.getByText("Read mail")).toBeTruthy();
+      expect(view.getByText("Web search")).toBeTruthy();
+      expect(view.getByText("Web fetch")).toBeTruthy();
     });
   });
 
@@ -3465,7 +3491,7 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(
         view.getByText(
-          "Sheets Rows Write: This required capability is not configured in the current workspace."
+          "Write sheet rows: This required capability is not configured in the current workspace."
         )
       ).toBeTruthy();
     });

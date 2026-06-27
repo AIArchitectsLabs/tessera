@@ -1066,19 +1066,6 @@ export const AuditRecordSchema = z.object({
 });
 export type AuditRecord = z.infer<typeof AuditRecordSchema>;
 
-export const WorkflowCapabilitySchema = z.enum([
-  "web",
-  "web.search",
-  "web.fetch",
-  "gmail.search",
-  "calendar",
-  "mail",
-  "drive",
-  "contacts",
-  "tool.workspace.write",
-]);
-export type WorkflowCapability = z.infer<typeof WorkflowCapabilitySchema>;
-
 export const CapabilityKindSchema = z.enum(["model", "skill", "tool", "integration"]);
 export type CapabilityKind = z.infer<typeof CapabilityKindSchema>;
 
@@ -1094,6 +1081,14 @@ export const CanonicalCapabilitySchema = z
     version: z.number().int().positive().default(1),
     aliases: z.array(z.string().min(1)).default([]),
     deprecated: z.boolean().default(false),
+    namespace: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    resource: z.string().min(1).optional(),
+    action: z.string().min(1).optional(),
+    provider: z.string().min(1).optional(),
+    providerCapabilityOf: z.string().min(1).optional(),
+    satisfies: z.array(z.string().min(1)).optional(),
+    requiredScopes: z.array(z.string().min(1)).optional(),
   })
   .strict();
 export type CanonicalCapability = z.infer<typeof CanonicalCapabilitySchema>;
@@ -1163,6 +1158,18 @@ export const CANONICAL_CAPABILITIES = [
     deprecated: false,
   },
   {
+    id: "integration.google-workspace.calendar.events.read",
+    kind: "integration",
+    label: "Google Calendar events",
+    description: "Can read Google Calendar events.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.calendar.events.read",
+    satisfies: ["integration.calendar.events.read"],
+  },
+  {
     id: "integration.crm.accounts.read",
     kind: "integration",
     label: "CRM accounts",
@@ -1177,7 +1184,7 @@ export const CANONICAL_CAPABILITIES = [
     label: "Web search",
     description: "Can search the public web.",
     version: 1,
-    aliases: ["web.search"],
+    aliases: [],
     deprecated: false,
   },
   {
@@ -1186,7 +1193,7 @@ export const CANONICAL_CAPABILITIES = [
     label: "Web fetch",
     description: "Can fetch a public web page.",
     version: 1,
-    aliases: ["web.fetch"],
+    aliases: [],
     deprecated: false,
   },
   {
@@ -1199,6 +1206,18 @@ export const CANONICAL_CAPABILITIES = [
     deprecated: false,
   },
   {
+    id: "integration.google-workspace.mail.messages.read",
+    kind: "integration",
+    label: "Gmail messages",
+    description: "Can read Gmail messages.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.mail.messages.read",
+    satisfies: ["integration.mail.messages.read"],
+  },
+  {
     id: "integration.mail.drafts.write",
     kind: "integration",
     label: "Draft mail",
@@ -1206,6 +1225,18 @@ export const CANONICAL_CAPABILITIES = [
     version: 1,
     aliases: ["mail.drafts.write"],
     deprecated: false,
+  },
+  {
+    id: "integration.google-workspace.mail.drafts.write",
+    kind: "integration",
+    label: "Gmail drafts",
+    description: "Can create Gmail drafts.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.mail.drafts.write",
+    satisfies: ["integration.mail.drafts.write"],
   },
   {
     id: "integration.drive.files.read",
@@ -1217,6 +1248,18 @@ export const CANONICAL_CAPABILITIES = [
     deprecated: false,
   },
   {
+    id: "integration.google-workspace.drive.files.read",
+    kind: "integration",
+    label: "Google Drive files",
+    description: "Can read Google Drive files.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.drive.files.read",
+    satisfies: ["integration.drive.files.read"],
+  },
+  {
     id: "integration.contacts.read",
     kind: "integration",
     label: "Read contacts",
@@ -1224,6 +1267,18 @@ export const CANONICAL_CAPABILITIES = [
     version: 1,
     aliases: ["contacts.read"],
     deprecated: false,
+  },
+  {
+    id: "integration.google-workspace.contacts.read",
+    kind: "integration",
+    label: "Google Contacts",
+    description: "Can look up Google contacts.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.contacts.read",
+    satisfies: ["integration.contacts.read"],
   },
   {
     id: "integration.sheets.rows.write",
@@ -1235,6 +1290,18 @@ export const CANONICAL_CAPABILITIES = [
     deprecated: false,
   },
   {
+    id: "integration.google-workspace.sheets.rows.write",
+    kind: "integration",
+    label: "Google Sheets rows",
+    description: "Can write rows to a Google Sheet.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.sheets.rows.write",
+    satisfies: ["integration.sheets.rows.write"],
+  },
+  {
     id: "integration.docs.documents.write",
     kind: "integration",
     label: "Write documents",
@@ -1243,13 +1310,115 @@ export const CANONICAL_CAPABILITIES = [
     aliases: ["docs.documents.write"],
     deprecated: false,
   },
+  {
+    id: "integration.google-workspace.docs.documents.write",
+    kind: "integration",
+    label: "Google Docs documents",
+    description: "Can write Google Docs content.",
+    version: 1,
+    aliases: [],
+    deprecated: false,
+    provider: "google-workspace",
+    providerCapabilityOf: "integration.docs.documents.write",
+    satisfies: ["integration.docs.documents.write"],
+  },
 ] as const satisfies readonly CanonicalCapability[];
 
-export function canonicalCapability(idOrAlias: string): CanonicalCapability | undefined {
-  return CANONICAL_CAPABILITIES.find(
-    (capability) =>
-      capability.id === idOrAlias || (capability.aliases as readonly string[]).includes(idOrAlias)
+const CANONICAL_CAPABILITY_BY_ID = new Map<string, CanonicalCapability>();
+for (const capability of CANONICAL_CAPABILITIES) {
+  CANONICAL_CAPABILITY_BY_ID.set(capability.id, capability);
+}
+
+const CANONICAL_CAPABILITY_BY_ALIAS = new Map<string, CanonicalCapability>();
+for (const capability of CANONICAL_CAPABILITIES) {
+  for (const alias of capability.aliases) {
+    CANONICAL_CAPABILITY_BY_ALIAS.set(alias, capability);
+  }
+}
+
+const LEGACY_CAPABILITY_MIGRATIONS: Record<string, string> = {
+  web: "integration.web.search",
+  "web.search": "integration.web.search",
+  "web.fetch": "integration.web.fetch",
+  calendar: "integration.calendar.events.read",
+  mail: "integration.mail.messages.read",
+  "gmail.search": "integration.mail.messages.read",
+  "integration.mail.read": "integration.mail.messages.read",
+  drive: "integration.drive.files.read",
+  "integration.drive.read": "integration.drive.files.read",
+  contacts: "integration.contacts.read",
+};
+
+function exactCanonicalCapability(id: string): CanonicalCapability | undefined {
+  return CANONICAL_CAPABILITY_BY_ID.get(id);
+}
+
+export const WorkflowCapabilitySchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => exactCanonicalCapability(value) !== undefined,
+    (value) => ({ message: `Unknown canonical workflow capability: ${value}` })
   );
+export type WorkflowCapability = z.infer<typeof WorkflowCapabilitySchema>;
+
+export function canonicalCapability(idOrAlias: string): CanonicalCapability | undefined {
+  return exactCanonicalCapability(idOrAlias) ?? CANONICAL_CAPABILITY_BY_ALIAS.get(idOrAlias);
+}
+
+export function normalizeCapabilityId(idOrAlias: string): string | undefined {
+  const canonical = canonicalCapability(idOrAlias);
+  if (canonical) return canonical.id;
+  return LEGACY_CAPABILITY_MIGRATIONS[idOrAlias];
+}
+
+export function capabilitySatisfies(required: string, available: string): boolean {
+  const requiredId = normalizeCapabilityId(required);
+  const availableId = normalizeCapabilityId(available);
+  if (!requiredId || !availableId) return false;
+  if (requiredId === availableId) return true;
+
+  const availableCapability = exactCanonicalCapability(availableId);
+  if (!availableCapability) return false;
+
+  if (availableCapability.providerCapabilityOf === requiredId) return true;
+  return availableCapability.satisfies?.includes(requiredId) ?? false;
+}
+
+export function relatedCapabilityIds(capability: string): string[] {
+  const normalized = normalizeCapabilityId(capability);
+  if (!normalized) return [];
+  const related = new Set([normalized]);
+
+  for (const candidate of CANONICAL_CAPABILITIES) {
+    if (capabilitySatisfies(normalized, candidate.id)) {
+      related.add(candidate.id);
+    }
+  }
+
+  return [...related];
+}
+
+export function capabilityDisplayLabel(idOrAlias: string): string {
+  const normalized = normalizeCapabilityId(idOrAlias);
+  const capability = normalized
+    ? exactCanonicalCapability(normalized)
+    : canonicalCapability(idOrAlias);
+  if (capability) return capability.label;
+  return idOrAlias
+    .replace(/[-_.]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function isProviderCapability(idOrAlias: string): boolean {
+  const normalized = normalizeCapabilityId(idOrAlias);
+  const capability = normalized
+    ? exactCanonicalCapability(normalized)
+    : canonicalCapability(idOrAlias);
+  return capability?.providerCapabilityOf !== undefined || capability?.provider !== undefined;
 }
 
 export function assertKnownCapability(id: string, kind: CapabilityKind, optional: boolean): string {
@@ -1573,6 +1742,8 @@ export const WorkflowCapabilityInventorySchema = z
             id: z.string().min(1),
             label: z.string().min(1),
             fingerprint: z.string().min(1),
+            provider: z.string().min(1).optional(),
+            requiredScopes: z.array(z.string().min(1)).optional(),
             capabilities: z.array(z.string().min(1)).default([]),
             dataPolicies: z.array(WorkflowDataPolicySchema).default([]),
             configured: z.boolean(),

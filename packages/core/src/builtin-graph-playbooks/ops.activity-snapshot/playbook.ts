@@ -8,7 +8,11 @@ export default {
     category: "operations",
     businessUseCase: "Latest workspace update",
     requiredCapabilities: [],
-    optionalCapabilities: ["drive", "mail", "calendar"],
+    optionalCapabilities: [
+      "integration.google-workspace.drive.files.read",
+      "integration.google-workspace.mail.messages.read",
+      "integration.google-workspace.calendar.events.read",
+    ],
     outputs: [
       {
         kind: "dashboard",
@@ -45,7 +49,11 @@ export default {
       schema: "schemas/dashboard.schema.json",
     },
   },
-  capabilities: ["drive", "mail", "calendar"],
+  capabilities: [
+    "integration.google-workspace.drive.files.read",
+    "integration.google-workspace.mail.messages.read",
+    "integration.google-workspace.calendar.events.read",
+  ],
   limits: {},
   start: "draftSnapshot",
   nodes: [

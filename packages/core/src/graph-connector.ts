@@ -15,6 +15,10 @@ export interface GraphConnectorShellCommand {
 export interface GraphConnectorEffect<Ctx> {
   effectId: string;
   capability: string;
+  provider?: string;
+  requiredScopes?: string[];
+  publishedCapabilities?: string[];
+  satisfies?: string[];
   sideEffect: "write" | "external";
   idempotent: boolean;
   previewRequired: boolean;
@@ -27,6 +31,10 @@ export interface GraphConnectorEffect<Ctx> {
 
 export interface GraphConnectorTool<Ctx> {
   capability: string;
+  provider?: string;
+  requiredScopes?: string[];
+  publishedCapabilities?: string[];
+  satisfies?: string[];
   sideEffect: "read" | "write" | "external";
   idempotent: boolean;
   shellAllowlist?: GraphConnectorShellCommand[];
@@ -35,6 +43,10 @@ export interface GraphConnectorTool<Ctx> {
 
 export interface GraphConnectorArtifactWrite<Ctx> {
   capability: string;
+  provider?: string;
+  requiredScopes?: string[];
+  publishedCapabilities?: string[];
+  satisfies?: string[];
   handler: (input: PlaybookGraphArtifactWriteAdapterInput, ctx: Ctx) => Promise<unknown> | unknown;
 }
 

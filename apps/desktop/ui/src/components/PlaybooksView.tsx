@@ -37,6 +37,7 @@ import type {
   WorkspaceStyleGuideReadResult,
 } from "@tessera/contracts";
 import {
+  capabilityDisplayLabel,
   workflowStatusFromGraphRunDetail,
   workflowStatusFromGraphRunRecord,
 } from "@tessera/contracts";
@@ -337,7 +338,7 @@ function mergeRunById<T extends { runId: string }>(runs: T[], nextRun: T): T[] {
 }
 
 function formatCapabilityLabel(value: string): string {
-  return titleFromId(value.replace(/^(?:skill|tool|integration)\./, ""));
+  return capabilityDisplayLabel(value);
 }
 
 function formatCapabilityBlockerMessage(blocker: {
@@ -1705,6 +1706,33 @@ function hashText(value: string): string {
   return `ui-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+function configuredIntegrationDataPolicies(
+  configured: boolean
+): WorkflowCapabilityInventory["integrations"][number]["dataPolicies"] {
+  return [configured ? "cloud-ok" : "workspace-local-ok"];
+}
+
+function webSearchIntegration(
+  provider: "brave-search" | "tavily" | "duckduckgo",
+  configured: boolean
+): WorkflowCapabilityInventory["integrations"][number] {
+  const id = `integration.${provider}`;
+  return {
+    id,
+    label: searchProviderLabel(provider),
+    provider,
+    fingerprint: hashText(
+      JSON.stringify({
+        id,
+        configured,
+      })
+    ),
+    capabilities: ["integration.web.search"],
+    configured,
+    dataPolicies: configuredIntegrationDataPolicies(configured),
+  };
+}
+
 function buildCapabilityInventory(
   modelSettings: ModelSettingsRead | null,
   integrationSettings: IntegrationSettingsRead | null,
@@ -1774,6 +1802,7 @@ function buildCapabilityInventory(
     {
       id: "integration.google-workspace",
       label: integrationLabel("google-workspace"),
+      provider: "google-workspace",
       fingerprint: hashText(
         JSON.stringify({
           id: "integration.google-workspace",
@@ -1781,74 +1810,25 @@ function buildCapabilityInventory(
         })
       ),
       capabilities: [
-        "integration.calendar.events.read",
-        "integration.mail.messages.read",
-        "integration.mail.read",
-        "integration.mail.drafts.write",
-        "integration.mail.drafts.send",
-        "integration.sheets.workbooks.write",
-        "integration.sheets.rows.write",
-        "integration.docs.documents.write",
-        "integration.drive.files.read",
-        "integration.drive.read",
-        "integration.contacts.read",
+        "integration.google-workspace.calendar.events.read",
+        "integration.google-workspace.mail.messages.read",
+        "integration.google-workspace.mail.drafts.write",
+        "integration.google-workspace.sheets.rows.write",
+        "integration.google-workspace.docs.documents.write",
+        "integration.google-workspace.drive.files.read",
+        "integration.google-workspace.contacts.read",
       ],
       configured: integrationSettings.providers.googleWorkspace.hasCredential,
-      dataPolicies: [
+      dataPolicies: configuredIntegrationDataPolicies(
         integrationSettings.providers.googleWorkspace.hasCredential
-          ? "cloud-ok"
-          : "workspace-local-ok",
-      ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],
-    },
-    {
-      id: "integration.brave-search",
-      label: "Brave Search",
-      fingerprint: hashText(
-        JSON.stringify({
-          id: "integration.brave-search",
-          configured: integrationSettings.providers.braveSearch.hasCredential,
-        })
       ),
-      capabilities: ["integration.search.read"],
-      configured: integrationSettings.providers.braveSearch.hasCredential,
-      dataPolicies: [
-        integrationSettings.providers.braveSearch.hasCredential ? "cloud-ok" : "workspace-local-ok",
-      ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],
     },
-    {
-      id: "integration.tavily",
-      label: searchProviderLabel("tavily"),
-      fingerprint: hashText(
-        JSON.stringify({
-          id: "integration.tavily",
-          configured: integrationSettings.search.providers.tavily.hasCredential,
-        })
-      ),
-      capabilities: ["integration.search.read"],
-      configured: integrationSettings.search.providers.tavily.hasCredential,
-      dataPolicies: [
-        integrationSettings.search.providers.tavily.hasCredential
-          ? "cloud-ok"
-          : "workspace-local-ok",
-      ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],
-    },
-    {
-      id: "integration.duckduckgo",
-      label: searchProviderLabel("duckduckgo"),
-      fingerprint: hashText(
-        JSON.stringify({
-          id: "integration.duckduckgo",
-          configured: integrationSettings.search.providers.duckduckgo.hasCredential,
-        })
-      ),
-      capabilities: ["integration.search.read"],
-      configured: integrationSettings.search.providers.duckduckgo.hasCredential,
-      dataPolicies: [
-        integrationSettings.search.providers.duckduckgo.hasCredential
-          ? "cloud-ok"
-          : "workspace-local-ok",
-      ] as ("cloud-ok" | "workspace-local-ok" | "local-only")[],
-    },
+    webSearchIntegration("brave-search", integrationSettings.providers.braveSearch.hasCredential),
+    webSearchIntegration("tavily", integrationSettings.search.providers.tavily.hasCredential),
+    webSearchIntegration(
+      "duckduckgo",
+      integrationSettings.search.providers.duckduckgo.hasCredential
+    ),
   ];
 
   const base = {

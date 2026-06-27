@@ -86,7 +86,8 @@ External playbooks own:
 ## Capability Rules
 
 - Every tool or connector use must be declared.
-- Use canonical capabilities such as `integration.mail.messages.read`, `integration.web.search`, `integration.web.fetch`, or package-local deterministic scripts.
+- Use generic canonical capabilities such as `integration.mail.messages.read`, `integration.web.search`, `integration.web.fetch`, or package-local deterministic scripts. Provider-specific capabilities, such as `integration.google-workspace.mail.messages.read`, describe a configured provider's availability; package authors should prefer generic canonical ids unless the playbook truly requires one provider.
+- Do not serialize broad legacy aliases such as `mail`, `drive`, `calendar`, `web`, `gmail.search`, `web.search`, or `web.fetch` in package metadata or graph nodes.
 - When a live connector or workspace source is required for the business outcome, include an executable graph node that collects that source and produces a declared artifact. A prompt that asks an agent to use a source is not enough.
 - Required live sources must appear in both `metadata.requiredCapabilities` and top-level `capabilities`. `metadata.optionalCapabilities` is UI/documentation metadata only — preflight treats every capability not in `metadata.requiredCapabilities` as optional automatically. Use `metadata.optionalCapabilities` to document intended-optional sources for readers and UI surfaces, but do not rely on it as a runtime gate.
 - Public feeds should be modeled as `integration.web.fetch` plus package-local parsing unless Tessera adds a generic feed capability.

@@ -10,7 +10,13 @@ import {
   PlaybookGraphNodeIdSchema,
   PlaybookGraphSchema,
   PlaybookGraphSourceRefSchema,
+  PlaybookSummarySchema,
+  WorkflowCapabilitySchema,
   canonicalCapability,
+  capabilityDisplayLabel,
+  capabilitySatisfies,
+  isProviderCapability,
+  normalizeCapabilityId,
 } from "./index.js";
 
 const validGraph = {
@@ -31,7 +37,7 @@ const validGraph = {
     brief: { schema: "./schemas/content-brief.schema.json", materialize: "brief.md" },
     briefScorecard: { schema: "./schemas/brief-scorecard.schema.json" },
   },
-  capabilities: ["web.search", "web.fetch"],
+  capabilities: ["integration.web.search", "integration.web.fetch"],
   limits: {
     maxGeneratedItems: 30,
     maxConcurrentBranches: 6,
@@ -64,7 +70,7 @@ const validGraph = {
             kind: "agent",
             prompt: "./prompts/research-serp.md",
             inputs: { item: { ref: "branch.item" } },
-            tools: ["web.search", "web.fetch"],
+            tools: ["integration.web.search", "integration.web.fetch"],
             output: { schema: "./schemas/research-item.schema.json" },
             onSuccess: "completed",
           },
@@ -158,7 +164,7 @@ describe("PlaybookGraphSchema", () => {
         {
           id: "toolStep",
           kind: "tool",
-          capability: "web.search",
+          capability: "integration.web.search",
           args: { query: "playbooks" },
         },
       ],
@@ -505,17 +511,75 @@ describe("PlaybookGraphCompileMetadataSchema", () => {
 });
 
 describe("canonical integration capabilities", () => {
-  test.each([
-    ["integration.web.search", "web.search"],
-    ["integration.web.fetch", "web.fetch"],
-    ["integration.mail.messages.read", "mail.messages.read"],
-    ["integration.mail.drafts.write", "mail.drafts.write"],
-    ["integration.drive.files.read", "drive.files.read"],
-    ["integration.contacts.read", "contacts.read"],
-    ["integration.sheets.rows.write", "sheets.rows.write"],
-    ["integration.docs.documents.write", "docs.documents.write"],
-  ])("registers %s (alias %s)", (id, alias) => {
-    expect(canonicalCapability(id)?.id).toBe(id);
-    expect(canonicalCapability(alias)?.id).toBe(id);
+  test("validates canonical V2 capability ids in playbook summaries", () => {
+    const summary = PlaybookSummarySchema.parse({
+      id: "content.seo-blog",
+      version: 1,
+      name: "SEO Blog",
+      requiredCapabilities: ["integration.web.search"],
+      optionalCapabilities: ["integration.google-workspace.mail.messages.read"],
+      stepCount: 3,
+    });
+
+    expect(summary.requiredCapabilities).toEqual(["integration.web.search"]);
+    expect(summary.optionalCapabilities).toEqual([
+      "integration.google-workspace.mail.messages.read",
+    ]);
+  });
+
+  test("rejects broad legacy ids in serialized summary capabilities", () => {
+    expect(
+      PlaybookSummarySchema.safeParse({
+        id: "content.seo-blog",
+        version: 1,
+        name: "SEO Blog",
+        requiredCapabilities: ["web.search"],
+        optionalCapabilities: ["mail"],
+        stepCount: 3,
+      }).success
+    ).toBe(false);
+    expect(WorkflowCapabilitySchema.safeParse("integration.web.search").success).toBe(true);
+    expect(WorkflowCapabilitySchema.safeParse("web.search").success).toBe(false);
+  });
+
+  test("normalizes legacy aliases only through migration helpers", () => {
+    expect(normalizeCapabilityId("mail")).toBe("integration.mail.messages.read");
+    expect(normalizeCapabilityId("gmail.search")).toBe("integration.mail.messages.read");
+    expect(normalizeCapabilityId("web.search")).toBe("integration.web.search");
+    expect(normalizeCapabilityId("drive")).toBe("integration.drive.files.read");
+    expect(canonicalCapability("mail")).toBeUndefined();
+    expect(canonicalCapability("web.search")).toBeUndefined();
+  });
+
+  test("keeps provider variants known but separate from generic aliases", () => {
+    const generic = canonicalCapability("integration.mail.messages.read");
+    const provider = canonicalCapability("integration.google-workspace.mail.messages.read");
+
+    expect(provider?.id).toBe("integration.google-workspace.mail.messages.read");
+    expect(provider?.providerCapabilityOf).toBe("integration.mail.messages.read");
+    expect(generic?.aliases).not.toContain("integration.google-workspace.mail.messages.read");
+    expect(isProviderCapability("integration.google-workspace.mail.messages.read")).toBe(true);
+  });
+
+  test("evaluates capability satisfaction directionally", () => {
+    expect(
+      capabilitySatisfies(
+        "integration.mail.messages.read",
+        "integration.google-workspace.mail.messages.read"
+      )
+    ).toBe(true);
+    expect(
+      capabilitySatisfies(
+        "integration.google-workspace.mail.messages.read",
+        "integration.mail.messages.read"
+      )
+    ).toBe(false);
+  });
+
+  test("returns display labels from capability descriptors", () => {
+    expect(capabilityDisplayLabel("integration.web.search")).toBe("Web search");
+    expect(capabilityDisplayLabel("integration.google-workspace.mail.messages.read")).toBe(
+      "Gmail messages"
+    );
   });
 });

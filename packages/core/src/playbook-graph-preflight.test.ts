@@ -15,7 +15,7 @@ const compiledGraph: CompiledPlaybookGraph = {
       brief: { schema: "schemas/brief.schema.json" },
     },
     inputs: {},
-    capabilities: ["web", "tool.workspace.write"],
+    capabilities: ["integration.web.search", "tool.workspace.write"],
     limits: {},
     start: "draftBrief",
     nodes: [
@@ -108,7 +108,7 @@ const inventory: WorkflowCapabilityInventory = {
       label: "DuckDuckGo",
       fingerprint: "search-1",
       configured: true,
-      capabilities: ["integration.search.read"],
+      capabilities: ["integration.web.search"],
       dataPolicies: ["workspace-local-ok"],
     },
   ],
@@ -160,16 +160,24 @@ describe("resolvePlaybookGraphPreflight", () => {
     expect(preview.nodePreviews[0]?.recommendedAgentId).toBe("analyst");
   });
 
-  test("accepts external playbook web and Gmail capability names when matching integrations exist", () => {
+  test("satisfies required generic canonical capabilities from configured provider variants", () => {
     const preview = resolvePlaybookGraphPreflight({
       compiledGraph: {
         ...compiledGraph,
         graph: {
           ...compiledGraph.graph,
           metadata: {
-            requiredCapabilities: ["web.search", "web.fetch", "gmail.search"],
+            requiredCapabilities: [
+              "integration.web.search",
+              "integration.mail.messages.read",
+              "integration.drive.files.read",
+            ],
           },
-          capabilities: ["web.search", "web.fetch", "gmail.search"],
+          capabilities: [
+            "integration.web.search",
+            "integration.mail.messages.read",
+            "integration.drive.files.read",
+          ],
         },
       },
       capabilityInventory: {
@@ -181,7 +189,11 @@ describe("resolvePlaybookGraphPreflight", () => {
             label: "Google Workspace",
             fingerprint: "google-1",
             configured: true,
-            capabilities: ["integration.mail.read"],
+            provider: "google-workspace",
+            capabilities: [
+              "integration.google-workspace.mail.messages.read",
+              "integration.google-workspace.drive.files.read",
+            ],
             dataPolicies: ["cloud-ok"],
           },
         ],
@@ -193,7 +205,7 @@ describe("resolvePlaybookGraphPreflight", () => {
     expect(preview.sourceGaps).toEqual([]);
   });
 
-  test("accepts canonical mail read capability when Google Workspace reports the legacy mail capability", () => {
+  test("blocks a required canonical capability when no inventory entry satisfies it", () => {
     const preview = resolvePlaybookGraphPreflight({
       compiledGraph: {
         ...compiledGraph,
@@ -207,56 +219,46 @@ describe("resolvePlaybookGraphPreflight", () => {
       },
       capabilityInventory: {
         ...inventory,
-        integrations: [
-          ...inventory.integrations,
-          {
-            id: "integration.google-workspace",
-            label: "Google Workspace",
-            fingerprint: "google-1",
-            configured: true,
-            capabilities: ["integration.mail.read"],
-            dataPolicies: ["cloud-ok"],
-          },
-        ],
+        integrations: inventory.integrations,
       },
     });
 
-    expect(preview.confirmationRequired).toBe(false);
-    expect(preview.blockers).toEqual([]);
+    expect(preview.confirmationRequired).toBe(true);
+    expect(preview.blockers).toEqual([
+      expect.objectContaining({
+        capability: "integration.mail.messages.read",
+        optional: false,
+      }),
+    ]);
     expect(preview.sourceGaps).toEqual([]);
   });
 
-  test("accepts canonical drive read capability when Google Workspace reports the legacy drive capability", () => {
+  test("reports missing optional canonical capability as a source gap", () => {
     const preview = resolvePlaybookGraphPreflight({
       compiledGraph: {
         ...compiledGraph,
         graph: {
           ...compiledGraph.graph,
           metadata: {
-            requiredCapabilities: ["integration.drive.files.read"],
+            requiredCapabilities: [],
           },
           capabilities: ["integration.drive.files.read"],
         },
       },
       capabilityInventory: {
         ...inventory,
-        integrations: [
-          ...inventory.integrations,
-          {
-            id: "integration.google-workspace",
-            label: "Google Workspace",
-            fingerprint: "google-1",
-            configured: true,
-            capabilities: ["integration.drive.read"],
-            dataPolicies: ["cloud-ok"],
-          },
-        ],
+        integrations: inventory.integrations,
       },
     });
 
     expect(preview.confirmationRequired).toBe(false);
     expect(preview.blockers).toEqual([]);
-    expect(preview.sourceGaps).toEqual([]);
+    expect(preview.sourceGaps).toEqual([
+      expect.objectContaining({
+        capability: "integration.drive.files.read",
+        optional: true,
+      }),
+    ]);
   });
 
   test("blocks required capabilities and reports optional source gaps", () => {
@@ -285,7 +287,7 @@ describe("resolvePlaybookGraphPreflight", () => {
     );
     expect(preview.sourceGaps).toEqual([
       expect.objectContaining({
-        capability: "web",
+        capability: "integration.web.search",
         optional: true,
       }),
     ]);
@@ -305,7 +307,7 @@ describe("resolvePlaybookGraphPreflight", () => {
     );
     expect(preview.sourceGaps).toEqual([
       expect.objectContaining({
-        capability: "web",
+        capability: "integration.web.search",
         optional: true,
       }),
     ]);

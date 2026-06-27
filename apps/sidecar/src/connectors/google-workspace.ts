@@ -361,6 +361,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     {
       effectId: "mail.draft",
       capability: "integration.mail.drafts.write",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.mail.drafts.write"],
       sideEffect: "external",
       idempotent: true,
       previewRequired: true,
@@ -396,6 +398,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     {
       effectId: "sheets.ledger.write",
       capability: "integration.sheets.rows.write",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.sheets.rows.write"],
       sideEffect: "external",
       idempotent: true,
       previewRequired: true,
@@ -437,6 +441,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     {
       effectId: "docs.document.write",
       capability: "integration.docs.documents.write",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.docs.documents.write"],
       sideEffect: "external",
       idempotent: true,
       previewRequired: true,
@@ -482,6 +488,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
   tools: [
     {
       capability: "integration.calendar.events.read",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.calendar.events.read"],
       sideEffect: "read",
       idempotent: true,
       shellAllowlist: [
@@ -491,6 +499,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     },
     {
       capability: "integration.mail.messages.read",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.mail.messages.read"],
       sideEffect: "read",
       idempotent: true,
       shellAllowlist: [
@@ -501,6 +511,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     },
     {
       capability: "integration.drive.files.read",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.drive.files.read"],
       sideEffect: "read",
       idempotent: true,
       shellAllowlist: [
@@ -510,6 +522,8 @@ export const googleWorkspaceConnector: GraphConnector<ConnectorContext> = {
     },
     {
       capability: "integration.contacts.read",
+      provider: "google-workspace",
+      publishedCapabilities: ["integration.google-workspace.contacts.read"],
       sideEffect: "read",
       idempotent: true,
       shellAllowlist: [{ command: "contacts", subcommand: "lookup" }],

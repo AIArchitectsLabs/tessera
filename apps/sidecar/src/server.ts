@@ -87,6 +87,7 @@ import {
   WorkspaceStyleGuideReadRequestSchema,
   WorkspaceStyleGuideSaveRequestSchema,
   compileAgentRuntimeContext,
+  normalizeCapabilityId,
 } from "@tessera/contracts";
 import {
   AgentProfileCreateRequestSchema,
@@ -694,14 +695,9 @@ function graphPlaybookCapabilities(
   const seen = new Set<WorkflowCapability>();
 
   for (const value of graphMetadataStringArray(metadata, key)) {
-    const parsed = WorkflowCapabilitySchema.safeParse(value);
-    let normalized: WorkflowCapability | undefined;
-    if (parsed.success) {
-      normalized = parsed.data;
-    } else {
-      const baseCapability = WorkflowCapabilitySchema.safeParse(value.split(".")[0]);
-      normalized = baseCapability.success ? baseCapability.data : undefined;
-    }
+    const normalizedId = normalizeCapabilityId(value);
+    const parsed = normalizedId ? WorkflowCapabilitySchema.safeParse(normalizedId) : undefined;
+    const normalized: WorkflowCapability | undefined = parsed?.success ? parsed.data : undefined;
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
     capabilities.push(normalized);
@@ -2488,9 +2484,9 @@ function graphRunShellCallFromTool(
   const url = typeof args.url === "string" ? args.url : undefined;
 
   const inferred =
-    input.node.capability === "web.search" || input.node.capability === "integration.web.search"
+    input.node.capability === "integration.web.search"
       ? { command: "web-search", subcommand: "search", args: query ? [query] : explicitArgs }
-      : input.node.capability === "web.fetch" || input.node.capability === "integration.web.fetch"
+      : input.node.capability === "integration.web.fetch"
         ? { command: "web-fetch", subcommand: "fetch", args: url ? [url] : explicitArgs }
         : explicitCommand && explicitSubcommand
           ? { command: explicitCommand, subcommand: explicitSubcommand, args: explicitArgs }

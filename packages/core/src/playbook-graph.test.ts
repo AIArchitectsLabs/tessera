@@ -217,13 +217,13 @@ describe("validatePlaybookGraph", () => {
     expect(() =>
       validatePlaybookGraph({
         ...graph,
-        capabilities: ["web.search"],
+        capabilities: ["integration.web.search"],
         start: "search",
         nodes: [
           {
             id: "search",
             kind: "tool",
-            capability: "web.fetch",
+            capability: "integration.web.fetch",
             args: {},
             outputArtifact: "researchPlan",
             onSuccess: "completed",
@@ -237,7 +237,7 @@ describe("validatePlaybookGraph", () => {
     expect(() =>
       validatePlaybookGraph({
         ...graph,
-        capabilities: ["web.search"],
+        capabilities: ["integration.web.search"],
         start: "write",
         nodes: [
           {
@@ -345,7 +345,7 @@ describe("validatePlaybookGraph", () => {
     expect(() =>
       validatePlaybookGraph({
         ...graph,
-        capabilities: ["web.search"],
+        capabilities: ["integration.web.search"],
         start: "draft",
         nodes: [
           {
@@ -353,7 +353,7 @@ describe("validatePlaybookGraph", () => {
             kind: "agent",
             prompt: "./prompts/draft.md",
             inputs: {},
-            tools: ["gmail.search"],
+            tools: ["integration.mail.messages.read"],
             output: {
               artifact: "scorecard",
               schema: "./schemas/scorecard.schema.json",
@@ -368,13 +368,13 @@ describe("validatePlaybookGraph", () => {
   test("accepts declared tool and agent capability use", () => {
     const parsed = validatePlaybookGraph({
       ...graph,
-      capabilities: ["web.search", "gmail.search"],
+      capabilities: ["integration.web.search", "integration.mail.messages.read"],
       start: "search",
       nodes: [
         {
           id: "search",
           kind: "tool",
-          capability: "web.search",
+          capability: "integration.web.search",
           args: {},
           outputArtifact: "researchPlan",
           onSuccess: "draft",
@@ -386,7 +386,7 @@ describe("validatePlaybookGraph", () => {
           inputs: {
             researchPlan: { artifact: "researchPlan" },
           },
-          tools: ["gmail.search"],
+          tools: ["integration.mail.messages.read"],
           output: {
             artifact: "scorecard",
             schema: "./schemas/scorecard.schema.json",
@@ -396,7 +396,10 @@ describe("validatePlaybookGraph", () => {
       ],
     });
 
-    expect(parsed.capabilities).toEqual(["web.search", "gmail.search"]);
+    expect(parsed.capabilities).toEqual([
+      "integration.web.search",
+      "integration.mail.messages.read",
+    ]);
   });
 
   test("rejects consumed artifacts that are not declared by the graph", () => {

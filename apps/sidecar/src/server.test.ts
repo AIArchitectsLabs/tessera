@@ -1327,7 +1327,11 @@ describe("graph playbook import endpoint", () => {
           version: "0.1.0",
           name: "SEO/GEO Blog Article Reference Playbook",
           metadata: {
-            requiredCapabilities: ["web.search", "web.fetch"],
+            requiredCapabilities: [
+              "integration.web.search",
+              "integration.web.fetch",
+              "integration.not.real",
+            ],
             outputs: ["finalArticle", "articleScorecard", "sourceSummary", "finalOutputManifest"],
             phases: ["Intake", "Research", "Brief"],
           },
@@ -1359,7 +1363,7 @@ describe("graph playbook import endpoint", () => {
         list.playbooks.find((item) => item.id === "reference.seo-geo-blog-article")
       ).toMatchObject({
         name: "SEO/GEO Blog Article Reference Playbook",
-        requiredCapabilities: ["web.search", "web.fetch"],
+        requiredCapabilities: ["integration.web.search", "integration.web.fetch"],
         phases: ["Intake", "Research", "Brief"],
       });
     } finally {
@@ -4111,13 +4115,13 @@ describe("graph run endpoints", () => {
         artifacts: {
           search: { schema: "schemas/search.schema.json" },
         },
-        capabilities: ["web.search"],
+        capabilities: ["integration.web.search"],
         start: "search",
         nodes: [
           {
             id: "search",
             kind: "tool",
-            capability: "web.search",
+            capability: "integration.web.search",
             args: { query: "tessera" },
             outputArtifact: "search",
             onSuccess: "completed",

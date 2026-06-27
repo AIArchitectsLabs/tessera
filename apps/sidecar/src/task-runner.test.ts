@@ -187,7 +187,7 @@ async function writePromptOnlyMailPackage(root: string): Promise<void> {
     category: "operations",
     businessUseCase: "Weekly Email Summary Tessera playbook package.",
     requiredCapabilities: [],
-    optionalCapabilities: ["mail"],
+    optionalCapabilities: ["integration.mail.messages.read"],
     outputs: [{ kind: "workspaceDocument", label: "Weekly Email Summary" }],
     phases: ["Draft", "Review", "Write"],
   },
@@ -210,7 +210,7 @@ async function writePromptOnlyMailPackage(root: string): Promise<void> {
   artifacts: {
     finalArtifact: { schema: "schemas/finalArtifact.schema.json" },
   },
-  capabilities: ["mail", "tool.workspace.write"],
+  capabilities: ["integration.mail.messages.read", "tool.workspace.write"],
   limits: {},
   start: "draft",
   nodes: [

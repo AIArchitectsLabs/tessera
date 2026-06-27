@@ -73,6 +73,38 @@ describe("built-in graph playbooks", () => {
     }
   });
 
+  test("internal built-ins declare provider-specific Google Workspace capabilities", async () => {
+    const loaded = await loadBuiltInGraphPlaybookPackages({
+      compilerVersion: "test",
+      scriptSdkVersion: "test",
+      compiledAt: "2026-05-16T00:00:00.000Z",
+    });
+
+    for (const entry of loaded) {
+      const optionalCapabilities = entry.compiled.graph.metadata?.optionalCapabilities;
+      const declaredCapabilities = new Set([
+        ...(Array.isArray(optionalCapabilities) ? optionalCapabilities : []),
+        ...(entry.compiled.graph.capabilities ?? []),
+      ]);
+
+      expect(declaredCapabilities).not.toContain("integration.calendar.events.read");
+      expect(declaredCapabilities).not.toContain("integration.mail.messages.read");
+      expect(declaredCapabilities).not.toContain("integration.drive.files.read");
+      expect(declaredCapabilities).not.toContain("integration.contacts.read");
+    }
+
+    const sales = loaded.find((entry) => entry.compiled.graph.id === "sales.meeting-brief");
+    if (!sales) throw new Error("Missing Sales Meeting Brief built-in graph");
+
+    expect(sales.compiled.graph.metadata?.optionalCapabilities).toEqual([
+      "integration.web.search",
+      "integration.google-workspace.calendar.events.read",
+      "integration.google-workspace.mail.messages.read",
+      "integration.google-workspace.drive.files.read",
+      "integration.google-workspace.contacts.read",
+    ]);
+  });
+
   test("sales meeting brief exposes only the customer-facing brief artifact", async () => {
     const loaded = await loadBuiltInGraphPlaybookPackages({
       compilerVersion: "test",

@@ -39,10 +39,10 @@ async function makeValidPlaybookPackage(
   const includeArtifactWrite = options.includeArtifactWrite ?? true;
   const includeEffectWrite = options.includeEffectWrite ?? false;
   const capabilities = options.capabilities ?? [
-    "web.search",
+    "integration.web.search",
     ...(includeArtifactWrite || includeEffectWrite ? ["tool.workspace.write"] : []),
   ];
-  const nodeTools = options.nodeTools ?? ["web.search"];
+  const nodeTools = options.nodeTools ?? ["integration.web.search"];
   const finalWriteNodeId = includeEffectWrite
     ? "commitBrief"
     : includeArtifactWrite
@@ -149,7 +149,7 @@ describe("workspace cli shell commands", () => {
 
   test("accepts workspace write effects as final playbook writes", async () => {
     const root = await makeValidPlaybookPackage({
-      capabilities: ["web.search", "tool.workspace.write"],
+      capabilities: ["integration.web.search", "tool.workspace.write"],
       includeArtifactWrite: false,
       includeEffectWrite: true,
     });

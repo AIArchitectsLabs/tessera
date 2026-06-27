@@ -10,7 +10,7 @@ Tessera is the only runtime. Start with an authoring brief. Ask one focused ques
 
 Workflow: help a support manager review urgent customer issues and prepare a daily escalation packet.
 Primary user: support manager.
-Sources and capabilities: Gmail support-manager email threads through gmail.search, public status-page evidence through web.fetch, and final workspace outputs through tool.workspace.write.
+Sources and capabilities: support-manager email threads through `integration.mail.messages.read`, public status-page evidence through `integration.web.fetch`, and final workspace outputs through `tool.workspace.write`.
 Final artifacts: Daily Escalation Packet markdown, Escalation Register CSV, Evidence Appendix markdown.
 ```
 
@@ -57,8 +57,8 @@ Source inventory:
 
 | Source | Capability | Access mode | Fixture/golden coverage | Notes |
 | --- | --- | --- | --- | --- |
-| Support-manager email threads | `gmail.search` | live connector later, fixture first | required | Needs privacy and redaction rules |
-| Public status pages | `web.fetch` | public URL fetch later, fixture first | required | Exact URLs can be user input or package fixture data |
+| Support-manager email threads | `integration.mail.messages.read` | live connector later, fixture first | required | Needs privacy and redaction rules |
+| Public status pages | `integration.web.fetch` | public URL fetch later, fixture first | required | Exact URLs can be user input or package fixture data |
 | Workspace final outputs | `tool.workspace.write` | Tessera effect after approval | Tessera runtime proof required | Required for markdown and CSV materialization |
 
 Data requirements:

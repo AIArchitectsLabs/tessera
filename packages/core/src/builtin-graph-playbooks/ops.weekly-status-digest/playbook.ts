@@ -9,7 +9,11 @@ export default {
     category: "operations",
     businessUseCase: "Summarize weekly team progress for stakeholders",
     requiredCapabilities: [],
-    optionalCapabilities: ["calendar", "mail", "drive"],
+    optionalCapabilities: [
+      "integration.google-workspace.calendar.events.read",
+      "integration.google-workspace.mail.messages.read",
+      "integration.google-workspace.drive.files.read",
+    ],
     outputs: [
       {
         kind: "statusDigest",
@@ -117,7 +121,12 @@ export default {
       schema: "schemas/statusDigest.schema.json",
     },
   },
-  capabilities: ["calendar", "mail", "drive", "tool.workspace.write"],
+  capabilities: [
+    "integration.google-workspace.calendar.events.read",
+    "integration.google-workspace.mail.messages.read",
+    "integration.google-workspace.drive.files.read",
+    "tool.workspace.write",
+  ],
   limits: {},
   start: "draftStatusDigest",
   nodes: [
