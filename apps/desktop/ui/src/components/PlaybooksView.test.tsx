@@ -3491,7 +3491,48 @@ describe("PlaybooksView", () => {
     await waitFor(() => {
       expect(
         view.getByText(
-          "Write sheet rows: This required capability is not configured in the current workspace."
+          "Write sheet rows: Connect Google Workspace in Settings to enable Google Sheets write access."
+        )
+      ).toBeTruthy();
+    });
+  });
+
+  test("names Google Workspace provider-specific blocker remediation", async () => {
+    includeImportedPlaybook = true;
+    graphRunListOverride = [];
+    playbookAssignmentPreviewOverride = {
+      assignmentPlan: {
+        resolverVersion: 2,
+        createdAt: "2026-05-25T00:00:00.000Z",
+        assignments: {},
+      },
+      confirmationRequired: true,
+      blockers: [
+        {
+          stepId: "createGmailDrafts",
+          kind: "integration",
+          capability: "integration.google-workspace.mail.drafts.write",
+          optional: false,
+          reason: "This required capability is not configured in the current workspace.",
+        },
+      ],
+      sourceGaps: [],
+      nodePreviews: [],
+    };
+    const view = renderPlaybooksView();
+
+    await waitFor(() => {
+      expect(view.getAllByText("Imported SEO Blog Article").length).toBeGreaterThan(0);
+    });
+
+    const playbookButton = view.getAllByText("Imported SEO Blog Article")[0]?.closest("button");
+    if (!playbookButton) throw new Error("Expected imported playbook button");
+    fireEvent.click(playbookButton);
+
+    await waitFor(() => {
+      expect(
+        view.getByText(
+          "Gmail drafts: Connect Google Workspace in Settings to enable Gmail draft access."
         )
       ).toBeTruthy();
     });

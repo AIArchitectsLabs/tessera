@@ -82,6 +82,7 @@ interface GoogleWorkspaceServiceHealth {
   service: string;
   ok: boolean;
   message: string;
+  required?: boolean;
 }
 
 interface GoogleWorkspaceOAuthClientStatus {
@@ -127,7 +128,14 @@ type CodexPollResult =
   | { status: "pending" }
   | { status: "authorized"; settings: ModelSettingsRead };
 
-const GOOGLE_WORKSPACE_CAPABILITIES = ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"];
+const GOOGLE_WORKSPACE_CAPABILITIES = [
+  { service: "Gmail", label: "Gmail drafts", required: true },
+  { service: "Sheets", label: "Google Sheets", required: true },
+  { service: "Calendar", label: "Calendar", required: false },
+  { service: "Drive", label: "Drive", required: false },
+  { service: "Contacts", label: "Contacts", required: false },
+  { service: "Docs", label: "Docs", required: false },
+];
 
 const DEFAULT_WORKSPACE_STYLE_CONFIG: WorkspaceConfig = {
   schemaVersion: 1,
@@ -2504,10 +2512,11 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                       Workspace services
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
-                      {GOOGLE_WORKSPACE_CAPABILITIES.map((service) => {
+                      {GOOGLE_WORKSPACE_CAPABILITIES.map((item) => {
                         const health = googleWorkspaceHealth.find(
-                          (item) => item.service === service
+                          (healthItem) => healthItem.service === item.service
                         );
+                        const required = health?.required ?? item.required;
                         const message = health
                           ? health.message
                           : hasIntegrationCredential
@@ -2515,17 +2524,26 @@ export function SettingsView({ onClose, userKey, workspaceRoot }: SettingsViewPr
                             : "Connect required";
                         return (
                           <div
-                            key={service}
+                            key={item.service}
                             className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 px-3 py-2"
                           >
-                            <span className="text-sm font-medium text-foreground">{service}</span>
+                            <span className="min-w-0 text-sm font-medium text-foreground">
+                              {item.label}
+                              {!required ? (
+                                <span className="ml-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                                  Optional
+                                </span>
+                              ) : null}
+                            </span>
                             <span
                               className={cn(
                                 "text-xs",
                                 health
                                   ? health.ok
                                     ? "text-emerald-700"
-                                    : "text-destructive"
+                                    : required
+                                      ? "text-destructive"
+                                      : "text-muted-foreground"
                                   : "text-muted-foreground"
                               )}
                             >
@@ -3820,7 +3838,7 @@ function integrationDescription(provider: IntegrationProvider, hasCredential: bo
     case "google-workspace":
       return hasCredential
         ? "Connected. Tessera can use approved Google Workspace actions for this account."
-        : "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates.";
+        : "Connect once to let Tessera create approved Gmail drafts and Google Sheets updates for Workspace-backed playbooks.";
     case "hubspot":
       return hasCredential
         ? "Connected. Tessera can read HubSpot CRM totals and records, then create or update contacts, companies, and deals after approval."

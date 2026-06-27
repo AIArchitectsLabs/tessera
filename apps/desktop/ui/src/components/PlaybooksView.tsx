@@ -341,11 +341,26 @@ function formatCapabilityLabel(value: string): string {
   return capabilityDisplayLabel(value);
 }
 
+function googleWorkspaceCapabilityRemediation(capability: string): string | null {
+  switch (capability) {
+    case "integration.mail.drafts.write":
+    case "integration.google-workspace.mail.drafts.write":
+      return "Connect Google Workspace in Settings to enable Gmail draft access.";
+    case "integration.sheets.rows.write":
+    case "integration.google-workspace.sheets.rows.write":
+      return "Connect Google Workspace in Settings to enable Google Sheets write access.";
+    default:
+      return null;
+  }
+}
+
 function formatCapabilityBlockerMessage(blocker: {
   capability: string;
   reason?: string | null | undefined;
 }): string {
   const label = formatCapabilityLabel(blocker.capability);
+  const remediation = googleWorkspaceCapabilityRemediation(blocker.capability);
+  if (remediation) return `${label}: ${remediation}`;
   if (!blocker.reason) return `Tessera could not use ${label}.`;
   if (blocker.reason.toLowerCase().includes(label.toLowerCase())) return blocker.reason;
   return `${label}: ${blocker.reason}`;

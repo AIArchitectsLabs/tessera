@@ -502,12 +502,12 @@ const invoke = async (command: string, args?: InvokeCall["args"]) => {
       } satisfies IntegrationConnectionTestResult;
     case "google_workspace_health":
       return [
-        { service: "Calendar", ok: true, message: "Ready" },
-        { service: "Gmail", ok: true, message: "Ready" },
-        { service: "Drive", ok: true, message: "Ready" },
-        { service: "Contacts", ok: true, message: "Ready" },
-        { service: "Docs", ok: true, message: "Available through Drive reads." },
-        { service: "Sheets", ok: true, message: "Available through Drive reads." },
+        { service: "Gmail", ok: true, message: "Ready", required: true },
+        { service: "Sheets", ok: true, message: "Ready", required: true },
+        { service: "Calendar", ok: true, message: "Ready", required: false },
+        { service: "Drive", ok: true, message: "Ready", required: false },
+        { service: "Contacts", ok: true, message: "Ready", required: false },
+        { service: "Docs", ok: true, message: "Available through Drive reads.", required: false },
       ];
     case "google_workspace_connect":
       if (googleWorkspaceConnectResult.ok) {
@@ -1147,12 +1147,20 @@ describe("SettingsView workspace integration flow", () => {
     expect(within(section).getByText("Uses Google Workspace CLI")).toBeTruthy();
     expect(
       within(section).getByText(
-        "Connect once to let Tessera read Calendar, Gmail, Drive, Contacts, Docs, and Sheets, then create approved drafts and spreadsheet updates."
+        "Connect once to let Tessera create approved Gmail drafts and Google Sheets updates for Workspace-backed playbooks."
       )
     ).toBeTruthy();
-    for (const service of ["Calendar", "Gmail", "Drive", "Contacts", "Docs", "Sheets"]) {
+    for (const service of [
+      "Gmail drafts",
+      "Google Sheets",
+      "Calendar",
+      "Drive",
+      "Contacts",
+      "Docs",
+    ]) {
       expect(within(section).getByText(service)).toBeTruthy();
     }
+    expect(within(section).getAllByText("Optional").length).toBeGreaterThanOrEqual(4);
     expect(
       within(section).queryByText(/Tessera stores the Workspace session in its app config/)
     ).toBeNull();
@@ -1274,6 +1282,11 @@ describe("SettingsView workspace integration flow", () => {
     });
     await waitFor(() => {
       expect(invokeCalls.some((call) => call.command === "google_workspace_health")).toBe(true);
+    });
+    await waitFor(() => {
+      expect(within(section).getByText("Gmail drafts")).toBeTruthy();
+      expect(within(section).getByText("Google Sheets")).toBeTruthy();
+      expect(within(section).getAllByText("Optional").length).toBeGreaterThanOrEqual(4);
     });
   });
 

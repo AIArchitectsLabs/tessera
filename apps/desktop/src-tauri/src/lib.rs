@@ -33,7 +33,8 @@ const GOOGLE_WORKSPACE_AUTH_SCOPES: &str = concat!(
     "https://www.googleapis.com/auth/contacts.readonly,",
     "https://www.googleapis.com/auth/documents.readonly,",
     "https://www.googleapis.com/auth/documents,",
-    "https://www.googleapis.com/auth/spreadsheets"
+    "https://www.googleapis.com/auth/spreadsheets,",
+    "openid,email,profile"
 );
 const GWS_CLI_URL_ENV: &str = "TESSERA_GWS_CLI_URL";
 const GWS_CLI_SHA256_ENV: &str = "TESSERA_GWS_CLI_SHA256";
@@ -1604,6 +1605,7 @@ struct GoogleWorkspaceServiceHealth {
     service: String,
     ok: bool,
     message: String,
+    required: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3177,7 +3179,8 @@ async fn google_workspace_health(
     let checks = google_workspace_health_checks();
     let mut results = Vec::with_capacity(checks.len());
 
-    for (service, args, not_found_is_ok) in checks {
+    for check in checks {
+        let (service, args, not_found_is_ok, required) = check;
         let result = run_google_workspace_cli_command(&app, state.inner(), &args).await?;
         let ok = google_workspace_health_ok(&result, not_found_is_ok);
         let message = google_workspace_health_message(&result, not_found_is_ok);
@@ -3185,13 +3188,14 @@ async fn google_workspace_health(
             service: service.to_string(),
             ok,
             message,
+            required,
         });
     }
 
     Ok(results)
 }
 
-fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool); 6] {
+fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool, bool); 6] {
     [
         (
             "Calendar",
@@ -3202,6 +3206,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "--params",
                 "{\"maxResults\":1}",
             ],
+            false,
             false,
         ),
         (
@@ -3215,6 +3220,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "{\"userId\":\"me\",\"maxResults\":1}",
             ],
             false,
+            true,
         ),
         (
             "Drive",
@@ -3225,6 +3231,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "--params",
                 "{\"pageSize\":1,\"fields\":\"files(id,name,mimeType)\"}",
             ],
+            false,
             false,
         ),
         (
@@ -3238,6 +3245,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "{\"resourceName\":\"people/me\",\"pageSize\":1,\"personFields\":\"names,emailAddresses\"}",
             ],
             false,
+            false,
         ),
         (
             "Docs",
@@ -3249,6 +3257,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "{\"documentId\":\"tessera-health-check-nonexistent\"}",
             ],
             true,
+            false,
         ),
         (
             "Sheets",
@@ -3259,6 +3268,7 @@ fn google_workspace_health_checks() -> [(&'static str, Vec<&'static str>, bool);
                 "--params",
                 "{\"spreadsheetId\":\"tessera-health-check-nonexistent\"}",
             ],
+            true,
             true,
         ),
     ]
@@ -4308,7 +4318,7 @@ mod tests {
     }
 
     #[test]
-    fn google_workspace_auth_requests_workspace_read_write_scopes() {
+    fn google_workspace_auth_requests_published_workspace_scopes() {
         let args = google_workspace_auth_args();
         assert_eq!(
             args,
@@ -4318,11 +4328,18 @@ mod tests {
         assert!(!args.contains(&"--full"));
 
         let scopes: Vec<&str> = GOOGLE_WORKSPACE_AUTH_SCOPES.split(',').collect();
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.compose"));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.file"));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/spreadsheets"));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/documents"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/calendar.readonly"));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.compose"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.file"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/contacts.readonly"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/documents.readonly"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/documents"));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/spreadsheets"));
+        assert!(scopes.contains(&"openid"));
+        assert!(scopes.contains(&"email"));
+        assert!(scopes.contains(&"profile"));
     }
 
     #[test]
@@ -4456,22 +4473,30 @@ mod tests {
         let checks = google_workspace_health_checks();
         let docs = checks
             .iter()
-            .find(|(service, _, _)| *service == "Docs")
+            .find(|(service, _, _, _)| *service == "Docs")
             .expect("docs check");
         let sheets = checks
             .iter()
-            .find(|(service, _, _)| *service == "Sheets")
+            .find(|(service, _, _, _)| *service == "Sheets")
             .expect("sheets check");
         let contacts = checks
             .iter()
-            .find(|(service, _, _)| *service == "Contacts")
+            .find(|(service, _, _, _)| *service == "Contacts")
             .expect("contacts check");
 
         assert_eq!(docs.1[0], "docs");
         assert!(docs.2);
+        assert!(!docs.3);
         assert_eq!(sheets.1[0], "sheets");
         assert!(sheets.2);
+        assert!(sheets.3);
         assert!(contacts.1.join(" ").contains("personFields"));
+        assert!(!contacts.3);
+        let gmail = checks
+            .iter()
+            .find(|(service, _, _, _)| *service == "Gmail")
+            .expect("gmail check");
+        assert!(gmail.3);
     }
 
     #[test]
