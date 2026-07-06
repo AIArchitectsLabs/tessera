@@ -6,11 +6,13 @@
     "apps/desktop/ui",
     "apps/sidecar",
     "apps/cli",
+    "apps/website",
     "packages/*",
     "plugins/*"
   ],
   "scripts": {
     "dev": "bun run --filter @tessera/desktop dev",
+    "website:dev": "bun run apps/website/serve.ts",
     "build": "bun run --filter '*' build",
     "build:sidecar": "bun run scripts/build-sidecar.ts",
     "check": "biome check . && bun run --filter '*' typecheck",

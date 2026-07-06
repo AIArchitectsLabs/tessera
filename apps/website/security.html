@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Security Parameters — Tessera</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .policy-container {
+      padding-top: 160px;
+      padding-bottom: 120px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .policy-content h2 {
+      font-size: 1.75rem;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+    .policy-content p {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      font-size: 1.05rem;
+      line-height: 1.7;
+    }
+    .policy-content ul {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      padding-left: 1.5rem;
+      font-size: 1.05rem;
+    }
+    .policy-content li {
+      margin-bottom: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo">
+        <span class="logo-icon">T</span>
+        <span class="logo-text">Tessera</span>
+      </a>
+      <div class="nav-actions">
+        <a href="index.html" class="btn btn-secondary nav-btn">Back to Home</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="container policy-container">
+    <h1 class="hero-title"><span class="text-gradient">Security Parameters</span></h1>
+    <p class="or-text">System Audit Summary</p>
+    
+    <div class="policy-content glass-panel" style="padding: 3rem; margin-top: 2rem;">
+      <p>
+        Tessera is built on an **isolation-first security model**. We reject open-ended cloud agents that can freely access systems. Instead, Tessera enforces strict hardware-level and process-level boundaries directly on your computer.
+      </p>
+
+      <h2>1. The Sandboxed Process Boundary</h2>
+      <p>
+        Tessera divides operations into a lightweight UI shell (built on Tauri v2) and a high-performance local daemon (the sidecar). 
+      </p>
+      <ul>
+        <li><strong>Strict Capability Scoping:</strong> System capabilities are explicitly defined inside a local configuration file. The sidecar can only spawn specific processes authorized by you.</li>
+        <li><strong>Local Sockets only:</strong> The communication between the UI and sidecar is restricted to local Unix sockets or Windows named pipes. TCP fallback uses randomized ports and binds strictly to `127.0.0.1` (never `0.0.0.0`) to block external network access.</li>
+      </ul>
+
+      <h2>2. Bearer Authentication & DNS Rebinding Protection</h2>
+      <p>
+        Every time the Tessera sidecar starts up, it generates an ephemeral, randomized 256-bit bearer token. 
+      </p>
+      <ul>
+        <li><strong>Protected Upgrades:</strong> Every web request and websocket upgrade between the UI and the sidecar requires this token, preventing unauthorized scripts running in your browser from calling sidecar APIs.</li>
+        <li><strong>Origin Verification:</strong> The sidecar enforces a strict `Host` header and `Origin` check, accepting requests only from the local Tauri webview origin.</li>
+      </ul>
+
+      <h2>3. OS-Secure Keychain Storage</h2>
+      <p>
+        Tessera integrates with native OS credential stores (Apple Keychain on macOS, Windows Credential Manager on Windows) through encrypted platform APIs. Plaintext passwords or API tokens are never saved to disk, ensuring that your keys stay safe even if your computer's files are accessed.
+      </p>
+
+      <h2>4. The Version Ledger (Git Service)</h2>
+      <p>
+        Whenever an automated task edits files, Tessera uses an internal local Git Service to commit changes. The user has access to side-by-side visual diff summaries and single-click rollbacks. This ensures all agent actions are auditable and reversible.
+      </p>
+
+      <h2>5. On-Demand Connector Sandbox</h2>
+      <p>
+        Third-party software connectors (such as Salesforce or Google Workspace adapters) are not bundled by default. They are downloaded and checked against checksum hashes only when you explicitly add them, keeping the core app footprint small and secure.
+      </p>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-grid">
+      <div>
+        <a href="index.html" class="logo footer-logo">
+          <span class="logo-icon">T</span>
+          <span class="logo-text">Tessera</span>
+        </a>
+        <p class="footer-tagline">Deterministic, local-first agent workspaces.</p>
+      </div>
+      <div class="footer-links-col">
+        <h4>Product</h4>
+        <a href="index.html#benefits">Benefits</a>
+        <a href="index.html#how-it-works">How it Works</a>
+        <a href="index.html#downloads">Downloads</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Resources</h4>
+        <a href="https://aiarchitectslabs.github.io/tessera/">User Docs</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera">GitHub</a>
+        <a href="https://aiarchitectslabs.github.io/tessera/playbook-authoring">Workspace Guides</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Legal</h4>
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="terms.html">Terms of Use</a>
+        <a href="security.html">Security Audit</a>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>&copy; 2026 AI Architects Labs. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

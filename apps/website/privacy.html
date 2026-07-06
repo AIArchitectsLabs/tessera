@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — Tessera</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .policy-container {
+      padding-top: 160px;
+      padding-bottom: 120px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .policy-content h2 {
+      font-size: 1.75rem;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+    .policy-content p {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      font-size: 1.05rem;
+      line-height: 1.7;
+    }
+    .policy-content ul {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      padding-left: 1.5rem;
+      font-size: 1.05rem;
+    }
+    .policy-content li {
+      margin-bottom: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo">
+        <span class="logo-icon">T</span>
+        <span class="logo-text">Tessera</span>
+      </a>
+      <div class="nav-actions">
+        <a href="index.html" class="btn btn-secondary nav-btn">Back to Home</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="container policy-container">
+    <h1 class="hero-title"><span class="text-gradient">Privacy Policy</span></h1>
+    <p class="or-text">Last Updated: July 06, 2026</p>
+    
+    <div class="policy-content glass-panel" style="padding: 3rem; margin-top: 2rem;">
+      <p>
+        At Tessera, we believe that your business data belongs entirely to you. Our application is designed from the ground up to follow a <strong>local-first architecture</strong>, ensuring that no sensitive operational files, client details, or API keys are ever stored or processed on third-party cloud servers.
+      </p>
+
+      <h2>1. Local Data Processing</h2>
+      <p>
+        Tessera does not host cloud databases. All databases, configuration files, SQLite activity stores, and workspace version records created while running playbooks are stored directly on your computer's local hard drive. 
+      </p>
+      <ul>
+        <li><strong>No Telemetry:</strong> We do not track what playbooks you write, what models you run, or what files you edit.</li>
+        <li><strong>No Cloud Transfers:</strong> Your documents, spreadsheets, and emails stay on your machine. The AI processes these files locally through native APIs.</li>
+      </ul>
+
+      <h2>2. Credential Security & OS Keychain</h2>
+      <p>
+        When you add API keys for AI models (like OpenRouter, OpenAI, or Anthropic) or connect external business services, Tessera does not save these credentials in plaintext config files. Instead, all credentials are encrypted and stored in your computer's built-in, native security system (Apple Keychain on macOS or Credential Manager on Windows).
+      </p>
+
+      <h2>3. Single Sign-On (SSO) Logins</h2>
+      <p>
+        When you log into Tessera using Google or Microsoft accounts, the login tokens are managed securely on your device. Tessera uses these tokens solely to authenticate your local session and authorize local Workspace API tasks (such as syncing sheets or calendar schedules).
+      </p>
+
+      <h2>4. Cookies & Website Analytics</h2>
+      <p>
+        Our static download website does not use tracking cookies, advertising trackers, or fingerprinting scripts. We do not gather or sell any personal data about your visit.
+      </p>
+
+      <h2>5. Updates & Policy Changes</h2>
+      <p>
+        Since Tessera is open-source and runs entirely client-side, we cannot change the privacy of your local files through remote updates. Any future changes to this policy will be documented on our GitHub repository.
+      </p>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-grid">
+      <div>
+        <a href="index.html" class="logo footer-logo">
+          <span class="logo-icon">T</span>
+          <span class="logo-text">Tessera</span>
+        </a>
+        <p class="footer-tagline">Deterministic, local-first agent workspaces.</p>
+      </div>
+      <div class="footer-links-col">
+        <h4>Product</h4>
+        <a href="index.html#benefits">Benefits</a>
+        <a href="index.html#how-it-works">How it Works</a>
+        <a href="index.html#downloads">Downloads</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Resources</h4>
+        <a href="https://aiarchitectslabs.github.io/tessera/">User Docs</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera">GitHub</a>
+        <a href="https://aiarchitectslabs.github.io/tessera/playbook-authoring">Workspace Guides</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Legal</h4>
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="terms.html">Terms of Use</a>
+        <a href="security.html">Security Audit</a>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>&copy; 2026 AI Architects Labs. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

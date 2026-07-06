@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tessera — Safe & Governed Business Automation</title>
+  <meta name="description" content="Tessera is a secure desktop application that automates your daily business operations locally. Keep your client lists private, avoid AI errors, and approve every action.">
+  
+  <!-- Open Graph -->
+  <meta property="og:title" content="Tessera — Secure Business Automation">
+  <meta property="og:description" content="Run daily tasks and workflows with absolute safety. Local privacy, zero AI errors, and manager-in-the-loop approvals.">
+  <meta property="og:type" content="website">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+  <!-- Background Ambient Glows -->
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="#" class="logo" id="nav-logo">
+        <span class="logo-icon">T</span>
+        <span class="logo-text">Tessera</span>
+      </a>
+      <nav class="nav-menu" id="nav-menu">
+        <a href="#benefits" class="nav-link">Why Tessera</a>
+        <a href="#how-it-works" class="nav-link">How it Works</a>
+        <a href="#downloads" class="nav-link">Downloads</a>
+        <a href="#faq" class="nav-link">FAQ</a>
+      </nav>
+      <div class="nav-actions">
+        <a href="#downloads" class="btn btn-secondary nav-btn" id="nav-download-btn">Download App</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <section class="hero-section">
+    <div class="container hero-grid">
+      <div class="hero-content">
+        <div class="badge-container">
+          <span class="badge"><i data-lucide="shield-check" class="badge-icon"></i> 100% Private Business Automation</span>
+        </div>
+        <h1 class="hero-title">
+          Automate Daily Tasks <span class="text-gradient">With Absolute Safety</span>
+        </h1>
+        <p class="hero-description">
+          Tessera is a secure desktop application that automates your business routines—like supply chain tracking, customer reports, and data entry—locally on your computer. Keep your data private, avoid AI mistakes, and approve critical updates before they happen.
+        </p>
+        
+        <!-- Smart Dynamic Download Button -->
+        <div class="hero-actions">
+          <div class="smart-download-container">
+            <a href="#" class="btn btn-primary btn-large" id="primary-download-btn">
+              <i data-lucide="download" class="btn-icon"></i>
+              <span class="btn-text-wrapper">
+                <span class="btn-label">Download Tessera</span>
+                <span class="btn-sublabel" id="primary-download-sublabel">Detecting OS...</span>
+              </span>
+            </a>
+          </div>
+          <div class="secondary-platforms-links">
+            <p class="or-text">Or download for:</p>
+            <div class="links-group">
+              <a href="#downloads" class="sec-platform-link" data-os="mac"><i data-lucide="apple"></i> macOS</a>
+              <a href="#downloads" class="sec-platform-link" data-os="win"><i data-lucide="monitor"></i> Windows</a>
+              <a href="#downloads" class="sec-platform-link" data-os="linux"><i data-lucide="terminal"></i> Linux</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- App Interface Live Preview (CSS Mockup) -->
+      <div class="hero-visual">
+        <div class="app-mockup-window glass-panel">
+          <div class="window-titlebar">
+            <div class="window-controls">
+              <span class="dot close"></span>
+              <span class="dot minimize"></span>
+              <span class="dot maximize"></span>
+            </div>
+            <div class="window-title">Tessera Desktop Workspace</div>
+            <div class="window-actions">
+              <span class="status-indicator-dot online"></span>
+              <span class="status-indicator-text">Secure Local Mode</span>
+            </div>
+          </div>
+          <div class="window-body">
+            <!-- Left-most Narrow Navigation Strip -->
+            <div class="mockup-icon-bar">
+              <div class="icon-bar-top">
+                <div class="icon-bar-logo">T</div>
+              </div>
+              <div class="icon-bar-middle">
+                <a href="#" class="icon-bar-item active"><i data-lucide="layout-grid"></i></a>
+                <a href="#" class="icon-bar-item"><i data-lucide="check-square"></i></a>
+                <a href="#" class="icon-bar-item"><i data-lucide="sliders"></i></a>
+              </div>
+              <div class="icon-bar-bottom">
+                <div class="icon-bar-avatar">SJ</div>
+              </div>
+            </div>
+
+            <!-- Sidebar -->
+            <aside class="mockup-sidebar">
+              <div class="workspace-section">
+                <div class="workspace-picker-label">WORKSPACE</div>
+                <div class="workspace-picker">
+                  <i data-lucide="folder" class="workspace-folder-icon"></i>
+                  <div class="workspace-info">
+                    <span class="workspace-name">qabot</span>
+                    <span class="workspace-path">D:/qabot</span>
+                  </div>
+                  <i data-lucide="chevron-down" class="picker-arrow"></i>
+                </div>
+              </div>
+              <div class="sidebar-header-label" id="mockup-sidebar-section-label">PLAYBOOKS</div>
+              <nav class="sidebar-nav">
+                <a href="#" class="sidebar-item active" id="mockup-nav-inbox">
+                  <i data-lucide="inbox"></i> Task Approvals <span class="badge-count">1</span>
+                </a>
+                <a href="#" class="sidebar-item" id="mockup-nav-playbooks">
+                  <i data-lucide="play-circle"></i> Automation Templates
+                </a>
+                <a href="#" class="sidebar-item" id="mockup-nav-history">
+                  <i data-lucide="history"></i> History Log
+                </a>
+                <a href="#" class="sidebar-item" id="mockup-nav-memory">
+                  <i data-lucide="brain"></i> Instructions & Rules
+                </a>
+              </nav>
+            </aside>
+
+            <!-- Main Content Pane -->
+            <main class="mockup-main" id="mockup-content-pane">
+              <!-- Content will be injected dynamically via JS based on selected tab -->
+              <div class="pane-header">
+                <h2 class="pane-title">Task Approvals</h2>
+                <p class="pane-subtitle">review and approve updates</p>
+              </div>
+              <div class="pane-content">
+                <div class="inbox-item urgent">
+                  <div class="item-meta">
+                    <span class="item-tag tag-red">Disruption Alert</span>
+                    <span class="item-time">Just now</span>
+                  </div>
+                  <h3 class="item-title">Confirm Supply Chain Alternative Port</h3>
+                  <p class="item-summary">
+                    Tessera detected shipping delays at Port of Long Beach. It has calculated the impact and recommends rerouting affected items.
+                  </p>
+                  
+                  <div class="payload-box">
+                    <table class="mockup-table">
+                      <thead>
+                        <tr>
+                          <th>Supplier</th>
+                          <th>Affected Shipments</th>
+                          <th>Recommended Backup Port</th>
+                          <th>Urgency</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>Apex Parts</td>
+                          <td>2 Shipments</td>
+                          <td>Port of Oakland</td>
+                          <td><span class="badge-table badge-table-red">High</span></td>
+                        </tr>
+                        <tr>
+                          <td>Global Logistics</td>
+                          <td>1 Shipment</td>
+                          <td>Port of Seattle</td>
+                          <td><span class="badge-table badge-table-amber">Medium</span></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  <div class="item-actions">
+                    <button class="btn-mock btn-mock-danger">Reject Advice</button>
+                    <button class="btn-mock btn-mock-success">Approve Reroute</button>
+                  </div>
+                </div>
+              </div>
+            </main>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Interactive Features Tabs Controls -->
+  <section class="features-showcase-section" id="how-it-works">
+    <div class="container">
+      <div class="section-header text-center">
+        <h2 class="section-title">See Tessera in Action</h2>
+        <p class="section-subtitle">Switch tabs below to see how Tessera keeps your business running smoothly and securely.</p>
+      </div>
+      <div class="tabs-container">
+        <button class="tab-btn active" id="tab-inbox" data-target="inbox">
+          <i data-lucide="inbox"></i> Task Approvals
+        </button>
+        <button class="tab-btn" id="tab-playbooks" data-target="playbooks">
+          <i data-lucide="play-circle"></i> Automation Templates
+        </button>
+        <button class="tab-btn" id="tab-ledger" data-target="ledger">
+          <i data-lucide="history"></i> History Log
+        </button>
+        <button class="tab-btn" id="tab-memory" data-target="memory">
+          <i data-lucide="brain"></i> Instructions & Rules
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benefits Section -->
+  <section id="benefits" class="features-grid-section">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Built for Business Owners Who Value Safety</h2>
+        <p class="section-subtitle">Get the benefits of advanced AI automation without the risk of data leaks or mistakes.</p>
+      </div>
+      <div class="grid-5">
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-emerald-trans"><i data-lucide="shield" class="text-emerald"></i></div>
+          <h3 class="feature-title">100% Private Business Data</h3>
+          <p class="feature-desc">
+            Your customer lists, reports, invoices, and financial records are processed entirely on your computer's hard drive. Your data never goes to third-party servers.
+          </p>
+        </div>
+        
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-blue-trans"><i data-lucide="undo" class="text-blue"></i></div>
+          <h3 class="feature-title">One-Click Undo</h3>
+          <p class="feature-desc">
+            Tessera records all document edits in a local workspace history. Easily compare what the AI updated side-by-side and undo changes with a single click.
+          </p>
+        </div>
+        
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-amber-trans"><i data-lucide="check-square" class="text-amber"></i></div>
+          <h3 class="feature-title">Structured Automation</h3>
+          <p class="feature-desc">
+            You choose the exact steps for your tasks (like scanning port arrivals or updating supplier sheets). The AI carries out your plans without wandering off-track.
+          </p>
+        </div>
+        
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-purple-trans"><i data-lucide="key" class="text-purple"></i></div>
+          <h3 class="feature-title">Secure Vault Protection</h3>
+          <p class="feature-desc">
+            All app logins and software passwords are encrypted and locked behind your computer's built-in security chip. 
+          </p>
+        </div>
+        
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-rose-trans"><i data-lucide="check" class="text-rose"></i></div>
+          <h3 class="feature-title">Easy Setup</h3>
+          <p class="feature-desc">
+            Add support for external software connectors, templates, and spreadsheets in seconds only when your daily tasks require them.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Business Workflow Section (Replacing Technical Architecture diagram) -->
+  <section class="architecture-section">
+    <div class="container">
+      <div class="section-header text-center">
+        <h2 class="section-title">How Tessera Automates Safely</h2>
+        <p class="section-subtitle">Tessera works directly on your desktop, executing tasks according to your guidelines and checking with you before completion.</p>
+      </div>
+      <div class="architecture-diagram glass-panel">
+        <div class="arch-box box-ui">
+          <div class="arch-box-header">1. Your Files & Tools</div>
+          <p class="arch-box-desc">Spreadsheets, emails, and files stored on your computer</p>
+        </div>
+        <div class="arch-arrow-container">
+          <div class="arch-arrow-label">Read data</div>
+          <div class="arch-arrow-line"></div>
+        </div>
+        <div class="arch-box box-sidecar">
+          <div class="arch-box-header">2. Tessera Local App</div>
+          <p class="arch-box-desc">Automatically processes data and drafts files locally</p>
+        </div>
+        <div class="arch-arrow-container horizontal">
+          <div class="arch-arrow-label">Sends draft</div>
+          <div class="arch-arrow-line"></div>
+        </div>
+        <div class="arch-box box-system">
+          <div class="arch-box-header">3. Approval Inbox</div>
+          <p class="arch-box-desc">You review the draft and click Approve to finalize</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- App Tour / Screenshots Section -->
+  <section class="tour-section" id="tour">
+    <div class="container">
+      <div class="section-header text-center">
+        <h2 class="section-title">Take a Look Inside</h2>
+        <p class="section-subtitle">Tessera provides a clean, calm, and distraction-free interface for configuring your AI assistant guidelines.</p>
+      </div>
+      
+      <div class="tour-container glass-panel">
+        <!-- Tour Tabs Sidebar -->
+        <div class="tour-sidebar">
+          <button class="tour-tab-btn active" data-image="images/welcome_screen.png" data-caption="Welcome Screen: A clean login gate protecting your local session. All data is locked to your Windows or Mac user profile.">
+            <i data-lucide="home"></i> Welcome Gate
+          </button>
+          <button class="tour-tab-btn" data-image="images/workspace_dashboard.png" data-caption="Workspace Dashboard: A distraction-free task planner. Provide a business objective in plain language and Tessera plans and executes it.">
+            <i data-lucide="layout"></i> Dashboard Composer
+          </button>
+          <button class="tour-tab-btn" data-image="images/workspace_playbooks.png" data-caption="Playbooks Review: Run structured playbook automation templates (like Renewal Risk Review) that leverage web, mail, and drive sources.">
+            <i data-lucide="play-circle"></i> Playbooks Review
+          </button>
+          <button class="tour-tab-btn" data-image="images/settings_models.png" data-caption="AI Brain Selector: Easily choose your AI default provider. Connect external services or run offline local models like Ollama.">
+            <i data-lucide="cpu"></i> Model Settings
+          </button>
+          <button class="tour-tab-btn" data-image="images/settings_integrations.png" data-caption="Software Connectors: Securely connect Tavily search, Google Workspace, or HubSpot with custom CLI automation commands.">
+            <i data-lucide="puzzle"></i> Integrations
+          </button>
+          <button class="tour-tab-btn" data-image="images/settings_memory.png" data-caption="Local Database Status: Review the active SQLite database store and manage pending items waiting in your review queue.">
+            <i data-lucide="database"></i> Memory Store
+          </button>
+          <button class="tour-tab-btn" data-image="images/settings_styleguide.png" data-caption="Style Guide: Configure workspace-local writing styles and preferences for playbook runs that use voice guidance.">
+            <i data-lucide="file-text"></i> Style Guide
+          </button>
+          <button class="tour-tab-btn" data-image="images/settings_agents.png" data-caption="Assistant Profiles: Choose pre-configured agent roles (like Business Operator, Research Analyst, or Executive Partner) to govern access rules.">
+            <i data-lucide="users"></i> Agent Profiles
+          </button>
+        </div>
+        
+        <!-- Tour Content Display -->
+        <div class="tour-content">
+          <div class="tour-image-wrapper">
+            <img src="images/welcome_screen.png" id="tour-main-image" alt="Tessera Welcome Screen" class="tour-img">
+          </div>
+          <div class="tour-caption-box">
+            <p id="tour-caption-text">Welcome Screen: A clean login gate protecting your local session. All data is locked to your Windows or Mac user profile.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Downloads Section -->
+  <section id="downloads" class="downloads-section">
+    <div class="container">
+      <div class="section-header text-center">
+        <h2 class="section-title">Download Tessera Desktop</h2>
+        <p class="section-subtitle">Get the local desktop app for your computer to start automating business operations safely.</p>
+      </div>
+      
+      <div class="downloads-grid">
+        <!-- macOS -->
+        <div class="download-card glass-panel" id="dl-mac">
+          <div class="dl-header">
+            <i data-lucide="apple" class="dl-platform-icon"></i>
+            <div>
+              <h3 class="dl-platform-title">macOS</h3>
+              <span class="dl-meta">v0.1.0 • For Apple Mac computers</span>
+            </div>
+          </div>
+          <div class="dl-options">
+            <a href="https://github.com/AIArchitectsLabs/tessera/releases/download/app-v0.1.0/Tessera_0.1.0_aarch64.dmg" class="btn btn-primary w-full text-center dl-btn-track" data-platform="mac-arm">
+              Download Mac Installer
+            </a>
+          </div>
+        </div>
+
+        <!-- Windows -->
+        <div class="download-card glass-panel" id="dl-win">
+          <div class="dl-header">
+            <i data-lucide="monitor" class="dl-platform-icon"></i>
+            <div>
+              <h3 class="dl-platform-title">Windows</h3>
+              <span class="dl-meta">v0.1.0 • For Windows PCs</span>
+            </div>
+          </div>
+          <div class="dl-options">
+            <a href="downloads/Tessera-0.1.0-setup.msi" class="btn btn-primary w-full text-center dl-btn-track" data-platform="win-msi">
+              Download Windows Installer
+            </a>
+          </div>
+        </div>
+
+        <!-- Linux -->
+        <div class="download-card glass-panel" id="dl-linux">
+          <div class="dl-header">
+            <i data-lucide="terminal" class="dl-platform-icon"></i>
+            <div>
+              <h3 class="dl-platform-title">Linux</h3>
+              <span class="dl-meta">v0.1.0 • For Linux systems</span>
+            </div>
+          </div>
+          <div class="dl-options">
+            <a href="https://github.com/AIArchitectsLabs/tessera/releases/download/app-v0.1.0/tessera_0.1.0_amd64.AppImage" class="btn btn-primary w-full text-center dl-btn-track" data-platform="linux-appimage">
+              Download Linux package
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Section -->
+  <section id="faq" class="faq-section">
+    <div class="container max-w-3xl">
+      <div class="section-header text-center">
+        <h2 class="section-title">Frequently Asked Questions</h2>
+      </div>
+      <div class="faq-list">
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">How is Tessera different from ChatGPT or other chatbots?</h3>
+          <p class="faq-answer">
+            Chatbots are open-ended conversational assistants that can easily make mistakes or leak your data to public servers. Tessera is a private application that runs templates with defined, step-by-step rules. The AI only performs specific parsing tasks you approve, so it cannot act on its own.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">What is a Supply Chain Risk automation template?</h3>
+          <p class="faq-answer">
+            It is a pre-built workspace setup that automatically scans shipping routes and ports, cross-references delays with your spreadsheet of suppliers, and sends a simple alert to your inbox if a shipment is at risk, suggesting the best alternative ports.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">Is my business data shared with anyone?</h3>
+          <p class="faq-answer">
+            No. All databases, supplier files, activity logs, and passwords stay stored locally on your own computer. Tessera does not collect or upload your business data.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">Do I need coding experience to use Tessera?</h3>
+          <p class="faq-answer">
+            No coding experience is required. You can load pre-built templates for common tasks (like lead routing, invoice parsing, and port tracking) and customize guidelines using plain language.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">How does Tessera connect to my existing business tools?</h3>
+          <p class="faq-answer">
+            Tessera connects using secure local integrations. You can link local spreadsheets, email templates (Gmail/Outlook), search providers, and CRM software (like HubSpot) using system credentials safely encrypted inside your computer's built-in keychain.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">What are the computer system requirements?</h3>
+          <p class="faq-answer">
+            Tessera is lightweight and optimized for local desktop performance. It runs on Windows 10/11, macOS (Intel and Apple Silicon M1/M2/M3/M4), and standard Linux distributions. It runs efficiently in the background without slowing down your computer.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">Can I share automation templates with my team?</h3>
+          <p class="faq-answer">
+            Yes. Since Tessera templates are saved as simple files on your hard drive, you can easily share them with team members using standard shared folders (like Google Drive, OneDrive, or Dropbox) or sync them using private team repositories.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">Is there a monthly subscription fee?</h3>
+          <p class="faq-answer">
+            No. Tessera is a free, open-source desktop application. There are no monthly software subscriptions or licensing fees. You only pay directly to your chosen AI provider (such as OpenAI or Anthropic) for the raw tokens your local playbooks consume, with zero markups.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
+          <h3 class="faq-question">How do I backup my playbooks and history?</h3>
+          <p class="faq-answer">
+            All your playbooks, local SQLite databases, style settings, and logs are stored inside a single directory (<code>.tessera</code>) on your computer. Simply copy this directory to an external drive or configure your automated backup software to include it.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-grid">
+      <div>
+        <a href="#" class="logo footer-logo">
+          <span class="logo-icon">T</span>
+          <span class="logo-text">Tessera</span>
+        </a>
+        <p class="footer-tagline">Deterministic, local-first agent workspaces.</p>
+      </div>
+      <div class="footer-links-col">
+        <h4>Product</h4>
+        <a href="#benefits">Benefits</a>
+        <a href="#how-it-works">How it Works</a>
+        <a href="#downloads">Downloads</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Resources</h4>
+        <a href="https://aiarchitectslabs.github.io/tessera/">User Documentation</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera">GitHub Project</a>
+        <a href="https://aiarchitectslabs.github.io/tessera/playbook-authoring">Workspace Guides</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Legal</h4>
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="terms.html">Terms of Use</a>
+        <a href="security.html">Security Audit</a>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>&copy; 2026 AI Architects Labs. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <!-- Notification Banner -->
+  <div class="notification-banner" id="clipboard-notification">
+    <i data-lucide="check" class="notification-icon"></i>
+    <span class="notification-message">Copied to clipboard!</span>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>

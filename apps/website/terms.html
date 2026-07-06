@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Use — Tessera</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .policy-container {
+      padding-top: 160px;
+      padding-bottom: 120px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .policy-content h2 {
+      font-size: 1.75rem;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+    .policy-content p {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      font-size: 1.05rem;
+      line-height: 1.7;
+    }
+    .policy-content ul {
+      color: var(--text-secondary);
+      margin-bottom: 1.5rem;
+      padding-left: 1.5rem;
+      font-size: 1.05rem;
+    }
+    .policy-content li {
+      margin-bottom: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="glow glow-1"></div>
+  <div class="glow glow-2"></div>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="container nav-container">
+      <a href="index.html" class="logo">
+        <span class="logo-icon">T</span>
+        <span class="logo-text">Tessera</span>
+      </a>
+      <div class="nav-actions">
+        <a href="index.html" class="btn btn-secondary nav-btn">Back to Home</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="container policy-container">
+    <h1 class="hero-title"><span class="text-gradient">Terms of Use</span></h1>
+    <p class="or-text">Last Updated: July 06, 2026</p>
+    
+    <div class="policy-content glass-panel" style="padding: 3rem; margin-top: 2rem;">
+      <p>
+        Welcome to Tessera. Please read these Terms of Use carefully before downloading or running our local desktop application. By installing or using Tessera, you agree to comply with these terms.
+      </p>
+
+      <h2>1. Open Source Licensing</h2>
+      <p>
+        Tessera is open-source software distributed under standard open-source licenses (such as Apache 2.0 and MIT). You are free to copy, modify, and distribute the source code according to the terms of those licenses.
+      </p>
+
+      <h2>2. Local Execution & Liability</h2>
+      <p>
+        Tessera is a <strong>local-first application</strong>. You run all workflows, playbooks, API connections, and automation scripts entirely on your own hardware. 
+      </p>
+      <ul>
+        <li><strong>No Warranty:</strong> Tessera is provided "as is", without warranty of any kind, express or implied. </li>
+        <li><strong>User Responsibility:</strong> You are solely responsible for verifying the accuracy of any documents, database edits, emails, or transactions conducted by your AI playbooks. Tessera is not liable for data loss, service disruptions, or database errors caused by automation runs.</li>
+        <li><strong>Data Backups:</strong> Because we do not store your data on external servers, you are responsible for maintaining backups of your local SQLite database and Git workspace files.</li>
+      </ul>
+
+      <h2>3. Acceptable Use of AI</h2>
+      <p>
+        When configuring templates and connecting models to Tessera, you agree not to use the application to build workflows designed for:
+      </p>
+      <ul>
+        <li>Spamming or sending unauthorized automated emails/messages.</li>
+        <li>Bypassing system security gates or conducting unauthorized network scanning.</li>
+        <li>Generating malicious code or assisting in deceptive operations.</li>
+      </ul>
+
+      <h2>4. Third-Party API Keys</h2>
+      <p>
+        Tessera facilitates connections to third-party LLM providers (e.g. OpenAI, OpenRouter, Anthropic). Your use of these services is subject to their respective terms of service and billing structures. Tessera is not responsible for any API usage charges you incur.
+      </p>
+
+      <h2>5. Termination</h2>
+      <p>
+        You can terminate these terms at any time by uninstalling the Tessera desktop app and deleting your local config directory (`.tessera`).
+      </p>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container footer-grid">
+      <div>
+        <a href="index.html" class="logo footer-logo">
+          <span class="logo-icon">T</span>
+          <span class="logo-text">Tessera</span>
+        </a>
+        <p class="footer-tagline">Deterministic, local-first agent workspaces.</p>
+      </div>
+      <div class="footer-links-col">
+        <h4>Product</h4>
+        <a href="index.html#benefits">Benefits</a>
+        <a href="index.html#how-it-works">How it Works</a>
+        <a href="index.html#downloads">Downloads</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Resources</h4>
+        <a href="https://aiarchitectslabs.github.io/tessera/">User Docs</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera">GitHub</a>
+        <a href="https://aiarchitectslabs.github.io/tessera/playbook-authoring">Workspace Guides</a>
+      </div>
+      <div class="footer-links-col">
+        <h4>Legal</h4>
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="terms.html">Terms of Use</a>
+        <a href="security.html">Security Audit</a>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>&copy; 2026 AI Architects Labs. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>
