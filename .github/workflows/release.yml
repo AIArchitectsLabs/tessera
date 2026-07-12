@@ -177,7 +177,7 @@ jobs:
           TAG_NAME: ${{ needs.release-info.outputs.tag-name }}
         run: |
           assets_file="$RUNNER_TEMP/release-assets.txt"
-          find target -type f \( \
+          find target -path "*/release/bundle/*" -type f \( \
             -name "*.AppImage" -o \
             -name "*.deb" -o \
             -name "*.dmg" -o \
