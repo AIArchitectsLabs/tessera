@@ -10,24 +10,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const platforms = {
     mac: {
-      label: "Download for macOS (DMG)",
-      sublabel: "Universal (Apple Silicon & Intel) • v0.1.0",
-      checksum: "e9c8a4115456f91689fb897ad1a525d886981cf131cd33544ba8f81e3cb4112e",
-      url: "downloads/Tessera-0.1.0-arm64.dmg",
+      label: "Download for macOS (Apple Silicon)",
+      sublabel: "Apple Silicon DMG • v0.1.0",
+      checksum: "eaf487e25d5f5c0e56e0637a6c457abd7ac0a40c94b12e256424443e658e067b",
+      url: "https://github.com/AIArchitectsLabs/tessera/releases/download/app-v0.1.0/Tessera_0.1.0_aarch64.dmg",
       cardId: "dl-mac",
     },
     windows: {
       label: "Download for Windows (MSI)",
       sublabel: "x64 Setup • v0.1.0",
-      checksum: "b019c2f3c582e0390b72f4853b2c65b294B3fb1cdd46f3b9d268035db4a9c108",
-      url: "downloads/Tessera-0.1.0-setup.msi",
+      checksum: "1d4179a3407e35cfd2dec724061f329cfaf112693b4b19e62922ab0825ab93b3",
+      url: "https://github.com/AIArchitectsLabs/tessera/releases/download/app-v0.1.0/Tessera_0.1.0_x64_en-US.msi",
       cardId: "dl-win",
     },
     linux: {
-      label: "Download for Linux (AppImage)",
-      sublabel: "x64 Linux • v0.1.0",
-      checksum: "d1f5a11ee9812689fbfd3910a78bfa1689fb897ad1a525d8123fa338a91012fa",
-      url: "downloads/Tessera-0.1.0.AppImage",
+      label: "Download for Linux (DEB)",
+      sublabel: "Debian/Ubuntu x64 • v0.1.0",
+      checksum: "241144ecc69e543e27b3bc2f7473755bb28a6c3453e485c719bcbde31b3b638d",
+      url: "https://github.com/AIArchitectsLabs/tessera/releases/download/app-v0.1.0/Tessera_0.1.0_amd64.deb",
       cardId: "dl-linux",
     },
   };

@@ -1,12 +1,14 @@
-name: Publish Docs to GitHub Pages
+name: Publish Website and Docs to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
+      - "apps/website/**"
       - "docs/public/**"
       - "scripts/docs-audit-public.ts"
       - "scripts/docs-check-style.ts"
+      - "scripts/docs-prepare-github-pages.ts"
       - "package.json"
       - "bun.lock"
       - ".node-version"
@@ -24,7 +26,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build docs
+    name: Build website and docs
     runs-on: ubuntu-latest
 
     steps:
@@ -38,7 +40,8 @@ jobs:
         with:
           bun-version: latest
 
-      - uses: actions/configure-pages@v5
+      - id: pages
+        uses: actions/configure-pages@v5
 
       - run: bun install --frozen-lockfile
 
@@ -46,19 +49,25 @@ jobs:
 
       - run: bun run docs:export
 
-      - name: Unpack docs export
+      - name: Prepare website
         run: |
-          mkdir -p docs-site
-          unzip -q docs-export.zip -d docs-site
+          mkdir -p site
+          rsync -a --exclude package.json --exclude serve.ts apps/website/ site/
 
-      - run: bun run docs:prepare-github-pages
+      - name: Add docs under website
+        run: |
+          mkdir -p site/docs
+          unzip -q docs-export.zip -d site/docs
+
+      - name: Configure docs base path
+        run: bun run scripts/docs-prepare-github-pages.ts site/docs "${{ steps.pages.outputs.base_path }}/docs"
 
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: docs-site
+          path: site
 
   deploy:
-    name: Deploy docs
+    name: Deploy website and docs
     runs-on: ubuntu-latest
     needs: build
 
