@@ -302,6 +302,69 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // GitHub Star Count
+  const STAR_REPO = "AIArchitectsLabs/tessera";
+  const STAR_CACHE_KEY = "tessera-star-count";
+  const STAR_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+  const starCountEls = document.querySelectorAll(".star-count");
+
+  function formatStarCount(count) {
+    if (count >= 1000) {
+      return `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+    }
+    return String(count);
+  }
+
+  function renderStarCount(count) {
+    const formatted = formatStarCount(count);
+    for (const el of starCountEls) {
+      el.textContent = formatted;
+    }
+  }
+
+  function readStarCache() {
+    try {
+      const raw = localStorage.getItem(STAR_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.count !== "number" || typeof parsed.timestamp !== "number") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeStarCache(count) {
+    try {
+      localStorage.setItem(STAR_CACHE_KEY, JSON.stringify({ count, timestamp: Date.now() }));
+    } catch {
+      // localStorage unavailable (private browsing, quota, etc.) — safe to ignore
+    }
+  }
+
+  async function refreshStarCount() {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${STAR_REPO}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.stargazers_count !== "number") return;
+      renderStarCount(data.stargazers_count);
+      writeStarCache(data.stargazers_count);
+    } catch {
+      // network failure / rate limit — leave whatever is already rendered (cache or nothing)
+    }
+  }
+
+  if (starCountEls.length > 0) {
+    const cached = readStarCache();
+    if (cached) {
+      renderStarCount(cached.count);
+    }
+    if (!cached || Date.now() - cached.timestamp > STAR_CACHE_TTL) {
+      refreshStarCount();
+    }
+  }
+
   // App Tour / Screenshots gallery tab switcher
   const tourTabBtns = document.querySelectorAll(".tour-tab-btn");
   const tourMainImage = document.getElementById("tour-main-image");

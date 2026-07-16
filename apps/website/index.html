@@ -42,6 +42,10 @@
         <a href="#faq" class="nav-link">FAQ</a>
       </nav>
       <div class="nav-actions">
+        <a href="https://github.com/AIArchitectsLabs/tessera" class="btn btn-secondary nav-btn nav-star-btn" id="nav-star-btn" target="_blank" rel="noopener">
+          <i data-lucide="star" class="btn-icon nav-star-icon"></i> Star
+          <span class="star-count" id="nav-star-count"></span>
+        </a>
         <a href="#downloads" class="btn btn-secondary nav-btn" id="nav-download-btn">Download App</a>
       </div>
     </div>
@@ -52,7 +56,7 @@
     <div class="container hero-grid">
       <div class="hero-content">
         <div class="badge-container">
-          <span class="badge"><i data-lucide="shield-check" class="badge-icon"></i> 100% Private Business Automation</span>
+          <span class="badge"><i data-lucide="shield-check" class="badge-icon"></i> 100% Private &middot; Open Source &middot; Auditable</span>
         </div>
         <h1 class="hero-title">
           Automate Daily Tasks <span class="text-gradient">With Absolute Safety</span>
@@ -359,6 +363,52 @@
     </div>
   </section>
 
+  <!-- Open Source Section -->
+  <section id="open-source" class="open-source-section">
+    <div class="container">
+      <div class="section-header text-center">
+        <h2 class="section-title">Open by Design</h2>
+        <p class="section-subtitle">Tessera is free, open-source software. Don't take our word for how it handles your data — read the code, self-host it, and help shape where it goes.</p>
+      </div>
+      <div class="grid-5 grid-3">
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-blue-trans"><i data-lucide="code" class="text-blue"></i></div>
+          <h3 class="feature-title">Auditable</h3>
+          <p class="feature-desc">
+            Read every line. Nothing is hidden — you can verify for yourself that your business data stays on your computer.
+          </p>
+        </div>
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-emerald-trans"><i data-lucide="git-fork" class="text-emerald"></i></div>
+          <h3 class="feature-title">No Lock-In</h3>
+          <p class="feature-desc">
+            Fork it, self-host it, run it forever. No vendor can hold your automations hostage or shut off access.
+          </p>
+        </div>
+        <div class="feature-card glass-card">
+          <div class="feature-icon bg-purple-trans"><i data-lucide="users" class="text-purple"></i></div>
+          <h3 class="feature-title">Built in the Open</h3>
+          <p class="feature-desc">
+            Issues and pull requests are public. Contribute a fix, request a feature, or help steer the roadmap.
+          </p>
+        </div>
+      </div>
+      <div class="open-source-cta">
+        <a href="https://github.com/AIArchitectsLabs/tessera" class="btn btn-primary" id="section-star-btn" target="_blank" rel="noopener">
+          <i data-lucide="star" class="btn-icon"></i> Star on GitHub
+          <span class="star-count" id="section-star-count"></span>
+        </a>
+        <a href="https://github.com/AIArchitectsLabs/tessera" class="btn btn-secondary" target="_blank" rel="noopener">
+          <i data-lucide="code" class="btn-icon"></i> View Source
+        </a>
+        <a href="https://github.com/AIArchitectsLabs/tessera/fork" class="btn btn-secondary" target="_blank" rel="noopener">
+          <i data-lucide="git-fork" class="btn-icon"></i> Fork
+        </a>
+      </div>
+      <p class="open-source-license">Apache 2.0 licensed &middot; Free forever</p>
+    </div>
+  </section>
+
   <!-- Downloads Section -->
   <section id="downloads" class="downloads-section">
     <div class="container">
@@ -481,6 +531,12 @@
           </p>
         </div>
         <div class="faq-item glass-card">
+          <h3 class="faq-question">Can I self-host or contribute to Tessera?</h3>
+          <p class="faq-answer">
+            Yes. Tessera is Apache 2.0 licensed, so you're free to fork it, modify it, and self-host it indefinitely. The source, issues, and pull requests are all public on <a href="https://github.com/AIArchitectsLabs/tessera" target="_blank" rel="noopener">GitHub</a> — contributions and feature requests are welcome.
+          </p>
+        </div>
+        <div class="faq-item glass-card">
           <h3 class="faq-question">How do I backup my playbooks and history?</h3>
           <p class="faq-answer">
             All your playbooks, local SQLite databases, style settings, and logs are stored inside a single directory (<code>.tessera</code>) on your computer. Simply copy this directory to an external drive or configure your automated backup software to include it.
@@ -499,6 +555,7 @@
           <span class="logo-text">Tessera</span>
         </a>
         <p class="footer-tagline">Deterministic, local-first agent workspaces.</p>
+        <p class="footer-tagline">Open source &middot; Apache 2.0</p>
       </div>
       <div class="footer-links-col">
         <h4>Product</h4>
@@ -510,6 +567,9 @@
         <h4>Resources</h4>
         <a href="docs/">User Documentation</a>
         <a href="https://github.com/AIArchitectsLabs/tessera">GitHub Project</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera" target="_blank" rel="noopener">Star on GitHub</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+        <a href="https://github.com/AIArchitectsLabs/tessera/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
         <a href="docs/playbook-authoring">Workspace Guides</a>
       </div>
       <div class="footer-links-col">
